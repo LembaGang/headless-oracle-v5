@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Integration Docs | Headless Oracle V5</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #cbd5e1; }
+        .glass { background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(51, 65, 85, 0.5); }
+        pre { background: #1e293b; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; font-family: 'Menlo', monospace; font-size: 0.85rem; border: 1px solid #334155; }
+        code { color: #60a5fa; }
+        h2 { color: white; font-weight: 700; margin-top: 2rem; margin-bottom: 1rem; font-size: 1.5rem; }
+        h3 { color: #e2e8f0; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; font-size: 1.1rem; }
+        .badge { background: #1e293b; color: #60a5fa; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; border: 1px solid #334155; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <nav class="w-full border-b border-slate-800 bg-slate-900/80 backdrop-blur-md fixed top-0 z-50">
+        <div class="max-w-5xl mx-auto px-6 h-16 flex justify-between items-center">
+            <a href="index.html" class="font-bold text-white tracking-wider">HEADLESS<span class="text-blue-500">ORACLE</span></a>
+            <div class="flex items-center gap-4">
+                <span class="badge">V5.0-BETA</span>
+                <span class="text-xs font-mono text-slate-500">Public Key: key_2026_v1</span>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow max-w-5xl mx-auto px-6 py-24 w-full grid grid-cols-1 md:grid-cols-4 gap-12">
+
+        <aside class="hidden md:block col-span-1 border-r border-slate-800 pr-6 h-[calc(100vh-100px)] sticky top-24">
+            <div class="space-y-4 text-sm font-medium text-slate-400">
+                <a href="#quickstart" class="block hover:text-white transition">Quick Start</a>
+                <a href="#endpoints" class="block hover:text-white transition">Endpoints</a>
+                <a href="#schema" class="block hover:text-white transition">Response Schema</a>
+                <a href="#verification" class="block hover:text-white transition">Verification Logic</a>
+                <a href="#fail-closed" class="block hover:text-white transition">Fail-Closed Architecture</a>
+            </div>
+        </aside>
+
+        <div class="col-span-1 md:col-span-3">
+
+            <h1 class="text-4xl font-bold text-white mb-6">Integration Guide</h1>
+            <p class="text-lg text-slate-400 mb-8">
+                Headless Oracle provides a cryptographically verifiable defensive execution layer for autonomous agents.
+            </p>
+
+            <section id="quickstart" class="mb-12 border-b border-slate-800 pb-12">
+                <h2>Quick Start</h2>
+                <p class="mb-4 text-sm">Fetch a signed attestation for the New York Stock Exchange. Note that Version 5 requires an API Key header.</p>
+                <pre class="text-blue-300">curl -X GET "https://headless-oracle-v5.mmsebenzi-oracle.workers.dev/v5/status?mic=XNYS" \
+     -H "X-Oracle-Key: YOUR_API_KEY"</pre>
+            </section>
+
+            <section id="endpoints" class="mb-12 border-b border-slate-800 pb-12">
+                <h2>Available Endpoints</h2>
+                <div class="space-y-6">
+                    <div>
+                        <h3 class="text-blue-400">/v5/status</h3>
+                        <p class="text-sm mb-2">Primary endpoint for market state checks. Requires <code>X-Oracle-Key</code>.</p>
+                        <pre>Query Params: mic (ISO 10383 code, e.g., XNYS, XLON)</pre>
+                    </div>
+                    <div>
+                        <h3 class="text-blue-400">/v5/demo</h3>
+                        <p class="text-sm mb-2">Returns a signed demo receipt for testing your verification logic.</p>
+                    </div>
+                </div>
+            </section>
+
+            <section id="schema" class="mb-12 border-b border-slate-800 pb-12">
+                <h2>Response Schema</h2>
+                <pre>{
+  "receipt_id": "uuid-v4",
+  "issued_at": "ISO-8601-Timestamp",
+  "mic": "XNYS",
+  "status": "OPEN",           // OPEN, CLOSED, HALTED, or UNKNOWN
+  "source": "SCHEDULE",       // SCHEDULE, OVERRIDE, or SYSTEM
+  "terms_hash": "v5.0-beta",
+  "public_key_id": "key_2026_v1",
+  "signature": "hex_string"
+}</pre>
+
+                <h3 class="mt-6">Status Definitions</h3>
+                <ul class="list-disc pl-5 space-y-2 text-slate-400 text-sm">
+                    <li><strong class="text-green-400">OPEN:</strong> Market is trading. Safe to execute.</li>
+                    <li><strong class="text-red-400">CLOSED / HALTED:</strong> Market is offline. Do not execute.</li>
+                    <li><strong class="text-yellow-400">UNKNOWN:</strong> Fail-closed state. Oracle is unsure. Do not execute.</li>
+                </ul>
+            </section>
+
+            <section id="verification" class="mb-12 border-b border-slate-800 pb-12">
+                <h2>Verification Logic</h2>
+                <p class="mb-4">To ensure the receipt is authentic, you must reconstruct the <strong>Signed Payload</strong> and verify the signature using our <a href="ed25519-public-key.txt" class="text-blue-400 underline">Public Key</a>.</p>
+
+                <h3 class="text-xs text-slate-500 uppercase tracking-widest mb-2">1. Construct the Payload</h3>
+                <p class="text-sm mb-4">The signature is calculated over the <strong>minified JSON string</strong> of all response fields <em>excluding</em> the signature itself.</p>
+                <pre class="text-blue-300">payload = { ...response_data }
+delete payload.signature
+data_to_verify = JSON.stringify(payload)</pre>
+
+                <h3 class="text-xs text-slate-500 uppercase tracking-widest mt-8 mb-2">2. Implementation Samples</h3>
+
+                <div class="space-y-4">
+                    <div>
+                        <p class="text-xs font-mono text-slate-500 mb-1">Python (PyNaCl)</p>
+                        <pre class="text-xs bg-slate-900 border-blue-900/30">
+import json
+from nacl.signing import VerifyKey
+
+# 1. Remove signature
+sig = r.pop('signature')
+
+# 2. Stringify (ensure no spaces after colons/commas to match JS)
+msg = json.dumps(r, separators=(',', ':'))
+
+# 3. Verify
+verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY_HEX))
+verify_key.verify(msg.encode(), bytes.fromhex(sig))</pre>
+                    </div>
+
+                    <div>
+                        <p class="text-xs font-mono text-slate-500 mb-1">JavaScript (Web Crypto)</p>
+                        <pre class="text-xs bg-slate-900 border-blue-900/30">
+const { signature, ...payload } = receipt;
+const msg = JSON.stringify(payload);
+const isValid = await crypto.subtle.verify(
+    "Ed25519",
+    pubKey,
+    hexToBytes(signature),
+    new TextEncoder().encode(msg)
+);</pre>
+                    </div>
+                </div>
+            </section>
+
+            <section id="fail-closed">
+                <h2>Fail-Closed Architecture</h2>
+                <p class="text-slate-400">
+                    This Oracle is designed with a three-tier safety cascade. If the primary schedule database fails, we return a signed <code>UNKNOWN</code> status from the system layer.
+                    <br><br>
+                    <strong>Integrator Rule:</strong> Only execute trades if <code>status === 'OPEN'</code> AND the cryptographic signature is valid.
+                </p>
+            </section>
+
+        </div>
+    </main>
+
+    <footer class="border-t border-slate-800 py-12 text-center text-slate-500 text-sm">
+        <a href="index.html" class="hover:text-white">Home</a> &bull;
+        <a href="verify.html" class="hover:text-white">Receipt Verifier</a> &bull;
+        <a href="terms.html" class="hover:text-white">Terms</a>
+    </footer>
+
+</body>
+</html>

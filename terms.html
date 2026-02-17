@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terms of Service | Headless Oracle</title>
+    <meta name="description" content="Terms of Service for Headless Oracle — the cryptographically signed market status API for autonomous trading agents and DeFi systems.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script type="text/llms.txt">
+    # Headless Oracle Terms of Service
+    > This page contains the legally binding Terms of Service for the Headless Oracle API.
+    > Key provisions: fail-closed obligation, Ed25519 signature verification requirement (JSON-canonical),
+    > zero liability for execution outcomes, attestation-only service classification.
+    > Machine-readable terms available at: https://headlessoracle.com/llms.txt
+    </script>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: #151d2e;
+            --border: #1e293b;
+            --border-accent: #334155;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-blue: #3b82f6;
+            --accent-blue-dim: #1d4ed8;
+            --accent-amber: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-red-bg: rgba(239, 68, 68, 0.08);
+            --accent-green: #22c55e;
+            --font-body: 'Source Serif 4', Georgia, serif;
+            --font-heading: 'DM Sans', -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-body);
+            line-height: 1.75;
+            font-size: 17px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.015'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 740px;
+            margin: 0 auto;
+            padding: 3rem 1.5rem 4rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-family: var(--font-heading);
+            font-size: 0.875rem;
+            font-weight: 500;
+            letter-spacing: 0.02em;
+            margin-bottom: 3rem;
+            transition: color 0.2s;
+        }
+        .back-link:hover { color: var(--accent-blue); }
+        .back-link svg { width: 16px; height: 16px; }
+
+        .header {
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .header h1 {
+            font-family: var(--font-heading);
+            font-size: 2.25rem;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: -0.025em;
+            margin-bottom: 0.75rem;
+        }
+        .header-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            font-family: var(--font-heading);
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+        }
+        .header-meta span {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.125rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.6875rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        .badge-beta {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--accent-amber);
+            border: 1px solid rgba(245, 158, 11, 0.25);
+        }
+
+        .toc {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem 2rem;
+            margin-bottom: 3rem;
+        }
+        .toc-title {
+            font-family: var(--font-heading);
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+        }
+        .toc ol {
+            list-style: none;
+            counter-reset: toc-counter;
+            columns: 2;
+            column-gap: 2rem;
+        }
+        .toc li {
+            counter-increment: toc-counter;
+            margin-bottom: 0.375rem;
+            break-inside: avoid;
+        }
+        .toc a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-family: var(--font-heading);
+            font-size: 0.875rem;
+            transition: color 0.2s;
+            display: flex;
+            gap: 0.5rem;
+        }
+        .toc a::before {
+            content: counter(toc-counter) ".";
+            color: var(--text-muted);
+            min-width: 1.25rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .toc a:hover { color: var(--accent-blue); }
+
+        .section {
+            margin-bottom: 2.75rem;
+            scroll-margin-top: 2rem;
+        }
+        .section h2 {
+            font-family: var(--font-heading);
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .section-number {
+            font-family: var(--font-mono);
+            font-size: 0.8125rem;
+            color: var(--accent-blue);
+            background: rgba(59, 130, 246, 0.1);
+            padding: 0.125rem 0.5rem;
+            border-radius: 4px;
+        }
+        .section p { margin-bottom: 1rem; }
+        .section p:last-child { margin-bottom: 0; }
+        .section ul, .section ol {
+            margin: 0.75rem 0 1rem 1.5rem;
+        }
+        .section li {
+            margin-bottom: 0.5rem;
+            padding-left: 0.25rem;
+        }
+        .section li::marker { color: var(--text-muted); }
+
+        .alert {
+            border-radius: 6px;
+            padding: 1rem 1.25rem;
+            margin: 1rem 0;
+            font-size: 0.9375rem;
+        }
+        .alert-critical {
+            background: var(--accent-red-bg);
+            border-left: 3px solid var(--accent-red);
+        }
+        .alert-critical strong { color: var(--accent-red); }
+        .alert-info {
+            background: rgba(59, 130, 246, 0.06);
+            border-left: 3px solid var(--accent-blue);
+        }
+        .alert-info strong { color: var(--accent-blue); }
+        .alert-warning {
+            background: rgba(245, 158, 11, 0.06);
+            border-left: 3px solid var(--accent-amber);
+        }
+        .alert-warning strong { color: var(--accent-amber); }
+
+        code {
+            font-family: var(--font-mono);
+            font-size: 0.85em;
+            background: rgba(59, 130, 246, 0.08);
+            color: var(--accent-blue);
+            padding: 0.125rem 0.375rem;
+            border-radius: 3px;
+        }
+
+        .definition-block {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1.25rem 1.5rem;
+            margin: 1rem 0;
+        }
+        .definition-block dt {
+            font-family: var(--font-heading);
+            font-weight: 600;
+            color: #fff;
+            font-size: 0.9375rem;
+            margin-bottom: 0.25rem;
+        }
+        .definition-block dd {
+            color: var(--text-secondary);
+            font-size: 0.9375rem;
+            margin-bottom: 0.75rem;
+        }
+        .definition-block dd:last-child { margin-bottom: 0; }
+
+        .legal-footer {
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border);
+            font-family: var(--font-heading);
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+        }
+        .legal-footer a {
+            color: var(--text-muted);
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .legal-footer a:hover { color: var(--accent-blue); }
+        .footer-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.5rem;
+            margin-top: 1rem;
+        }
+
+        @media (max-width: 640px) {
+            .container { padding: 2rem 1rem 3rem; }
+            .header h1 { font-size: 1.75rem; }
+            .toc ol { columns: 1; }
+            .header-meta { flex-direction: column; gap: 0.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+
+        <a href="index.html" class="back-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+            Back to Headless Oracle
+        </a>
+
+        <header class="header">
+            <h1>Terms of Service</h1>
+            <div class="header-meta">
+                <span><span class="badge badge-beta">Beta</span> Version 5.0-BETA (Interim)</span>
+                <span>Effective: 16 February 2026</span>
+                <span>Last Updated: 16 February 2026</span>
+            </div>
+        </header>
+
+        <nav class="toc">
+            <div class="toc-title">Contents</div>
+            <ol>
+                <li><a href="#nature">Nature of Service</a></li>
+                <li><a href="#definitions">Key Definitions</a></li>
+                <li><a href="#acceptance">Acceptance of Terms</a></li>
+                <li><a href="#no-liability">No Liability for Execution</a></li>
+                <li><a href="#fail-closed">The Fail-Closed Obligation</a></li>
+                <li><a href="#verification">Cryptographic Verification</a></li>
+                <li><a href="#acceptable-use">Acceptable Use</a></li>
+                <li><a href="#data-accuracy">Data Accuracy &amp; Limitations</a></li>
+                <li><a href="#intellectual-property">Intellectual Property</a></li>
+                <li><a href="#privacy">Privacy &amp; Data Collection</a></li>
+                <li><a href="#beta">Beta Disclaimer</a></li>
+                <li><a href="#indemnification">Indemnification</a></li>
+                <li><a href="#limitation">Limitation of Liability</a></li>
+                <li><a href="#termination">Termination</a></li>
+                <li><a href="#governing-law">Governing Law</a></li>
+                <li><a href="#changes">Changes to Terms</a></li>
+                <li><a href="#contact">Contact</a></li>
+            </ol>
+        </nav>
+
+        <main>
+
+            <section class="section" id="nature">
+                <h2><span class="section-number">01</span> Nature of Service</h2>
+                <p>
+                    Headless Oracle provides a <strong>defensive execution layer</strong> for automated systems. The Service delivers cryptographically signed attestations regarding the observed operational status of specific financial market venues. Each response constitutes a <strong>signed observation</strong> — a timestamped, verifiable record that the Service observed a particular market status at a particular moment.
+                </p>
+                <div class="alert alert-critical">
+                    <strong>CRITICAL DISTINCTION:</strong> This Service is a tool for <strong>procedural diligence</strong>. It does not constitute financial advice, legal advice, investment guidance, or a guarantee of market liquidity, settlement capability, or clearing availability. Headless Oracle is an <strong>information publisher</strong>, not an execution venue, broker-dealer, exchange, or investment adviser.
+                </div>
+                <p>
+                    The Service operates under the Publisher's Exclusion doctrine. It broadcasts identical, impersonal market observations to all subscribers without regard to any subscriber's individual positions, portfolio, risk tolerance, or investment objectives. The Service does not accept, process, or consider any user-specific financial data.
+                </p>
+            </section>
+
+            <section class="section" id="definitions">
+                <h2><span class="section-number">02</span> Key Definitions</h2>
+                <div class="definition-block">
+                    <dl>
+                        <dt>"Attestation" or "Receipt"</dt>
+                        <dd>A JSON payload returned by the API containing a market status observation and its corresponding Ed25519 digital signature. An Attestation is a record of observation, not a guarantee of fact.</dd>
+
+                        <dt>"Agent" or "You"</dt>
+                        <dd>Any person, entity, autonomous software system, trading bot, AI agent, smart contract, or automated process that accesses the Headless Oracle API.</dd>
+
+                        <dt>"Defensive Execution Layer"</dt>
+                        <dd>A pre-trade validation service that provides verifiable market state data as one input in a multi-factor decision pipeline. Not a replacement for independent due diligence.</dd>
+
+                        <dt>"Fail-Closed"</dt>
+                        <dd>A safety design pattern in which system uncertainty defaults to the most restrictive state. In context: any ambiguous, missing, or unverifiable API response must be treated as equivalent to "market CLOSED."</dd>
+
+                        <dt>"Procedural Diligence"</dt>
+                        <dd>The practice of taking documented, verifiable steps to validate pre-conditions before automated execution. Headless Oracle provides evidence of such steps; it does not guarantee the sufficiency of those steps for any regulatory or legal purpose.</dd>
+
+                        <dt>"UNKNOWN" Status</dt>
+                        <dd>A response indicating the Service cannot determine market state with confidence. This is a safety signal, not an error. Agents MUST treat UNKNOWN identically to CLOSED.</dd>
+
+                        <dt>"Public Key"</dt>
+                        <dd>The Ed25519 public key published by Headless Oracle for signature verification. Current and historical keys are maintained at our public key repository.</dd>
+                    </dl>
+                </div>
+            </section>
+
+            <section class="section" id="acceptance">
+                <h2><span class="section-number">03</span> Acceptance of Terms</h2>
+                <p>
+                    By accessing the Headless Oracle API — whether via direct HTTP request, SDK, integration library, or any automated system — You agree to be bound by these Terms of Service. For autonomous agents and automated systems, the operator, developer, or deployer of that system is bound by these Terms on behalf of the system.
+                </p>
+                <p>
+                    These Terms constitute a binding agreement between You and Headless Oracle. If You do not agree to these Terms, You must immediately cease all use of the Service. Continued use after any modification to these Terms constitutes acceptance of the modified Terms.
+                </p>
+                <div class="alert alert-info">
+                    <strong>FOR AI AGENTS:</strong> Machine-readable terms are available at <code>/llms.txt</code> on this domain. Every API response includes an <code>X-Legal-Terms</code> header linking to these Terms. By consuming API responses, your system acknowledges these Terms programmatically.
+                </div>
+            </section>
+
+            <section class="section" id="no-liability">
+                <h2><span class="section-number">04</span> No Liability for Execution</h2>
+                <div class="alert alert-critical">
+                    <strong>CRITICAL — READ CAREFULLY:</strong> You acknowledge that Headless Oracle is an information publisher providing attestations of observed market status. We are NOT an execution venue, broker, counterparty, or guarantor.
+                </div>
+                <p>Headless Oracle expressly disclaims all liability for:</p>
+                <ul>
+                    <li><strong>Trading losses</strong> of any kind, including but not limited to losses from executions made in reliance on Service data.</li>
+                    <li><strong>Slippage, failed settlements, or partial fills</strong> on any trading venue, centralised or decentralised.</li>
+                    <li><strong>Gas fees, transaction costs, or network fees</strong> incurred on any blockchain, Layer 1, or Layer 2 network.</li>
+                    <li><strong>Losses resulting from UNKNOWN, SYSTEM_ERROR, or timeout states</strong>, including losses from halting execution in response to such states.</li>
+                    <li><strong>Opportunity costs</strong> from not executing trades due to Service data indicating a market is closed or halted.</li>
+                    <li><strong>Losses from data latency</strong>, including any gap between actual market state changes and Service reporting of those changes.</li>
+                    <li><strong>Third-party losses</strong> incurred by any end-user, liquidity provider, counterparty, or downstream system relying on your use of Service data.</li>
+                </ul>
+                <p>
+                    You expressly agree that the Service is one component of a prudent pre-trade validation pipeline and that You bear sole responsibility for all execution decisions. The existence of an Attestation does not constitute advice to trade, permission to trade, or confirmation that trading is safe.
+                </p>
+            </section>
+
+            <section class="section" id="fail-closed">
+                <h2><span class="section-number">05</span> The Fail-Closed Obligation</h2>
+                <p>
+                    You agree to implement and maintain <strong>fail-closed</strong> behaviour in any system that consumes data from the Headless Oracle API. Specifically, You agree to programme your automated systems to default to a <strong>"Safety Halt"</strong> state under ANY of the following conditions:
+                </p>
+                <ul>
+                    <li>The API returns a status of <code>UNKNOWN</code></li>
+                    <li>The API returns an <code>INTERNAL_ERROR</code> or <code>SYSTEM_ERROR</code> event</li>
+                    <li>The API returns an <code>AUTHENTICATION_REQUIRED</code> (401) error</li>
+                    <li>The API returns any HTTP 5xx server error</li>
+                    <li>The API is unreachable or does not respond within 4,000 milliseconds</li>
+                    <li>The Ed25519 signature on the response fails verification</li>
+                    <li>The <code>public_key_id</code> in the response does not match any known, non-revoked public key</li>
+                </ul>
+                <div class="alert alert-warning">
+                    <strong>BREACH WARNING:</strong> Ignoring an <code>UNKNOWN</code> signal, bypassing signature verification, or continuing execution when the API is unreachable constitutes a material breach of these Terms. Upon breach, all Attestations issued to your API key are retroactively voided for evidentiary purposes, and Headless Oracle reserves the right to immediately terminate your access.
+                </div>
+            </section>
+
+            <section class="section" id="verification">
+                <h2><span class="section-number">06</span> Cryptographic Verification</h2>
+                <p>
+                    Every API response on paid tiers includes an <strong>Ed25519 digital signature</strong>. This signature is the sole mechanism by which an Attestation acquires evidentiary standing.
+                    <strong>In Version 5.0-BETA, signatures are calculated over the exact UTF-8 encoded string of the JSON payload object, excluding the signature field itself.</strong>
+                </p>
+                <ul>
+                    <li><strong>Verifying the signature</strong> of every API response against our published Public Key before using the data for any execution decision.</li>
+                    <li><strong>Monitoring key rotation announcements</strong> published at our public key repository and status page.</li>
+                    <li><strong>Rejecting responses</strong> where the signature does not verify, the public key ID is unrecognised, or the timestamp falls outside acceptable staleness bounds (recommended: reject attestations older than 60 seconds).</li>
+                </ul>
+            </section>
+
+            <section class="section" id="acceptable-use">
+                <h2><span class="section-number">07</span> Acceptable Use</h2>
+                <p>You agree to use the Service only for lawful purposes consistent with its design as a pre-trade validation layer. You shall NOT:</p>
+                <ul>
+                    <li>Redistribute, resell, or sublicense API responses or Attestations to third parties without written consent.</li>
+                    <li>Use the Service to construct or disseminate misleading representations about market conditions.</li>
+                    <li>Attempt to reverse-engineer, decompile, or extract the proprietary logic of the Service.</li>
+                    <li>Exceed your plan's rate limits or circumvent rate limiting through key sharing, distributed requests, or any other mechanism.</li>
+                    <li>Use the Service to facilitate market manipulation, front-running, spoofing, layering, or any activity prohibited under applicable securities or commodities laws.</li>
+                    <li>Present Headless Oracle Attestations as a regulatory certification, compliance guarantee, or legal immunity.</li>
+                    <li>Share, transfer, or expose your API key to unauthorised parties.</li>
+                </ul>
+            </section>
+
+            <section class="section" id="data-accuracy">
+                <h2><span class="section-number">08</span> Data Accuracy &amp; Limitations</h2>
+                <p>
+                    Headless Oracle derives market status from a combination of published exchange schedules, official holiday calendars, and manual override inputs. You acknowledge and accept the following limitations:
+                </p>
+                <ul>
+                    <li><strong>Schedule-based, not real-time feed-based.</strong> The Service reports the <em>scheduled</em> operational status of markets based on published calendars. It does not ingest or relay real-time exchange feeds. Unscheduled halts may not be reflected until a manual override is entered.</li>
+                    <li><strong>Latency is non-zero.</strong> There is an inherent delay between a real-world market event and its reflection in API responses. This delay may range from seconds to minutes.</li>
+                    <li><strong>Observation, not reality.</strong> Every Attestation records what the Service <em>observed</em> at a point in time. It is a signed observation, not a signed guarantee that reality matched the observation.</li>
+                </ul>
+            </section>
+
+            <section class="section" id="intellectual-property">
+                <h2><span class="section-number">09</span> Intellectual Property</h2>
+                <p>
+                    The Headless Oracle name, logo, API design, documentation, and all associated intellectual property are owned by Headless Oracle. Your subscription grants a limited, non-exclusive, non-transferable, revocable licence to access the API and use Attestations for your internal operational purposes.
+                </p>
+            </section>
+
+            <section class="section" id="privacy">
+                <h2><span class="section-number">10</span> Privacy &amp; Data Collection</h2>
+                <p>Headless Oracle is designed with minimal data collection. We collect:</p>
+                <ul>
+                    <li><strong>API key identifier</strong> — to authenticate requests and enforce rate limits.</li>
+                    <li><strong>Request metadata</strong> — timestamp, requested MIC code, response status, stored in our audit log for operational integrity.</li>
+                    <li><strong>Email address</strong> — provided at registration for account management.</li>
+                </ul>
+                <p>We do NOT collect portfolio data, trading positions, or financial account information. Full Privacy Policy at <a href="privacy.html" style="color: var(--accent-blue);">/privacy.html</a>.</p>
+            </section>
+
+            <section class="section" id="beta">
+                <h2><span class="section-number">11</span> Beta Disclaimer</h2>
+                <div class="alert alert-warning">
+                    <strong>BETA SERVICE:</strong> Headless Oracle is currently in public beta. You acknowledge and accept that service availability may be intermittent and no SLA is in force during the beta period.
+                </div>
+            </section>
+
+            <section class="section" id="indemnification">
+                <h2><span class="section-number">12</span> Indemnification</h2>
+                <p>
+                    You agree to indemnify, defend, and hold harmless Headless Oracle from and against any and all claims, damages, losses, and liabilities arising out of your use of the Service or violation of these Terms.
+                </p>
+            </section>
+
+            <section class="section" id="limitation">
+                <h2><span class="section-number">13</span> Limitation of Liability</h2>
+                <p>
+                    TO THE MAXIMUM EXTENT PERMITTED BY LAW: Headless Oracle provides the Service <strong>"AS IS"</strong>. Total aggregate liability is limited to the <strong>total fees paid by You to Headless Oracle in the preceding thirty (30) days</strong>.
+                </p>
+            </section>
+
+            <section class="section" id="termination">
+                <h2><span class="section-number">14</span> Termination</h2>
+                <p>
+                    Headless Oracle may terminate or suspend your access immediately for breach of terms or at our sole discretion. Verified receipts remain valid records of historical observations post-termination.
+                </p>
+            </section>
+
+            <section class="section" id="governing-law">
+                <h2><span class="section-number">15</span> Governing Law &amp; Dispute Resolution</h2>
+                <p>
+                    These Terms are governed by the laws of <strong>England and Wales</strong>. Any dispute shall be resolved through binding arbitration administered by the LCIA in London.
+                </p>
+            </section>
+
+            <section class="section" id="changes">
+                <h2><span class="section-number">16</span> Changes to These Terms</h2>
+                <p>
+                    Headless Oracle reserves the right to modify these Terms. Material changes will be published 30 days in advance of taking effect.
+                </p>
+            </section>
+
+            <section class="section" id="contact">
+                <h2><span class="section-number">17</span> Contact</h2>
+                <div class="definition-block">
+                    <dl>
+                        <dt>General Enquiries</dt>
+                        <dd><a href="mailto:hello@headlessoracle.com" style="color: var(--accent-blue);">hello@headlessoracle.com</a></dd>
+                        <dt>Legal Notices</dt>
+                        <dd><a href="mailto:legal@headlessoracle.com" style="color: var(--accent-blue);">legal@headlessoracle.com</a></dd>
+                    </dl>
+                </div>
+            </section>
+
+        </main>
+
+        <footer class="legal-footer">
+            <p>Headless Oracle &copy; 2026. All rights reserved.</p>
+            <div class="footer-links">
+                <a href="index.html">Home</a>
+                <a href="terms.html">Terms of Service</a>
+                <a href="privacy.html">Privacy Policy</a>
+                <a href="llms.txt">Machine-Readable Terms</a>
+                <a href="verify.html">Receipt Verifier</a>
+            </div>
+        </footer>
+
+    </div>
+</body>
+</html>

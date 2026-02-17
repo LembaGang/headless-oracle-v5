@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy | Headless Oracle</title>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --text-primary: #e2e8f0;
+            --text-muted: #64748b;
+            --accent-blue: #3b82f6;
+            --font-heading: -apple-system, sans-serif;
+            --font-body: Georgia, serif;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-body);
+            line-height: 1.75;
+            padding: 4rem 1.5rem;
+        }
+        .container { max-width: 740px; margin: 0 auto; }
+        h1 { font-family: var(--font-heading); font-size: 2.5rem; color: #fff; margin-bottom: 2rem; }
+        h2 { font-family: var(--font-heading); font-size: 1.5rem; color: #fff; margin-top: 3rem; margin-bottom: 1rem; border-bottom: 1px solid #1e293b; padding-bottom: 0.5rem;}
+        p { margin-bottom: 1rem; color: var(--text-muted); }
+        ul { margin-bottom: 1rem; margin-left: 1.5rem; color: var(--text-muted); }
+        li { margin-bottom: 0.5rem; }
+        a { color: var(--accent-blue); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="index.html" style="font-family: var(--font-heading); font-size: 0.875rem;">&larr; Back to Home</a>
+
+        <h1>Privacy Policy</h1>
+        <p><strong>Effective Date:</strong> February 16, 2026</p>
+
+        <p>Headless Oracle is designed with <strong>architectural data minimization</strong>. We believe the safest way to handle user data is not to collect it in the first place.</p>
+
+        <h2>1. Data We Collect</h2>
+        <p>We strictly limit data collection to what is necessary for operational security and verifying Liability Receipts:</p>
+        <ul>
+            <li><strong>API Key Identifier:</strong> To authenticate your <code>X-Oracle-Key</code> header and enforce rate limits.</li>
+            <li><strong>Request Metadata:</strong> The <code>receipt_id</code>, MIC code queried, and response status. These are stored in our audit logs to prove operational integrity.</li>
+            <li><strong>Email Address:</strong> Only if provided for account management, used strictly for billing and critical security alerts (e.g., "Key Rotation").</li>
+            <li><strong>IP Address:</strong> Logged temporarily for rate-limiting and DDoS protection, then purged.</li>
+        </ul>
+
+        <h2>2. Data We Do NOT Collect</h2>
+        <p>To preserve our status under the Publisher's Exclusion doctrine, we do not touch financial data:</p>
+        <ul>
+            <li>We do NOT collect portfolio holdings, trading positions, or account balances.</li>
+            <li>We do NOT collect wallet addresses or private keys.</li>
+            <li>We do NOT track your browsing history or use advertising cookies.</li>
+        </ul>
+
+        <h2>3. How We Use Data</h2>
+        <p>Your data is used for two purposes only: <strong>Service Delivery</strong> (letting you query the API) and <strong>Security</strong> (detecting abuse or proof of attestation for dispute resolution).</p>
+
+        <h2>4. Data Retention</h2>
+        <p>Operational audit logs are retained for <strong>90 days</strong>. After this period, they are permanently deleted. You may request earlier deletion of your account metadata by contacting support.</p>
+
+        <h2>5. Contact</h2>
+        <p>For privacy concerns: <a href="mailto:security@headlessoracle.com">security@headlessoracle.com</a></p>
+    </div>
+</body>
+</html>

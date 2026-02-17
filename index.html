@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Headless Oracle V5 | Defensive Execution Layer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .hero-glow { position: absolute; width: 600px; height: 600px; background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, rgba(0, 0, 0, 0) 70%); top: -200px; left: 50%; transform: translateX(-50%); z-index: -1; }
+        pre { background: #1e293b; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; font-size: 0.875rem; border: 1px solid #334155; }
+        .status-dot { height: 8px; width: 8px; background-color: #22c55e; border-radius: 50%; display: inline-block; margin-right: 6px; box-shadow: 0 0 8px #22c55e; }
+    </style>
+</head>
+<body class="text-slate-300 min-h-screen flex flex-col relative overflow-x-hidden">
+
+    <div class="hero-glow"></div>
+
+    <nav class="w-full max-w-6xl mx-auto p-6 flex justify-between items-center border-b border-slate-800/50">
+        <div class="flex items-center gap-2">
+            <div class="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+            <span class="text-xl font-bold tracking-wider text-white">HEADLESS<span class="text-blue-500">ORACLE</span></span>
+        </div>
+        <div class="flex gap-6 text-sm font-medium">
+            <a href="docs.html" class="hover:text-white transition">Docs</a>
+            <a href="#" onclick="testLiveAPI(); document.getElementById('api-response').scrollIntoView({behavior:'smooth'}); return false;" class="hover:text-white transition flex items-center"><span class="status-dot"></span>Status</a>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col items-center justify-center text-center px-4 mt-16 mb-20">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-900/30 border border-blue-500/30 text-blue-400 text-xs font-semibold mb-6">
+            <span class="relative flex h-2 w-2">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+            </span>
+            V5 Beta is Live
+        </div>
+
+        <h1 class="text-5xl md:text-7xl font-bold text-white mb-6 tracking-tight max-w-4xl">
+            Your RWA Bot Doesn't Know <br />
+            <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-500">When NYSE Closes.</span>
+        </h1>
+
+        <p class="text-xl text-slate-400 mb-8 max-w-2xl mx-auto">
+            That Costs You Money. Headless Oracle is the <strong class="text-white">first purpose-built</strong> defensive execution layer for autonomous agents. Get a cryptographically verifiable attestation of market status <em>before</em> your bot executes a trade.
+        </p>
+
+        <div class="flex flex-col sm:flex-row gap-4 w-full justify-center">
+            <button onclick="testLiveAPI().then(() => document.getElementById('api-response').scrollIntoView({behavior:'smooth'}))" class="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold transition shadow-lg shadow-blue-900/20 flex items-center justify-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                Test Live API
+            </button>
+            <a href="docs.html" class="px-8 py-4 glass hover:bg-white/10 text-white rounded-lg font-bold transition flex items-center justify-center">
+                Read Integration Docs
+            </a>
+        </div>
+    </main>
+
+    <section class="max-w-4xl mx-auto px-6 mb-24 grid md:grid-cols-2 gap-12 items-center">
+        <div class="text-left">
+            <h2 class="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+                <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                The Incident Report
+            </h2>
+            <p class="text-slate-400 mb-4">A DeFi bot trading tokenized equities on Solana submits a buy order for a synthetic SPY token at <strong>16:05 ET</strong>.</p>
+            <p class="text-slate-400 mb-6">The NYSE closed 5 minutes ago. The on-chain order executes, but there is no underlying liquidity to settle against. The bot takes a loss on the spread, pays gas, and the position is immediately underwater.</p>
+            <div class="p-4 bg-red-900/20 border border-red-500/30 rounded-lg">
+                <p class="text-red-200 font-mono text-sm">Cost: <span class="text-white font-bold">$200 - $5,000</span> per incident due to blind execution.</p>
+            </div>
+        </div>
+        <div class="glass p-6 rounded-xl border border-slate-700 relative">
+            <div class="absolute -top-3 -right-3 bg-blue-600 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Solution</div>
+            <h3 class="text-lg font-bold text-white mb-2">Don't Trust. Verify.</h3>
+            <p class="text-sm text-slate-400 mb-4">We don't just send data. We sign it. Every API response includes an <strong>Ed25519 cryptographic signature</strong> that proves the state of the market at that exact millisecond.</p>
+            <ul class="space-y-2 text-sm text-slate-300">
+                <li class="flex items-center gap-2"><svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Verifiable Market State Check</li>
+                <li class="flex items-center gap-2"><svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Audit-Friendly Liability Receipt</li>
+                <li class="flex items-center gap-2"><svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> 100% Fail-Closed Architecture</li>
+            </ul>
+            <a href="verify.html" class="inline-block mt-4 text-xs text-blue-400 hover:text-blue-300 underline">Verify any receipt yourself &rarr;</a>
+        </div>
+    </section>
+
+    <section class="w-full max-w-3xl mx-auto px-6 mb-24">
+        <div class="flex items-center justify-between mb-2 px-2">
+            <span class="text-xs font-mono text-slate-500">GET /v5/status</span>
+            <button onclick="copyCommand(this)" class="text-xs text-slate-500 hover:text-white transition cursor-pointer">Copy JSON</button>
+        </div>
+        <div class="glass p-0 rounded-lg overflow-hidden border border-slate-700 shadow-2xl">
+            <div class="bg-slate-900/50 px-4 py-2 border-b border-slate-700 flex gap-2">
+                <div class="w-3 h-3 rounded-full bg-red-500/20 border border-red-500/50"></div>
+                <div class="w-3 h-3 rounded-full bg-yellow-500/20 border border-yellow-500/50"></div>
+                <div class="w-3 h-3 rounded-full bg-green-500/20 border border-green-500/50"></div>
+            </div>
+            <pre id="api-response" class="text-xs sm:text-sm text-blue-300 font-mono p-6 overflow-x-auto">
+{
+  "receipt_id": "...",
+  "status": "WAITING_FOR_TEST..."
+}</pre>
+        </div>
+    </section>
+
+    <footer class="border-t border-slate-800 bg-slate-900/50 mt-auto">
+        <div class="max-w-6xl mx-auto px-6 py-12 flex flex-col md:flex-row justify-between items-center gap-6">
+            <div class="text-center md:text-left">
+                <p class="text-sm text-slate-500">&copy; 2026 Headless Oracle. Built for the Agentic Economy.</p>
+                <p class="text-xs text-slate-600 mt-2 max-w-md">Headless Oracle provides verifiable data attestations, not legal or financial advice. The cryptographic receipt evidences the observation of market status based on configured sources.</p>
+            </div>
+            <div class="flex gap-6 text-xs text-slate-500">
+                <a href="terms.html" class="hover:text-white transition">Terms of Service</a>
+                <a href="privacy.html" class="hover:text-white transition">Privacy Policy</a>
+                <a href="verify.html" class="hover:text-white transition">Receipt Verifier</a>
+                <a href="ed25519-public-key.txt" class="hover:text-white transition">Public Key Registry</a>
+                <a href="llms.txt" class="hover:text-white transition">LLM / Agent Terms</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        const API_URL = 'https://headless-oracle-v5.mmsebenzi-oracle.workers.dev/v5/status?mic=XNYS';
+
+        async function testLiveAPI() {
+            const pre = document.getElementById('api-response');
+            pre.innerText = '{ "status": "QUERYING_ORACLE..." }';
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'GET',
+                    headers: {
+                        'X-Oracle-Key': 'oracle_primary_key_2026'
+                    }
+                });
+
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.message || response.statusText);
+                }
+
+                const data = await response.json();
+                pre.innerText = JSON.stringify(data, null, 2);
+                pre.className = "text-xs sm:text-sm text-green-400 font-mono p-6 overflow-x-auto";
+            } catch (e) {
+                pre.innerText = JSON.stringify({ error: "Could not reach Oracle", details: e.message }, null, 2);
+                pre.className = "text-xs sm:text-sm text-red-400 font-mono p-6 overflow-x-auto";
+            }
+        }
+
+        function copyCommand(btn) {
+            const textToCopy = document.getElementById('api-response').innerText;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                const originalText = btn.innerText;
+                btn.innerText = "Copied JSON!";
+                btn.classList.add("text-green-500");
+                setTimeout(() => {
+                    btn.innerText = originalText;
+                    btn.classList.remove("text-green-500");
+                }, 2000);
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Receipt Verifier | Headless Oracle</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; }
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-300 min-h-screen flex flex-col">
+
+    <nav class="w-full max-w-6xl mx-auto p-6 flex justify-between items-center border-b border-slate-800/50">
+        <div class="flex items-center gap-2">
+            <span class="text-xl font-bold tracking-wider text-white">HEADLESS<span class="text-blue-500">ORACLE</span></span>
+        </div>
+        <div class="flex gap-6 text-sm font-medium">
+            <a href="index.html" class="hover:text-white transition">Home</a>
+            <a href="ed25519-public-key.txt" class="hover:text-white transition">Public Key</a>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col items-center justify-center p-4">
+        <div class="max-w-3xl w-full">
+
+            <h1 class="text-3xl font-bold text-white mb-2 text-center">Verify Liability Receipt</h1>
+            <p class="text-center text-slate-500 mb-8">
+                Paste a JSON receipt below to independently verify its Ed25519 signature using the Web Crypto API.
+                <br>This happens entirely in your browser. No data is sent to our servers.
+            </p>
+
+            <div id="browser-warning" class="hidden mb-6 p-4 rounded-lg border border-yellow-500 bg-yellow-900/20 text-yellow-200 text-sm text-center">
+                <strong>Browser Incompatible:</strong> Your browser doesn't support Ed25519. Please use Chrome 113+, Firefox 128+, or the latest Safari.
+            </div>
+
+            <div class="glass rounded-xl p-6 mb-6">
+                <label class="block text-sm font-bold text-white mb-2">Liability Receipt (JSON)</label>
+                <textarea id="receipt-input" rows="8"
+                    class="w-full bg-slate-800 border border-slate-700 rounded-lg p-4 font-mono text-xs text-slate-300 focus:ring-2 focus:ring-blue-500 outline-none"
+                    placeholder='{ "receipt_id": "...", "signature": "..." }'></textarea>
+            </div>
+
+            <div class="glass rounded-xl p-6 mb-8">
+                <label class="block text-sm font-bold text-white mb-2">Oracle Public Key (PEM Format)</label>
+                <textarea id="public-key-input" rows="3"
+                    class="w-full bg-slate-800 border border-slate-700 rounded-lg p-4 font-mono text-xs text-slate-400 focus:ring-2 focus:ring-blue-500 outline-none"
+                    placeholder="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAqZh9e8PionpHa73JLiRLynkvpbednvH6b2/UHoLkOA4=
+-----END PUBLIC KEY-----"></textarea>
+                <p class="text-xs text-slate-600 mt-2">
+                    Normally fetched automatically from the <a href="ed25519-public-key.txt" target="_blank" class="underline text-blue-500">Public Registry</a>.
+                </p>
+            </div>
+
+            <button id="verify-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-lg transition mb-8 shadow-lg shadow-blue-900/20">
+                Verify Signature
+            </button>
+
+            <div id="result-area" class="hidden rounded-xl p-6 border text-center transition-all">
+                <div id="result-icon" class="text-6xl mb-4"></div>
+                <h2 id="result-title" class="text-2xl font-bold mb-2"></h2>
+                <p id="result-desc" class="text-sm"></p>
+            </div>
+
+        </div>
+    </main>
+
+    <footer class="p-8 text-center text-slate-600 text-xs border-t border-slate-800">
+        &copy; 2026 Headless Oracle. Verification runs locally via <a href="https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto" class="underline">window.crypto.subtle</a>.
+    </footer>
+
+    <script>
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await window.crypto.subtle.importKey(
+                    "raw",
+                    new Uint8Array(32),
+                    { name: "Ed25519" },
+                    false,
+                    ["verify"]
+                );
+            } catch (e) {
+                document.getElementById('browser-warning').classList.remove('hidden');
+            }
+        });
+
+        async function verifySignature() {
+            const receiptText = document.getElementById('receipt-input').value.trim();
+            const publicKeyPem = document.getElementById('public-key-input').value.trim();
+            const resultArea = document.getElementById('result-area');
+            const resultTitle = document.getElementById('result-title');
+            const resultDesc = document.getElementById('result-desc');
+            const resultIcon = document.getElementById('result-icon');
+
+            resultArea.className = "hidden rounded-xl p-6 border text-center transition-all";
+
+            try {
+                if (!receiptText || !publicKeyPem) throw new Error("Please fill in both fields.");
+
+                const receipt = JSON.parse(receiptText);
+
+                const { signature, ...payload } = receipt;
+                if (!signature) throw new Error("Receipt is missing 'signature' field.");
+
+                const message = JSON.stringify(payload);
+                const msgBuffer = new TextEncoder().encode(message);
+
+                const pemHeader = "-----BEGIN PUBLIC KEY-----";
+                const pemFooter = "-----END PUBLIC KEY-----";
+                const pemContents = publicKeyPem.replace(pemHeader, "").replace(pemFooter, "").replace(/\s/g, "");
+                const binaryKey = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
+
+                const format = binaryKey.length > 32 ? "spki" : "raw";
+
+                const cryptoKey = await window.crypto.subtle.importKey(
+                    format,
+                    binaryKey,
+                    { name: "Ed25519" },
+                    true,
+                    ["verify"]
+                );
+
+                const signatureBytes = new Uint8Array(signature.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+
+                const isValid = await window.crypto.subtle.verify("Ed25519", cryptoKey, signatureBytes, msgBuffer);
+
+                resultArea.classList.remove('hidden');
+                if (isValid) {
+                    resultArea.className = "rounded-xl p-6 border border-green-500 bg-green-900/20 text-green-200";
+                    resultIcon.innerHTML = "&#x2705;";
+                    resultTitle.innerText = "Signature Valid";
+                    resultDesc.innerText = `Successfully verified against Key: ${receipt.public_key_id}`;
+                } else {
+                    throw new Error("Signature Mismatch — The data may have been tampered with.");
+                }
+
+            } catch (err) {
+                resultArea.classList.remove('hidden');
+                resultArea.className = "rounded-xl p-6 border border-red-500 bg-red-900/20 text-red-200";
+                resultIcon.innerHTML = "&#x274C;";
+                resultTitle.innerText = "Verification Failed";
+                resultDesc.innerText = err.message;
+            }
+        }
+
+        document.getElementById('verify-btn').addEventListener('click', verifySignature);
+    </script>
+</body>
+</html>
