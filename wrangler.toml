@@ -1,0 +1,7 @@
+name = "headless-oracle-v5"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[vars]
+PUBLIC_KEY_ID = "key_2026_v1"
+CURRENT_TERMS_VERSION = "v5.0-2026"

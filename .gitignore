@@ -165,3 +165,10 @@ dist
 .env*
 !.env.example
 .wrangler/
+
+# Secrets & private keys
+*.pem
+*.key
+Master Key.txt
+*.secret
+*.credentials
