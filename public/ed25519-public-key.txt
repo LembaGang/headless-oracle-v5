@@ -5,11 +5,11 @@ ALGORITHM: Ed25519
 STATUS: ACTIVE
 CREATED: 2026-02-16
 -----------------------------------------------
-HEX: a9987d7bc3e2a27a476bbdc92e244bca792ea5b79d9ef1fa6f6fd41e82e4380e
-BASE64 (RAW): qZh9e8PionpHa73JLiRLynkvpbednvH6b2/UHoLkOA4=
+HEX: 03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178
+BASE64 (RAW): A9wnmToskIVs3rReIorAZfGPafCTPJF7IzbB51cS8Xg=
 
 PEM FORMAT (SPKI):
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAqZh9e8PionpHa73JLiRLynkvpbednvH6b2/UHoLkOA4=
+MCowBQYDK2VwAyEAA9wnmToskIVs3rReIorAZfGPafCTPJF7IzbB51cS8Xg=
 -----END PUBLIC KEY-----
 -----------------------------------------------
