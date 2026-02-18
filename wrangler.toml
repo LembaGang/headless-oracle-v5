@@ -5,3 +5,17 @@ compatibility_date = "2024-01-01"
 [vars]
 PUBLIC_KEY_ID = "key_2026_v1"
 CURRENT_TERMS_VERSION = "v5.0-2026"
+
+# ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
+# Used for circuit breaker halts and emergency market status overrides.
+# To create: Cloudflare Dashboard → Workers & Pages → KV → Create namespace
+# Name it: ORACLE_OVERRIDES
+# Then paste the namespace ID below and redeploy.
+#
+# To set an override (e.g. during a circuit breaker):
+#   Key:   XNYS
+#   Value: {"status":"HALTED","reason":"NYSE circuit breaker L1 triggered","expires":"2026-03-09T20:00:00Z"}
+# To clear: delete the key. The Worker reverts to schedule-based status.
+[[kv_namespaces]]
+binding = "ORACLE_OVERRIDES"
+id = "1c741530d611473687d2fad61f5b2e9c"
