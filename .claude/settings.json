@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test)",
+      "Bash(npm run dev)",
+      "Bash(npm run deploy)",
+      "Bash(npm run build)",
+      "Bash(wrangler *)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add src/*)",
+      "Bash(git add test/*)",
+      "Bash(git add .claude/*)"
+    ]
+  }
+}

@@ -76,3 +76,11 @@ Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - March 29: UK/EU clocks spring forward (GMT→BST / CET→CEST) — affects XLON, XPAR
 - October 25: UK/EU fall back — affects XLON, XPAR
 - November 1: US fall back — affects XNYS, XNAS
+
+## Workflow & Session Context
+This project uses `.claude/rules/` for persistent engineering context. Read these at session start:
+- `.claude/rules/90_active_priorities.md` — current sprint state and next actions
+- `.claude/rules/10_decisions.md` — architectural decisions and their rationale
+- `.claude/rules/00_engineering_standards.md` — hard rules for this codebase
+
+Update `90_active_priorities.md` after any significant change.
