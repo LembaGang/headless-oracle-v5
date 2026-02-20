@@ -2,26 +2,32 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Production-ready. All engineering complete. Awaiting human marketing tasks.
+**Phase**: Production-ready. All engineering complete. Pre-launch marketing phase.
 **Test suite**: 66/66 tests passing
-**Last significant work**: Feb 19 2026 — full audit pass, all tests green, all pages live, docs updated
-**Next session trigger**: User completes human tasks (article publish, Twitter thread, DST demo repo, outreach)
+**Last significant work**: Feb 20 2026 — operator runbook written, file organisation done, full
+handover package prepared, all repos committed and pushed, all internal links fixed to extensionless paths.
+**Next session trigger**: User completes human tasks → HN launch March 10.
 
 ## Immediate Next Engineering Tasks (when user returns)
-1. **DST Exploit Demo repo** — create `github.com/LembaGang/dst-exploit-demo`
-   - `vulnerable_bot.py` — breaks on March 8 phantom hour with hardcoded UTC offset
-   - `safe_bot.py` — calls /v5/demo, halts if not OPEN, sig verified
-   - `README.md` — bad-debt scenario ($13M–$19.5M at OUSG/Ondo 150% CR, 15% drop)
-   - This is the single highest-priority engineering task before March 8
+1. **Add rate limiting in Cloudflare Dashboard** — must be done before HN launch (March 10)
+   - Dashboard: Workers & Pages → headless-oracle-v5 → Settings → Rate Limiting
+   - Rules to add:
+     - `/v5/demo*`     → 100 req/min per IP → Block (429)
+     - `/v5/schedule*` → 60 req/min per IP  → Block (429)
+     - `/v5/exchanges` → 60 req/min per IP  → Block (429)
+     - `/v5/keys`      → 60 req/min per IP  → Block (429)
+   - `/v5/status` is already protected by API key auth — no rate limit rule needed
+   - **This is a human task** — must be done in the Cloudflare Dashboard
 
-2. **Rate limiting on public routes** — after first real user, add Cloudflare Rate Limiting
-   - `/v5/demo`: 1000 req/min per IP
-   - `/v5/schedule`, `/v5/exchanges`, `/v5/keys`: 500 req/min per IP
-   - `/v5/status` already protected by API key
+2. **Beta API key provisioning** — when first prospect wants to test /v5/status
+   - Add their key to `BETA_API_KEYS` secret via:
+     `wrangler secret put BETA_API_KEYS` (enter comma-separated list including new key)
+   - Format: `existing_key,new_key_for_ondo`
+   - Then redeploy: `wrangler deploy`
 
-3. **Beta API key provisioning** — when first prospect wants to test /v5/status
-   - Add their key to `BETA_API_KEYS` secret via `wrangler secret put BETA_API_KEYS`
-   - Format: comma-separated, e.g. `existing_key,new_key_for_ondo`
+3. **Monitoring / alerting** — optional but recommended before scale
+   - Cloudflare Dashboard → Workers & Pages → headless-oracle-v5 → Metrics
+   - Set up email alerts for Worker errors (4xx/5xx spikes)
 
 ## Sprint Goals (Pre-March 8)
 - [x] 7 exchanges live and tested
@@ -32,24 +38,26 @@
 - [x] CLAUDE.md files updated in both repos
 - [x] Risk committee status update written
 - [x] Financial model written
-- [ ] DST exploit demo repo published on GitHub
-- [ ] Phantom Hour article published (human task — Gemini)
+- [x] DST exploit demo repo published on GitHub (github.com/LembaGang/dst-exploit-demo)
+- [x] All internal frontend links fixed (extensionless paths)
+- [x] Operator runbook written (headless-oracle-v5/OPERATOR_RUNBOOK.md)
+- [x] Business handover document written (C:/Users/User/Headless Oracle/Business/HANDOVER.md)
+- [ ] Phantom Hour article published (human task — Gemini draft ready)
 - [ ] Twitter/X thread posted (human task)
 - [ ] 15 targeted DMs sent (human task — begins Feb 28)
+- [ ] Rate limiting configured in Cloudflare Dashboard (human task — before March 10)
 
 ## Codebase Health
 - **Worker**: headless-oracle-v5 | main branch | deployed to Cloudflare Workers
 - **Frontend**: headless-oracle-web | main branch | deployed to Cloudflare Pages via `npm run deploy`
+- **DST Demo**: dst-exploit-demo | master branch | published on GitHub
 - **Tests**: 66/66 passing. `.dev.vars` populated with test-only keypair.
 - **Public key**: `03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178` (production)
 - **All live pages**: headlessoracle.com, /docs, /status, /verify, /terms, /privacy, /llms.txt
 
 ## Known Issues / Blockers
-- **308 redirects on .html links**: Cloudflare Pages strips `.html` extensions and 308-redirects to
-  extensionless URLs (/docs, /status etc). Browsers handle this transparently. Internal `.html` links
-  work correctly. Not a functional issue — cosmetic only. Can fix by updating internal hrefs to
-  extensionless if desired.
-- **No rate limiting on public routes yet**: Acceptable at zero-traffic stage. Add before HN launch.
+- **No rate limiting on public routes yet**: Acceptable at zero-traffic stage. Must add before HN launch.
+  See: OPERATOR_RUNBOOK.md → Section 5. Dashboard instructions are ready.
 
 ## DST Calendar — Critical Dates
 - **March 8, 2026**: US clocks spring forward (EST→EDT). XNYS + XNAS affected. Phantom hour 2–3am ET.
@@ -63,5 +71,5 @@ Start by reading:
 1. This file (done)
 2. `.claude/rules/00_engineering_standards.md` for hard rules
 3. `.claude/rules/10_decisions.md` for architectural context
-4. `src/index.ts` if touching core logic
-5. First task is almost certainly the DST exploit demo repo
+4. `OPERATOR_RUNBOOK.md` for operational procedures
+5. `src/index.ts` if touching core logic
