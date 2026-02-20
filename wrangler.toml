@@ -19,3 +19,14 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 [[kv_namespaces]]
 binding = "ORACLE_OVERRIDES"
 id = "1c741530d611473687d2fad61f5b2e9c"
+
+# ─── Rate Limiting ────────────────────────────────────────────────────────────
+# Rate limiting for public routes is configured in the Cloudflare Dashboard,
+# NOT in this file. See operator runbook for setup instructions.
+# Dashboard path: Workers & Pages → headless-oracle-v5 → Settings → Rate Limiting
+# Recommended rules (add before HN launch):
+#   /v5/demo*     → 100 req/min per IP → Block (429)
+#   /v5/schedule* → 60 req/min per IP  → Block (429)
+#   /v5/exchanges → 60 req/min per IP  → Block (429)
+#   /v5/keys      → 60 req/min per IP  → Block (429)
+# /v5/status is already protected by API key auth.
