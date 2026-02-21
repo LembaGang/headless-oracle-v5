@@ -77,10 +77,24 @@ Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - October 25: UK/EU fall back — affects XLON, XPAR
 - November 1: US fall back — affects XNYS, XNAS
 
+## Strategic North Star
+This project is building the signed market-state primitive for AI agent infrastructure.
+The analogy is a DNS root server — not a product, a layer of the internet.
+Primary consumer in 18 months: autonomous agents, not human developers.
+
+**Decision filter for every interface, schema, and architecture choice:**
+> "Can an agent consume this without asking a follow-up question?" If no, it's not done.
+
+**Standing instruction:** At the end of any significant change, name one gap the current
+architecture does not yet solve that will matter when agent consumption scales.
+
+Full strategic context: `.claude/rules/05_strategic_vision.md`
+
 ## Workflow & Session Context
 This project uses `.claude/rules/` for persistent engineering context. Read these at session start:
-- `.claude/rules/90_active_priorities.md` — current sprint state and next actions
-- `.claude/rules/10_decisions.md` — architectural decisions and their rationale
-- `.claude/rules/00_engineering_standards.md` — hard rules for this codebase
+1. `.claude/rules/05_strategic_vision.md` — north star, decision filters, why this matters
+2. `.claude/rules/90_active_priorities.md` — current sprint state and next actions
+3. `.claude/rules/10_decisions.md` — architectural decisions and their rationale
+4. `.claude/rules/00_engineering_standards.md` — hard rules for this codebase
 
 Update `90_active_priorities.md` after any significant change.
