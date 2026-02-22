@@ -11,6 +11,7 @@ export interface Env {
 	MASTER_API_KEY: string;
 	BETA_API_KEYS: string;
 	PUBLIC_KEY_ID: string;
+	PUBLIC_KEY_VALID_FROM?: string;
 	ORACLE_OVERRIDES: KVNamespace; // Cloudflare KV — manual circuit-breaker overrides
 }
 
@@ -451,7 +452,14 @@ function getNextSession(mic: string, now: Date): NextSession | null {
 // ─── Signing ─────────────────────────────────────────────────────────────────
 
 async function signPayload(payload: Record<string, string>, privKeyHex: string): Promise<string> {
-	const canonical = JSON.stringify(payload);
+	// Canonical form: keys sorted alphabetically, serialised with no whitespace.
+	// Deterministic regardless of JS object insertion order.
+	// See /v5/keys → canonical_payload_spec for the published specification.
+	const sorted: Record<string, string> = {};
+	for (const key of Object.keys(payload).sort()) {
+		sorted[key] = payload[key];
+	}
+	const canonical = JSON.stringify(sorted);
 	const msgBytes  = new TextEncoder().encode(canonical);
 	const privKey   = fromHex(privKeyHex);
 	const sig       = await ed.sign(msgBytes, privKey);
@@ -477,12 +485,178 @@ const SUPPORTED_EXCHANGES = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => (
 	timezone: cfg.timezone,
 }));
 
+// ─── Receipt TTL ─────────────────────────────────────────────────────────────
+// Signed receipts expire this many seconds after issued_at.
+// Consumers MUST NOT act on a receipt whose expires_at has passed.
+const RECEIPT_TTL_SECONDS = 60;
+
+// ─── OpenAPI 3.1 Specification ────────────────────────────────────────────────
+
+const OPENAPI_SPEC = {
+	openapi: '3.1.0',
+	info: {
+		title:       'Headless Oracle',
+		version:     '5.0.0',
+		description: 'Cryptographically signed market-state receipts for AI agents and automated trading systems. ' +
+			'All signed receipts use Ed25519. Consumers MUST treat UNKNOWN status as CLOSED and halt execution. ' +
+			'Receipts expire at expires_at — do not act on stale receipts.',
+		contact: { url: 'https://headlessoracle.com' },
+	},
+	servers: [{ url: 'https://api.headlessoracle.com' }],
+	components: {
+		securitySchemes: {
+			ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-Oracle-Key' },
+		},
+		schemas: {
+			Status: {
+				type: 'string',
+				enum: ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'],
+				description: 'UNKNOWN MUST be treated as CLOSED. Halt all execution.',
+			},
+			Source: {
+				type: 'string',
+				enum: ['SCHEDULE', 'OVERRIDE', 'SYSTEM'],
+			},
+			SignedReceipt: {
+				type: 'object',
+				required: ['receipt_id', 'issued_at', 'expires_at', 'mic', 'status', 'source', 'terms_hash', 'public_key_id', 'signature'],
+				properties: {
+					receipt_id:    { type: 'string', format: 'uuid' },
+					issued_at:     { type: 'string', format: 'date-time' },
+					expires_at:    { type: 'string', format: 'date-time', description: 'Do not act on this receipt after this time.' },
+					mic:           { type: 'string', example: 'XNYS' },
+					status:        { '$ref': '#/components/schemas/Status' },
+					source:        { '$ref': '#/components/schemas/Source' },
+					reason:        { type: 'string', description: 'Present when source is OVERRIDE.' },
+					terms_hash:    { type: 'string', example: 'v5.0-beta' },
+					public_key_id: { type: 'string', example: 'key_2026_v1' },
+					signature:     { type: 'string', description: 'Ed25519 signature of canonical payload as 128-char hex string.' },
+				},
+			},
+			Error: {
+				type: 'object',
+				required: ['error'],
+				properties: {
+					error:     { type: 'string' },
+					message:   { type: 'string' },
+					status:    { type: 'string', description: 'Present on CRITICAL_FAILURE — always UNKNOWN.' },
+					supported: { type: 'array', items: { type: 'string' }, description: 'Present on UNKNOWN_MIC errors.' },
+				},
+			},
+		},
+	},
+	paths: {
+		'/v5/demo': {
+			get: {
+				summary:     'Public signed receipt',
+				description: 'Returns a signed market-state receipt. No authentication required. Suitable for integration testing and public dashboards. For production use, prefer /v5/status.',
+				parameters:  [{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' }, description: 'Market Identifier Code (MIC). See /v5/exchanges for supported values.' }],
+				responses: {
+					'200': { description: 'Signed receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/SignedReceipt' } } } },
+					'400': { description: 'Unknown MIC', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/status': {
+			get: {
+				summary:     'Authenticated signed receipt',
+				description: 'Returns a signed market-state receipt. Requires X-Oracle-Key header. Primary production endpoint.',
+				security:    [{ ApiKeyAuth: [] }],
+				parameters:  [{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' }, description: 'Market Identifier Code (MIC).' }],
+				responses: {
+					'200': { description: 'Signed receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/SignedReceipt' } } } },
+					'400': { description: 'Unknown MIC', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'401': { description: 'Missing API key' },
+					'403': { description: 'Invalid API key' },
+				},
+			},
+		},
+		'/v5/schedule': {
+			get: {
+				summary:     'Next open/close times',
+				description: 'Schedule-based next session open and close times in UTC. Not signed. Does not reflect real-time halts or KV overrides. For authoritative status use /v5/demo or /v5/status.',
+				parameters:  [{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' } }],
+				responses: {
+					'200': {
+						description: 'Schedule data',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										mic:            { type: 'string' },
+										name:           { type: 'string' },
+										timezone:       { type: 'string', description: 'IANA timezone name.' },
+										queried_at:     { type: 'string', format: 'date-time' },
+										current_status: { '$ref': '#/components/schemas/Status' },
+										next_open:      { type: 'string', format: 'date-time', nullable: true },
+										next_close:     { type: 'string', format: 'date-time', nullable: true },
+										note:           { type: 'string' },
+									},
+								},
+							},
+						},
+					},
+					'400': { description: 'Unknown MIC' },
+				},
+			},
+		},
+		'/v5/exchanges': {
+			get: {
+				summary:     'Directory of supported exchanges',
+				description: 'Returns all exchanges for which Oracle provides signed receipts.',
+				responses: {
+					'200': {
+						description: 'Exchange list',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										exchanges: {
+											type: 'array',
+											items: {
+												type: 'object',
+												properties: {
+													mic:      { type: 'string' },
+													name:     { type: 'string' },
+													timezone: { type: 'string' },
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		'/v5/keys': {
+			get: {
+				summary:     'Public key registry',
+				description: 'Returns active signing public keys and the canonical payload specification required for independent receipt verification.',
+				responses: {
+					'200': { description: 'Key registry with canonical signing spec', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/openapi.json': {
+			get: {
+				summary:   'OpenAPI 3.1 specification',
+				responses: { '200': { description: 'This document' } },
+			},
+		},
+	},
+};
+
 // ─── Worker ───────────────────────────────────────────────────────────────────
 
 export default {
 	async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const now = new Date();
+		const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
 
 		const corsHeaders = {
 			'Access-Control-Allow-Origin':  '*',
@@ -525,7 +699,13 @@ export default {
 						algorithm:  'Ed25519',
 						format:     'hex',
 						public_key: env.ED25519_PUBLIC_KEY || '',
+						valid_from: env.PUBLIC_KEY_VALID_FROM || '2026-01-01T00:00:00Z',
 					}],
+					canonical_payload_spec: {
+						description:     'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
+						receipt_fields:  ['expires_at', 'issued_at', 'mic', 'public_key_id', 'receipt_id', 'source', 'status', 'terms_hash'],
+						override_fields: ['expires_at', 'issued_at', 'mic', 'public_key_id', 'reason', 'receipt_id', 'source', 'status', 'terms_hash'],
+					},
 				});
 			}
 
@@ -589,6 +769,7 @@ export default {
 								const payload = {
 									receipt_id:    crypto.randomUUID(),
 									issued_at:     now.toISOString(),
+									expires_at:    expiresAt,
 									mic,
 									status:        override.status,
 									source:        'OVERRIDE',
@@ -608,6 +789,7 @@ export default {
 					const payload = {
 						receipt_id:    crypto.randomUUID(),
 						issued_at:     now.toISOString(),
+						expires_at:    expiresAt,
 						mic,
 						status,
 						source,
@@ -627,6 +809,7 @@ export default {
 						const safePayload = {
 							receipt_id:    crypto.randomUUID(),
 							issued_at:     now.toISOString(),
+							expires_at:    expiresAt,
 							mic,
 							status:        'UNKNOWN',
 							source:        'SYSTEM',
@@ -648,6 +831,10 @@ export default {
 						}, 500);
 					}
 				}
+			}
+
+			if (url.pathname === '/openapi.json') {
+				return json(OPENAPI_SPEC);
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────

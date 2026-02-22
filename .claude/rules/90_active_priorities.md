@@ -2,10 +2,13 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Production-ready. All engineering complete. Pre-launch marketing phase.
-**Test suite**: 66/66 tests passing
-**Last significant work**: Feb 20 2026 — operator runbook written, file organisation done, full
-handover package prepared, all repos committed and pushed, all internal links fixed to extensionless paths.
+**Phase**: Production-ready. Pre-launch marketing phase. Critical agent-adoption gaps being closed.
+**Test suite**: 70/70 tests passing
+**Last significant work**: Feb 22 2026 — CRITICAL gaps 1, 2, 3 resolved:
+  - `expires_at` added to all signed receipts (Tier 0/1/2), TTL = 60s
+  - `/openapi.json` endpoint live (OpenAPI 3.1 spec, machine-readable)
+  - Canonical signing payload documented in `/v5/keys` (alphabetical field order, spec field list)
+  - Key `valid_from` added to `/v5/keys` for rotation lifecycle tracking
 **Next session trigger**: User completes human tasks → HN launch March 10.
 
 ## Immediate Next Engineering Tasks (when user returns)
@@ -51,9 +54,9 @@ handover package prepared, all repos committed and pushed, all internal links fi
 - **Worker**: headless-oracle-v5 | main branch | deployed to Cloudflare Workers
 - **Frontend**: headless-oracle-web | main branch | deployed to Cloudflare Pages via `npm run deploy`
 - **DST Demo**: dst-exploit-demo | master branch | published on GitHub
-- **Tests**: 66/66 passing. `.dev.vars` populated with test-only keypair.
+- **Tests**: 70/70 passing. `.dev.vars` populated with test-only keypair.
 - **Public key**: `03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178` (production)
-- **All live pages**: headlessoracle.com, /docs, /status, /verify, /terms, /privacy, /llms.txt
+- **All live pages**: headlessoracle.com, /docs, /status, /verify, /terms, /privacy, /llms.txt, /openapi.json
 
 ## Known Issues / Blockers
 - **No rate limiting on public routes yet**: Acceptable at zero-traffic stage. Must add before HN launch.
@@ -71,21 +74,18 @@ handover package prepared, all repos committed and pushed, all internal links fi
      Work through these in priority order after HN launch. -->
 
 ### CRITICAL — blocks agent adoption
-1. **No `expires_at` in signed receipts**
-   The receipt has `issued_at` but no expiry. An agent caching a receipt cannot know when it
-   becomes stale. A cached OPEN receipt from 30 min ago is a catastrophic failure mode.
-   Fix: add `expires_at: issued_at + N seconds` to the signed payload. Start with 60s.
+1. ~~**No `expires_at` in signed receipts**~~ **RESOLVED Feb 22 2026**
+   All signed receipts now include `expires_at: issued_at + 60s`. Signed in the canonical
+   payload. Consumers must not act on receipts past their `expires_at`.
 
-2. **No OpenAPI / machine-readable schema**
-   No `/openapi.json`, no `/.well-known/oracle`. An agent or MCP client discovering Oracle
-   cannot programmatically understand what it does or what it returns.
-   Fix: publish an OpenAPI 3.1 spec. Zero runtime cost — static JSON served from a route.
+2. ~~**No OpenAPI / machine-readable schema**~~ **RESOLVED Feb 22 2026**
+   `/openapi.json` is live. OpenAPI 3.1 spec covers all routes, schemas, auth, and error
+   shapes. Agent-discoverable without reading documentation.
 
-3. **Canonical signing payload is implicit, not documented**
-   `signPayload` does `JSON.stringify(payload)` — JS key ordering is insertion-order-dependent.
-   If field order ever changes, all existing verifiers break silently.
-   Fix: document the canonical form (ordered field list) at `/v5/keys` or in a spec file.
-   This must be nailed before a consumer SDK is published.
+3. ~~**Canonical signing payload is implicit, not documented**~~ **RESOLVED Feb 22 2026**
+   `signPayload` sorts keys alphabetically (deterministic regardless of insertion order).
+   Field lists documented at `/v5/keys → canonical_payload_spec`. Consumer SDKs can now
+   implement independent verification against a published spec.
 
 ### HIGH — needed before scale
 4. **`terms_hash` is a label, not a hash**

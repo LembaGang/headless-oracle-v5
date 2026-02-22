@@ -215,6 +215,23 @@ describe('GET /v5/keys', () => {
 		// public_key should be a non-empty string
 		expect(typeof key.public_key).toBe('string');
 		expect((key.public_key as string).length).toBeGreaterThan(0);
+		// Key lifecycle: valid_from must be present for rotation tracking
+		expect(key).toHaveProperty('valid_from');
+		expect(new Date(key.valid_from as string).getTime()).not.toBeNaN();
+	});
+
+	it('returns canonical_payload_spec documenting the signing field order', async () => {
+		const body = await fetchJSON('/v5/keys');
+		expect(body).toHaveProperty('canonical_payload_spec');
+		const spec = body.canonical_payload_spec as Record<string, unknown>;
+		expect(spec).toHaveProperty('description');
+		expect(spec).toHaveProperty('receipt_fields');
+		const fields = spec.receipt_fields as string[];
+		// expires_at must be in the canonical field list (agents need to verify it)
+		expect(fields).toContain('expires_at');
+		expect(fields).toContain('issued_at');
+		expect(fields).toContain('mic');
+		expect(fields).toContain('status');
 	});
 });
 
@@ -494,6 +511,7 @@ describe('KV Override (Circuit Breaker)', () => {
 		expect(body).toHaveProperty('status', 'HALTED');
 		expect(body).toHaveProperty('receipt_id');
 		expect(body).toHaveProperty('issued_at');
+		expect(body).toHaveProperty('expires_at');
 		expect(body).toHaveProperty('terms_hash', 'v5.0-beta');
 
 		// Clean up
@@ -521,7 +539,7 @@ describe('Receipt structure', () => {
 	it('all required receipt fields are present in demo response', async () => {
 		const body = await fetchJSON('/v5/demo');
 		const requiredFields = [
-			'receipt_id', 'issued_at', 'mic', 'status',
+			'receipt_id', 'issued_at', 'expires_at', 'mic', 'status',
 			'source', 'terms_hash', 'public_key_id', 'signature',
 		];
 		for (const field of requiredFields) {
@@ -542,5 +560,42 @@ describe('Receipt structure', () => {
 		const issuedAt = new Date(body.issued_at as string).getTime();
 		const now      = Date.now();
 		expect(Math.abs(now - issuedAt)).toBeLessThan(5000);
+	});
+
+	it('expires_at is a valid ISO 8601 date approximately 60 seconds after issued_at', async () => {
+		const body      = await fetchJSON('/v5/demo');
+		const issuedAt  = new Date(body.issued_at  as string).getTime();
+		const expiresAt = new Date(body.expires_at as string).getTime();
+		expect(expiresAt).not.toBeNaN();
+		// Allow ±1s tolerance around the 60s TTL
+		expect(expiresAt - issuedAt).toBeGreaterThanOrEqual(59000);
+		expect(expiresAt - issuedAt).toBeLessThanOrEqual(61000);
+	});
+});
+
+// ─── GET /openapi.json ───────────────────────────────────────────────────────
+
+describe('GET /openapi.json', () => {
+	it('returns 200 with a valid OpenAPI 3.1 spec', async () => {
+		const response = await fetchWorker('/openapi.json');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('openapi', '3.1.0');
+		expect(body).toHaveProperty('info');
+		expect(body).toHaveProperty('paths');
+
+		const paths = body.paths as Record<string, unknown>;
+		expect(paths).toHaveProperty('/v5/demo');
+		expect(paths).toHaveProperty('/v5/status');
+		expect(paths).toHaveProperty('/v5/keys');
+		expect(paths).toHaveProperty('/v5/schedule');
+		expect(paths).toHaveProperty('/v5/exchanges');
+	});
+
+	it('does not require authentication', async () => {
+		const response = await fetchWorker('/openapi.json');
+		expect(response.status).toBe(200);
 	});
 });

@@ -32,7 +32,8 @@ DST is handled automatically via IANA timezone names in `Intl.DateTimeFormat`. N
 - `GET /v5/status?mic=<MIC>` — Authenticated signed receipt. Requires `X-Oracle-Key` header.
 - `GET /v5/schedule?mic=<MIC>` — Next open/close times in UTC (no auth). Default MIC: XNYS.
 - `GET /v5/exchanges` — Directory of all 7 supported exchanges (no auth).
-- `GET /v5/keys` — Public key registry in hex format (no auth).
+- `GET /v5/keys` — Public key registry in hex format + canonical signing spec (no auth).
+- `GET /openapi.json` — OpenAPI 3.1 machine-readable spec (no auth).
 - All other paths → 404. Note: `/v5/status/*` paths hit auth guard first → 401.
 
 ## Architecture: Fail-Closed Safety Tiers
@@ -67,7 +68,7 @@ Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - `BETA_API_KEYS=test_beta_key_1,test_beta_key_2`
 
 ## Commands
-- `npm test` — Run 66-test suite with Vitest (requires `.dev.vars` to be populated)
+- `npm test` — Run 70-test suite with Vitest (requires `.dev.vars` to be populated)
 - `npm run dev` — Local development server
 - `npm run deploy` — Deploy to Cloudflare Workers (`wrangler deploy`)
 
