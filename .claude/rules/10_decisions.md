@@ -62,3 +62,13 @@
 **Decision**: `/v5/keys` returns `valid_until: null` when no rotation is scheduled, populated from `PUBLIC_KEY_VALID_UNTIL` env var when set.
 **Rationale**: Using `null` rather than a far-future sentinel (e.g. `9999-12-31`) avoids agents making false assumptions about key validity windows. `null` is unambiguous: this key has no scheduled expiry. When a rotation is planned, the operator sets `PUBLIC_KEY_VALID_UNTIL` before deploying the new key, giving consumers advance notice.
 **Status**: Active — Feb 22 2026
+
+## ADR-013: schema_version replaces terms_hash
+**Decision**: The receipt field `terms_hash` is renamed to `schema_version` with value `'v5.0'`.
+**Rationale**: `terms_hash` implied a cryptographic commitment to a terms document. The field was hardcoded to a version string (`'v5.0-beta'`), which is misleading. `schema_version` accurately names what the field is: a stable identifier for the receipt schema version. Done pre-launch while zero consumers exist to absorb the breaking change cleanly. If a genuine cryptographic commitment to terms is required in future, a new `terms_hash` field can be added alongside `schema_version`.
+**Status**: Active — Feb 22 2026
+
+## ADR-014: /v5/health — no mic field, no schema_version
+**Decision**: Health receipts contain `{ receipt_id, issued_at, expires_at, status: 'OK', source: 'SYSTEM', public_key_id, signature }`. No `mic`, no `schema_version`.
+**Rationale**: Health is a system-level liveness probe, not a market receipt. Including `mic` would imply exchange-specific health, which is not what the endpoint measures. Omitting `schema_version` keeps the health receipt minimal and avoids coupling liveness checks to schema versioning. The canonical field list is documented in `/v5/keys → health_fields`.
+**Status**: Active — Feb 22 2026

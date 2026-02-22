@@ -64,7 +64,7 @@ describe('GET /v5/demo', () => {
 		expect(body).toHaveProperty('mic', 'XNYS');
 		expect(body).toHaveProperty('status');
 		expect(body).toHaveProperty('source');
-		expect(body).toHaveProperty('terms_hash', 'v5.0-beta');
+		expect(body).toHaveProperty('schema_version', 'v5.0');
 		expect(body).toHaveProperty('public_key_id');
 		expect(body).toHaveProperty('signature');
 
@@ -181,7 +181,7 @@ describe('GET /v5/status', () => {
 			expect((body.signature as string).length).toBe(128);
 			expect(body).toHaveProperty('receipt_id');
 			expect(body).toHaveProperty('issued_at');
-			expect(body).toHaveProperty('terms_hash', 'v5.0-beta');
+			expect(body).toHaveProperty('schema_version', 'v5.0');
 		});
 	}
 
@@ -552,7 +552,7 @@ describe('KV Override (Circuit Breaker)', () => {
 		expect(body).toHaveProperty('receipt_id');
 		expect(body).toHaveProperty('issued_at');
 		expect(body).toHaveProperty('expires_at');
-		expect(body).toHaveProperty('terms_hash', 'v5.0-beta');
+		expect(body).toHaveProperty('schema_version', 'v5.0');
 
 		// Clean up
 		await env.ORACLE_OVERRIDES.delete('XJPX');
@@ -580,7 +580,7 @@ describe('Receipt structure', () => {
 		const body = await fetchJSON('/v5/demo');
 		const requiredFields = [
 			'receipt_id', 'issued_at', 'expires_at', 'mic', 'status',
-			'source', 'terms_hash', 'public_key_id', 'signature',
+			'source', 'schema_version', 'public_key_id', 'signature',
 		];
 		for (const field of requiredFields) {
 			expect(body).toHaveProperty(field);
@@ -674,5 +674,46 @@ describe('Holiday coverage guard (fail-closed)', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+// ─── GET /v5/health ──────────────────────────────────────────────────────────
+
+describe('GET /v5/health', () => {
+	it('returns 200 with a signed health receipt (no auth required)', async () => {
+		const response = await fetchWorker('/v5/health');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('receipt_id');
+		expect(body).toHaveProperty('issued_at');
+		expect(body).toHaveProperty('expires_at');
+		expect(body).toHaveProperty('status', 'OK');
+		expect(body).toHaveProperty('source', 'SYSTEM');
+		expect(body).toHaveProperty('public_key_id');
+		expect(body).toHaveProperty('signature');
+		expect((body.signature as string).length).toBe(128);
+	});
+
+	it('health receipt_id is a valid UUID', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body.receipt_id as string).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
+	});
+
+	it('health expires_at is ~60s after issued_at', async () => {
+		const body = await fetchJSON('/v5/health');
+		const issuedAt  = new Date(body.issued_at  as string).getTime();
+		const expiresAt = new Date(body.expires_at as string).getTime();
+		expect(expiresAt - issuedAt).toBeGreaterThanOrEqual(59000);
+		expect(expiresAt - issuedAt).toBeLessThanOrEqual(61000);
+	});
+
+	it('health receipt does not contain a mic field', async () => {
+		const body = await fetchJSON('/v5/health');
+		// Health is system-level, not exchange-specific
+		expect(Object.prototype.hasOwnProperty.call(body, 'mic')).toBe(false);
 	});
 });

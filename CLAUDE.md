@@ -4,12 +4,12 @@
 - **Runtime**: Cloudflare Workers (TypeScript)
 - **Build/Deploy**: Wrangler (`wrangler.toml`)
 - **Crypto**: Ed25519 signing via `@noble/ed25519` + `@noble/hashes`
-- **Testing**: Vitest 76-test suite with `@cloudflare/vitest-pool-workers`
+- **Testing**: Vitest 80-test suite with `@cloudflare/vitest-pool-workers`
 - **KV**: Cloudflare KV (`ORACLE_OVERRIDES`) for manual circuit-breaker halts
 
 ## Project Structure
 - `src/index.ts` — Main worker (all routes, 7-exchange config, signing, fail-closed logic)
-- `test/index.spec.ts` — 76 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks
+- `test/index.spec.ts` — 80 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks, health endpoint
 - `vitest.config.mts` — Points to `wrangler.toml` (NOT wrangler.jsonc — that file is deleted)
 - `wrangler.toml` — Worker config + KV namespace binding (`ORACLE_OVERRIDES`)
 - `.dev.vars` — Local dev/test secrets (test-only keypair, NOT production keys)
@@ -33,6 +33,7 @@ DST is handled automatically via IANA timezone names in `Intl.DateTimeFormat`. N
 - `GET /v5/schedule?mic=<MIC>` — Next open/close times in UTC (no auth). Default MIC: XNYS.
 - `GET /v5/exchanges` — Directory of all 7 supported exchanges (no auth).
 - `GET /v5/keys` — Public key registry in hex format + canonical signing spec (no auth).
+- `GET /v5/health` — Signed liveness probe (no auth). Distinguishes Oracle-down from market-UNKNOWN.
 - `GET /openapi.json` — OpenAPI 3.1 machine-readable spec (no auth).
 - All other paths → 404. Note: `/v5/status/*` paths hit auth guard first → 401.
 
@@ -68,7 +69,7 @@ Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - `BETA_API_KEYS=test_beta_key_1,test_beta_key_2`
 
 ## Commands
-- `npm test` — Run 76-test suite with Vitest (requires `.dev.vars` to be populated)
+- `npm test` — Run 80-test suite with Vitest (requires `.dev.vars` to be populated)
 - `npm run dev` — Local development server
 - `npm run deploy` — Deploy to Cloudflare Workers (`wrangler deploy`)
 

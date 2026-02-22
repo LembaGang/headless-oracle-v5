@@ -654,7 +654,7 @@ const OPENAPI_SPEC = {
 			},
 			SignedReceipt: {
 				type: 'object',
-				required: ['receipt_id', 'issued_at', 'expires_at', 'mic', 'status', 'source', 'terms_hash', 'public_key_id', 'signature'],
+				required: ['receipt_id', 'issued_at', 'expires_at', 'mic', 'status', 'source', 'schema_version', 'public_key_id', 'signature'],
 				properties: {
 					receipt_id:    { type: 'string', format: 'uuid' },
 					issued_at:     { type: 'string', format: 'date-time' },
@@ -663,7 +663,7 @@ const OPENAPI_SPEC = {
 					status:        { '$ref': '#/components/schemas/Status' },
 					source:        { '$ref': '#/components/schemas/Source' },
 					reason:        { type: 'string', description: 'Present when source is OVERRIDE.' },
-					terms_hash:    { type: 'string', example: 'v5.0-beta' },
+					schema_version: { type: 'string', example: 'v5.0', description: 'Receipt schema version. Consumers should verify this matches the version they were built against.' },
 					public_key_id: { type: 'string', example: 'key_2026_v1' },
 					signature:     { type: 'string', description: 'Ed25519 signature of canonical payload as 128-char hex string.' },
 				},
@@ -777,7 +777,22 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
-		'/openapi.json': {
+		'/v5/health': {
+					get: {
+						summary:     'Signed liveness probe',
+						description: 'Returns a signed receipt confirming the Oracle signing infrastructure is alive. ' +
+							'Use this to distinguish Oracle-is-down from market-is-UNKNOWN. ' +
+							'A 200 with valid signature means signing works. A 500 means signing is offline.',
+						responses: {
+							'200': {
+								description: 'Signed health receipt',
+								content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' } } } } },
+							},
+							'500': { description: 'Signing system offline — CRITICAL_FAILURE', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+						},
+					},
+				},
+				'/openapi.json': {
 			get: {
 				summary:   'OpenAPI 3.1 specification',
 				responses: { '200': { description: 'This document' } },
@@ -840,8 +855,9 @@ export default {
 					}],
 					canonical_payload_spec: {
 						description:     'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
-						receipt_fields:  ['expires_at', 'issued_at', 'mic', 'public_key_id', 'receipt_id', 'source', 'status', 'terms_hash'],
-						override_fields: ['expires_at', 'issued_at', 'mic', 'public_key_id', 'reason', 'receipt_id', 'source', 'status', 'terms_hash'],
+						receipt_fields:  ['expires_at', 'issued_at', 'mic', 'public_key_id', 'receipt_id', 'schema_version', 'source', 'status'],
+						override_fields: ['expires_at', 'issued_at', 'mic', 'public_key_id', 'reason', 'receipt_id', 'schema_version', 'source', 'status'],
+					health_fields:   ['expires_at', 'issued_at', 'public_key_id', 'receipt_id', 'source', 'status'],
 					},
 				});
 			}
@@ -914,7 +930,7 @@ export default {
 									status:        override.status,
 									source:        'OVERRIDE',
 									reason:        override.reason,
-									terms_hash:    'v5.0-beta',
+									schema_version: 'v5.0',
 									public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
 								};
 								const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
@@ -933,7 +949,7 @@ export default {
 						mic,
 						status,
 						source,
-						terms_hash:    'v5.0-beta',
+						schema_version: 'v5.0',
 						public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
 					};
 
@@ -953,7 +969,7 @@ export default {
 							mic,
 							status:        'UNKNOWN',
 							source:        'SYSTEM',
-							terms_hash:    'v5.0-beta',
+							schema_version: 'v5.0',
 							public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
 						};
 						const safeSig = await signPayload(safePayload, env.ED25519_PRIVATE_KEY);
@@ -970,6 +986,34 @@ export default {
 							source:  'SYSTEM',
 						}, 500);
 					}
+				}
+			}
+
+			// ── GET /v5/health — signed liveness probe (public, no auth) ──
+			// Agents use this to distinguish "Oracle is down" from "market is UNKNOWN".
+			// A signed OK receipt means signing infrastructure is alive.
+			// A 500 CRITICAL_FAILURE means signing is offline — treat all market state as UNKNOWN.
+			if (url.pathname === '/v5/health') {
+				try {
+					const healthPayload = {
+						receipt_id:    crypto.randomUUID(),
+						issued_at:     now.toISOString(),
+						expires_at:    expiresAt,
+						status:        'OK',
+						source:        'SYSTEM',
+						public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
+					};
+					const signature = await signPayload(healthPayload, env.ED25519_PRIVATE_KEY);
+					return json({ ...healthPayload, signature });
+				} catch (healthError: unknown) {
+					const msg = healthError instanceof Error ? healthError.message : 'Unknown error';
+					console.error();
+					return json({
+						error:   'CRITICAL_FAILURE',
+						message: 'Oracle signature system offline. Treat as UNKNOWN. Halt all execution.',
+						status:  'UNKNOWN',
+						source:  'SYSTEM',
+					}, 500);
 				}
 			}
 

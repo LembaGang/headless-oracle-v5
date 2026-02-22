@@ -4,7 +4,17 @@
 ## Current Status
 **Phase**: Production-ready. Pre-launch marketing phase. Critical agent-adoption gaps being closed.
 **Test suite**: 76/76 tests passing
-**Last significant work**: Feb 22 2026 — HIGH gaps 5 + 6 resolved:
+**Last significant work**: Feb 22 2026 — gaps 4 + 11 resolved (terms_hash rename, /v5/health):
+  - `terms_hash` renamed to `schema_version`, value updated `'v5.0-beta'` → `'v5.0'`
+  - Breaking change to signed payload schema — done pre-launch while zero consumers exist
+  - `/v5/health` endpoint live: signed liveness probe, public, no auth
+  - Health receipt: `{ receipt_id, issued_at, expires_at, status: 'OK', source: 'SYSTEM', public_key_id, signature }`
+  - No `mic` field — health is system-level, not exchange-specific
+  - On signing failure: 500 CRITICAL_FAILURE (same pattern as Tier 3)
+  - `health_fields` added to canonical_payload_spec in `/v5/keys`
+  - ADR-013 (health endpoint) and ADR-014 (schema_version) added to 10_decisions.md
+  - 4 new health tests added (80 total)
+**Previous significant work**: Feb 22 2026 — HIGH gaps 5 + 6 resolved:
   - `valid_until` added to `/v5/keys` response (null by default; set via `PUBLIC_KEY_VALID_UNTIL` env var)
   - Gap 5 now fully resolved: key rotation has `valid_from` + `valid_until`
   - `lunch_break: { start, end } | null` added to `/v5/schedule` response for all MICs
@@ -93,10 +103,11 @@
    implement independent verification against a published spec.
 
 ### HIGH — needed before scale
-4. **`terms_hash` is a label, not a hash**
-   Currently hardcoded to `'v5.0-beta'` — it's a version string, not a cryptographic
-   commitment to a terms document. An agent can't verify what it's agreeing to.
-   Fix: hash the actual terms document and serve the real hash, or rename to `schema_version`.
+4. ~~**`terms_hash` is a label, not a hash**~~ **RESOLVED Feb 22 2026**
+   Field renamed to `schema_version`, value updated to `'v5.0'`. Accurately describes what
+   the field is: a schema version identifier. Done pre-launch while zero consumers exist.
+   If a true cryptographic commitment to a terms document is needed later, that is a new
+   field (`terms_hash`) to add alongside `schema_version`, not a rename.
 
 5. ~~**Key rotation has no lifecycle**~~ **RESOLVED Feb 22 2026**
    `/v5/keys` now returns `valid_from` (populated via `PUBLIC_KEY_VALID_FROM` env var, default
@@ -135,9 +146,10 @@
     Fix: publish `@headlessoracle/verify` on npm. 3-line verification. Gets Oracle into
     training data with a clear integration pattern.
 
-11. **No health endpoint**
-    Agents with automated circuit breakers can't distinguish "Oracle is down" from "market
-    is genuinely UNKNOWN." Fix: `GET /v5/health` returning a signed liveness receipt.
+11. ~~**No health endpoint**~~ **RESOLVED Feb 22 2026**
+    `GET /v5/health` is live. Returns a signed receipt (`status: 'OK', source: 'SYSTEM'`).
+    On signing failure returns 500 CRITICAL_FAILURE. Agents can now distinguish Oracle-down
+    from market-UNKNOWN: a valid signed health receipt confirms the signing infrastructure works.
 
 ### LONG-TERM — when federation matters
 12. **Single-operator trust model**
