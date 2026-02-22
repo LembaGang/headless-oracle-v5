@@ -51,3 +51,14 @@
 **Decision**: Run tests inside a real Miniflare Workers runtime, not Node.js
 **Rationale**: Catches Worker-specific API incompatibilities (crypto, KV, env bindings) that Node tests miss. Config in `vitest.config.mts` pointing to `wrangler.toml`.
 **Status**: Active — note: config file is `wrangler.toml`, NOT `wrangler.jsonc` (deleted)
+
+## ADR-011: lunch_break in /v5/schedule — local time, not UTC
+**Decision**: `lunch_break.start` and `lunch_break.end` are local exchange time strings (`HH:MM`), not UTC instants.
+**Rationale**: Lunch breaks are a static property of the exchange configuration, not a dynamic per-session value. Local times (`11:30`, `12:30`) are meaningful and stable. UTC equivalents would be identical (XJPX and XHKG do not observe DST) but would require computing per-request and are less readable. The `timezone` field already in the response gives consumers everything they need to convert if required.
+**Alternatives considered**: UTC `HH:MM` (unnecessary conversion, same result for these exchanges), full ISO datetime (wrong abstraction — lunch break is a recurring daily window, not a specific instant).
+**Status**: Active — Feb 22 2026
+
+## ADR-012: valid_until defaults to null — not a sentinel date
+**Decision**: `/v5/keys` returns `valid_until: null` when no rotation is scheduled, populated from `PUBLIC_KEY_VALID_UNTIL` env var when set.
+**Rationale**: Using `null` rather than a far-future sentinel (e.g. `9999-12-31`) avoids agents making false assumptions about key validity windows. `null` is unambiguous: this key has no scheduled expiry. When a rotation is planned, the operator sets `PUBLIC_KEY_VALID_UNTIL` before deploying the new key, giving consumers advance notice.
+**Status**: Active — Feb 22 2026

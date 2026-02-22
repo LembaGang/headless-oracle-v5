@@ -218,6 +218,11 @@ describe('GET /v5/keys', () => {
 		// Key lifecycle: valid_from must be present for rotation tracking
 		expect(key).toHaveProperty('valid_from');
 		expect(new Date(key.valid_from as string).getTime()).not.toBeNaN();
+		// valid_until is null (no rotation scheduled) or a valid ISO date
+		expect(Object.prototype.hasOwnProperty.call(key, 'valid_until')).toBe(true);
+		if (key.valid_until !== null) {
+			expect(new Date(key.valid_until as string).getTime()).not.toBeNaN();
+		}
 	});
 
 	it('returns canonical_payload_spec documenting the signing field order', async () => {
@@ -334,6 +339,41 @@ describe('GET /v5/schedule', () => {
 	it('does not require authentication', async () => {
 		const response = await fetchWorker('/v5/schedule?mic=XNYS');
 		expect(response.status).toBe(200);
+	});
+});
+
+// ─── Lunch break in /v5/schedule ─────────────────────────────────────────────
+
+describe('Lunch break in /v5/schedule', () => {
+	it('XJPX schedule includes lunch_break with correct local times', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XJPX');
+		expect(body).toHaveProperty('lunch_break');
+		const lb = body.lunch_break as Record<string, unknown>;
+		expect(lb).not.toBeNull();
+		expect(lb).toHaveProperty('start', '11:30');
+		expect(lb).toHaveProperty('end', '12:30');
+	});
+
+	it('XHKG schedule includes lunch_break with correct local times', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XHKG');
+		expect(body).toHaveProperty('lunch_break');
+		const lb = body.lunch_break as Record<string, unknown>;
+		expect(lb).not.toBeNull();
+		expect(lb).toHaveProperty('start', '12:00');
+		expect(lb).toHaveProperty('end', '13:00');
+	});
+
+	it('XNYS schedule has lunch_break: null (no lunch break)', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XNYS');
+		expect(Object.prototype.hasOwnProperty.call(body, 'lunch_break')).toBe(true);
+		expect(body.lunch_break).toBeNull();
+	});
+
+	it('XLON, XPAR, XSES all have lunch_break: null', async () => {
+		for (const mic of ['XLON', 'XPAR', 'XSES']) {
+			const body = await fetchJSON(`/v5/schedule?mic=${mic}`);
+			expect(body.lunch_break).toBeNull();
+		}
 	});
 });
 

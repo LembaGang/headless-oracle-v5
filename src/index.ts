@@ -12,6 +12,7 @@ export interface Env {
 	BETA_API_KEYS: string;
 	PUBLIC_KEY_ID: string;
 	PUBLIC_KEY_VALID_FROM?: string;
+	PUBLIC_KEY_VALID_UNTIL?: string; // ISO 8601 — set when a key rotation is scheduled
 	ORACLE_OVERRIDES: KVNamespace; // Cloudflare KV — manual circuit-breaker overrides
 }
 
@@ -725,6 +726,7 @@ const OPENAPI_SPEC = {
 										current_status: { '$ref': '#/components/schemas/Status' },
 										next_open:      { type: 'string', format: 'date-time', nullable: true },
 										next_close:     { type: 'string', format: 'date-time', nullable: true },
+										lunch_break:    { nullable: true, description: 'Null if no lunch break. start/end are local exchange time (HH:MM). See timezone field.', type: 'object', properties: { start: { type: 'string', example: '11:30' }, end: { type: 'string', example: '12:30' } } },
 										note:           { type: 'string' },
 									},
 								},
@@ -769,7 +771,7 @@ const OPENAPI_SPEC = {
 		'/v5/keys': {
 			get: {
 				summary:     'Public key registry',
-				description: 'Returns active signing public keys and the canonical payload specification required for independent receipt verification.',
+				description: 'Returns active signing public keys and the canonical payload specification required for independent receipt verification. Each key includes valid_from and valid_until (null if no scheduled rotation) for lifecycle tracking.',
 				responses: {
 					'200': { description: 'Key registry with canonical signing spec', content: { 'application/json': { schema: { type: 'object' } } } },
 				},
@@ -829,11 +831,12 @@ export default {
 			if (url.pathname === '/v5/keys') {
 				return json({
 					keys: [{
-						key_id:     env.PUBLIC_KEY_ID || 'key_2026_v1',
-						algorithm:  'Ed25519',
-						format:     'hex',
-						public_key: env.ED25519_PUBLIC_KEY || '',
-						valid_from: env.PUBLIC_KEY_VALID_FROM || '2026-01-01T00:00:00Z',
+						key_id:      env.PUBLIC_KEY_ID || 'key_2026_v1',
+						algorithm:   'Ed25519',
+						format:      'hex',
+						public_key:  env.ED25519_PUBLIC_KEY || '',
+						valid_from:  env.PUBLIC_KEY_VALID_FROM  || '2026-01-01T00:00:00Z',
+						valid_until: env.PUBLIC_KEY_VALID_UNTIL || null,
 					}],
 					canonical_payload_spec: {
 						description:     'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
@@ -866,7 +869,10 @@ export default {
 					current_status: currentStatus.status,
 					next_open:      nextSession?.next_open  ?? null,
 					next_close:     nextSession?.next_close ?? null,
-					note:           'Times are UTC. Schedule-based only — does not reflect real-time halts or overrides.',
+					lunch_break:    config.lunchBreak
+						? { start: `${pad2(config.lunchBreak.startHour)}:${pad2(config.lunchBreak.startMinute)}`, end: `${pad2(config.lunchBreak.endHour)}:${pad2(config.lunchBreak.endMinute)}` }
+						: null,
+					note:           'Times are UTC. lunch_break times are local exchange time (see timezone field).',
 				});
 			}
 

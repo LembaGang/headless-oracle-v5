@@ -3,19 +3,17 @@
 
 ## Current Status
 **Phase**: Production-ready. Pre-launch marketing phase. Critical agent-adoption gaps being closed.
-**Test suite**: 72/72 tests passing
-**Last significant work**: Feb 22 2026 — HIGH gap 7 resolved (holiday time bomb):
-  - `holidays` restructured from `string[]` to `Record<string, string[]>` (year-keyed)
-  - 2027 holiday data added for all 7 exchanges
-  - Fail-closed guard added to `getScheduleStatus`: if current year has no data → UNKNOWN/SYSTEM
-  - Fail-closed guard added to `getNextSession`: if candidate date falls in uncovered year → null
-  - 2 new guard tests added (72 total). Both pass via `vi.setSystemTime('2028-...')`.
-  - ANNUAL MAINTENANCE: Add next year's holidays before Dec 31 each year. Run `npm test` to verify.
-**Previous significant work**: Feb 22 2026 — CRITICAL gaps 1, 2, 3 resolved:
-  - `expires_at` added to all signed receipts (Tier 0/1/2), TTL = 60s
-  - `/openapi.json` endpoint live (OpenAPI 3.1 spec, machine-readable)
-  - Canonical signing payload documented in `/v5/keys` (alphabetical field order, spec field list)
-  - Key `valid_from` added to `/v5/keys` for rotation lifecycle tracking
+**Test suite**: 76/76 tests passing
+**Last significant work**: Feb 22 2026 — HIGH gaps 5 + 6 resolved:
+  - `valid_until` added to `/v5/keys` response (null by default; set via `PUBLIC_KEY_VALID_UNTIL` env var)
+  - Gap 5 now fully resolved: key rotation has `valid_from` + `valid_until`
+  - `lunch_break: { start, end } | null` added to `/v5/schedule` response for all MICs
+  - XJPX returns `{ start: '11:30', end: '12:30' }` (local JST), XHKG `{ start: '12:00', end: '13:00' }` (local HKT)
+  - All other MICs return `lunch_break: null` — explicit signal, not absent field
+  - lunch_break times are local exchange time (see `timezone` field); `note` field updated accordingly
+  - OpenAPI spec updated for both changes
+  - 4 new lunch_break tests + 1 valid_until assertion added (76 total)
+**Previous significant work**: Feb 22 2026 — HIGH gap 7 resolved (holiday time bomb)
 **Next session trigger**: User completes human tasks → HN launch March 10.
 
 ## Immediate Next Engineering Tasks (when user returns)
@@ -100,16 +98,18 @@
    commitment to a terms document. An agent can't verify what it's agreeing to.
    Fix: hash the actual terms document and serve the real hash, or rename to `schema_version`.
 
-5. **Key rotation has no lifecycle**
-   `/v5/keys` has no `valid_from` or `valid_until` on keys. When the signing key rotates,
-   every consumer with a cached public key breaks with no warning.
-   Fix: add `valid_from` (and optionally `valid_until`) to the key registry object.
+5. ~~**Key rotation has no lifecycle**~~ **RESOLVED Feb 22 2026**
+   `/v5/keys` now returns `valid_from` (populated via `PUBLIC_KEY_VALID_FROM` env var, default
+   `2026-01-01T00:00:00Z`) and `valid_until` (populated via `PUBLIC_KEY_VALID_UNTIL` env var,
+   default `null`). Set `PUBLIC_KEY_VALID_UNTIL` before a scheduled key rotation to signal
+   consumers before the key expires.
 
-6. **Lunch breaks missing from `/v5/schedule`**
-   XJPX (11:30–12:30) and XHKG (12:00–13:00) have lunch breaks. `/v5/schedule` returns
-   `next_open`/`next_close` as if sessions are continuous. An agent scheduling during
-   the XJPX lunch break gets the wrong answer.
-   Fix: add `lunch_break` to the schedule response for affected MICs.
+6. ~~**Lunch breaks missing from `/v5/schedule`**~~ **RESOLVED Feb 22 2026**
+   `/v5/schedule` now returns `lunch_break: { start, end } | null` for all MICs.
+   XJPX: `{ start: '11:30', end: '12:30' }` (local JST).
+   XHKG: `{ start: '12:00', end: '13:00' }` (local HKT).
+   All other MICs: `null` — explicit field, not absent. Times are local exchange time;
+   timezone is already in the response. OpenAPI spec updated.
 
 7. ~~**Holiday lists are 2026-only — time bomb**~~ **RESOLVED Feb 22 2026**
    `holidays` is now year-keyed (`Record<string, string[]>`). 2027 data added for all 7
