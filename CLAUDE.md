@@ -4,12 +4,12 @@
 - **Runtime**: Cloudflare Workers (TypeScript)
 - **Build/Deploy**: Wrangler (`wrangler.toml`)
 - **Crypto**: Ed25519 signing via `@noble/ed25519` + `@noble/hashes`
-- **Testing**: Vitest 66-test suite with `@cloudflare/vitest-pool-workers`
+- **Testing**: Vitest 72-test suite with `@cloudflare/vitest-pool-workers`
 - **KV**: Cloudflare KV (`ORACLE_OVERRIDES`) for manual circuit-breaker halts
 
 ## Project Structure
 - `src/index.ts` — Main worker (all routes, 7-exchange config, signing, fail-closed logic)
-- `test/index.spec.ts` — 66 Vitest unit tests covering all routes, all MICs, KV overrides
+- `test/index.spec.ts` — 72 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard
 - `vitest.config.mts` — Points to `wrangler.toml` (NOT wrangler.jsonc — that file is deleted)
 - `wrangler.toml` — Worker config + KV namespace binding (`ORACLE_OVERRIDES`)
 - `.dev.vars` — Local dev/test secrets (test-only keypair, NOT production keys)
@@ -68,7 +68,7 @@ Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - `BETA_API_KEYS=test_beta_key_1,test_beta_key_2`
 
 ## Commands
-- `npm test` — Run 70-test suite with Vitest (requires `.dev.vars` to be populated)
+- `npm test` — Run 72-test suite with Vitest (requires `.dev.vars` to be populated)
 - `npm run dev` — Local development server
 - `npm run deploy` — Deploy to Cloudflare Workers (`wrangler deploy`)
 

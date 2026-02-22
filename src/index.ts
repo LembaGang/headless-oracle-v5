@@ -34,6 +34,10 @@ function fromHex(hex: string): Uint8Array {
 // All times are LOCAL to the exchange timezone.
 // DST is handled automatically via Intl.DateTimeFormat with named IANA timezones.
 // No hardcoded UTC offsets anywhere in this file.
+//
+// holidays is year-keyed: { '2026': ['YYYY-MM-DD', ...], '2027': [...] }
+// If the current year has no entry, getScheduleStatus returns UNKNOWN (fail-closed).
+// MAINTENANCE: Add next year's holidays before Dec 31 of each year.
 
 interface HalfDay {
 	date: string; // YYYY-MM-DD in local exchange timezone
@@ -55,7 +59,7 @@ interface MarketConfig {
 	openMinute: number;
 	closeHour: number;
 	closeMinute: number;
-	holidays: string[]; // YYYY-MM-DD in local exchange timezone
+	holidays: Record<string, string[]>; // { 'YYYY': ['YYYY-MM-DD', ...] }
 	halfDays?: HalfDay[];
 	lunchBreak?: LunchBreak;
 }
@@ -68,21 +72,37 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		timezone: 'America/New_York',
 		openHour: 9, openMinute: 30,
 		closeHour: 16, closeMinute: 0,
-		holidays: [
-			'2026-01-01', // New Year's Day
-			'2026-01-19', // MLK Day
-			'2026-02-16', // Presidents' Day
-			'2026-04-03', // Good Friday
-			'2026-05-25', // Memorial Day
-			'2026-06-19', // Juneteenth
-			'2026-07-03', // Independence Day (observed)
-			'2026-09-07', // Labor Day
-			'2026-11-26', // Thanksgiving
-			'2026-12-25', // Christmas
-		],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-19', // MLK Day
+				'2026-02-16', // Presidents' Day
+				'2026-04-03', // Good Friday
+				'2026-05-25', // Memorial Day
+				'2026-06-19', // Juneteenth
+				'2026-07-03', // Independence Day (observed)
+				'2026-09-07', // Labor Day
+				'2026-11-26', // Thanksgiving
+				'2026-12-25', // Christmas
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-18', // MLK Day (3rd Mon of Jan)
+				'2027-02-15', // Presidents' Day (3rd Mon of Feb)
+				'2027-03-26', // Good Friday (Easter = Mar 28)
+				'2027-05-31', // Memorial Day (last Mon of May)
+				'2027-06-18', // Juneteenth observed (Jun 19 = Sat → preceding Fri)
+				'2027-07-05', // Independence Day observed (Jul 4 = Sun → following Mon)
+				'2027-09-06', // Labor Day (1st Mon of Sep)
+				'2027-11-25', // Thanksgiving (4th Thu of Nov)
+				'2027-12-24', // Christmas observed (Dec 25 = Sat → preceding Fri)
+			],
+		},
 		halfDays: [
-			{ date: '2026-11-27', closeHour: 13, closeMinute: 0 }, // Black Friday
-			{ date: '2026-12-24', closeHour: 13, closeMinute: 0 }, // Christmas Eve
+			{ date: '2026-11-27', closeHour: 13, closeMinute: 0 }, // Black Friday 2026
+			{ date: '2026-12-24', closeHour: 13, closeMinute: 0 }, // Christmas Eve 2026
+			{ date: '2027-11-26', closeHour: 13, closeMinute: 0 }, // Black Friday 2027
+			// No Christmas Eve half-day in 2027: Dec 24 is a full holiday (Christmas observed)
 		],
 	},
 
@@ -91,21 +111,36 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		timezone: 'America/New_York',
 		openHour: 9, openMinute: 30,
 		closeHour: 16, closeMinute: 0,
-		holidays: [
-			'2026-01-01',
-			'2026-01-19',
-			'2026-02-16',
-			'2026-04-03',
-			'2026-05-25',
-			'2026-06-19',
-			'2026-07-03',
-			'2026-09-07',
-			'2026-11-26',
-			'2026-12-25',
-		],
+		holidays: {
+			'2026': [
+				'2026-01-01',
+				'2026-01-19',
+				'2026-02-16',
+				'2026-04-03',
+				'2026-05-25',
+				'2026-06-19',
+				'2026-07-03',
+				'2026-09-07',
+				'2026-11-26',
+				'2026-12-25',
+			],
+			'2027': [
+				'2027-01-01',
+				'2027-01-18',
+				'2027-02-15',
+				'2027-03-26',
+				'2027-05-31',
+				'2027-06-18',
+				'2027-07-05',
+				'2027-09-06',
+				'2027-11-25',
+				'2027-12-24',
+			],
+		},
 		halfDays: [
 			{ date: '2026-11-27', closeHour: 13, closeMinute: 0 },
 			{ date: '2026-12-24', closeHour: 13, closeMinute: 0 },
+			{ date: '2027-11-26', closeHour: 13, closeMinute: 0 },
 		],
 	},
 
@@ -117,19 +152,33 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		timezone: 'Europe/London',
 		openHour: 8, openMinute: 0,
 		closeHour: 16, closeMinute: 30,
-		holidays: [
-			'2026-01-01', // New Year's Day
-			'2026-04-03', // Good Friday
-			'2026-04-06', // Easter Monday
-			'2026-05-04', // Early May Bank Holiday
-			'2026-05-25', // Spring Bank Holiday
-			'2026-08-31', // Summer Bank Holiday
-			'2026-12-25', // Christmas Day
-			'2026-12-28', // Boxing Day (observed; Dec 26 falls on Saturday)
-		],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-05-04', // Early May Bank Holiday
+				'2026-05-25', // Spring Bank Holiday
+				'2026-08-31', // Summer Bank Holiday
+				'2026-12-25', // Christmas Day
+				'2026-12-28', // Boxing Day (observed; Dec 26 falls on Saturday)
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-05-03', // Early May Bank Holiday (1st Mon of May)
+				'2027-05-31', // Spring Bank Holiday (last Mon of May)
+				'2027-08-30', // Summer Bank Holiday (last Mon of Aug)
+				'2027-12-27', // Christmas Day observed (Dec 25 = Sat → Mon Dec 27)
+				'2027-12-28', // Boxing Day observed (Dec 26 = Sun → Tue Dec 28)
+			],
+		},
 		halfDays: [
-			{ date: '2026-12-24', closeHour: 12, closeMinute: 30 }, // Christmas Eve
-			{ date: '2026-12-31', closeHour: 12, closeMinute: 30 }, // New Year's Eve
+			{ date: '2026-12-24', closeHour: 12, closeMinute: 30 }, // Christmas Eve 2026
+			{ date: '2026-12-31', closeHour: 12, closeMinute: 30 }, // New Year's Eve 2026
+			{ date: '2027-12-24', closeHour: 12, closeMinute: 30 }, // Christmas Eve 2027
+			{ date: '2027-12-31', closeHour: 12, closeMinute: 30 }, // New Year's Eve 2027
 		],
 	},
 
@@ -142,26 +191,47 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		openHour: 9, openMinute: 0,
 		closeHour: 15, closeMinute: 30,
 		lunchBreak: { startHour: 11, startMinute: 30, endHour: 12, endMinute: 30 },
-		holidays: [
-			'2026-01-01', // New Year's Day
-			'2026-01-12', // Coming of Age Day
-			'2026-02-11', // National Foundation Day
-			'2026-02-23', // Emperor's Birthday
-			'2026-03-20', // Vernal Equinox Day
-			'2026-04-29', // Showa Day
-			'2026-05-03', // Constitution Day
-			'2026-05-04', // Greenery Day
-			'2026-05-05', // Children's Day
-			'2026-05-06', // Substitute holiday
-			'2026-07-20', // Marine Day
-			'2026-08-10', // Mountain Day
-			'2026-09-21', // Respect for the Aged Day
-			'2026-09-22', // Autumnal Equinox Day
-			'2026-10-12', // Sports Day
-			'2026-11-03', // Culture Day
-			'2026-11-23', // Labour Thanksgiving Day
-			'2026-12-31', // New Year's Eve (closed)
-		],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-12', // Coming of Age Day
+				'2026-02-11', // National Foundation Day
+				'2026-02-23', // Emperor's Birthday
+				'2026-03-20', // Vernal Equinox Day
+				'2026-04-29', // Showa Day
+				'2026-05-03', // Constitution Day
+				'2026-05-04', // Greenery Day
+				'2026-05-05', // Children's Day
+				'2026-05-06', // Substitute holiday
+				'2026-07-20', // Marine Day
+				'2026-08-10', // Mountain Day
+				'2026-09-21', // Respect for the Aged Day
+				'2026-09-22', // Autumnal Equinox Day
+				'2026-10-12', // Sports Day
+				'2026-11-03', // Culture Day
+				'2026-11-23', // Labour Thanksgiving Day
+				'2026-12-31', // New Year's Eve (closed)
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-11', // Coming of Age Day (2nd Mon of Jan)
+				'2027-02-11', // National Foundation Day
+				'2027-02-23', // Emperor's Birthday
+				'2027-03-20', // Vernal Equinox Day (Sat — included for completeness)
+				'2027-04-29', // Showa Day
+				'2027-05-03', // Constitution Day
+				'2027-05-04', // Greenery Day
+				'2027-05-05', // Children's Day
+				'2027-07-19', // Marine Day (3rd Mon of Jul)
+				'2027-08-11', // Mountain Day
+				'2027-09-20', // Respect for the Aged Day (3rd Mon of Sep)
+				'2027-09-23', // Autumnal Equinox Day (approx — verify annually via Cabinet Office)
+				'2027-10-11', // Sports Day (2nd Mon of Oct)
+				'2027-11-03', // Culture Day
+				'2027-11-23', // Labour Thanksgiving Day
+				'2027-12-31', // New Year's Eve (closed)
+			],
+		},
 	},
 
 	// ── Euronext Paris ────────────────────────────────────────────────────────
@@ -171,23 +241,42 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		timezone: 'Europe/Paris',
 		openHour: 9, openMinute: 0,
 		closeHour: 17, closeMinute: 30,
-		holidays: [
-			'2026-01-01', // New Year's Day
-			'2026-04-03', // Good Friday
-			'2026-04-06', // Easter Monday
-			'2026-05-01', // Labour Day
-			'2026-05-14', // Ascension Day
-			'2026-05-25', // Whit Monday
-			'2026-07-14', // Bastille Day
-			'2026-08-15', // Assumption of Mary
-			'2026-11-01', // All Saints' Day
-			'2026-11-11', // Armistice Day
-			'2026-12-25', // Christmas Day
-			'2026-12-26', // Boxing Day
-		],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-05-01', // Labour Day
+				'2026-05-14', // Ascension Day
+				'2026-05-25', // Whit Monday
+				'2026-07-14', // Bastille Day
+				'2026-08-15', // Assumption of Mary
+				'2026-11-01', // All Saints' Day
+				'2026-11-11', // Armistice Day
+				'2026-12-25', // Christmas Day
+				'2026-12-26', // Boxing Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-05-01', // Labour Day (Sat — weekend, included for completeness)
+				'2027-05-06', // Ascension Day (39 days after Easter Mar 28)
+				'2027-05-17', // Whit Monday (Pentecost + 1)
+				'2027-07-14', // Bastille Day
+				'2027-08-15', // Assumption of Mary (Sun — weekend, included)
+				'2027-11-01', // All Saints' Day
+				'2027-11-11', // Armistice Day
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-26', // Boxing Day (Sun — weekend)
+				'2027-12-27', // Christmas observed (Mon — Dec 25+26 both fall on weekends)
+			],
+		},
 		halfDays: [
-			{ date: '2026-12-24', closeHour: 14, closeMinute: 5 }, // Christmas Eve
-			{ date: '2026-12-31', closeHour: 14, closeMinute: 5 }, // New Year's Eve
+			{ date: '2026-12-24', closeHour: 14, closeMinute: 5 }, // Christmas Eve 2026
+			{ date: '2026-12-31', closeHour: 14, closeMinute: 5 }, // New Year's Eve 2026
+			{ date: '2027-12-24', closeHour: 14, closeMinute: 5 }, // Christmas Eve 2027
+			{ date: '2027-12-31', closeHour: 14, closeMinute: 5 }, // New Year's Eve 2027
 		],
 	},
 
@@ -200,24 +289,43 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		openHour: 9, openMinute: 30,
 		closeHour: 16, closeMinute: 0,
 		lunchBreak: { startHour: 12, startMinute: 0, endHour: 13, endMinute: 0 },
-		holidays: [
-			'2026-01-01', // New Year's Day
-			'2026-02-17', // Chinese New Year Day 1
-			'2026-02-18', // Chinese New Year Day 2
-			'2026-04-03', // Good Friday
-			'2026-04-04', // Ching Ming Festival
-			'2026-04-06', // Easter Monday
-			'2026-05-01', // Labour Day
-			'2026-05-15', // Buddha's Birthday
-			'2026-06-10', // Dragon Boat Festival
-			'2026-07-01', // HKSAR Establishment Day
-			'2026-10-01', // National Day
-			'2026-10-29', // Chung Yeung Festival
-			'2026-12-25', // Christmas Day
-			'2026-12-26', // Boxing Day
-		],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-02-17', // Chinese New Year Day 1
+				'2026-02-18', // Chinese New Year Day 2
+				'2026-04-03', // Good Friday
+				'2026-04-04', // Ching Ming Festival
+				'2026-04-06', // Easter Monday
+				'2026-05-01', // Labour Day
+				'2026-05-15', // Buddha's Birthday
+				'2026-06-10', // Dragon Boat Festival
+				'2026-07-01', // HKSAR Establishment Day
+				'2026-10-01', // National Day
+				'2026-10-29', // Chung Yeung Festival
+				'2026-12-25', // Christmas Day
+				'2026-12-26', // Boxing Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-02-06', // Chinese New Year Day 1 (approx — verify via lunar calendar)
+				'2027-02-07', // Chinese New Year Day 2 (approx — verify via lunar calendar)
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-04-05', // Ching Ming Festival (approx — 15th day after Spring Equinox)
+				'2027-05-01', // Labour Day (Sat — weekend, included)
+				'2027-05-23', // Buddha's Birthday (approx — 4th month, 8th day lunar)
+				'2027-06-20', // Dragon Boat Festival (approx — 5th month, 5th day lunar)
+				'2027-07-01', // HKSAR Establishment Day
+				'2027-10-01', // National Day
+				'2027-10-18', // Chung Yeung Festival (approx — 9th month, 9th day lunar)
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-27', // Christmas observed (Mon)
+			],
+		},
 		halfDays: [
-			{ date: '2026-02-16', closeHour: 12, closeMinute: 0 }, // CNY Eve (morning only)
+			{ date: '2026-02-16', closeHour: 12, closeMinute: 0 }, // CNY Eve 2026 (morning only)
+			{ date: '2027-02-05', closeHour: 12, closeMinute: 0 }, // CNY Eve 2027 (approx — morning only)
 		],
 	},
 
@@ -228,17 +336,31 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		timezone: 'Asia/Singapore',
 		openHour: 9, openMinute: 0,
 		closeHour: 17, closeMinute: 0,
-		holidays: [
-			'2026-01-01', // New Year's Day
-			'2026-02-17', // Chinese New Year Day 1
-			'2026-02-18', // Chinese New Year Day 2
-			'2026-04-03', // Good Friday
-			'2026-05-01', // Labour Day
-			'2026-06-02', // Hari Raya Haji
-			'2026-08-09', // National Day
-			'2026-11-14', // Deepavali
-			'2026-12-25', // Christmas Day
-		],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-02-17', // Chinese New Year Day 1
+				'2026-02-18', // Chinese New Year Day 2
+				'2026-04-03', // Good Friday
+				'2026-05-01', // Labour Day
+				'2026-06-02', // Hari Raya Haji
+				'2026-08-09', // National Day
+				'2026-11-14', // Deepavali
+				'2026-12-25', // Christmas Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-02-06', // Chinese New Year Day 1 (approx — lunar calendar)
+				'2027-02-07', // Chinese New Year Day 2 (approx — lunar calendar)
+				'2027-03-26', // Good Friday
+				'2027-05-01', // Labour Day (Sat — weekend, included)
+				'2027-05-22', // Hari Raya Haji (approx — Islamic calendar, ~11 days before 2026)
+				'2027-08-09', // National Day
+				'2027-11-06', // Deepavali (approx — Hindu calendar)
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-27', // Christmas observed (Mon)
+			],
+		},
 	},
 };
 
@@ -307,15 +429,22 @@ function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 	const config = MARKET_CONFIGS[mic];
 	if (!config) return { status: 'UNKNOWN', source: 'SCHEDULE' };
 
-	const { weekday, dateStr, hour, minute } = getLocalTimeParts(config.timezone, now);
+	const { weekday, year, dateStr, hour, minute } = getLocalTimeParts(config.timezone, now);
 
 	// Weekend
 	if (weekday === 'Sat' || weekday === 'Sun') {
 		return { status: 'CLOSED', source: 'SCHEDULE' };
 	}
 
+	// Fail-closed guard: if this year has no holiday data, returning OPEN would be wrong.
+	// An agent cannot safely distinguish "no holidays" from "we forgot to update the list".
+	const yearHolidays = config.holidays[year];
+	if (!yearHolidays) {
+		return { status: 'UNKNOWN', source: 'SYSTEM' };
+	}
+
 	// Full holiday
-	if (config.holidays.includes(dateStr)) {
+	if (yearHolidays.includes(dateStr)) {
 		return { status: 'CLOSED', source: 'SCHEDULE' };
 	}
 
@@ -390,7 +519,12 @@ function getNextSession(mic: string, now: Date): NextSession | null {
 	for (let i = 0; i < 14; i++) {
 		const { weekday, dateStr, year, month, day } = getLocalTimeParts(config.timezone, candidate);
 
-		if (weekday !== 'Sat' && weekday !== 'Sun' && !config.holidays.includes(dateStr)) {
+		// Fail-closed: if this year has no holiday coverage, stop rather than risk
+		// returning a session date that falls on an unchecked holiday.
+		const yearHolidays = config.holidays[year];
+		if (!yearHolidays) return null;
+
+		if (weekday !== 'Sat' && weekday !== 'Sun' && !yearHolidays.includes(dateStr)) {
 			// Determine effective open/close for this day
 			let closeH = config.closeHour;
 			let closeM = config.closeMinute;
@@ -446,7 +580,7 @@ function getNextSession(mic: string, now: Date): NextSession | null {
 		candidate.setUTCDate(candidate.getUTCDate() + 1);
 	}
 
-	return null; // Unreachable under normal circumstances
+	return null; // no suitable session found within 14 days (or holiday coverage ran out)
 }
 
 // ─── Signing ─────────────────────────────────────────────────────────────────

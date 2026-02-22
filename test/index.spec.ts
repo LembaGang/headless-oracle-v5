@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import worker from '../src';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -597,5 +597,42 @@ describe('GET /openapi.json', () => {
 	it('does not require authentication', async () => {
 		const response = await fetchWorker('/openapi.json');
 		expect(response.status).toBe(200);
+	});
+});
+
+// ─── Holiday coverage guard (fail-closed) ────────────────────────────────────
+// These tests verify that when the current year has no holiday data, the oracle
+// returns a signed UNKNOWN/SYSTEM receipt rather than silently treating every
+// weekday as a trading day.
+
+describe('Holiday coverage guard (fail-closed)', () => {
+	it('returns signed UNKNOWN when current year has no holiday coverage', async () => {
+		vi.useFakeTimers();
+		// 2028-03-15 is a Wednesday — open hours for XNYS — but 2028 has no holiday data
+		vi.setSystemTime(new Date('2028-03-15T14:30:00Z'));
+		try {
+			const body = await fetchJSON('/v5/demo?mic=XNYS');
+			expect(body).toHaveProperty('status', 'UNKNOWN');
+			expect(body).toHaveProperty('source', 'SYSTEM');
+			// Guard fires in Tier 1 (not a throw), so receipt is still signed
+			expect(body).toHaveProperty('signature');
+			expect((body.signature as string).length).toBe(128);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('guard fires for all 7 MICs in an uncovered year', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2028-06-01T10:00:00Z'));
+		try {
+			for (const mic of ALL_MICS) {
+				const body = await fetchJSON(`/v5/demo?mic=${mic}`);
+				expect(body).toHaveProperty('status', 'UNKNOWN');
+				expect(body).toHaveProperty('source', 'SYSTEM');
+			}
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

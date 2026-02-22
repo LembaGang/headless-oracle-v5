@@ -3,8 +3,15 @@
 
 ## Current Status
 **Phase**: Production-ready. Pre-launch marketing phase. Critical agent-adoption gaps being closed.
-**Test suite**: 70/70 tests passing
-**Last significant work**: Feb 22 2026 — CRITICAL gaps 1, 2, 3 resolved:
+**Test suite**: 72/72 tests passing
+**Last significant work**: Feb 22 2026 — HIGH gap 7 resolved (holiday time bomb):
+  - `holidays` restructured from `string[]` to `Record<string, string[]>` (year-keyed)
+  - 2027 holiday data added for all 7 exchanges
+  - Fail-closed guard added to `getScheduleStatus`: if current year has no data → UNKNOWN/SYSTEM
+  - Fail-closed guard added to `getNextSession`: if candidate date falls in uncovered year → null
+  - 2 new guard tests added (72 total). Both pass via `vi.setSystemTime('2028-...')`.
+  - ANNUAL MAINTENANCE: Add next year's holidays before Dec 31 each year. Run `npm test` to verify.
+**Previous significant work**: Feb 22 2026 — CRITICAL gaps 1, 2, 3 resolved:
   - `expires_at` added to all signed receipts (Tier 0/1/2), TTL = 60s
   - `/openapi.json` endpoint live (OpenAPI 3.1 spec, machine-readable)
   - Canonical signing payload documented in `/v5/keys` (alphabetical field order, spec field list)
@@ -54,7 +61,7 @@
 - **Worker**: headless-oracle-v5 | main branch | deployed to Cloudflare Workers
 - **Frontend**: headless-oracle-web | main branch | deployed to Cloudflare Pages via `npm run deploy`
 - **DST Demo**: dst-exploit-demo | master branch | published on GitHub
-- **Tests**: 70/70 passing. `.dev.vars` populated with test-only keypair.
+- **Tests**: 72/72 passing. `.dev.vars` populated with test-only keypair.
 - **Public key**: `03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178` (production)
 - **All live pages**: headlessoracle.com, /docs, /status, /verify, /terms, /privacy, /llms.txt, /openapi.json
 
@@ -104,11 +111,13 @@
    the XJPX lunch break gets the wrong answer.
    Fix: add `lunch_break` to the schedule response for affected MICs.
 
-7. **Holiday lists are 2026-only — time bomb**
-   All `holidays` arrays in `MARKET_CONFIGS` are hardcoded for 2026. On Jan 1 2027,
-   the oracle returns OPEN on holidays. This is silent and catastrophic.
-   Fix: architecture decision needed — external calendar source, or extend arrays annually
-   before Dec 31 each year with a calendar reminder.
+7. ~~**Holiday lists are 2026-only — time bomb**~~ **RESOLVED Feb 22 2026**
+   `holidays` is now year-keyed (`Record<string, string[]>`). 2027 data added for all 7
+   exchanges. Fail-closed guard returns UNKNOWN/SYSTEM if the current year has no data —
+   converts a silent wrong answer into a detectable safe state.
+   **ANNUAL MAINTENANCE**: Before Dec 31 each year, add the following year's holidays to
+   all 7 configs in `src/index.ts` and run `npm test`. Lunar/Islamic/Hindu calendar dates
+   (XHKG, XSES) need manual verification from official exchange calendars.
 
 ### MEDIUM — when consumer base grows
 8. **No batch query**
