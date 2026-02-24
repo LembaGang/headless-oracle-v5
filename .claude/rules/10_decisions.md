@@ -72,3 +72,26 @@
 **Decision**: Health receipts contain `{ receipt_id, issued_at, expires_at, status: 'OK', source: 'SYSTEM', public_key_id, signature }`. No `mic`, no `schema_version`.
 **Rationale**: Health is a system-level liveness probe, not a market receipt. Including `mic` would imply exchange-specific health, which is not what the endpoint measures. Omitting `schema_version` keeps the health receipt minimal and avoids coupling liveness checks to schema versioning. The canonical field list is documented in `/v5/keys → health_fields`.
 **Status**: Active — Feb 22 2026
+
+## ADR-015: MCP Streamable HTTP at POST /mcp
+**Decision**: Implement `POST /mcp` using JSON-RPC 2.0 / MCP Streamable HTTP transport (protocol version `2024-11-05`). Three tools: `get_market_status`, `get_market_schedule`, `list_exchanges`. No new npm dependencies — tools call the same internal functions as the REST routes. `buildSignedReceipt` is extracted as a shared function so the 4-tier fail-closed architecture applies identically to MCP and REST callers.
+**Rationale**: MCP is becoming the standard agent tool protocol. Without a `/mcp` endpoint, Oracle is invisible to Claude Desktop, Cursor, and the growing MCP-compatible agent ecosystem. The endpoint is outside the main `try/catch` and uses JSON-RPC error format — never REST `CRITICAL_FAILURE` format — so agent tool callers receive deterministic, unambiguous errors. `isError: true` in the tool result (not a JSON-RPC `error` field) signals a tool-level failure, consistent with the MCP spec and agent expectations.
+**Alternatives considered**: Separate MCP server process (more ops overhead, no shared signing key access), MCP via SSE (stateful, more complex, not needed at current scale).
+**Status**: Active — Feb 22 2026
+
+## ADR-016: /v5/batch — all-or-nothing validation, independent signing, Tier 3 fails whole batch
+**Decision**: `GET /v5/batch?mics=XNYS,XNAS,XLON` validates all MICs up front before processing any. Each receipt is independently signed via `buildSignedReceipt` (full 4-tier apply per-MIC). If any MIC triggers Tier 3 (signing offline), the entire batch returns 500 CRITICAL_FAILURE rather than partially succeeding.
+**Rationale**: Validating all MICs up front is fail-closed — it prevents silently processing a partially valid request. Independent signing means each receipt is self-contained and verifiable in isolation; agents can split the batch and forward individual receipts to other agents. Tier 3 failure is total because signing failure means the signing key or infrastructure is offline — partial results from a compromised signing system are worse than no results.
+**Alternatives considered**: `POST /v5/batch` with a JSON body (GET with query param is simpler and more cache-friendly for future CDN caching), extending `/v5/status` to accept comma-separated `mic` (changes response schema conditionally — agents can't reliably parse), returning partial results on Tier 3 failure (unsafe).
+**Status**: Active — Feb 23 2026
+
+## ADR-017: /.well-known/oracle-keys.json — RFC 8615 key discovery, minimal payload
+**Decision**: `GET /.well-known/oracle-keys.json` returns the active signing key(s) with lifecycle metadata (`key_id`, `algorithm`, `format`, `public_key`, `valid_from`, `valid_until`) plus `service` and `spec` fields. Does NOT include `canonical_payload_spec` (that stays at `/v5/keys`).
+**Rationale**: RFC 8615 defines `/.well-known/` as the standard location where agents and web infrastructure look for service metadata — before checking any service-specific path. Without this endpoint, Oracle is invisible to any agent or tool that follows the standard. The minimal payload (key data only, no spec) keeps the well-known response broadly interoperable and avoids coupling the standard discovery path to Oracle-specific schema details.
+**Status**: Active — Feb 23 2026
+
+## ADR-018: @headlessoracle/verify — Web Crypto only, zero production dependencies
+**Decision**: The consumer SDK (`@headlessoracle/verify` at `C:\Users\User\headless-oracle-verify\`) uses only the Web Crypto API (`crypto.subtle`) for Ed25519 verification. No production npm dependencies. `@noble/ed25519` is a devDependency only (used in tests to sign payloads, mirroring the server).
+**Rationale**: Zero production dependencies eliminates supply-chain risk for consumers and removes `sha512` global-mutation requirements. Web Crypto is available in all target environments (Node.js 18+, Cloudflare Workers, modern browsers). The test strategy — sign with noble, verify with Web Crypto — is a true round-trip integration test that proves Oracle server ↔ SDK compatibility. The `publicKey` option lets high-throughput consumers skip the key registry fetch entirely, avoiding a network call on every verification.
+**Alternatives considered**: Using `@noble/ed25519` as a production dep (adds supply-chain dep, requires sha512 setup by consumer), supporting both noble and Web Crypto (increases bundle and complexity for no gain in modern environments).
+**Status**: Active — Feb 24 2026

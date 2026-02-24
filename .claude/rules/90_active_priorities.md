@@ -3,8 +3,40 @@
 
 ## Current Status
 **Phase**: Production-ready. Pre-launch marketing phase. Critical agent-adoption gaps being closed.
-**Test suite**: 76/76 tests passing
-**Last significant work**: Feb 22 2026 — gaps 4 + 11 resolved (terms_hash rename, /v5/health):
+**Test suite**: 112/112 tests passing (worker) + 24/24 tests passing (SDK)
+**Last significant work**: Feb 24 2026 — gap 10 resolved (@headlessoracle/verify SDK):
+  - `@headlessoracle/verify` npm package built at `C:\Users\User\headless-oracle-verify\`
+  - Zero production dependencies — uses Web Crypto API (crypto.subtle)
+  - Single `verify(receipt, options?)` function: fields check → TTL check → Ed25519 verification
+  - Handles all receipt types: SCHEDULE, OVERRIDE (with reason), HEALTH (no mic/schema_version)
+  - `publicKey` option skips key registry fetch — essential for high-throughput agent use
+  - `keysUrl` option supports staging/self-hosted instances
+  - `now` option supports time-override in consumer tests
+  - 6 machine-readable failure reasons: MISSING_FIELDS, EXPIRED, UNKNOWN_KEY, INVALID_SIGNATURE, KEY_FETCH_FAILED, INVALID_KEY_FORMAT
+  - Dual ESM + CJS build via tsup; TypeScript declarations included
+  - 24/24 tests passing; tests sign with noble/ed25519, verify with Web Crypto — true round-trip integration test
+  - ADR-018 added to 10_decisions.md
+  - **Publish step (human task)**: `npm publish --access public` from `C:\Users\User\headless-oracle-verify\` after setting up npm org `@headlessoracle`
+**Previous significant work**: Feb 23 2026 — gap 8 resolved (/v5/batch) + /.well-known/oracle-keys.json added:
+  - `GET /v5/batch?mics=XNYS,XNAS,XLON` live: authenticated, parallel, independently signed receipts
+  - Full 4-tier fail-closed applies per-MIC; Tier 3 failure fails the whole batch
+  - Deduplicates MICs, validates all up front, preserves request order
+  - `GET /.well-known/oracle-keys.json` live: RFC 8615 standard key-discovery URI
+  - Returns active key data (without canonical_payload_spec) for web-standard discoverability
+  - OpenAPI spec updated for both new routes
+  - 22 new tests added (112 total); all 112 pass
+  - ADR-016 (batch) and ADR-017 (well-known) added to 10_decisions.md
+**Previous significant work**: Feb 22 2026 — gap 9 resolved (MCP server):
+  - `POST /mcp` live: MCP Streamable HTTP, JSON-RPC 2.0, protocol version `2024-11-05`
+  - Three tools: `get_market_status`, `get_market_schedule`, `list_exchanges`
+  - No new npm dependencies — tools call the same internal functions as REST routes
+  - `buildSignedReceipt` extracted as shared function: 4-tier fail-closed applies equally to MCP and REST
+  - MCP handler outside main try/catch — returns JSON-RPC error format, never REST CRITICAL_FAILURE
+  - CORS updated to allow POST; OpenAPI spec updated with `/mcp` path
+  - 10 new MCP tests added (90 total); all 90 pass
+  - ADR-015 added to 10_decisions.md
+  - Oracle is now discoverable from Claude Desktop, Cursor, and MCP-compatible agents
+**Previous significant work**: Feb 22 2026 — gaps 4 + 11 resolved (terms_hash rename, /v5/health):
   - `terms_hash` renamed to `schema_version`, value updated `'v5.0-beta'` → `'v5.0'`
   - Breaking change to signed payload schema — done pre-launch while zero consumers exist
   - `/v5/health` endpoint live: signed liveness probe, public, no auth
@@ -27,7 +59,13 @@
 **Next session trigger**: User completes human tasks → HN launch March 10.
 
 ## Immediate Next Engineering Tasks (when user returns)
-1. **Add rate limiting in Cloudflare Dashboard** — must be done before HN launch (March 10)
+1. **Publish @headlessoracle/verify to npm** (human task)
+   - Create npm org: `@headlessoracle` at npmjs.com
+   - From `C:\Users\User\headless-oracle-verify\`: `npm publish --access public`
+   - Then add the npm badge and install snippet to headlessoracle.com/docs
+   - The README's 3-line example is the copy-paste integration pattern for agents
+
+2. **Add rate limiting in Cloudflare Dashboard** — must be done before HN launch (March 10)
    - Dashboard: Workers & Pages → headless-oracle-v5 → Settings → Rate Limiting
    - Rules to add:
      - `/v5/demo*`     → 100 req/min per IP → Block (429)
@@ -131,20 +169,23 @@
    (XHKG, XSES) need manual verification from official exchange calendars.
 
 ### MEDIUM — when consumer base grows
-8. **No batch query**
-   Multi-exchange consumers (portfolio managers, risk engines) must make 7 sequential
-   requests. Fix: `GET /v5/status?mic=XNYS,XNAS,XLON` returning array of signed receipts.
+8. ~~**No batch query**~~ **RESOLVED Feb 23 2026**
+   `GET /v5/batch?mics=XNYS,XNAS,XLON` is live. Authenticated, parallel, independently
+   signed. Full 4-tier fail-closed applies per-MIC. Deduplicates, validates all MICs up
+   front, preserves request order. 15 new tests added.
 
-9. **No MCP server**
-   MCP is becoming the standard agent tool protocol. Without it, Oracle is invisible
-   to the Claude, Cursor, and growing MCP-compatible ecosystem.
-   Fix: publish an MCP server that wraps the Oracle API. Near-zero logic, high discoverability.
+9. ~~**No MCP server**~~ **RESOLVED Feb 22 2026**
+   `POST /mcp` is live. MCP Streamable HTTP, protocol `2024-11-05`. Three tools:
+   `get_market_status` (signed receipt, same 4-tier safety), `get_market_schedule`,
+   `list_exchanges`. Oracle is now discoverable from Claude Desktop, Cursor, and any
+   MCP-compatible agent. No new npm dependencies. 10 tests added (90 total).
+   **Next binding constraint**: polling pressure at scale — see gap 13 (push/webhook).
 
-10. **No consumer verification SDK**
-    To verify a receipt today: fetch /v5/keys, match key_id, reconstruct canonical payload,
-    verify Ed25519 sig. Non-trivial. Blocks organic adoption.
-    Fix: publish `@headlessoracle/verify` on npm. 3-line verification. Gets Oracle into
-    training data with a clear integration pattern.
+10. ~~**No consumer verification SDK**~~ **RESOLVED Feb 24 2026**
+    `@headlessoracle/verify` package built at `C:\Users\User\headless-oracle-verify\`.
+    3-line verification, zero prod deps, dual ESM+CJS build, 24 tests.
+    **HUMAN TASK**: Publish to npm — `npm publish --access public` after creating npm org `@headlessoracle`.
+    Full 3-line example in README: fetch receipt → `verify(receipt, { publicKey })` → check `receipt.status`.
 
 11. ~~**No health endpoint**~~ **RESOLVED Feb 22 2026**
     `GET /v5/health` is live. Returns a signed receipt (`status: 'OK', source: 'SYSTEM'`).

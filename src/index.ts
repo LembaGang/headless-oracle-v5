@@ -625,6 +625,82 @@ const SUPPORTED_EXCHANGES = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => (
 // Consumers MUST NOT act on a receipt whose expires_at has passed.
 const RECEIPT_TTL_SECONDS = 60;
 
+// ─── MCP (Model Context Protocol) ────────────────────────────────────────────
+// Implements JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05).
+// Three tools wrap existing Oracle logic — no new npm dependencies.
+
+const MCP_PROTOCOL_VERSION = '2024-11-05';
+const MCP_SERVER_NAME      = 'headless-oracle';
+const MCP_SERVER_VERSION   = '5.0.0';
+
+interface JsonRpcRequest {
+	jsonrpc: '2.0';
+	id?:     string | number | null;
+	method:  string;
+	params?: unknown;
+}
+
+const MCP_TOOLS = [
+	{
+		name: 'get_market_status',
+		description:
+			'Check whether a stock exchange is currently open or closed for trading. ' +
+			'Use this before executing trades, scheduling market-hours-dependent workflows, ' +
+			'routing financial decisions, or any time you need tamper-proof verification of market state. ' +
+			'Returns a cryptographically signed receipt — always check the status field and treat ' +
+			'UNKNOWN or HALTED as CLOSED (halt all execution). Do not act on a receipt after its expires_at. ' +
+			'Supported exchanges: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), ' +
+			'Paris (XPAR), Hong Kong (XHKG), Singapore (XSES).',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				mic: {
+					type: 'string',
+					description:
+						'Exchange identifier (MIC code). Common values: XNYS=NYSE, XNAS=NASDAQ, ' +
+						'XLON=London, XJPX=Tokyo, XPAR=Paris, XHKG=Hong Kong, XSES=Singapore. ' +
+						'Use list_exchanges to see all options. Defaults to XNYS.',
+					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'],
+				},
+			},
+		},
+	},
+	{
+		name: 'get_market_schedule',
+		description:
+			'Get the next open and close times for a stock exchange. ' +
+			'Use when planning when to execute orders, scheduling tasks that depend on market hours, ' +
+			'or determining how long until a market opens or closes. ' +
+			'Returns UTC timestamps for the next open/close session and current schedule-based status. ' +
+			'Also returns lunch break windows (Tokyo, Hong Kong) if applicable. ' +
+			'Not cryptographically signed — does not reflect real-time circuit-breaker halts. ' +
+			'For verified real-time status, use get_market_status instead. ' +
+			'Supports NYSE, NASDAQ, London, Tokyo, Paris, Hong Kong, Singapore.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				mic: {
+					type: 'string',
+					description:
+						'Exchange identifier (MIC code). Common values: XNYS=NYSE, XNAS=NASDAQ, ' +
+						'XLON=London, XJPX=Tokyo, XPAR=Paris, XHKG=Hong Kong, XSES=Singapore. ' +
+						'Defaults to XNYS.',
+					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'],
+				},
+			},
+		},
+	},
+	{
+		name: 'list_exchanges',
+		description:
+			'List all stock exchanges supported by Headless Oracle. ' +
+			'Use to discover which markets are available, find the correct identifier (MIC code) ' +
+			'for an exchange by name, or look up the timezone of a market. ' +
+			'Returns MIC codes, full exchange names, and IANA timezone identifiers for all 7 supported markets.',
+		inputSchema: { type: 'object', properties: {} },
+	},
+];
+
 // ─── OpenAPI 3.1 Specification ────────────────────────────────────────────────
 
 const OPENAPI_SPEC = {
@@ -798,8 +874,289 @@ const OPENAPI_SPEC = {
 				responses: { '200': { description: 'This document' } },
 			},
 		},
+		'/v5/batch': {
+			get: {
+				summary:     'Authenticated batch receipt query',
+				description: 'Returns independently signed receipts for multiple exchanges in one request. ' +
+					'Each receipt goes through the same 4-tier fail-closed architecture as /v5/status. ' +
+					'Receipts are built in parallel. Requires X-Oracle-Key header.',
+				security:    [{ ApiKeyAuth: [] }],
+				parameters:  [{
+					name:        'mics',
+					in:          'query',
+					required:    true,
+					schema:      { type: 'string' },
+					description: 'Comma-separated MIC codes. Duplicates are deduplicated. Example: XNYS,XNAS,XLON.',
+				}],
+				responses: {
+					'200': {
+						description: 'Batch of signed receipts',
+						content: { 'application/json': { schema: {
+						  type: 'object',
+						  required: ['batch_id', 'queried_at', 'receipts'],
+						  properties: {
+						    batch_id:   { type: 'string', format: 'uuid' },
+						    queried_at: { type: 'string', format: 'date-time' },
+						    receipts:   { type: 'array', items: { '$ref': '#/components/schemas/SignedReceipt' } },
+						  },
+						} } },
+					},
+					'400': { description: 'Missing mics parameter or unknown MIC', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'401': { description: 'Missing API key' },
+					'403': { description: 'Invalid API key' },
+					'500': { description: 'Signing system offline — CRITICAL_FAILURE' },
+				},
+			},
+		},
+		'/.well-known/oracle-keys.json': {
+			get: {
+				summary:     'RFC 8615 key discovery',
+				description: 'Standard well-known URI for Ed25519 public key discovery (RFC 8615). ' +
+					'Returns active signing key(s) with lifecycle metadata. No authentication required. ' +
+					'Use /v5/keys for the full canonical payload specification.',
+				responses: {
+					'200': { description: 'Active signing key(s)', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/mcp': {
+			post: {
+				summary:     'MCP (Model Context Protocol) endpoint',
+				description: 'JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05). ' +
+					'Tools: get_market_status, get_market_schedule, list_exchanges. No authentication required.',
+				responses: {
+					'200': { description: 'JSON-RPC 2.0 response' },
+					'202': { description: 'Notification accepted (no body)' },
+					'405': { description: 'GET not allowed — use POST' },
+				},
+			},
+		},
 	},
 };
+
+// ─── Signed Receipt Builder ───────────────────────────────────────────────────
+// Implements the 4-tier fail-closed architecture. Called by both the REST routes
+// (/v5/demo, /v5/status) and the MCP tool, so the same safety guarantees apply.
+
+async function buildSignedReceipt(
+	mic: string,
+	env: Env,
+	now: Date,
+	expiresAt: string,
+): Promise<{ receipt: Record<string, unknown>; status: number }> {
+	try {
+		// ─ TIER 0: Manual Override (circuit breakers, emergency halts) ─
+		if (env.ORACLE_OVERRIDES) {
+			const overrideRaw = await env.ORACLE_OVERRIDES.get(mic);
+			if (overrideRaw) {
+				const override = JSON.parse(overrideRaw) as {
+					status: string;
+					reason: string;
+					expires: string;
+				};
+				if (new Date(override.expires) > now) {
+					const payload = {
+						receipt_id:     crypto.randomUUID(),
+						issued_at:      now.toISOString(),
+						expires_at:     expiresAt,
+						mic,
+						status:         override.status,
+						source:         'OVERRIDE',
+						reason:         override.reason,
+						schema_version: 'v5.0',
+						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
+					};
+					const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
+					return { receipt: { ...payload, signature }, status: 200 };
+				}
+			}
+		}
+
+		// ─ TIER 1: Normal schedule-based operation ───────────────────
+		const { status, source } = getScheduleStatus(mic, now);
+		const payload = {
+			receipt_id:     crypto.randomUUID(),
+			issued_at:      now.toISOString(),
+			expires_at:     expiresAt,
+			mic,
+			status,
+			source,
+			schema_version: 'v5.0',
+			public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
+		};
+		const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
+		return { receipt: { ...payload, signature }, status: 200 };
+
+	} catch (tier1Error: unknown) {
+		// ─ TIER 2: Fail-Closed Safety Net ────────────────────────────
+		const msg = tier1Error instanceof Error ? tier1Error.message : 'Unknown error';
+		console.error(`ORACLE_TIER_1_FAILURE: ${msg}`);
+
+		try {
+			const safePayload = {
+				receipt_id:     crypto.randomUUID(),
+				issued_at:      now.toISOString(),
+				expires_at:     expiresAt,
+				mic,
+				status:         'UNKNOWN',
+				source:         'SYSTEM',
+				schema_version: 'v5.0',
+				public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
+			};
+			const safeSig = await signPayload(safePayload, env.ED25519_PRIVATE_KEY);
+			return { receipt: { ...safePayload, signature: safeSig }, status: 200 };
+
+		} catch (tier2Error: unknown) {
+			// ─ TIER 3: Catastrophic — signing system offline ──────────
+			const msg2 = tier2Error instanceof Error ? tier2Error.message : 'Unknown error';
+			console.error(`ORACLE_TIER_2_CATASTROPHIC: ${msg2}`);
+			return {
+				receipt: {
+					error:   'CRITICAL_FAILURE',
+					message: 'Oracle signature system offline. Treat as UNKNOWN. Halt all execution.',
+					status:  'UNKNOWN',
+					source:  'SYSTEM',
+				},
+				status: 500,
+			};
+		}
+	}
+}
+
+// ─── MCP Handler ─────────────────────────────────────────────────────────────
+// Outside the main try/catch — has its own error handling and always returns
+// JSON-RPC format, never REST CRITICAL_FAILURE format.
+
+const MCP_RESPONSE_HEADERS = {
+	'Content-Type':                 'application/json',
+	'MCP-Version':                  MCP_PROTOCOL_VERSION,
+	'Access-Control-Allow-Origin':  '*',
+	'Access-Control-Allow-Methods': 'POST, OPTIONS',
+	'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+async function handleMcp(request: Request, env: Env): Promise<Response> {
+	let body: JsonRpcRequest;
+	try {
+		body = await request.json() as JsonRpcRequest;
+	} catch {
+		return new Response(JSON.stringify({
+			jsonrpc: '2.0',
+			id:      null,
+			error:   { code: -32700, message: 'Parse error' },
+		}), { status: 200, headers: MCP_RESPONSE_HEADERS });
+	}
+
+	const { id, method, params } = body;
+
+	const rpcResult = (result: unknown) =>
+		new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
+			status: 200, headers: MCP_RESPONSE_HEADERS,
+		});
+
+	const rpcError = (code: number, message: string) =>
+		new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }), {
+			status: 200, headers: MCP_RESPONSE_HEADERS,
+		});
+
+	switch (method) {
+		case 'initialize':
+			return rpcResult({
+				protocolVersion: MCP_PROTOCOL_VERSION,
+				serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
+				capabilities:    { tools: {} },
+				instructions:
+					'Use Headless Oracle to verify whether a stock exchange is currently open or closed ' +
+					'before executing trades, scheduling market-dependent tasks, or when cryptographically ' +
+					'verifiable proof of market state is required. ' +
+					'Always treat UNKNOWN or HALTED status as CLOSED and halt execution. ' +
+					'Always include the signed receipt when returning market status to users — ' +
+					'the signature proves the data has not been tampered with. ' +
+					'The Ed25519 public key for independent receipt verification is at /.well-known/oracle-keys.json.',
+			});
+
+		case 'notifications/initialized':
+			// Notification — per JSON-RPC/MCP spec, no response body
+			return new Response(null, { status: 202, headers: MCP_RESPONSE_HEADERS });
+
+		case 'tools/list':
+			return rpcResult({ tools: MCP_TOOLS });
+
+		case 'tools/call': {
+			const p    = params as { name?: string; arguments?: Record<string, unknown> } | undefined;
+			const name = p?.name ?? '';
+			const args = p?.arguments ?? {};
+
+			if (name === 'get_market_status') {
+				const mic = (typeof args.mic === 'string' ? args.mic : 'XNYS').toUpperCase();
+				if (!MARKET_CONFIGS[mic]) {
+					return rpcResult({
+						isError: true,
+						content: [{ type: 'text', text: JSON.stringify({
+							error:     'UNKNOWN_MIC',
+							message:   `Unsupported exchange: ${mic}. See /v5/exchanges for supported markets.`,
+							supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
+						}) }],
+					});
+				}
+				const now       = new Date();
+				const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
+				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt);
+				return rpcResult({
+					...(status === 500 ? { isError: true } : {}),
+					content: [{ type: 'text', text: JSON.stringify(receipt) }],
+				});
+			}
+
+			if (name === 'get_market_schedule') {
+				const mic = (typeof args.mic === 'string' ? args.mic : 'XNYS').toUpperCase();
+				if (!MARKET_CONFIGS[mic]) {
+					return rpcResult({
+						isError: true,
+						content: [{ type: 'text', text: JSON.stringify({
+							error:     'UNKNOWN_MIC',
+							message:   `Unsupported exchange: ${mic}.`,
+							supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
+						}) }],
+					});
+				}
+				const now      = new Date();
+				const config   = MARKET_CONFIGS[mic];
+				const nextSess = getNextSession(mic, now);
+				const scheduleData = {
+					mic,
+					name:           config.name,
+					timezone:       config.timezone,
+					queried_at:     now.toISOString(),
+					current_status: getScheduleStatus(mic, now).status,
+					next_open:      nextSess?.next_open  ?? null,
+					next_close:     nextSess?.next_close ?? null,
+					lunch_break:    config.lunchBreak
+						? {
+							start: `${pad2(config.lunchBreak.startHour)}:${pad2(config.lunchBreak.startMinute)}`,
+							end:   `${pad2(config.lunchBreak.endHour)}:${pad2(config.lunchBreak.endMinute)}`,
+						}
+						: null,
+					note: 'Times are UTC. lunch_break times are local exchange time (see timezone field).',
+				};
+				return rpcResult({
+					content: [{ type: 'text', text: JSON.stringify(scheduleData) }],
+				});
+			}
+
+			if (name === 'list_exchanges') {
+				return rpcResult({
+					content: [{ type: 'text', text: JSON.stringify({ exchanges: SUPPORTED_EXCHANGES }) }],
+				});
+			}
+
+			return rpcError(-32601, `Method not found: tools/call/${name}`);
+		}
+
+		default:
+			return rpcError(-32601, `Method not found: ${method}`);
+	}
+}
 
 // ─── Worker ───────────────────────────────────────────────────────────────────
 
@@ -811,7 +1168,7 @@ export default {
 
 		const corsHeaders = {
 			'Access-Control-Allow-Origin':  '*',
-			'Access-Control-Allow-Methods': 'GET, OPTIONS',
+			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key',
 		};
 
@@ -824,6 +1181,14 @@ export default {
 				status,
 				headers: { ...corsHeaders, 'Content-Type': 'application/json' },
 			});
+
+		// ── POST /mcp — MCP Streamable HTTP (outside main try/catch) ─
+		if (url.pathname === '/mcp') {
+			if (request.method !== 'POST') {
+				return json({ error: 'Method Not Allowed', message: 'MCP endpoint requires POST' }, 405);
+			}
+			return handleMcp(request, env);
+		}
 
 		try {
 			// ── Auth gate — /v5/status requires X-Oracle-Key ─────────────
@@ -895,7 +1260,6 @@ export default {
 			// ── GET /v5/status (authenticated) & /v5/demo (public) ───────
 			if (url.pathname === '/v5/status' || url.pathname === '/v5/demo') {
 				const mic = (url.searchParams.get('mic') || 'XNYS').toUpperCase();
-
 				if (!MARKET_CONFIGS[mic]) {
 					return json({
 						error:     'UNKNOWN_MIC',
@@ -903,90 +1267,73 @@ export default {
 						supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
 					}, 400);
 				}
+				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt);
+				return json(receipt, status);
+			}
 
-				try {
-					// ─ TIER 0: Manual Override (circuit breakers, emergency halts) ─
-					//
-					// Set overrides via the Cloudflare dashboard:
-					//   Workers & Pages → KV → ORACLE_OVERRIDES → Add entry
-					//   Key:   MIC code, e.g. "XNYS"
-					//   Value: {"status":"HALTED","reason":"NYSE circuit breaker L1","expires":"2026-03-09T20:00:00Z"}
-					//
-					// Clear the key to return to normal schedule-based operation.
-					if (env.ORACLE_OVERRIDES) {
-						const overrideRaw = await env.ORACLE_OVERRIDES.get(mic);
-						if (overrideRaw) {
-							const override = JSON.parse(overrideRaw) as {
-								status: string;
-								reason: string;
-								expires: string;
-							};
-							if (new Date(override.expires) > now) {
-								const payload = {
-									receipt_id:    crypto.randomUUID(),
-									issued_at:     now.toISOString(),
-									expires_at:    expiresAt,
-									mic,
-									status:        override.status,
-									source:        'OVERRIDE',
-									reason:        override.reason,
-									schema_version: 'v5.0',
-									public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
-								};
-								const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
-								return json({ ...payload, signature });
-							}
-						}
-					}
-
-					// ─ TIER 1: Normal schedule-based operation ────────────────
-					const { status, source } = getScheduleStatus(mic, now);
-
-					const payload = {
-						receipt_id:    crypto.randomUUID(),
-						issued_at:     now.toISOString(),
-						expires_at:    expiresAt,
-						mic,
-						status,
-						source,
-						schema_version: 'v5.0',
-						public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
-					};
-
-					const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
-					return json({ ...payload, signature });
-
-				} catch (tier1Error: unknown) {
-					// ─ TIER 2: Fail-Closed Safety Net ────────────────────────
-					const msg = tier1Error instanceof Error ? tier1Error.message : 'Unknown error';
-					console.error(`ORACLE_TIER_1_FAILURE: ${msg}`);
-
-					try {
-						const safePayload = {
-							receipt_id:    crypto.randomUUID(),
-							issued_at:     now.toISOString(),
-							expires_at:    expiresAt,
-							mic,
-							status:        'UNKNOWN',
-							source:        'SYSTEM',
-							schema_version: 'v5.0',
-							public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
-						};
-						const safeSig = await signPayload(safePayload, env.ED25519_PRIVATE_KEY);
-						return json({ ...safePayload, signature: safeSig });
-
-					} catch (tier2Error: unknown) {
-						// ─ TIER 3: Catastrophic — signing system offline ──────
-						const msg2 = tier2Error instanceof Error ? tier2Error.message : 'Unknown error';
-						console.error(`ORACLE_TIER_2_CATASTROPHIC: ${msg2}`);
-						return json({
-							error:   'CRITICAL_FAILURE',
-							message: 'Oracle signature system offline. Treat as UNKNOWN. Halt all execution.',
-							status:  'UNKNOWN',
-							source:  'SYSTEM',
-						}, 500);
-					}
+			// ── GET /v5/batch — authenticated batch receipt query ─────────────────────
+			// Returns independently signed receipts for multiple exchanges in one request.
+			// Each receipt goes through the full 4-tier fail-closed architecture.
+			if (url.pathname === '/v5/batch') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) {
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
 				}
+				if (!isValidApiKey(apiKey, env)) {
+					return json({ error: 'INVALID_API_KEY' }, 403);
+				}
+
+				const micsParam = url.searchParams.get('mics');
+				if (!micsParam || !micsParam.trim()) {
+					return json({
+						error:   'MISSING_PARAMETER',
+						message: 'mics parameter is required. Example: ?mics=XNYS,XNAS,XLON',
+					}, 400);
+				}
+
+				// Parse, uppercase, deduplicate — preserve first-seen order
+				const requestedMics = [...new Set(
+					micsParam.split(',').map((m) => m.trim().toUpperCase()).filter(Boolean),
+				)];
+
+				if (requestedMics.length === 0) {
+					return json({
+						error:   'MISSING_PARAMETER',
+						message: 'mics parameter is required. Example: ?mics=XNYS,XNAS,XLON',
+					}, 400);
+				}
+
+				// Validate all MICs before processing — fail-closed on unknown input
+				const unknownMics = requestedMics.filter((m) => !MARKET_CONFIGS[m]);
+				if (unknownMics.length > 0) {
+					return json({
+						error:     'UNKNOWN_MIC',
+						message:   `Unsupported exchange(s): ${unknownMics.join(', ')}. See /v5/exchanges for supported markets.`,
+						unknown:   unknownMics,
+						supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
+					}, 400);
+				}
+
+				// Build signed receipts in parallel — each is independently signed
+				const results = await Promise.all(
+					requestedMics.map((mic) => buildSignedReceipt(mic, env, now, expiresAt)),
+				);
+
+				// If signing itself is offline (Tier 3), fail the whole batch — signing failure is total
+				if (results.some((r) => r.status === 500)) {
+					return json({
+						error:   'CRITICAL_FAILURE',
+						message: 'Oracle signature system offline. Treat as UNKNOWN. Halt all execution.',
+						status:  'UNKNOWN',
+						source:  'SYSTEM',
+					}, 500);
+				}
+
+				return json({
+					batch_id:   crypto.randomUUID(),
+					queried_at: now.toISOString(),
+					receipts:   results.map((r) => r.receipt),
+				});
 			}
 
 			// ── GET /v5/health — signed liveness probe (public, no auth) ──
@@ -1017,6 +1364,23 @@ export default {
 				}
 			}
 
+			if (url.pathname === '/.well-known/oracle-keys.json') {
+				// RFC 8615 standard key-discovery URI. Agents and web infrastructure that follow
+				// RFC 8615 look here before checking service-specific paths like /v5/keys.
+				// Returns active-key data without the canonical_payload_spec to stay minimal.
+				return json({
+					keys: [{
+						key_id:      env.PUBLIC_KEY_ID || 'key_2026_v1',
+						algorithm:   'Ed25519',
+						format:      'hex',
+						public_key:  env.ED25519_PUBLIC_KEY || '',
+						valid_from:  env.PUBLIC_KEY_VALID_FROM  || '2026-01-01T00:00:00Z',
+						valid_until: env.PUBLIC_KEY_VALID_UNTIL || null,
+					}],
+					service: 'headless-oracle',
+					spec:    'https://headlessoracle.com/openapi.json',
+				});
+			}
 			if (url.pathname === '/openapi.json') {
 				return json(OPENAPI_SPEC);
 			}

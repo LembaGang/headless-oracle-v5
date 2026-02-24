@@ -4,12 +4,12 @@
 - **Runtime**: Cloudflare Workers (TypeScript)
 - **Build/Deploy**: Wrangler (`wrangler.toml`)
 - **Crypto**: Ed25519 signing via `@noble/ed25519` + `@noble/hashes`
-- **Testing**: Vitest 80-test suite with `@cloudflare/vitest-pool-workers`
+- **Testing**: Vitest 112-test suite with `@cloudflare/vitest-pool-workers`
 - **KV**: Cloudflare KV (`ORACLE_OVERRIDES`) for manual circuit-breaker halts
 
 ## Project Structure
 - `src/index.ts` — Main worker (all routes, 7-exchange config, signing, fail-closed logic)
-- `test/index.spec.ts` — 80 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks, health endpoint
+- `test/index.spec.ts` — 90 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks, health endpoint, MCP tools
 - `vitest.config.mts` — Points to `wrangler.toml` (NOT wrangler.jsonc — that file is deleted)
 - `wrangler.toml` — Worker config + KV namespace binding (`ORACLE_OVERRIDES`)
 - `.dev.vars` — Local dev/test secrets (test-only keypair, NOT production keys)
@@ -33,8 +33,11 @@ DST is handled automatically via IANA timezone names in `Intl.DateTimeFormat`. N
 - `GET /v5/schedule?mic=<MIC>` — Next open/close times in UTC (no auth). Default MIC: XNYS.
 - `GET /v5/exchanges` — Directory of all 7 supported exchanges (no auth).
 - `GET /v5/keys` — Public key registry in hex format + canonical signing spec (no auth).
+- `GET /v5/batch?mics=<MIC,MIC,...>` — Authenticated batch: signed receipts for multiple MICs in one request. Requires `X-Oracle-Key`. Deduplicates, validates all MICs up front, runs in parallel.
 - `GET /v5/health` — Signed liveness probe (no auth). Distinguishes Oracle-down from market-UNKNOWN.
+- `GET /.well-known/oracle-keys.json` — RFC 8615 key discovery URI (no auth). Active signing key + lifecycle metadata.
 - `GET /openapi.json` — OpenAPI 3.1 machine-readable spec (no auth).
+- `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, protocol `2024-11-05`, no auth). Tools: `get_market_status`, `get_market_schedule`, `list_exchanges`.
 - All other paths → 404. Note: `/v5/status/*` paths hit auth guard first → 401.
 
 ## Architecture: Fail-Closed Safety Tiers

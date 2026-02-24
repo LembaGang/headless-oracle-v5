@@ -172,3 +172,6 @@ dist
 Master Key.txt
 *.secret
 *.credentials
+
+# MCP publisher CLI binary
+mcp-publisher.exe

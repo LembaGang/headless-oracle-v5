@@ -717,3 +717,413 @@ describe('GET /v5/health', () => {
 		expect(Object.prototype.hasOwnProperty.call(body, 'mic')).toBe(false);
 	});
 });
+
+// ─── POST /mcp — MCP Streamable HTTP ─────────────────────────────────────────
+
+async function postMcp(body: unknown): Promise<Response> {
+	return fetchWorker('/mcp', {
+		method:  'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body:    JSON.stringify(body),
+	});
+}
+
+async function postMcpJSON(body: unknown): Promise<Record<string, unknown>> {
+	const response = await postMcp(body);
+	return response.json() as Promise<Record<string, unknown>>;
+}
+
+describe('POST /mcp', () => {
+	it('initialize → 200 with protocolVersion, serverInfo, and capabilities.tools', async () => {
+		const response = await postMcp({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+		expect(response.status).toBe(200);
+		expect(response.headers.get('MCP-Version')).toBe('2024-11-05');
+
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('jsonrpc', '2.0');
+		const result = body.result as Record<string, unknown>;
+		expect(result).toHaveProperty('protocolVersion', '2024-11-05');
+		const serverInfo = result.serverInfo as Record<string, unknown>;
+		expect(serverInfo).toHaveProperty('name', 'headless-oracle');
+		const capabilities = result.capabilities as Record<string, unknown>;
+		expect(capabilities).toHaveProperty('tools');
+	});
+
+	it('notifications/initialized → 202 with empty body', async () => {
+		const response = await postMcp({ jsonrpc: '2.0', method: 'notifications/initialized' });
+		expect(response.status).toBe(202);
+		const text = await response.text();
+		expect(text).toBe('');
+	});
+
+	it('tools/list → 3 tools with names, descriptions, and inputSchema', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+		const result = body.result as Record<string, unknown>;
+		const tools = result.tools as Array<Record<string, unknown>>;
+		expect(tools).toHaveLength(3);
+
+		const names = tools.map((t) => t.name as string);
+		expect(names).toContain('get_market_status');
+		expect(names).toContain('get_market_schedule');
+		expect(names).toContain('list_exchanges');
+
+		for (const tool of tools) {
+			expect(typeof tool.description).toBe('string');
+			expect((tool.description as string).length).toBeGreaterThan(0);
+			expect(tool).toHaveProperty('inputSchema');
+		}
+	});
+
+	it('tools/call get_market_status XNYS → signed receipt with schema_version v5.0', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 3, method: 'tools/call',
+			params: { name: 'get_market_status', arguments: { mic: 'XNYS' } },
+		});
+		const result = body.result as Record<string, unknown>;
+		// MCP tool result, not a JSON-RPC error
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
+		expect(result).not.toHaveProperty('isError');
+
+		const content = result.content as Array<{ type: string; text: string }>;
+		expect(content).toHaveLength(1);
+		expect(content[0].type).toBe('text');
+
+		const receipt = JSON.parse(content[0].text) as Record<string, unknown>;
+		expect(receipt).toHaveProperty('mic', 'XNYS');
+		expect(VALID_STATUSES).toContain(receipt.status);
+		expect(receipt).toHaveProperty('schema_version', 'v5.0');
+		expect(receipt).toHaveProperty('signature');
+		expect((receipt.signature as string).length).toBe(128);
+	});
+
+	it('tools/call get_market_status with active KV HALTED override → HALTED, OVERRIDE, signed', async () => {
+		const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status: 'HALTED', reason: 'MCP circuit breaker test', expires,
+		}));
+
+		try {
+			const body = await postMcpJSON({
+				jsonrpc: '2.0', id: 4, method: 'tools/call',
+				params: { name: 'get_market_status', arguments: { mic: 'XNYS' } },
+			});
+			const result = body.result as Record<string, unknown>;
+			const content = result.content as Array<{ type: string; text: string }>;
+			const receipt = JSON.parse(content[0].text) as Record<string, unknown>;
+
+			expect(receipt).toHaveProperty('status', 'HALTED');
+			expect(receipt).toHaveProperty('source', 'OVERRIDE');
+			expect(receipt).toHaveProperty('signature');
+			expect((receipt.signature as string).length).toBe(128);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+		}
+	});
+
+	it('tools/call get_market_schedule XJPX → lunch_break with local times, no signature', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 5, method: 'tools/call',
+			params: { name: 'get_market_schedule', arguments: { mic: 'XJPX' } },
+		});
+		const result = body.result as Record<string, unknown>;
+		const content = result.content as Array<{ type: string; text: string }>;
+		const schedule = JSON.parse(content[0].text) as Record<string, unknown>;
+
+		expect(schedule).toHaveProperty('mic', 'XJPX');
+		expect(schedule).toHaveProperty('lunch_break');
+		const lb = schedule.lunch_break as Record<string, unknown>;
+		expect(lb).toHaveProperty('start', '11:30');
+		expect(lb).toHaveProperty('end', '12:30');
+		// Schedule endpoint is not signed
+		expect(Object.prototype.hasOwnProperty.call(schedule, 'signature')).toBe(false);
+	});
+
+	it('tools/call list_exchanges → 7 exchanges with all MIC codes', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 6, method: 'tools/call',
+			params: { name: 'list_exchanges', arguments: {} },
+		});
+		const result = body.result as Record<string, unknown>;
+		const content = result.content as Array<{ type: string; text: string }>;
+		const data = JSON.parse(content[0].text) as Record<string, unknown>;
+
+		const exchanges = data.exchanges as Array<Record<string, unknown>>;
+		expect(exchanges).toHaveLength(7);
+
+		const mics = exchanges.map((e) => e.mic as string);
+		for (const mic of ALL_MICS) {
+			expect(mics).toContain(mic);
+		}
+	});
+
+	it('tools/call get_market_status with unknown MIC → isError: true, UNKNOWN_MIC, no JSON-RPC error field', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 7, method: 'tools/call',
+			params: { name: 'get_market_status', arguments: { mic: 'FAKE' } },
+		});
+		// Must NOT be a JSON-RPC protocol error — the tool ran, it just found no data
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
+
+		const result = body.result as Record<string, unknown>;
+		expect(result).toHaveProperty('isError', true);
+
+		const content = result.content as Array<{ type: string; text: string }>;
+		const data = JSON.parse(content[0].text) as Record<string, unknown>;
+		expect(data).toHaveProperty('error', 'UNKNOWN_MIC');
+	});
+
+	it('unknown method prompts/list → JSON-RPC error code -32601', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 8, method: 'prompts/list' });
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(true);
+		const error = body.error as Record<string, unknown>;
+		expect(error).toHaveProperty('code', -32601);
+	});
+
+	it('GET /mcp → 405 Method Not Allowed', async () => {
+		const response = await fetchWorker('/mcp');
+		expect(response.status).toBe(405);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'Method Not Allowed');
+	});
+});
+
+// ─── GET /v5/batch ────────────────────────────────────────────────────────────
+
+describe('GET /v5/batch', () => {
+	it('returns 401 without API key', async () => {
+		const response = await fetchWorker('/v5/batch?mics=XNYS,XNAS');
+		expect(response.status).toBe(401);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
+	});
+
+	it('returns 403 with an invalid API key', async () => {
+		const response = await fetchWorker('/v5/batch?mics=XNYS', {
+			headers: { 'X-Oracle-Key': 'bad_key_xyz' },
+		});
+		expect(response.status).toBe(403);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
+	});
+
+	it('returns 400 when mics param is missing', async () => {
+		const response = await fetchWorker('/v5/batch', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'MISSING_PARAMETER');
+	});
+
+	it('returns 400 when mics param is an empty string', async () => {
+		const response = await fetchWorker('/v5/batch?mics=', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'MISSING_PARAMETER');
+	});
+
+	it('returns 400 for an unknown MIC in the batch', async () => {
+		const response = await fetchWorker('/v5/batch?mics=XNYS,ZZZZ', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
+		expect(body).toHaveProperty('unknown');
+		expect(body).toHaveProperty('supported');
+		const unknown = body.unknown as string[];
+		expect(unknown).toContain('ZZZZ');
+		expect(unknown).not.toContain('XNYS');
+	});
+
+	it('returns 400 when all MICs are unknown', async () => {
+		const response = await fetchWorker('/v5/batch?mics=AAAA,BBBB', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
+	});
+
+	it('returns 200 with 2 signed receipts for XNYS,XNAS', async () => {
+		const response = await fetchWorker('/v5/batch?mics=XNYS,XNAS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('batch_id');
+		expect(body).toHaveProperty('queried_at');
+		expect(body).toHaveProperty('receipts');
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		expect(receipts).toHaveLength(2);
+	});
+
+	it('each receipt in the batch is independently signed', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XNYS,XNAS,XLON', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		for (const receipt of receipts) {
+			expect(receipt).toHaveProperty('signature');
+			expect(typeof receipt.signature).toBe('string');
+			expect((receipt.signature as string).length).toBe(128);
+			expect(receipt).toHaveProperty('receipt_id');
+			expect(receipt).toHaveProperty('issued_at');
+			expect(receipt).toHaveProperty('expires_at');
+		}
+	});
+
+	it('each receipt has the correct mic field for its exchange', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XNYS,XLON,XJPX', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		const mics = receipts.map((r) => r.mic as string);
+		expect(mics).toContain('XNYS');
+		expect(mics).toContain('XLON');
+		expect(mics).toContain('XJPX');
+	});
+
+	it('receipt order matches request order', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XPAR,XHKG,XSES', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		expect(receipts[0].mic).toBe('XPAR');
+		expect(receipts[1].mic).toBe('XHKG');
+		expect(receipts[2].mic).toBe('XSES');
+	});
+
+	it('deduplicates repeated MICs — XNYS,XNYS returns one receipt', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XNYS,XNYS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		expect(receipts).toHaveLength(1);
+		expect(receipts[0].mic).toBe('XNYS');
+	});
+
+	it('all 7 MICs in one batch returns 7 receipts', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XNYS,XNAS,XLON,XJPX,XPAR,XHKG,XSES', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		expect(receipts).toHaveLength(7);
+		const mics = receipts.map((r) => r.mic as string);
+		for (const mic of ALL_MICS) {
+			expect(mics).toContain(mic);
+		}
+	});
+
+	it('normalises lowercase mics to uppercase', async () => {
+		const body = await fetchJSON('/v5/batch?mics=xnys,xnas', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		expect(receipts).toHaveLength(2);
+		expect(receipts[0].mic).toBe('XNYS');
+		expect(receipts[1].mic).toBe('XNAS');
+	});
+
+	it('batch_id is a valid UUID', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XNYS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(body.batch_id as string).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
+	});
+
+	it('queried_at is a valid ISO 8601 date close to now', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XNYS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const t = new Date(body.queried_at as string).getTime();
+		expect(t).not.toBeNaN();
+		expect(Math.abs(Date.now() - t)).toBeLessThan(5000);
+	});
+
+	it('receipts include schema_version v5.0', async () => {
+		const body = await fetchJSON('/v5/batch?mics=XNYS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		expect(receipts[0]).toHaveProperty('schema_version', 'v5.0');
+	});
+
+	it('KV HALTED override for one MIC is reflected in the batch; other MICs are schedule-based', async () => {
+		const expires = new Date(Date.now() + 3600_000).toISOString();
+		await env.ORACLE_OVERRIDES.put('XLON', JSON.stringify({
+			status: 'HALTED', reason: 'Batch circuit breaker test', expires,
+		}));
+		try {
+			const body = await fetchJSON('/v5/batch?mics=XNYS,XLON', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			});
+			const receipts = body.receipts as Array<Record<string, unknown>>;
+			const xnys = receipts.find((r) => r.mic === 'XNYS')!;
+			const xlon = receipts.find((r) => r.mic === 'XLON')!;
+			expect(xnys.source).toBe('SCHEDULE');
+			expect(xlon.status).toBe('HALTED');
+			expect(xlon.source).toBe('OVERRIDE');
+			// Both are still independently signed
+			expect((xnys.signature as string).length).toBe(128);
+			expect((xlon.signature as string).length).toBe(128);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XLON');
+		}
+	});
+});
+
+// ─── GET /.well-known/oracle-keys.json ───────────────────────────────────────
+
+describe('GET /.well-known/oracle-keys.json', () => {
+	it('returns 200 with keys array (no auth required)', async () => {
+		const response = await fetchWorker('/.well-known/oracle-keys.json');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('keys');
+		const keys = body.keys as Array<Record<string, unknown>>;
+		expect(keys.length).toBeGreaterThan(0);
+	});
+
+	it('key entry has Ed25519 algorithm, hex format, and non-empty public_key', async () => {
+		const body = await fetchJSON('/.well-known/oracle-keys.json');
+		const keys = body.keys as Array<Record<string, unknown>>;
+		const key = keys[0];
+		expect(key).toHaveProperty('algorithm', 'Ed25519');
+		expect(key).toHaveProperty('format', 'hex');
+		expect(typeof key.public_key).toBe('string');
+		expect((key.public_key as string).length).toBeGreaterThan(0);
+	});
+
+	it('key entry includes valid_from and valid_until lifecycle fields', async () => {
+		const body = await fetchJSON('/.well-known/oracle-keys.json');
+		const key = (body.keys as Array<Record<string, unknown>>)[0];
+		expect(key).toHaveProperty('valid_from');
+		expect(new Date(key.valid_from as string).getTime()).not.toBeNaN();
+		expect(Object.prototype.hasOwnProperty.call(key, 'valid_until')).toBe(true);
+	});
+
+	it('response includes service identifier and spec URL', async () => {
+		const body = await fetchJSON('/.well-known/oracle-keys.json');
+		expect(body).toHaveProperty('service', 'headless-oracle');
+		expect(body).toHaveProperty('spec');
+		expect(typeof body.spec).toBe('string');
+	});
+
+	it('public_key matches the key returned by /v5/keys', async () => {
+		const [wellKnown, keysEndpoint] = await Promise.all([
+			fetchJSON('/.well-known/oracle-keys.json'),
+			fetchJSON('/v5/keys'),
+		]);
+		const wkKey = (wellKnown.keys  as Array<Record<string, unknown>>)[0];
+		const v5Key = (keysEndpoint.keys as Array<Record<string, unknown>>)[0];
+		expect(wkKey.public_key).toBe(v5Key.public_key);
+		expect(wkKey.key_id).toBe(v5Key.key_id);
+	});
+});
