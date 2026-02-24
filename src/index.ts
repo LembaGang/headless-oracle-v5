@@ -1,5 +1,6 @@
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+import { createClient } from '@supabase/supabase-js';
 
 ed.hashes.sha512 = sha512;
 
@@ -13,7 +14,15 @@ export interface Env {
 	PUBLIC_KEY_ID: string;
 	PUBLIC_KEY_VALID_FROM?: string;
 	PUBLIC_KEY_VALID_UNTIL?: string; // ISO 8601 — set when a key rotation is scheduled
-	ORACLE_OVERRIDES: KVNamespace; // Cloudflare KV — manual circuit-breaker overrides
+	ORACLE_OVERRIDES: KVNamespace;   // Cloudflare KV — manual circuit-breaker overrides
+	ORACLE_API_KEYS:  KVNamespace;   // Cloudflare KV — paid key cache: sha256(key) → { plan, status }, TTL 300s
+	// Billing secrets — set via `wrangler secret put`
+	STRIPE_SECRET_KEY?:         string;
+	STRIPE_WEBHOOK_SECRET?:     string;
+	STRIPE_PRO_PRICE_ID?:       string;
+	SUPABASE_URL?:               string;
+	SUPABASE_SERVICE_ROLE_KEY?:  string;
+	RESEND_API_KEY?:             string;
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -28,6 +37,12 @@ function fromHex(hex: string): Uint8Array {
 		bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
 	}
 	return bytes;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+	const bytes = new TextEncoder().encode(input);
+	const hash  = await crypto.subtle.digest('SHA-256', bytes);
+	return toHex(new Uint8Array(hash));
 }
 
 // ─── Market Configuration ────────────────────────────────────────────────────
@@ -602,14 +617,101 @@ async function signPayload(payload: Record<string, string>, privKeyHex: string):
 }
 
 // ─── API Key Validation ───────────────────────────────────────────────────────
+// Hot path order:
+//   1. MASTER_API_KEY — allow immediately, no lookup
+//   2. BETA_API_KEYS  — allow immediately, no lookup
+//   3. KV cache hit   — { plan, status }; active→allow, suspended/cancelled→402
+//   4. KV miss        — lookup Supabase, warm KV, then check status
+//   5. Not found      — 403
 
-function isValidApiKey(key: string, env: Env): boolean {
-	if (key === env.MASTER_API_KEY) return true;
+type AuthResult = { allowed: true } | { allowed: false; status: 402 | 403; error: string };
+
+async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
+	// Step 1: master key — fastest possible path
+	if (key === env.MASTER_API_KEY) return { allowed: true };
+
+	// Step 2: beta keys — no lookup
 	if (env.BETA_API_KEYS) {
 		const betaKeys = env.BETA_API_KEYS.split(',').map((k) => k.trim());
-		if (betaKeys.includes(key)) return true;
+		if (betaKeys.includes(key)) return { allowed: true };
 	}
-	return false;
+
+	// Steps 3–5: paid key — hash once, use for KV and Supabase
+	const keyHash = await sha256Hex(key);
+
+	// Step 3: KV cache
+	if (env.ORACLE_API_KEYS) {
+		const cached = await env.ORACLE_API_KEYS.get(keyHash);
+		if (cached) {
+			const { status } = JSON.parse(cached) as { plan: string; status: string };
+			if (status === 'active') return { allowed: true };
+			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
+			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED' };
+		}
+	}
+
+	// Step 4: KV miss → Supabase lookup
+	if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+		const { data } = await supabase
+			.from('api_keys')
+			.select('plan, status')
+			.eq('key_hash', keyHash)
+			.single();
+
+		if (data) {
+			// Warm the KV cache for subsequent requests
+			if (env.ORACLE_API_KEYS) {
+				await env.ORACLE_API_KEYS.put(
+					keyHash,
+					JSON.stringify({ plan: data.plan, status: data.status }),
+					{ expirationTtl: 300 },
+				);
+			}
+			if (data.status === 'active') return { allowed: true };
+			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED' };
+		}
+	}
+
+	// Step 5: not found anywhere
+	return { allowed: false, status: 403, error: 'INVALID_API_KEY' };
+}
+
+// ─── Stripe Webhook Signature Verification ────────────────────────────────────
+// Stripe signs webhooks with HMAC-SHA256 using the webhook secret.
+// Header format: "t=<timestamp>,v1=<hex_signature>"
+// Signed payload: "<timestamp>.<raw_body>"
+// Reject events older than 5 minutes to prevent replay attacks.
+
+async function verifyStripeSignature(
+	rawBody: string,
+	sigHeader: string,
+	secret: string,
+): Promise<boolean> {
+	const parts: Record<string, string> = {};
+	for (const part of sigHeader.split(',')) {
+		const eqIdx = part.indexOf('=');
+		if (eqIdx !== -1) parts[part.slice(0, eqIdx)] = part.slice(eqIdx + 1);
+	}
+	const timestamp = parts['t'];
+	const v1        = parts['v1'];
+	if (!timestamp || !v1) return false;
+
+	// Replay attack protection: reject signatures older than 5 minutes
+	const ageSec = Date.now() / 1000 - parseInt(timestamp, 10);
+	if (ageSec > 300) return false;
+
+	const signedContent = `${timestamp}.${rawBody}`;
+	const key = await crypto.subtle.importKey(
+		'raw',
+		new TextEncoder().encode(secret),
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign'],
+	);
+	const sig      = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedContent));
+	const expected = toHex(new Uint8Array(sig));
+	return expected === v1;
 }
 
 // ─── Supported Exchange Directory ─────────────────────────────────────────────
@@ -931,6 +1033,48 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/checkout': {
+			post: {
+				summary:     'Create Stripe Checkout Session',
+				description: 'Creates a Stripe Checkout Session for the Pro plan and returns the hosted payment URL. No authentication required. Redirect the user to the returned url.',
+				responses: {
+					'200': {
+						description: 'Checkout session created',
+						content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', format: 'uri' } } } } },
+					},
+					'503': { description: 'Billing not configured' },
+					'502': { description: 'Stripe API error' },
+				},
+			},
+		},
+		'/webhooks/stripe': {
+			post: {
+				summary:     'Stripe webhook receiver',
+				description: 'Receives and processes Stripe events. Requires a valid Stripe-Signature header. Handles: checkout.session.completed (key generation + email), customer.subscription.updated, invoice.payment_failed, customer.subscription.deleted.',
+				responses: {
+					'200': { description: 'Event received and processed' },
+					'400': { description: 'Missing Stripe-Signature header' },
+					'401': { description: 'Invalid signature' },
+				},
+			},
+		},
+		'/v5/account': {
+			get: {
+				summary:     'Account info for the calling API key',
+				description: 'Returns plan, status, and key_prefix for the authenticated key. Use to verify subscription status.',
+				security:    [{ ApiKeyAuth: [] }],
+				responses: {
+					'200': {
+						description: 'Account info',
+						content: { 'application/json': { schema: { type: 'object', required: ['plan', 'status', 'key_prefix'], properties: { plan: { type: 'string', example: 'pro' }, status: { type: 'string', enum: ['active', 'suspended', 'cancelled'] }, key_prefix: { type: 'string', nullable: true, example: 'ok_live_a1b2c3' } } } } },
+					},
+					'401': { description: 'Missing API key' },
+					'402': { description: 'Payment required — subscription suspended or cancelled' },
+					'403': { description: 'Invalid API key' },
+					'404': { description: 'Account not found' },
+				},
+			},
+		},
 	},
 };
 
@@ -1197,8 +1341,9 @@ export default {
 				if (!apiKey) {
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
 				}
-				if (!isValidApiKey(apiKey, env)) {
-					return json({ error: 'INVALID_API_KEY' }, 403);
+				const auth = await checkApiKey(apiKey, env);
+				if (!auth.allowed) {
+					return json({ error: auth.error }, auth.status);
 				}
 			}
 
@@ -1279,8 +1424,9 @@ export default {
 				if (!apiKey) {
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
 				}
-				if (!isValidApiKey(apiKey, env)) {
-					return json({ error: 'INVALID_API_KEY' }, 403);
+				const batchAuth = await checkApiKey(apiKey, env);
+				if (!batchAuth.allowed) {
+					return json({ error: batchAuth.error }, batchAuth.status);
 				}
 
 				const micsParam = url.searchParams.get('mics');
@@ -1383,6 +1529,220 @@ export default {
 			}
 			if (url.pathname === '/openapi.json') {
 				return json(OPENAPI_SPEC);
+			}
+
+			// ── POST /v5/checkout — create Stripe Checkout Session ────────
+			// No auth required. Returns { url } to redirect the user to Stripe.
+			if (url.pathname === '/v5/checkout') {
+				if (request.method !== 'POST') {
+					return json({ error: 'Method Not Allowed', message: 'Use POST' }, 405);
+				}
+				if (!env.STRIPE_SECRET_KEY || !env.STRIPE_PRO_PRICE_ID) {
+					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
+				}
+				const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+					method: 'POST',
+					headers: {
+						'Authorization':  `Bearer ${env.STRIPE_SECRET_KEY}`,
+						'Content-Type':   'application/x-www-form-urlencoded',
+					},
+					body: new URLSearchParams({
+						'mode':                         'subscription',
+						'line_items[0][price]':         env.STRIPE_PRO_PRICE_ID,
+						'line_items[0][quantity]':      '1',
+						'success_url':                  'https://headlessoracle.com/success?session_id={CHECKOUT_SESSION_ID}',
+						'cancel_url':                   'https://headlessoracle.com/pricing',
+						'allow_promotion_codes':        'true',
+						'billing_address_collection':   'auto',
+					}).toString(),
+				});
+				const stripeBody = await stripeRes.json() as { url?: string; error?: { message: string } };
+				if (!stripeRes.ok || !stripeBody.url) {
+					console.error(`STRIPE_CHECKOUT_ERROR: ${stripeBody.error?.message ?? 'unknown'}`);
+					return json({ error: 'CHECKOUT_FAILED', message: 'Could not create checkout session' }, 502);
+				}
+				return json({ url: stripeBody.url });
+			}
+
+			// ── POST /webhooks/stripe — handle Stripe events ──────────────
+			// Verifies Stripe-Signature before processing any event.
+			// Returns 200 for all recognised events, 400/401 for bad requests.
+			if (url.pathname === '/webhooks/stripe') {
+				if (request.method !== 'POST') {
+					return json({ error: 'Method Not Allowed', message: 'Use POST' }, 405);
+				}
+				if (!env.STRIPE_WEBHOOK_SECRET) {
+					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Webhook not configured' }, 503);
+				}
+
+				const sigHeader = request.headers.get('Stripe-Signature');
+				if (!sigHeader) {
+					return json({ error: 'MISSING_SIGNATURE' }, 400);
+				}
+
+				// Must read raw body before any other processing — HMAC is over raw bytes
+				const rawBody = await request.text();
+				const valid   = await verifyStripeSignature(rawBody, sigHeader, env.STRIPE_WEBHOOK_SECRET);
+				if (!valid) {
+					return json({ error: 'INVALID_SIGNATURE' }, 401);
+				}
+
+				const event = JSON.parse(rawBody) as { type: string; data: { object: Record<string, unknown> } };
+
+				if (event.type === 'checkout.session.completed') {
+					const session = event.data.object;
+					const email   = (session['customer_details'] as { email?: string } | null)?.email
+						?? session['customer_email'] as string | null;
+
+					if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+						console.error('WEBHOOK_ERROR: Supabase not configured — key not stored');
+						return json({ received: true });
+					}
+
+					// Generate ok_live_ key — shown to the user exactly once via email
+					const rawKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+					const keyValue    = 'ok_live_' + toHex(rawKeyBytes);
+					const keyHash     = await sha256Hex(keyValue);
+					const keyPrefix   = keyValue.substring(0, 14); // 'ok_live_' + 6 chars
+
+					// Store in Supabase
+					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					const { error: dbError } = await supabase.from('api_keys').insert({
+						id:                    crypto.randomUUID(),
+						key_hash:              keyHash,
+						key_prefix:            keyPrefix,
+						plan:                  'pro',
+						status:                'active',
+						stripe_customer_id:    session['customer'] as string | null,
+						stripe_subscription_id: session['subscription'] as string | null,
+						email,
+						created_at:            new Date().toISOString(),
+					});
+					if (dbError) {
+						console.error(`WEBHOOK_DB_ERROR: ${dbError.message}`);
+						return json({ error: 'DB_ERROR' }, 500);
+					}
+
+					// Warm the KV cache immediately
+					if (env.ORACLE_API_KEYS) {
+						await env.ORACLE_API_KEYS.put(
+							keyHash,
+							JSON.stringify({ plan: 'pro', status: 'active' }),
+							{ expirationTtl: 300 },
+						);
+					}
+
+					// Send key via Resend (shown once — customer cannot recover it)
+					if (env.RESEND_API_KEY && email) {
+						const emailRes = await fetch('https://api.resend.com/emails', {
+							method:  'POST',
+							headers: {
+								'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+								'Content-Type':  'application/json',
+							},
+							body: JSON.stringify({
+								from:    'Headless Oracle <keys@headlessoracle.com>',
+								to:      [email],
+								subject: 'Your Headless Oracle API key',
+								html: `<p>Thank you for subscribing to Headless Oracle.</p>
+<p>Your API key (save this — it will not be shown again):</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
+<p>Use it in your requests as the <code>X-Oracle-Key</code> header against <code>https://api.headlessoracle.com/v5/status</code>.</p>
+<p>Check your account status anytime: <a href="https://api.headlessoracle.com/v5/account">GET /v5/account</a></p>
+<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
+							}),
+						});
+						if (!emailRes.ok) {
+							// Key is already stored — log the error but do not fail the webhook
+							console.error(`RESEND_ERROR: failed to send key email to ${email}`);
+						}
+					}
+
+					return json({ received: true });
+				}
+
+				if (event.type === 'customer.subscription.updated') {
+					const sub = event.data.object;
+					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+						await supabase.from('api_keys')
+							.update({ status: sub['status'] === 'active' ? 'active' : 'suspended' })
+							.eq('stripe_subscription_id', sub['id'] as string);
+					}
+					return json({ received: true });
+				}
+
+				if (event.type === 'invoice.payment_failed') {
+					const invoice = event.data.object;
+					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+						await supabase.from('api_keys')
+							.update({ status: 'suspended' })
+							.eq('stripe_subscription_id', invoice['subscription'] as string);
+					}
+					return json({ received: true });
+				}
+
+				if (event.type === 'customer.subscription.deleted') {
+					const sub = event.data.object;
+					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+						await supabase.from('api_keys')
+							.update({ status: 'cancelled' })
+							.eq('stripe_subscription_id', sub['id'] as string);
+					}
+					return json({ received: true });
+				}
+
+				// Unrecognised event — acknowledge without processing
+				return json({ received: true });
+			}
+
+			// ── GET /v5/account — account info for the calling key ────────
+			// Requires X-Oracle-Key. Returns { plan, status, key_prefix }.
+			if (url.pathname === '/v5/account') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) {
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				}
+				const accountAuth = await checkApiKey(apiKey, env);
+				if (!accountAuth.allowed) {
+					return json({ error: accountAuth.error }, accountAuth.status);
+				}
+
+				// Internal keys (master / beta) are not Supabase records
+				const isMaster = apiKey === env.MASTER_API_KEY;
+				const isBeta   = env.BETA_API_KEYS
+					? env.BETA_API_KEYS.split(',').map((k) => k.trim()).includes(apiKey)
+					: false;
+				if (isMaster || isBeta) {
+					return json({ plan: 'internal', status: 'active', key_prefix: null });
+				}
+
+				// Paid key — KV should be warm from checkApiKey call above
+				const keyHash = await sha256Hex(apiKey);
+				if (env.ORACLE_API_KEYS) {
+					const cached = await env.ORACLE_API_KEYS.get(keyHash);
+					if (cached) {
+						const data = JSON.parse(cached) as { plan: string; status: string };
+						return json({ plan: data.plan, status: data.status, key_prefix: apiKey.substring(0, 14) });
+					}
+				}
+
+				// KV miss (unlikely after checkApiKey) — try Supabase for key_prefix
+				if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					const { data } = await supabase
+						.from('api_keys')
+						.select('plan, status, key_prefix')
+						.eq('key_hash', keyHash)
+						.single();
+					if (data) {
+						return json({ plan: data.plan, status: data.status, key_prefix: data.key_prefix });
+					}
+				}
+
+				return json({ error: 'ACCOUNT_NOT_FOUND' }, 404);
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────

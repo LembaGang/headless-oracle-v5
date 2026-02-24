@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.LembaGang/headless-oracle",
+  "description": "Ed25519-signed market open/close receipts for NYSE, NASDAQ, LSE, JPX, Euronext, HKEX, and SGX.",
+  "repository": {
+    "url": "https://github.com/LembaGang/headless-oracle-v5",
+    "source": "github"
+  },
+  "version": "5.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://headlessoracle.mmsebenzi-oracle.workers.dev/mcp"
+    }
+  ]
+}

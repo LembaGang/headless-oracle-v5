@@ -2,10 +2,31 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Production-ready. Pre-launch marketing phase. Critical agent-adoption gaps being closed.
-**Test suite**: 112/112 tests passing (worker) + 24/24 tests passing (SDK)
-**Last significant work**: Feb 24 2026 — gap 10 resolved (@headlessoracle/verify SDK):
-  - `@headlessoracle/verify` npm package built at `C:\Users\User\headless-oracle-verify\`
+**Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
+**Test suite**: 135/135 tests passing (worker) + 24/24 tests passing (SDK)
+**Last significant work**: Feb 24 2026 — Stripe billing fully implemented:
+  - `POST /v5/checkout` — creates Stripe Checkout Session (subscription mode), returns `{ url }`, no auth
+  - `POST /webhooks/stripe` — verifies Stripe-Signature (HMAC-SHA256, 5-min replay protection), handles 4 events:
+    - `checkout.session.completed` → generate `ok_live_<32 random hex bytes>` key, hash + store in Supabase `api_keys` table, warm `ORACLE_API_KEYS` KV cache (TTL 300s), send key via Resend (shown once)
+    - `customer.subscription.updated` → update `status` in Supabase (active→active, else suspended)
+    - `invoice.payment_failed` → set `status = 'suspended'` in Supabase
+    - `customer.subscription.deleted` → set `status = 'cancelled'` in Supabase
+  - `GET /v5/account` — requires `X-Oracle-Key`, returns `{ plan, status, key_prefix }`
+  - `isValidApiKey` (sync) replaced by `checkApiKey` (async, 5-step hot path):
+    1. MASTER_API_KEY → allow (no lookup)
+    2. BETA_API_KEYS → allow (no lookup)
+    3. sha256(key) in `ORACLE_API_KEYS` KV → check status (active→allow, suspended/cancelled→402)
+    4. KV miss → Supabase lookup → warm KV → check status
+    5. Not found → 403 INVALID_API_KEY
+  - New status code: 402 PAYMENT_REQUIRED for suspended/cancelled (distinguishable from 403 by agents)
+  - New KV namespace: `ORACLE_API_KEYS` (id: real ID needed before deploy)
+  - New secrets needed: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRO_PRICE_ID`, `RESEND_API_KEY`
+    (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` already in .dev.vars)
+  - All 112 existing tests pass unchanged; 23 new billing tests added (135 total)
+  - OpenAPI spec updated with 3 new paths
+  - ADR-019 to be added to 10_decisions.md
+**Previous significant work**: Feb 24 2026 — gap 10 fully resolved (@headlessoracle/verify SDK published):
+  - `@headlessoracle/verify` live at npmjs.com/package/@headlessoracle/verify
   - Zero production dependencies — uses Web Crypto API (crypto.subtle)
   - Single `verify(receipt, options?)` function: fields check → TTL check → Ed25519 verification
   - Handles all receipt types: SCHEDULE, OVERRIDE (with reason), HEALTH (no mic/schema_version)
@@ -16,7 +37,7 @@
   - Dual ESM + CJS build via tsup; TypeScript declarations included
   - 24/24 tests passing; tests sign with noble/ed25519, verify with Web Crypto — true round-trip integration test
   - ADR-018 added to 10_decisions.md
-  - **Publish step (human task)**: `npm publish --access public` from `C:\Users\User\headless-oracle-verify\` after setting up npm org `@headlessoracle`
+  - GitHub: github.com/LembaGang/headless-oracle-verify
 **Previous significant work**: Feb 23 2026 — gap 8 resolved (/v5/batch) + /.well-known/oracle-keys.json added:
   - `GET /v5/batch?mics=XNYS,XNAS,XLON` live: authenticated, parallel, independently signed receipts
   - Full 4-tier fail-closed applies per-MIC; Tier 3 failure fails the whole batch
@@ -59,11 +80,33 @@
 **Next session trigger**: User completes human tasks → HN launch March 10.
 
 ## Immediate Next Engineering Tasks (when user returns)
-1. **Publish @headlessoracle/verify to npm** (human task)
-   - Create npm org: `@headlessoracle` at npmjs.com
-   - From `C:\Users\User\headless-oracle-verify\`: `npm publish --access public`
-   - Then add the npm badge and install snippet to headlessoracle.com/docs
-   - The README's 3-line example is the copy-paste integration pattern for agents
+1. **Before deploy: Supabase schema** — create the `api_keys` table (human task):
+   ```sql
+   create table api_keys (
+     id                       uuid primary key,
+     key_hash                 text unique not null,
+     key_prefix               text not null,
+     plan                     text not null default 'pro',
+     status                   text not null default 'active',
+     stripe_customer_id       text,
+     stripe_subscription_id   text,
+     email                    text,
+     created_at               timestamptz not null,
+     last_used_at             timestamptz
+   );
+   create index on api_keys (key_hash);
+   create index on api_keys (stripe_subscription_id);
+   ```
+2. **Before deploy: Cloudflare KV** — create `ORACLE_API_KEYS` namespace in Cloudflare Dashboard, replace placeholder ID `00000000000000000000000000000001` in `wrangler.toml` with the real namespace ID, then redeploy.
+3. **Before deploy: set secrets** via `wrangler secret put`:
+   - `STRIPE_SECRET_KEY`  (live secret key from Stripe Dashboard)
+   - `STRIPE_WEBHOOK_SECRET` (from Stripe Dashboard → Webhooks → endpoint secret)
+   - `STRIPE_PRO_PRICE_ID` (from Stripe Dashboard → Products)
+   - `SUPABASE_URL` (already in .dev.vars — add production value)
+   - `SUPABASE_SERVICE_ROLE_KEY` (already in .dev.vars — add production value)
+   - `RESEND_API_KEY` (from Resend Dashboard)
+4. **Before deploy: register Stripe webhook** — point `POST https://api.headlessoracle.com/webhooks/stripe` at the worker, select events: `checkout.session.completed`, `customer.subscription.updated`, `invoice.payment_failed`, `customer.subscription.deleted`
+5. **Stripe billing** — DONE ✓
 
 2. **Add rate limiting in Cloudflare Dashboard** — must be done before HN launch (March 10)
    - Dashboard: Workers & Pages → headless-oracle-v5 → Settings → Rate Limiting

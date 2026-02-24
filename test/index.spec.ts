@@ -1127,3 +1127,387 @@ describe('GET /.well-known/oracle-keys.json', () => {
 		expect(wkKey.key_id).toBe(v5Key.key_id);
 	});
 });
+
+// ─── Billing: Auth hot path — paid keys via KV ───────────────────────────────
+
+// Shared helper: compute sha256(string) in the test Workers runtime
+async function sha256Hex(input: string): Promise<string> {
+	const bytes = new TextEncoder().encode(input);
+	const hash  = await crypto.subtle.digest('SHA-256', bytes);
+	return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Shared helper: build a valid Stripe-Signature header for a given raw body + secret
+async function makeStripeSignature(rawBody: string, secret: string): Promise<string> {
+	const timestamp = Math.floor(Date.now() / 1000).toString();
+	const signedContent = `${timestamp}.${rawBody}`;
+	const keyMaterial = await crypto.subtle.importKey(
+		'raw',
+		new TextEncoder().encode(secret),
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign'],
+	);
+	const sig    = await crypto.subtle.sign('HMAC', keyMaterial, new TextEncoder().encode(signedContent));
+	const sigHex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+	return `t=${timestamp},v1=${sigHex}`;
+}
+
+describe('Auth hot path — paid keys via KV', () => {
+	const PAID_KEY_ACTIVE    = 'ok_live_' + 'a'.repeat(64);
+	const PAID_KEY_SUSPENDED = 'ok_live_' + 'b'.repeat(64);
+	const PAID_KEY_CANCELLED = 'ok_live_' + 'c'.repeat(64);
+	const PAID_KEY_UNKNOWN   = 'ok_live_' + 'd'.repeat(64);
+
+	it('active ok_live_ key in KV → 200 on /v5/status', async () => {
+		const hash = await sha256Hex(PAID_KEY_ACTIVE);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'pro', status: 'active' }));
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': PAID_KEY_ACTIVE },
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('mic', 'XNYS');
+			expect(body).toHaveProperty('signature');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+		}
+	});
+
+	it('suspended ok_live_ key in KV → 402 with PAYMENT_REQUIRED', async () => {
+		const hash = await sha256Hex(PAID_KEY_SUSPENDED);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'pro', status: 'suspended' }));
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': PAID_KEY_SUSPENDED },
+			});
+			expect(response.status).toBe(402);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'PAYMENT_REQUIRED');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+		}
+	});
+
+	it('cancelled ok_live_ key in KV → 402', async () => {
+		const hash = await sha256Hex(PAID_KEY_CANCELLED);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'pro', status: 'cancelled' }));
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': PAID_KEY_CANCELLED },
+			});
+			expect(response.status).toBe(402);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+		}
+	});
+
+	it('ok_live_ key not found in KV or Supabase → 403', async () => {
+		// PAID_KEY_UNKNOWN has no KV entry and no Supabase record
+		const response = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': PAID_KEY_UNKNOWN },
+		});
+		expect(response.status).toBe(403);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
+	});
+
+	it('active paid key also grants access to /v5/batch', async () => {
+		const hash = await sha256Hex(PAID_KEY_ACTIVE);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'pro', status: 'active' }));
+		try {
+			const response = await fetchWorker('/v5/batch?mics=XNYS', {
+				headers: { 'X-Oracle-Key': PAID_KEY_ACTIVE },
+			});
+			expect(response.status).toBe(200);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+		}
+	});
+
+	it('MASTER_API_KEY still works unchanged (step 1 short-circuit)', async () => {
+		const response = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(response.status).toBe(200);
+	});
+
+	it('beta key still works unchanged (step 2 short-circuit)', async () => {
+		const response = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		});
+		expect(response.status).toBe(200);
+	});
+});
+
+// ─── Billing: GET /v5/account ─────────────────────────────────────────────────
+
+describe('GET /v5/account', () => {
+	const ACCOUNT_KEY = 'ok_live_' + 'e'.repeat(64);
+
+	it('returns 401 without API key', async () => {
+		const response = await fetchWorker('/v5/account');
+		expect(response.status).toBe(401);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
+	});
+
+	it('returns 403 with invalid key', async () => {
+		const response = await fetchWorker('/v5/account', {
+			headers: { 'X-Oracle-Key': 'totally_invalid_key_xyz' },
+		});
+		expect(response.status).toBe(403);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
+	});
+
+	it('MASTER_API_KEY → { plan: "internal", status: "active", key_prefix: null }', async () => {
+		const body = await fetchJSON('/v5/account', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(body).toHaveProperty('plan', 'internal');
+		expect(body).toHaveProperty('status', 'active');
+		expect(body).toHaveProperty('key_prefix', null);
+	});
+
+	it('beta key → { plan: "internal", status: "active", key_prefix: null }', async () => {
+		const body = await fetchJSON('/v5/account', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_2' },
+		});
+		expect(body).toHaveProperty('plan', 'internal');
+		expect(body).toHaveProperty('status', 'active');
+		expect(body).toHaveProperty('key_prefix', null);
+	});
+
+	it('active paid key → { plan, status, key_prefix } from KV', async () => {
+		const hash = await sha256Hex(ACCOUNT_KEY);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'pro', status: 'active' }));
+		try {
+			const body = await fetchJSON('/v5/account', {
+				headers: { 'X-Oracle-Key': ACCOUNT_KEY },
+			});
+			expect(body).toHaveProperty('plan', 'pro');
+			expect(body).toHaveProperty('status', 'active');
+			// key_prefix is first 14 chars of the key value
+			expect(body).toHaveProperty('key_prefix', ACCOUNT_KEY.substring(0, 14));
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+		}
+	});
+
+	it('suspended paid key → 402 from /v5/account', async () => {
+		const hash = await sha256Hex(ACCOUNT_KEY);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'pro', status: 'suspended' }));
+		try {
+			const response = await fetchWorker('/v5/account', {
+				headers: { 'X-Oracle-Key': ACCOUNT_KEY },
+			});
+			expect(response.status).toBe(402);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+		}
+	});
+});
+
+// ─── Billing: POST /v5/checkout ──────────────────────────────────────────────
+
+describe('POST /v5/checkout', () => {
+	it('GET /v5/checkout → 405 Method Not Allowed', async () => {
+		const response = await fetchWorker('/v5/checkout');
+		expect(response.status).toBe(405);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'Method Not Allowed');
+	});
+
+	it('POST /v5/checkout → 200 with Stripe url when Stripe responds OK', async () => {
+		const mockCheckoutUrl = 'https://checkout.stripe.com/pay/cs_test_mock_session';
+
+		const originalFetch = globalThis.fetch;
+		// Replace global fetch only for Stripe API calls
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.stripe.com')) {
+				return new Response(JSON.stringify({ url: mockCheckoutUrl, id: 'cs_test_mock' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/v5/checkout', { method: 'POST' });
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('url', mockCheckoutUrl);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('POST /v5/checkout → 502 when Stripe returns an error', async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.stripe.com')) {
+				return new Response(JSON.stringify({ error: { message: 'Invalid API key' } }), {
+					status: 401,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/v5/checkout', { method: 'POST' });
+			expect(response.status).toBe(502);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'CHECKOUT_FAILED');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+});
+
+// ─── Billing: POST /webhooks/stripe ──────────────────────────────────────────
+
+describe('POST /webhooks/stripe', () => {
+	const WEBHOOK_SECRET = 'whsec_test_placeholder_for_local_tests'; // matches .dev.vars
+
+	it('GET /webhooks/stripe → 405 Method Not Allowed', async () => {
+		const response = await fetchWorker('/webhooks/stripe');
+		expect(response.status).toBe(405);
+	});
+
+	it('POST /webhooks/stripe without Stripe-Signature → 400', async () => {
+		const response = await fetchWorker('/webhooks/stripe', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ type: 'checkout.session.completed', data: { object: {} } }),
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'MISSING_SIGNATURE');
+	});
+
+	it('POST /webhooks/stripe with invalid Stripe-Signature → 401', async () => {
+		const response = await fetchWorker('/webhooks/stripe', {
+			method:  'POST',
+			headers: {
+				'Content-Type':    'application/json',
+				'Stripe-Signature': 't=9999999999,v1=invalidsignaturehex',
+			},
+			body: JSON.stringify({ type: 'test.event', data: { object: {} } }),
+		});
+		expect(response.status).toBe(401);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_SIGNATURE');
+	});
+
+	it('POST /webhooks/stripe with valid signature + unrecognised event → 200 { received: true }', async () => {
+		const rawBody = JSON.stringify({ type: 'account.updated', data: { object: {} } });
+		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+
+		const response = await fetchWorker('/webhooks/stripe', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+			body:    rawBody,
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('received', true);
+	});
+
+	it('POST /webhooks/stripe with valid signature + subscription.updated → 200', async () => {
+		const rawBody = JSON.stringify({
+			type: 'customer.subscription.updated',
+			data: { object: { id: 'sub_test_123', status: 'active' } },
+		});
+		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+
+		// Supabase call will be a real network request to the configured URL.
+		// We mock it to avoid database side-effects in tests.
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/stripe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('POST /webhooks/stripe with valid signature + invoice.payment_failed → 200', async () => {
+		const rawBody = JSON.stringify({
+			type: 'invoice.payment_failed',
+			data: { object: { subscription: 'sub_test_456' } },
+		});
+		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/stripe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('POST /webhooks/stripe with valid signature + subscription.deleted → 200', async () => {
+		const rawBody = JSON.stringify({
+			type: 'customer.subscription.deleted',
+			data: { object: { id: 'sub_test_789' } },
+		});
+		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/stripe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+});

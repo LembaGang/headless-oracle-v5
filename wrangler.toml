@@ -20,6 +20,15 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 binding = "ORACLE_OVERRIDES"
 id = "1c741530d611473687d2fad61f5b2e9c"
 
+# ─── KV Namespace: Paid API Key Cache ────────────────────────────────────────
+# 5-minute cache in front of Supabase for paid key auth.
+# Key: sha256(raw_api_key_value) — Value: { "plan": "pro", "status": "active" }
+# To create: Cloudflare Dashboard → Workers & Pages → KV → Create namespace
+# Name it: ORACLE_API_KEYS — then paste the namespace ID below and redeploy.
+[[kv_namespaces]]
+binding = "ORACLE_API_KEYS"
+id = "00000000000000000000000000000001"
+
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 # Rate limiting for public routes is configured in the Cloudflare Dashboard,
 # NOT in this file. See operator runbook for setup instructions.
