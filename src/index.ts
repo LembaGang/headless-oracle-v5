@@ -17,9 +17,9 @@ export interface Env {
 	ORACLE_OVERRIDES: KVNamespace;   // Cloudflare KV — manual circuit-breaker overrides
 	ORACLE_API_KEYS:  KVNamespace;   // Cloudflare KV — paid key cache: sha256(key) → { plan, status }, TTL 300s
 	// Billing secrets — set via `wrangler secret put`
-	STRIPE_SECRET_KEY?:         string;
-	STRIPE_WEBHOOK_SECRET?:     string;
-	STRIPE_PRO_PRICE_ID?:       string;
+	PADDLE_API_KEY?:            string;
+	PADDLE_WEBHOOK_SECRET?:     string;
+	PADDLE_PRICE_ID?:           string;
 	SUPABASE_URL?:               string;
 	SUPABASE_SERVICE_ROLE_KEY?:  string;
 	RESEND_API_KEY?:             string;
@@ -677,31 +677,31 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	return { allowed: false, status: 403, error: 'INVALID_API_KEY' };
 }
 
-// ─── Stripe Webhook Signature Verification ────────────────────────────────────
-// Stripe signs webhooks with HMAC-SHA256 using the webhook secret.
-// Header format: "t=<timestamp>,v1=<hex_signature>"
-// Signed payload: "<timestamp>.<raw_body>"
+// ─── Paddle Webhook Signature Verification ────────────────────────────────────
+// Paddle signs webhooks with HMAC-SHA256 using the webhook secret.
+// Header format: "ts=<timestamp>;h1=<hex_signature>"
+// Signed payload: "<timestamp>:<raw_body>"
 // Reject events older than 5 minutes to prevent replay attacks.
 
-async function verifyStripeSignature(
+async function verifyPaddleSignature(
 	rawBody: string,
 	sigHeader: string,
 	secret: string,
 ): Promise<boolean> {
 	const parts: Record<string, string> = {};
-	for (const part of sigHeader.split(',')) {
+	for (const part of sigHeader.split(';')) {
 		const eqIdx = part.indexOf('=');
 		if (eqIdx !== -1) parts[part.slice(0, eqIdx)] = part.slice(eqIdx + 1);
 	}
-	const timestamp = parts['t'];
-	const v1        = parts['v1'];
-	if (!timestamp || !v1) return false;
+	const timestamp = parts['ts'];
+	const h1        = parts['h1'];
+	if (!timestamp || !h1) return false;
 
 	// Replay attack protection: reject signatures older than 5 minutes
 	const ageSec = Date.now() / 1000 - parseInt(timestamp, 10);
 	if (ageSec > 300) return false;
 
-	const signedContent = `${timestamp}.${rawBody}`;
+	const signedContent = `${timestamp}:${rawBody}`;
 	const key = await crypto.subtle.importKey(
 		'raw',
 		new TextEncoder().encode(secret),
@@ -711,7 +711,7 @@ async function verifyStripeSignature(
 	);
 	const sig      = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedContent));
 	const expected = toHex(new Uint8Array(sig));
-	return expected === v1;
+	return expected === h1;
 }
 
 // ─── Supported Exchange Directory ─────────────────────────────────────────────
@@ -1035,25 +1035,25 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/checkout': {
 			post: {
-				summary:     'Create Stripe Checkout Session',
-				description: 'Creates a Stripe Checkout Session for the Pro plan and returns the hosted payment URL. No authentication required. Redirect the user to the returned url.',
+				summary:     'Create Paddle Checkout Transaction',
+				description: 'Creates a Paddle transaction for the Pro plan and returns the hosted payment URL. No authentication required. Redirect the user to the returned url.',
 				responses: {
 					'200': {
-						description: 'Checkout session created',
+						description: 'Checkout transaction created',
 						content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', format: 'uri' } } } } },
 					},
 					'503': { description: 'Billing not configured' },
-					'502': { description: 'Stripe API error' },
+					'502': { description: 'Paddle API error' },
 				},
 			},
 		},
-		'/webhooks/stripe': {
+		'/webhooks/paddle': {
 			post: {
-				summary:     'Stripe webhook receiver',
-				description: 'Receives and processes Stripe events. Requires a valid Stripe-Signature header. Handles: checkout.session.completed (key generation + email), customer.subscription.updated, invoice.payment_failed, customer.subscription.deleted.',
+				summary:     'Paddle webhook receiver',
+				description: 'Receives and processes Paddle events. Requires a valid Paddle-Signature header. Handles: transaction.completed (key generation + email), subscription.updated, subscription.past_due, subscription.canceled.',
 				responses: {
 					'200': { description: 'Event received and processed' },
-					'400': { description: 'Missing Stripe-Signature header' },
+					'400': { description: 'Missing Paddle-Signature header' },
 					'401': { description: 'Invalid signature' },
 				},
 			},
@@ -1531,72 +1531,88 @@ export default {
 				return json(OPENAPI_SPEC);
 			}
 
-			// ── POST /v5/checkout — create Stripe Checkout Session ────────
-			// No auth required. Returns { url } to redirect the user to Stripe.
+			// ── POST /v5/checkout — create Paddle checkout transaction ───
+			// No auth required. Returns { url } to redirect the user to Paddle.
 			if (url.pathname === '/v5/checkout') {
 				if (request.method !== 'POST') {
 					return json({ error: 'Method Not Allowed', message: 'Use POST' }, 405);
 				}
-				if (!env.STRIPE_SECRET_KEY || !env.STRIPE_PRO_PRICE_ID) {
+				if (!env.PADDLE_API_KEY || !env.PADDLE_PRICE_ID) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
 				}
-				const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+				const paddleRes = await fetch('https://api.paddle.com/transactions', {
 					method: 'POST',
 					headers: {
-						'Authorization':  `Bearer ${env.STRIPE_SECRET_KEY}`,
-						'Content-Type':   'application/x-www-form-urlencoded',
+						'Authorization': `Bearer ${env.PADDLE_API_KEY}`,
+						'Content-Type':  'application/json',
 					},
-					body: new URLSearchParams({
-						'mode':                         'subscription',
-						'line_items[0][price]':         env.STRIPE_PRO_PRICE_ID,
-						'line_items[0][quantity]':      '1',
-						'success_url':                  'https://headlessoracle.com/success?session_id={CHECKOUT_SESSION_ID}',
-						'cancel_url':                   'https://headlessoracle.com/pricing',
-						'allow_promotion_codes':        'true',
-						'billing_address_collection':   'auto',
-					}).toString(),
+					body: JSON.stringify({
+						items: [{ price_id: env.PADDLE_PRICE_ID, quantity: 1 }],
+					}),
 				});
-				const stripeBody = await stripeRes.json() as { url?: string; error?: { message: string } };
-				if (!stripeRes.ok || !stripeBody.url) {
-					console.error(`STRIPE_CHECKOUT_ERROR: ${stripeBody.error?.message ?? 'unknown'}`);
+				const paddleBody = await paddleRes.json() as { data?: { checkout?: { url?: string } }; error?: { detail: string } };
+				const checkoutUrl = paddleBody.data?.checkout?.url;
+				if (!paddleRes.ok || !checkoutUrl) {
+					console.error(`PADDLE_CHECKOUT_ERROR: ${paddleBody.error?.detail ?? 'unknown'}`);
 					return json({ error: 'CHECKOUT_FAILED', message: 'Could not create checkout session' }, 502);
 				}
-				return json({ url: stripeBody.url });
+				return json({ url: checkoutUrl });
 			}
 
-			// ── POST /webhooks/stripe — handle Stripe events ──────────────
-			// Verifies Stripe-Signature before processing any event.
+			// ── POST /webhooks/paddle — handle Paddle events ─────────────
+			// Verifies Paddle-Signature before processing any event.
 			// Returns 200 for all recognised events, 400/401 for bad requests.
-			if (url.pathname === '/webhooks/stripe') {
+			if (url.pathname === '/webhooks/paddle') {
 				if (request.method !== 'POST') {
 					return json({ error: 'Method Not Allowed', message: 'Use POST' }, 405);
 				}
-				if (!env.STRIPE_WEBHOOK_SECRET) {
+				if (!env.PADDLE_WEBHOOK_SECRET) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Webhook not configured' }, 503);
 				}
 
-				const sigHeader = request.headers.get('Stripe-Signature');
+				const sigHeader = request.headers.get('Paddle-Signature');
 				if (!sigHeader) {
 					return json({ error: 'MISSING_SIGNATURE' }, 400);
 				}
 
 				// Must read raw body before any other processing — HMAC is over raw bytes
 				const rawBody = await request.text();
-				const valid   = await verifyStripeSignature(rawBody, sigHeader, env.STRIPE_WEBHOOK_SECRET);
+				const valid   = await verifyPaddleSignature(rawBody, sigHeader, env.PADDLE_WEBHOOK_SECRET);
 				if (!valid) {
 					return json({ error: 'INVALID_SIGNATURE' }, 401);
 				}
 
-				const event = JSON.parse(rawBody) as { type: string; data: { object: Record<string, unknown> } };
+				const event = JSON.parse(rawBody) as { event_type: string; data: Record<string, unknown> };
 
-				if (event.type === 'checkout.session.completed') {
-					const session = event.data.object;
-					const email   = (session['customer_details'] as { email?: string } | null)?.email
-						?? session['customer_email'] as string | null;
+				if (event.event_type === 'transaction.completed') {
+					const txn = event.data;
+
+					// Guard: skip non-subscription transactions (e.g. one-time payments)
+					if (!txn['subscription_id']) return json({ received: true });
 
 					if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
 						console.error('WEBHOOK_ERROR: Supabase not configured — key not stored');
 						return json({ received: true });
+					}
+
+					// Idempotency guard: skip renewals (subscription_id already has a row)
+					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					const { data: existing } = await supabase
+						.from('api_keys').select('id').eq('stripe_subscription_id', txn['subscription_id'] as string).single();
+					if (existing) return json({ received: true });
+
+					// Fetch email from Paddle customer API (not included in transaction payload)
+					let email: string | null = null;
+					if (env.PADDLE_API_KEY && txn['customer_id']) {
+						const custRes = await fetch(`https://api.paddle.com/customers/${txn['customer_id'] as string}`, {
+							headers: { 'Authorization': `Bearer ${env.PADDLE_API_KEY}` },
+						});
+						if (custRes.ok) {
+							const custBody = await custRes.json() as { data?: { email?: string } };
+							email = custBody.data?.email ?? null;
+						} else {
+							console.error(`PADDLE_CUSTOMER_FETCH_ERROR: ${txn['customer_id'] as string}`);
+						}
 					}
 
 					// Generate ok_live_ key — shown to the user exactly once via email
@@ -1605,16 +1621,15 @@ export default {
 					const keyHash     = await sha256Hex(keyValue);
 					const keyPrefix   = keyValue.substring(0, 14); // 'ok_live_' + 6 chars
 
-					// Store in Supabase
-					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					// Store in Supabase (stripe_customer_id / stripe_subscription_id store Paddle IDs)
 					const { error: dbError } = await supabase.from('api_keys').insert({
 						id:                    crypto.randomUUID(),
 						key_hash:              keyHash,
 						key_prefix:            keyPrefix,
 						plan:                  'pro',
 						status:                'active',
-						stripe_customer_id:    session['customer'] as string | null,
-						stripe_subscription_id: session['subscription'] as string | null,
+						stripe_customer_id:    txn['customer_id'] as string | null,
+						stripe_subscription_id: txn['subscription_id'] as string | null,
 						email,
 						created_at:            new Date().toISOString(),
 					});
@@ -1661,8 +1676,8 @@ export default {
 					return json({ received: true });
 				}
 
-				if (event.type === 'customer.subscription.updated') {
-					const sub = event.data.object;
+				if (event.event_type === 'subscription.updated') {
+					const sub = event.data;
 					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 						await supabase.from('api_keys')
@@ -1672,19 +1687,19 @@ export default {
 					return json({ received: true });
 				}
 
-				if (event.type === 'invoice.payment_failed') {
-					const invoice = event.data.object;
+				if (event.event_type === 'subscription.past_due') {
+					const sub = event.data;
 					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 						await supabase.from('api_keys')
 							.update({ status: 'suspended' })
-							.eq('stripe_subscription_id', invoice['subscription'] as string);
+							.eq('stripe_subscription_id', sub['id'] as string);
 					}
 					return json({ received: true });
 				}
 
-				if (event.type === 'customer.subscription.deleted') {
-					const sub = event.data.object;
+				if (event.event_type === 'subscription.canceled') {
+					const sub = event.data;
 					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 						await supabase.from('api_keys')

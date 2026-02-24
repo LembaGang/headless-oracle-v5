@@ -1137,10 +1137,10 @@ async function sha256Hex(input: string): Promise<string> {
 	return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Shared helper: build a valid Stripe-Signature header for a given raw body + secret
-async function makeStripeSignature(rawBody: string, secret: string): Promise<string> {
+// Shared helper: build a valid Paddle-Signature header for a given raw body + secret
+async function makePaddleSignature(rawBody: string, secret: string): Promise<string> {
 	const timestamp = Math.floor(Date.now() / 1000).toString();
-	const signedContent = `${timestamp}.${rawBody}`;
+	const signedContent = `${timestamp}:${rawBody}`;            // colon separator
 	const keyMaterial = await crypto.subtle.importKey(
 		'raw',
 		new TextEncoder().encode(secret),
@@ -1150,7 +1150,7 @@ async function makeStripeSignature(rawBody: string, secret: string): Promise<str
 	);
 	const sig    = await crypto.subtle.sign('HMAC', keyMaterial, new TextEncoder().encode(signedContent));
 	const sigHex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
-	return `t=${timestamp},v1=${sigHex}`;
+	return `ts=${timestamp};h1=${sigHex}`;                      // semicolon separator, ts/h1 keys
 }
 
 describe('Auth hot path — paid keys via KV', () => {
@@ -1320,15 +1320,15 @@ describe('POST /v5/checkout', () => {
 		expect(body).toHaveProperty('error', 'Method Not Allowed');
 	});
 
-	it('POST /v5/checkout → 200 with Stripe url when Stripe responds OK', async () => {
-		const mockCheckoutUrl = 'https://checkout.stripe.com/pay/cs_test_mock_session';
+	it('POST /v5/checkout → 200 with Paddle url when Paddle responds OK', async () => {
+		const mockCheckoutUrl = 'https://buy.paddle.com/checkout/cs_test_mock_txn';
 
 		const originalFetch = globalThis.fetch;
-		// Replace global fetch only for Stripe API calls
+		// Replace global fetch only for Paddle API calls
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
-			if (urlStr.includes('api.stripe.com')) {
-				return new Response(JSON.stringify({ url: mockCheckoutUrl, id: 'cs_test_mock' }), {
+			if (urlStr.includes('api.paddle.com')) {
+				return new Response(JSON.stringify({ data: { checkout: { url: mockCheckoutUrl } } }), {
 					status: 200,
 					headers: { 'Content-Type': 'application/json' },
 				});
@@ -1346,12 +1346,12 @@ describe('POST /v5/checkout', () => {
 		}
 	});
 
-	it('POST /v5/checkout → 502 when Stripe returns an error', async () => {
+	it('POST /v5/checkout → 502 when Paddle returns an error', async () => {
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
-			if (urlStr.includes('api.stripe.com')) {
-				return new Response(JSON.stringify({ error: { message: 'Invalid API key' } }), {
+			if (urlStr.includes('api.paddle.com')) {
+				return new Response(JSON.stringify({ error: { detail: 'Invalid API key' } }), {
 					status: 401,
 					headers: { 'Content-Type': 'application/json' },
 				});
@@ -1370,48 +1370,48 @@ describe('POST /v5/checkout', () => {
 	});
 });
 
-// ─── Billing: POST /webhooks/stripe ──────────────────────────────────────────
+// ─── Billing: POST /webhooks/paddle ──────────────────────────────────────────
 
-describe('POST /webhooks/stripe', () => {
-	const WEBHOOK_SECRET = 'whsec_test_placeholder_for_local_tests'; // matches .dev.vars
+describe('POST /webhooks/paddle', () => {
+	const WEBHOOK_SECRET = 'pdl_ntfset_test_placeholder_for_local_tests'; // matches .dev.vars
 
-	it('GET /webhooks/stripe → 405 Method Not Allowed', async () => {
-		const response = await fetchWorker('/webhooks/stripe');
+	it('GET /webhooks/paddle → 405 Method Not Allowed', async () => {
+		const response = await fetchWorker('/webhooks/paddle');
 		expect(response.status).toBe(405);
 	});
 
-	it('POST /webhooks/stripe without Stripe-Signature → 400', async () => {
-		const response = await fetchWorker('/webhooks/stripe', {
+	it('POST /webhooks/paddle without Paddle-Signature → 400', async () => {
+		const response = await fetchWorker('/webhooks/paddle', {
 			method:  'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body:    JSON.stringify({ type: 'checkout.session.completed', data: { object: {} } }),
+			body:    JSON.stringify({ event_type: 'transaction.completed', data: {} }),
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'MISSING_SIGNATURE');
 	});
 
-	it('POST /webhooks/stripe with invalid Stripe-Signature → 401', async () => {
-		const response = await fetchWorker('/webhooks/stripe', {
+	it('POST /webhooks/paddle with invalid Paddle-Signature → 401', async () => {
+		const response = await fetchWorker('/webhooks/paddle', {
 			method:  'POST',
 			headers: {
-				'Content-Type':    'application/json',
-				'Stripe-Signature': 't=9999999999,v1=invalidsignaturehex',
+				'Content-Type':     'application/json',
+				'Paddle-Signature': 'ts=9999999999;h1=invalidsignaturehex',
 			},
-			body: JSON.stringify({ type: 'test.event', data: { object: {} } }),
+			body: JSON.stringify({ event_type: 'test.event', data: {} }),
 		});
 		expect(response.status).toBe(401);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'INVALID_SIGNATURE');
 	});
 
-	it('POST /webhooks/stripe with valid signature + unrecognised event → 200 { received: true }', async () => {
-		const rawBody = JSON.stringify({ type: 'account.updated', data: { object: {} } });
-		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+	it('POST /webhooks/paddle with valid signature + unrecognised event → 200 { received: true }', async () => {
+		const rawBody = JSON.stringify({ event_type: 'account.updated', data: {} });
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
-		const response = await fetchWorker('/webhooks/stripe', {
+		const response = await fetchWorker('/webhooks/paddle', {
 			method:  'POST',
-			headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+			headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
 			body:    rawBody,
 		});
 		expect(response.status).toBe(200);
@@ -1419,28 +1419,48 @@ describe('POST /webhooks/stripe', () => {
 		expect(body).toHaveProperty('received', true);
 	});
 
-	it('POST /webhooks/stripe with valid signature + subscription.updated → 200', async () => {
+	it('POST /webhooks/paddle with valid signature + transaction.completed (no subscription_id) → 200 (skipped)', async () => {
+		// Non-subscription transactions must be silently skipped
 		const rawBody = JSON.stringify({
-			type: 'customer.subscription.updated',
-			data: { object: { id: 'sub_test_123', status: 'active' } },
+			event_type: 'transaction.completed',
+			data: { id: 'txn_test_oneoff', customer_id: 'ctm_test_001', subscription_id: null },
 		});
-		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
-		// Supabase call will be a real network request to the configured URL.
-		// We mock it to avoid database side-effects in tests.
+		const response = await fetchWorker('/webhooks/paddle', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+			body:    rawBody,
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('received', true);
+	});
+
+	it('POST /webhooks/paddle with valid signature + transaction.completed (renewal idempotency) → 200 (skipped)', async () => {
+		// A second transaction.completed for the same subscription_id must not generate a new key
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: { id: 'txn_test_renewal', customer_id: 'ctm_test_renewal', subscription_id: 'sub_test_existing' },
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
 			if (urlStr.includes('supabase.co')) {
-				return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				// Simulate: subscription already has a row → return existing record
+				return new Response(JSON.stringify({ data: { id: 'existing_row_uuid' }, error: null }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
 			}
 			return originalFetch(input, init);
 		};
 
 		try {
-			const response = await fetchWorker('/webhooks/stripe', {
+			const response = await fetchWorker('/webhooks/paddle', {
 				method:  'POST',
-				headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
 				body:    rawBody,
 			});
 			expect(response.status).toBe(200);
@@ -1451,13 +1471,14 @@ describe('POST /webhooks/stripe', () => {
 		}
 	});
 
-	it('POST /webhooks/stripe with valid signature + invoice.payment_failed → 200', async () => {
+	it('POST /webhooks/paddle with valid signature + subscription.updated → 200', async () => {
 		const rawBody = JSON.stringify({
-			type: 'invoice.payment_failed',
-			data: { object: { subscription: 'sub_test_456' } },
+			event_type: 'subscription.updated',
+			data: { id: 'sub_test_123', status: 'active' },
 		});
-		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
+		// Mock Supabase to avoid database side-effects in tests
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
@@ -1468,9 +1489,9 @@ describe('POST /webhooks/stripe', () => {
 		};
 
 		try {
-			const response = await fetchWorker('/webhooks/stripe', {
+			const response = await fetchWorker('/webhooks/paddle', {
 				method:  'POST',
-				headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
 				body:    rawBody,
 			});
 			expect(response.status).toBe(200);
@@ -1481,12 +1502,12 @@ describe('POST /webhooks/stripe', () => {
 		}
 	});
 
-	it('POST /webhooks/stripe with valid signature + subscription.deleted → 200', async () => {
+	it('POST /webhooks/paddle with valid signature + subscription.past_due → 200', async () => {
 		const rawBody = JSON.stringify({
-			type: 'customer.subscription.deleted',
-			data: { object: { id: 'sub_test_789' } },
+			event_type: 'subscription.past_due',
+			data: { id: 'sub_test_456' },
 		});
-		const sig = await makeStripeSignature(rawBody, WEBHOOK_SECRET);
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -1498,9 +1519,39 @@ describe('POST /webhooks/stripe', () => {
 		};
 
 		try {
-			const response = await fetchWorker('/webhooks/stripe', {
+			const response = await fetchWorker('/webhooks/paddle', {
 				method:  'POST',
-				headers: { 'Content-Type': 'application/json', 'Stripe-Signature': sig },
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('POST /webhooks/paddle with valid signature + subscription.canceled → 200', async () => {
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.canceled',
+			data: { id: 'sub_test_789' },
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
 				body:    rawBody,
 			});
 			expect(response.status).toBe(200);

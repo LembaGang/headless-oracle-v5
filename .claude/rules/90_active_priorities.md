@@ -4,27 +4,22 @@
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
 **Test suite**: 135/135 tests passing (worker) + 24/24 tests passing (SDK)
-**Last significant work**: Feb 24 2026 — Stripe billing fully implemented:
-  - `POST /v5/checkout` — creates Stripe Checkout Session (subscription mode), returns `{ url }`, no auth
-  - `POST /webhooks/stripe` — verifies Stripe-Signature (HMAC-SHA256, 5-min replay protection), handles 4 events:
-    - `checkout.session.completed` → generate `ok_live_<32 random hex bytes>` key, hash + store in Supabase `api_keys` table, warm `ORACLE_API_KEYS` KV cache (TTL 300s), send key via Resend (shown once)
-    - `customer.subscription.updated` → update `status` in Supabase (active→active, else suspended)
-    - `invoice.payment_failed` → set `status = 'suspended'` in Supabase
-    - `customer.subscription.deleted` → set `status = 'cancelled'` in Supabase
+**Last significant work**: Feb 24 2026 — Paddle billing (Stripe → Paddle swap):
+  - `POST /v5/checkout` — creates Paddle transaction (`POST https://api.paddle.com/transactions`), returns `{ url }`, no auth
+  - `POST /webhooks/paddle` — verifies `Paddle-Signature` header (format: `ts=<ts>;h1=<hex>`, signed content: `<ts>:<body>`, HMAC-SHA256, 5-min replay protection), handles 4 events:
+    - `transaction.completed` → idempotency guard (skip if `stripe_subscription_id` already exists in Supabase) + skip if no `subscription_id` (one-time payment guard) → generate `ok_live_<32 random hex bytes>` key, fetch email via Paddle customer API, hash + store in Supabase `api_keys` table, warm `ORACLE_API_KEYS` KV cache (TTL 300s), send key via Resend (shown once)
+    - `subscription.updated` → update `status` in Supabase (active→active, else suspended)
+    - `subscription.past_due` → set `status = 'suspended'` in Supabase
+    - `subscription.canceled` → set `status = 'cancelled'` in Supabase
   - `GET /v5/account` — requires `X-Oracle-Key`, returns `{ plan, status, key_prefix }`
-  - `isValidApiKey` (sync) replaced by `checkApiKey` (async, 5-step hot path):
-    1. MASTER_API_KEY → allow (no lookup)
-    2. BETA_API_KEYS → allow (no lookup)
-    3. sha256(key) in `ORACLE_API_KEYS` KV → check status (active→allow, suspended/cancelled→402)
-    4. KV miss → Supabase lookup → warm KV → check status
-    5. Not found → 403 INVALID_API_KEY
+  - `checkApiKey` (async, 5-step hot path) — unchanged
   - New status code: 402 PAYMENT_REQUIRED for suspended/cancelled (distinguishable from 403 by agents)
   - New KV namespace: `ORACLE_API_KEYS` (id: real ID needed before deploy)
-  - New secrets needed: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRO_PRICE_ID`, `RESEND_API_KEY`
+  - Secrets needed: `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID`, `RESEND_API_KEY`
     (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` already in .dev.vars)
-  - All 112 existing tests pass unchanged; 23 new billing tests added (135 total)
-  - OpenAPI spec updated with 3 new paths
-  - ADR-019 to be added to 10_decisions.md
+  - All 112 existing tests pass unchanged; 25 new billing tests added (137 total — 2 more than Stripe version for idempotency + non-subscription guards)
+  - OpenAPI spec updated: `/webhooks/stripe` → `/webhooks/paddle`, event names updated
+  - ADR-019 updated in 10_decisions.md
 **Previous significant work**: Feb 24 2026 — gap 10 fully resolved (@headlessoracle/verify SDK published):
   - `@headlessoracle/verify` live at npmjs.com/package/@headlessoracle/verify
   - Zero production dependencies — uses Web Crypto API (crypto.subtle)
@@ -99,14 +94,14 @@
    ```
 2. **Before deploy: Cloudflare KV** — create `ORACLE_API_KEYS` namespace in Cloudflare Dashboard, replace placeholder ID `00000000000000000000000000000001` in `wrangler.toml` with the real namespace ID, then redeploy.
 3. **Before deploy: set secrets** via `wrangler secret put`:
-   - `STRIPE_SECRET_KEY`  (live secret key from Stripe Dashboard)
-   - `STRIPE_WEBHOOK_SECRET` (from Stripe Dashboard → Webhooks → endpoint secret)
-   - `STRIPE_PRO_PRICE_ID` (from Stripe Dashboard → Products)
+   - `PADDLE_API_KEY` (live API key from Paddle Dashboard → Developer → Authentication)
+   - `PADDLE_WEBHOOK_SECRET` (from Paddle Dashboard → Notifications → endpoint secret)
+   - `PADDLE_PRICE_ID` (from Paddle Dashboard → Catalog → Prices, format: `pri_*`)
    - `SUPABASE_URL` (already in .dev.vars — add production value)
    - `SUPABASE_SERVICE_ROLE_KEY` (already in .dev.vars — add production value)
    - `RESEND_API_KEY` (from Resend Dashboard)
-4. **Before deploy: register Stripe webhook** — point `POST https://api.headlessoracle.com/webhooks/stripe` at the worker, select events: `checkout.session.completed`, `customer.subscription.updated`, `invoice.payment_failed`, `customer.subscription.deleted`
-5. **Stripe billing** — DONE ✓
+4. **Before deploy: register Paddle webhook** — point `POST https://api.headlessoracle.com/webhooks/paddle` at the worker, select events: `transaction.completed`, `subscription.updated`, `subscription.past_due`, `subscription.canceled`
+5. **Paddle billing** — DONE ✓
 
 2. **Add rate limiting in Cloudflare Dashboard** — must be done before HN launch (March 10)
    - Dashboard: Workers & Pages → headless-oracle-v5 → Settings → Rate Limiting
