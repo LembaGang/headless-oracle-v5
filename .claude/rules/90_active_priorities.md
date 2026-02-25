@@ -4,12 +4,16 @@
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
 **Test suite**: 141/141 tests passing (worker) + 24/24 tests passing (SDK)
-**Last significant work**: Feb 25 2026 — discoverability polish (robots.txt, llms.txt, MCP descriptions):
-  - `GET /robots.txt` — live; permits AI crawlers to all public endpoints (`/llms.txt`, `/openapi.json`, `/.well-known/`, `/v5/demo`, `/v5/schedule`, `/v5/exchanges`, `/v5/keys`, `/v5/health`)
-  - `GET /llms.txt` — live; machine-readable summary for LLMs (llmstxt.org convention); structured endpoint docs, fail-closed mandate, MCP tool list
-  - MCP tool descriptions tightened: crisper imperative language, MANDATORY safety annotations, consistent MIC listing
-  - 4 new tests added (141 total)
-  - `public/robots.txt` and `public/llms.txt` remain as reference copies (content is inlined in worker constants `ROBOTS_TXT`, `LLMS_TXT`)
+**Last significant work**: Feb 25 2026 — full website audit + LLMS_TXT expansion + deploy:
+  - **LLMS_TXT**: Added `## Code Examples` (Python PyNaCl, JS Web Crypto, fail-closed bot pattern, key fetching), `## Known Schedule Risk Events` (DST table 2026), and full docs for /v5/batch, /v5/keys, /v5/health, /v5/account, POST /v5/checkout — every public route now covered
+  - **docs.html**: Added `#mcp` section (MCP setup for Claude Desktop, 3 tools documented), `/v5/batch` docs, `#billing` section (/v5/account, /v5/checkout, error codes 401/402/403), sidebar updated with new anchors
+  - **index.html**: Added MCP server mention with link to docs.html#mcp and llms.txt
+  - **Website audit**: terms.html ✅ #fail-closed + #no-liability, privacy.html ✅ consistent, verify.html ✅ correct key, ed25519-public-key.txt ✅ correct key (03dc...), no stale terms_hash or wrong fingerprint in live codebase
+  - **llms.txt synced**: headless-oracle-v5/public/, headless-oracle-web/llms.txt, headless-oracle-web/public/llms.txt all match LLMS_TXT constant
+  - **Deployed**: Worker (headless-oracle-v5) + Pages (headless-oracle-web) both live
+  - 141/141 tests passing
+  - `GET /robots.txt` — live; permits AI crawlers to all public endpoints
+  - `GET /llms.txt` — live; full structured coverage for LLM crawlers
 **Previous significant work**: Feb 24 2026 — Paddle billing (Stripe → Paddle swap):
   - `POST /v5/checkout` — creates Paddle transaction (`POST https://api.paddle.com/transactions`), returns `{ url }`, no auth
   - `POST /webhooks/paddle` — verifies `Paddle-Signature` header (format: `ts=<ts>;h1=<hex>`, signed content: `<ts>:<body>`, HMAC-SHA256, 5-min replay protection), handles 4 events:
