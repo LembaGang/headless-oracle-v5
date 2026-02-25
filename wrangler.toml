@@ -2,6 +2,16 @@ name = "headless-oracle-v5"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
+routes = [
+  { pattern = "headlessoracle.com/v5/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/mcp", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/webhooks/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/.well-known/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/openapi.json", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/robots.txt", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/llms.txt", zone_name = "headlessoracle.com" },
+]
+
 [vars]
 PUBLIC_KEY_ID = "key_2026_v1"
 CURRENT_TERMS_VERSION = "v5.0-2026"
