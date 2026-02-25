@@ -799,6 +799,52 @@ Interactive demo endpoint. No API key required. Test the API and see a live sign
 
 - [Try the demo](https://headlessoracle.com/v5/demo)
 
+### GET /v5/batch — Batch Status Check (Signed)
+
+Returns signed status receipts for multiple exchanges in one authenticated request.
+
+- Required header: \`X-Oracle-Key\` (your API key)
+- Required parameter: \`mics\` (comma-separated MIC codes, e.g. \`XNYS,XNAS,XLON\`)
+- All MICs validated up front — invalid MIC returns 400 for the entire request
+- Each receipt is independently signed and verifiable in isolation
+- Tier 3 signing failure fails the whole batch (never partial results from a broken signing key)
+
+### GET /v5/keys — Public Key Registry
+
+Returns the current Ed25519 public key and the canonical payload specification for independent verification.
+
+- No authentication required
+- Response: key_id, algorithm, format, public_key (hex), valid_from, valid_until (null if no rotation scheduled)
+- Also returns \`canonical_payload_spec\` documenting the exact field list and sort order for all receipt types
+- Matching well-known endpoint: GET /.well-known/oracle-keys.json (RFC 8615 standard discovery URI)
+
+### GET /v5/health — Liveness Probe (Signed)
+
+Returns a signed receipt confirming Oracle signing infrastructure is alive.
+
+- No authentication required
+- Response fields: receipt_id, issued_at, expires_at, status ("OK"), source ("SYSTEM"), public_key_id, signature
+- Use to distinguish Oracle-is-down from market-is-UNKNOWN
+- 200 + valid signature = Oracle alive; 500 CRITICAL_FAILURE = signing system offline
+
+### GET /v5/account — Account Info
+
+Returns plan and status for the authenticated API key.
+
+- Required header: \`X-Oracle-Key\` (your API key)
+- Response: plan ("pro" or "internal"), status ("active", "suspended", "cancelled"), key_prefix
+- Returns 402 PAYMENT_REQUIRED if subscription is suspended or cancelled
+
+### POST /v5/checkout — Start a Subscription
+
+Creates a Paddle checkout session and returns a redirect URL.
+
+- No authentication required
+- No request body required
+- Response: \`{ "url": "https://..." }\` — redirect to this URL to complete payment
+- After successful payment, your API key is delivered by email (shown once)
+- Keys are prefixed \`ok_live_\` for easy identification in logs and config
+
 ## MCP Integration
 
 Headless Oracle is available as an MCP (Model Context Protocol) server for direct integration with Claude, GPT, and other AI agent frameworks.
@@ -828,6 +874,113 @@ Setup: Add the Headless Oracle MCP server to your agent's tool configuration. Se
 - DeFi Synthetic Equity Safety Gate: Gate minting, redemption, liquidation, and rebalancing behind cryptographically attested market status checks for synthetic equity and perpetual futures protocols.
 
 - Autonomous Agent Risk Stack: Market status is Gate Zero — the first check before price oracle query, gas estimation, position sizing, and execution routing.
+
+## Code Examples
+
+### Python — Ed25519 Signature Verification (PyNaCl)
+
+\`\`\`python
+import json, requests
+from nacl.signing import VerifyKey
+
+PUBLIC_KEY_HEX = "03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178"
+
+def verify_receipt(receipt: dict) -> bool:
+    sig = receipt.pop("signature")
+    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+    try:
+        VerifyKey(bytes.fromhex(PUBLIC_KEY_HEX)).verify(
+            canonical.encode(), bytes.fromhex(sig)
+        )
+        return True
+    except Exception:
+        return False
+
+receipt = requests.get("https://headlessoracle.com/v5/demo").json()
+assert verify_receipt(dict(receipt))
+\`\`\`
+
+### JavaScript — Ed25519 Verification (Web Crypto API)
+
+\`\`\`javascript
+async function verifyReceipt(receipt) {
+  const { signature, ...payload } = receipt;
+  const sorted = {};
+  for (const key of Object.keys(payload).sort()) sorted[key] = payload[key];
+  const canonical = JSON.stringify(sorted);
+  const keyBytes  = hexToBytes("03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178");
+  const sigBytes  = hexToBytes(signature);
+  const msgBytes  = new TextEncoder().encode(canonical);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw", keyBytes, { name: "Ed25519" }, false, ["verify"]
+  );
+  return crypto.subtle.verify({ name: "Ed25519" }, cryptoKey, sigBytes, msgBytes);
+}
+function hexToBytes(hex) {
+  return new Uint8Array(hex.match(/.{2}/g).map(b => parseInt(b, 16)));
+}
+\`\`\`
+
+### Python — Fail-Closed Bot Integration Pattern
+
+\`\`\`python
+import requests, json
+from nacl.signing import VerifyKey
+
+ORACLE_KEY = "03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178"
+API_KEY    = "your_api_key"
+
+def is_market_confirmed_open(mic: str = "XNYS") -> bool:
+    """
+    Returns True ONLY if Oracle confirms OPEN and Ed25519 signature is valid.
+    Returns False on any failure — timeout, UNKNOWN, invalid sig, exception.
+    Fail-closed by design.
+    """
+    try:
+        receipt = requests.get(
+            f"https://headlessoracle.com/v5/status",
+            params={"mic": mic},
+            headers={"X-Oracle-Key": API_KEY},
+            timeout=4,
+        ).json()
+        sig = receipt.pop("signature")
+        canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        VerifyKey(bytes.fromhex(ORACLE_KEY)).verify(
+            canonical.encode(), bytes.fromhex(sig)
+        )
+        return receipt.get("status") == "OPEN"
+    except Exception:
+        return False  # Fail-closed
+
+# In your execution loop:
+if position_needs_action and is_market_confirmed_open("XNYS"):
+    execute_trade()
+else:
+    log("Execution deferred: market not confirmed OPEN")
+\`\`\`
+
+### Python — Programmatic Key Fetching
+
+\`\`\`python
+def get_oracle_public_key(fallback: str) -> str:
+    """Always fall back to the hardcoded key if the fetch fails."""
+    try:
+        resp = requests.get("https://headlessoracle.com/v5/keys", timeout=4)
+        return resp.json()["keys"][0]["public_key"]
+    except Exception:
+        return fallback
+\`\`\`
+
+## Known Schedule Risk Events (DST 2026)
+
+Any bot using hardcoded UTC offsets will compute incorrect open/close times after these dates. Headless Oracle handles all transitions automatically — no action required on your end.
+
+| Date             | Event                                              | Affected Markets |
+|------------------|----------------------------------------------------|------------------|
+| March 8, 2026    | US clocks spring forward (EST → EDT, UTC-5 → UTC-4) | XNYS, XNAS     |
+| March 29, 2026   | UK/EU clocks spring forward (GMT/CET → BST/CEST)  | XLON, XPAR       |
+| October 25, 2026 | UK/EU clocks fall back (BST/CEST → GMT/CET)       | XLON, XPAR       |
+| November 1, 2026 | US clocks fall back (EDT → EST, UTC-4 → UTC-5)    | XNYS, XNAS       |
 
 ## Legal
 
