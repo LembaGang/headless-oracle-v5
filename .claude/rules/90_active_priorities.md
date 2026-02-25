@@ -3,8 +3,14 @@
 
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
-**Test suite**: 135/135 tests passing (worker) + 24/24 tests passing (SDK)
-**Last significant work**: Feb 24 2026 — Paddle billing (Stripe → Paddle swap):
+**Test suite**: 141/141 tests passing (worker) + 24/24 tests passing (SDK)
+**Last significant work**: Feb 25 2026 — discoverability polish (robots.txt, llms.txt, MCP descriptions):
+  - `GET /robots.txt` — live; permits AI crawlers to all public endpoints (`/llms.txt`, `/openapi.json`, `/.well-known/`, `/v5/demo`, `/v5/schedule`, `/v5/exchanges`, `/v5/keys`, `/v5/health`)
+  - `GET /llms.txt` — live; machine-readable summary for LLMs (llmstxt.org convention); structured endpoint docs, fail-closed mandate, MCP tool list
+  - MCP tool descriptions tightened: crisper imperative language, MANDATORY safety annotations, consistent MIC listing
+  - 4 new tests added (141 total)
+  - `public/robots.txt` and `public/llms.txt` remain as reference copies (content is inlined in worker constants `ROBOTS_TXT`, `LLMS_TXT`)
+**Previous significant work**: Feb 24 2026 — Paddle billing (Stripe → Paddle swap):
   - `POST /v5/checkout` — creates Paddle transaction (`POST https://api.paddle.com/transactions`), returns `{ url }`, no auth
   - `POST /webhooks/paddle` — verifies `Paddle-Signature` header (format: `ts=<ts>;h1=<hex>`, signed content: `<ts>:<body>`, HMAC-SHA256, 5-min replay protection), handles 4 events:
     - `transaction.completed` → idempotency guard (skip if `stripe_subscription_id` already exists in Supabase) + skip if no `subscription_id` (one-time payment guard) → generate `ok_live_<32 random hex bytes>` key, fetch email via Paddle customer API, hash + store in Supabase `api_keys` table, warm `ORACLE_API_KEYS` KV cache (TTL 300s), send key via Resend (shown once)

@@ -1128,6 +1128,42 @@ describe('GET /.well-known/oracle-keys.json', () => {
 	});
 });
 
+// ─── GET /robots.txt ─────────────────────────────────────────────────────────
+
+describe('GET /robots.txt', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/robots.txt');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('allows llms.txt and openapi.json for all user-agents', async () => {
+		const body = await fetchWorker('/robots.txt').then((r) => r.text());
+		expect(body).toContain('User-agent: *');
+		expect(body).toContain('Allow: /llms.txt');
+		expect(body).toContain('Allow: /openapi.json');
+	});
+});
+
+// ─── GET /llms.txt ────────────────────────────────────────────────────────────
+
+describe('GET /llms.txt', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/llms.txt');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains fail-closed mandate and supported exchange MIC codes', async () => {
+		const body = await fetchWorker('/llms.txt').then((r) => r.text());
+		expect(body).toContain('UNKNOWN');
+		expect(body).toContain('XNYS');
+		expect(body).toContain('XJPX');
+		expect(body).toContain('XHKG');
+		expect(body).toContain('expires_at');
+	});
+});
+
 // ─── Billing: Auth hot path — paid keys via KV ───────────────────────────────
 
 // Shared helper: compute sha256(string) in the test Workers runtime

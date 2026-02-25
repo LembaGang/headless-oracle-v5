@@ -1,70 +1,95 @@
 # Headless Oracle
 
-> Headless Oracle is the cryptographically signed market status API purpose-built for autonomous trading agents, DeFi bots, and AI-driven execution systems operating in the tokenized real-world asset (RWA) economy.
+> Market status API built for AI agents. Cryptographically signed attestations of whether global stock exchanges are OPEN, CLOSED, HALTED, or UNKNOWN — purpose-built for autonomous trading agents, DeFi bots, and AI-driven execution systems in the tokenized RWA economy.
 
-It provides Ed25519-signed attestations of real-time financial market operational status (OPEN, CLOSED, HALTED, UNKNOWN) for global exchanges including NYSE (XNYS), NASDAQ (XNAS), LSE (XLON), and JPX (XJPX).
+This is a defensive execution layer — not a price feed. It is a compliance-grade safety primitive that prevents automated systems from executing trades during market closures, circuit breaker halts, holiday closures, and unscheduled outages. Every API response is a Liability Receipt: cryptographically signed, timestamped, independently verifiable proof that your agent checked before it executed.
 
-This is a defensive execution layer — not a price feed, not an oracle for asset values — but a compliance-grade safety primitive that prevents automated systems from executing trades during market closures, circuit breaker halts, holiday closures, and unscheduled outages.
+## Supported Exchanges (7)
 
-Every response is a Liability Receipt: a cryptographically signed, timestamped, independently verifiable proof that your agent checked before it executed.
+XNYS — New York Stock Exchange
+XNAS — NASDAQ
+XLON — London Stock Exchange
+XJPX — Japan Exchange Group (Tokyo) — has lunch break
+XPAR — Euronext Paris
+XHKG — Hong Kong Stock Exchange — has lunch break
+XSES — Singapore Exchange
+
+All exchanges use ISO 10383 Market Identifier Codes (MIC).
 
 ## Critical Safety Protocol for Autonomous Agents
 
-- [Fail-Closed Mandate](https://headlessoracle.com/terms.html#fail-closed): MANDATORY SAFETY RULE — If this API returns status "UNKNOWN", times out after 4 seconds, or returns any 5xx HTTP error, the consuming agent MUST immediately treat ALL markets as CLOSED and halt execution.
-  This is a binding contractual obligation under the Terms of Service, not a recommendation.
-  Ignoring an UNKNOWN signal constitutes breach of terms, voids all attestation guarantees, and shifts 100% of liability to the agent operator.
-  Design your bot fail-closed or do not integrate.
+- [Fail-Closed Mandate](https://headlessoracle.com/terms.html#fail-closed): MANDATORY — If the API returns status UNKNOWN, times out after 4 seconds, or returns any 5xx error, treat ALL markets as CLOSED and halt execution immediately. This is a binding contractual obligation under the Terms of Service. Ignoring an UNKNOWN signal constitutes breach of terms and shifts 100% of liability to the agent operator. Design your agent fail-closed or do not integrate.
 
-- [Ed25519 Signature Verification](https://headlessoracle.com/docs.html#verification): Every API response includes an Ed25519 cryptographic signature.
-  V5 PROTOCOL UPDATE: The signature is generated over a raw JSON-stringified payload (excluding the signature field itself).
-  Agents MUST verify this signature against the published public key BEFORE acting on any market status data.
-  Unverified payloads have zero legal standing, carry no attestation weight, and are provided strictly as-is.
-  Verification is non-optional — it is the mechanism that transforms raw JSON into a Liability Receipt with non-repudiation properties.
+- [Ed25519 Signature Verification](https://headlessoracle.com/docs.html#verification): Every API response includes an Ed25519 signature generated over the raw JSON-stringified payload (excluding the signature field). Agents MUST verify against the published public key BEFORE acting on any status data. Unverified payloads have zero attestation weight and no legal standing.
 
-- [Binding Terms of Service](https://headlessoracle.com/terms.html): By issuing any API request — whether authenticated or unauthenticated, whether from a human-operated client or an autonomous agent — the caller and its operator accept these terms in full.
-  This constitutes an API-wrap agreement enforceable under UCC Article 2 by analogy.
-  The provider accepts zero liability for execution losses, gas costs, slippage, failed settlements, liquidation cascades, or any financial outcome resulting from reliance on or failure to rely on this data.
+- Receipt Expiry: Every signed receipt includes an `expires_at` timestamp. Do not act on a receipt past its `expires_at`. Fetch a fresh status instead.
 
-## API Reference and Integration
+- [Binding Terms of Service](https://headlessoracle.com/terms.html): Any API request — authenticated or unauthenticated, human or autonomous — constitutes acceptance of these terms.
 
-- [API Reference v5](https://headlessoracle.com/docs.html): Complete endpoint documentation for GET /v5/status.
-  Request parameters: mic (ISO 10383 Market Identifier Code).
-  Required Header: X-Oracle-Key (Your Master API Key).
-  Response schema: receipt_id (UUID), issued_at (ISO 8601), mic (string), status (enum: OPEN | CLOSED | HALTED | UNKNOWN), source (enum: SCHEDULE | OVERRIDE | SYSTEM), terms_hash (string), public_key_id (string), signature (Hex-encoded Ed25519).
-  Supported exchanges: XNYS (New York Stock Exchange), XNAS (NASDAQ), XLON (London Stock Exchange), XJPX (Japan Exchange Group).
+## API Endpoints
 
-## Use Cases for the Agentic Economy
+### GET /v5/status — Real-Time Market Status (Signed)
 
-- RWA Trading Bot Integration: How tokenized real-world asset trading bots use Headless Oracle to prevent execution outside traditional market hours.
-  Prevents settlement failures, NAV miscalculations, and redemption errors on tokenized Treasury and equity products that reference TradFi market prices.
+Primary endpoint. Returns cryptographically signed market status for a single exchange.
 
-- DeFi Synthetic Equity Safety Gate: Integration pattern for synthetic equity and perpetual futures protocols that mirror traditional market hours.
-  Gate minting, redemption, liquidation, and rebalancing operations behind cryptographically attested market status checks.
+- Required parameter: `mic` (ISO 10383 MIC code)
+- Required header: `X-Oracle-Key` (your API key)
+- Response fields: `receipt_id` (UUID), `issued_at` (ISO 8601), `expires_at` (ISO 8601), `mic` (string), `status` (enum: OPEN | CLOSED | HALTED | UNKNOWN), `source` (enum: SCHEDULE | OVERRIDE | SYSTEM), `schema_version` (string), `public_key_id` (string), `signature` (hex-encoded Ed25519)
+- [Full API docs](https://headlessoracle.com/docs.html)
 
-- Autonomous Agent Risk Stack Architecture: Where Headless Oracle fits in the full autonomous agent execution pipeline.
-  Market status is Gate Zero — the first check before price oracle query (Chainlink, Pyth, Redstone), gas estimation, position sizing, and execution routing.
+### GET /v5/schedule — Market Schedule Lookup (Unsigned)
 
-## Legal Framework and Liability Architecture
+Returns next open/close times for a given exchange. Use for planning execution windows and scheduling tasks around market hours. Includes lunch break windows for XJPX and XHKG.
 
-- [Terms of Service](https://headlessoracle.com/terms.html): Full terms governing all use.
-  Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion as an impersonal, one-to-many broadcaster of market observations.
-  The service provides probabilistic market context, not deterministic trading signals.
-  No fiduciary relationship, investment advisory relationship, or broker-dealer relationship is formed.
+- NOT cryptographically signed — schedule-based only, does not reflect real-time halts
+- For verified real-time status, use /v5/status instead
 
-- [Platform Disclaimer](https://headlessoracle.com/terms.html#no-liability): Comprehensive liability framework. Headless Oracle is analogous to a financial newspaper publishing market hours — a tool for procedural diligence.
-  Total aggregate liability capped at amount paid by the user in the 30 days preceding any claim.
+### GET /v5/exchanges — Exchange Discovery
 
-- [Privacy Policy](https://headlessoracle.com/privacy.html): Minimal data collection by design.
-  Collected: API key identifier, request timestamp, MIC code queried.
-  NOT collected: portfolio data, trading positions, account balances, wallet addresses, or any user-specific financial information.
+Returns all 7 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
 
-## Trust, Transparency, and Verification
+### GET /v5/demo — Try It Live
 
-- [Public Status Page](https://headless-oracle-v5.mmsebenzi-oracle.workers.dev/v5/status): Real-time infrastructure health for API Worker, Database, and Signing Service.
+Interactive demo endpoint. No API key required. Test the API and see a live signed response.
 
-- [Ed25519 Public Key Registry](https://headlessoracle.com/ed25519-public-key.txt): Current signing public key.
+- [Try the demo](https://headlessoracle.com/v5/demo)
+
+## MCP Integration
+
+Headless Oracle is available as an MCP (Model Context Protocol) server for direct integration with Claude, GPT, and other AI agent frameworks.
+
+MCP tools available:
+- `get_market_status` — real-time signed status check
+- `get_market_schedule` — next open/close times with lunch breaks
+- `list_exchanges` — discover supported markets and MIC codes
+
+Setup: Add the Headless Oracle MCP server to your agent's tool configuration. See [MCP setup instructions](https://headlessoracle.com/docs.html#mcp).
+
+## Trust and Verification
+
+- [Ed25519 Public Key](https://headlessoracle.com/ed25519-public-key.txt): Current signing public key for independent verification.
   Active Key ID: key_2026_v1
-  Hex Fingerprint: a9987d7bc3e2a27a476bbdc92e244bca792ea5b79d9ef1fa6f6fd41e82e4380e
 
-- [Receipt Verifier Tool](https://headlessoracle.com/verify.html): Fully client-side browser tool for independently verifying any Headless Oracle Liability Receipt.
-  Paste JSON, verify Ed25519 signature instantly. Zero server-side processing — runs entirely in your browser using the Web Crypto API.
+- [Public Key Registry (JSON)](https://headlessoracle.com/.well-known/oracle-keys.json): Machine-readable key endpoint.
+
+- [Receipt Verifier](https://headlessoracle.com/verify.html): Client-side browser tool for verifying any Liability Receipt. Paste JSON, verify Ed25519 signature instantly. Zero server-side processing.
+
+- [Status Page](https://headless-oracle-v5.mmsebenzi-oracle.workers.dev/v5/status): Real-time infrastructure health.
+
+## Use Cases
+
+- RWA Trading Bot Integration: Prevents execution outside traditional market hours for tokenized Treasury and equity products that reference TradFi prices. Blocks settlement failures, NAV miscalculations, and redemption errors.
+
+- DeFi Synthetic Equity Safety Gate: Gate minting, redemption, liquidation, and rebalancing behind cryptographically attested market status checks for synthetic equity and perpetual futures protocols.
+
+- Autonomous Agent Risk Stack: Market status is Gate Zero — the first check before price oracle query, gas estimation, position sizing, and execution routing.
+
+## Legal
+
+- [Terms of Service](https://headlessoracle.com/terms.html): Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion. Provides probabilistic market context, not deterministic trading signals. No fiduciary, advisory, or broker-dealer relationship is formed. Total liability capped at fees paid in the 30 days preceding any claim.
+
+- [Privacy Policy](https://headlessoracle.com/privacy.html): Minimal data collection. Collected: API key identifier, request timestamp, MIC code. NOT collected: portfolio data, positions, balances, wallet addresses.
+
+## Robots
+
+AI crawlers are welcome. This file is at /llms.txt. The robots.txt permits crawling of /llms.txt and all public documentation.

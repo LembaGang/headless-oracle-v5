@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /llms.txt
+Allow: /openapi.json
+Allow: /.well-known/
+Allow: /v5/demo
+Allow: /v5/schedule
+Allow: /v5/exchanges
+Allow: /v5/keys
+Allow: /v5/health
+Disallow:

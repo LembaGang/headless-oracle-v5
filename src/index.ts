@@ -727,6 +727,119 @@ const SUPPORTED_EXCHANGES = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => (
 // Consumers MUST NOT act on a receipt whose expires_at has passed.
 const RECEIPT_TTL_SECONDS = 60;
 
+// ─── Static discovery files ───────────────────────────────────────────────────
+// Served as plain text. robots.txt signals to AI crawlers which paths are open.
+// llms.txt (llmstxt.org convention) provides a machine-readable summary for LLMs.
+
+const ROBOTS_TXT = `User-agent: *
+Allow: /llms.txt
+Allow: /openapi.json
+Allow: /.well-known/
+Allow: /v5/demo
+Allow: /v5/schedule
+Allow: /v5/exchanges
+Allow: /v5/keys
+Allow: /v5/health
+Disallow:
+`;
+
+const LLMS_TXT = `# Headless Oracle
+
+> Market status API built for AI agents. Cryptographically signed attestations of whether global stock exchanges are OPEN, CLOSED, HALTED, or UNKNOWN — purpose-built for autonomous trading agents, DeFi bots, and AI-driven execution systems in the tokenized RWA economy.
+
+This is a defensive execution layer — not a price feed. It is a compliance-grade safety primitive that prevents automated systems from executing trades during market closures, circuit breaker halts, holiday closures, and unscheduled outages. Every API response is a Liability Receipt: cryptographically signed, timestamped, independently verifiable proof that your agent checked before it executed.
+
+## Supported Exchanges (7)
+
+XNYS — New York Stock Exchange
+XNAS — NASDAQ
+XLON — London Stock Exchange
+XJPX — Japan Exchange Group (Tokyo) — has lunch break
+XPAR — Euronext Paris
+XHKG — Hong Kong Stock Exchange — has lunch break
+XSES — Singapore Exchange
+
+All exchanges use ISO 10383 Market Identifier Codes (MIC).
+
+## Critical Safety Protocol for Autonomous Agents
+
+- [Fail-Closed Mandate](https://headlessoracle.com/terms.html#fail-closed): MANDATORY — If the API returns status UNKNOWN, times out after 4 seconds, or returns any 5xx error, treat ALL markets as CLOSED and halt execution immediately. This is a binding contractual obligation under the Terms of Service. Ignoring an UNKNOWN signal constitutes breach of terms and shifts 100% of liability to the agent operator. Design your agent fail-closed or do not integrate.
+
+- [Ed25519 Signature Verification](https://headlessoracle.com/docs.html#verification): Every API response includes an Ed25519 signature generated over the raw JSON-stringified payload (excluding the signature field). Agents MUST verify against the published public key BEFORE acting on any status data. Unverified payloads have zero attestation weight and no legal standing.
+
+- Receipt Expiry: Every signed receipt includes an \`expires_at\` timestamp. Do not act on a receipt past its \`expires_at\`. Fetch a fresh status instead.
+
+- [Binding Terms of Service](https://headlessoracle.com/terms.html): Any API request — authenticated or unauthenticated, human or autonomous — constitutes acceptance of these terms.
+
+## API Endpoints
+
+### GET /v5/status — Real-Time Market Status (Signed)
+
+Primary endpoint. Returns cryptographically signed market status for a single exchange.
+
+- Required parameter: \`mic\` (ISO 10383 MIC code)
+- Required header: \`X-Oracle-Key\` (your API key)
+- Response fields: \`receipt_id\` (UUID), \`issued_at\` (ISO 8601), \`expires_at\` (ISO 8601), \`mic\` (string), \`status\` (enum: OPEN | CLOSED | HALTED | UNKNOWN), \`source\` (enum: SCHEDULE | OVERRIDE | SYSTEM), \`schema_version\` (string), \`public_key_id\` (string), \`signature\` (hex-encoded Ed25519)
+- [Full API docs](https://headlessoracle.com/docs.html)
+
+### GET /v5/schedule — Market Schedule Lookup (Unsigned)
+
+Returns next open/close times for a given exchange. Use for planning execution windows and scheduling tasks around market hours. Includes lunch break windows for XJPX and XHKG.
+
+- NOT cryptographically signed — schedule-based only, does not reflect real-time halts
+- For verified real-time status, use /v5/status instead
+
+### GET /v5/exchanges — Exchange Discovery
+
+Returns all 7 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
+
+### GET /v5/demo — Try It Live
+
+Interactive demo endpoint. No API key required. Test the API and see a live signed response.
+
+- [Try the demo](https://headlessoracle.com/v5/demo)
+
+## MCP Integration
+
+Headless Oracle is available as an MCP (Model Context Protocol) server for direct integration with Claude, GPT, and other AI agent frameworks.
+
+MCP tools available:
+- \`get_market_status\` — real-time signed status check
+- \`get_market_schedule\` — next open/close times with lunch breaks
+- \`list_exchanges\` — discover supported markets and MIC codes
+
+Setup: Add the Headless Oracle MCP server to your agent's tool configuration. See [MCP setup instructions](https://headlessoracle.com/docs.html#mcp).
+
+## Trust and Verification
+
+- [Ed25519 Public Key](https://headlessoracle.com/ed25519-public-key.txt): Current signing public key for independent verification.
+  Active Key ID: key_2026_v1
+
+- [Public Key Registry (JSON)](https://headlessoracle.com/.well-known/oracle-keys.json): Machine-readable key endpoint.
+
+- [Receipt Verifier](https://headlessoracle.com/verify.html): Client-side browser tool for verifying any Liability Receipt. Paste JSON, verify Ed25519 signature instantly. Zero server-side processing.
+
+- [Status Page](https://headless-oracle-v5.mmsebenzi-oracle.workers.dev/v5/status): Real-time infrastructure health.
+
+## Use Cases
+
+- RWA Trading Bot Integration: Prevents execution outside traditional market hours for tokenized Treasury and equity products that reference TradFi prices. Blocks settlement failures, NAV miscalculations, and redemption errors.
+
+- DeFi Synthetic Equity Safety Gate: Gate minting, redemption, liquidation, and rebalancing behind cryptographically attested market status checks for synthetic equity and perpetual futures protocols.
+
+- Autonomous Agent Risk Stack: Market status is Gate Zero — the first check before price oracle query, gas estimation, position sizing, and execution routing.
+
+## Legal
+
+- [Terms of Service](https://headlessoracle.com/terms.html): Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion. Provides probabilistic market context, not deterministic trading signals. No fiduciary, advisory, or broker-dealer relationship is formed. Total liability capped at fees paid in the 30 days preceding any claim.
+
+- [Privacy Policy](https://headlessoracle.com/privacy.html): Minimal data collection. Collected: API key identifier, request timestamp, MIC code. NOT collected: portfolio data, positions, balances, wallet addresses.
+
+## Robots
+
+AI crawlers are welcome. This file is at /llms.txt. The robots.txt permits crawling of /llms.txt and all public documentation.
+`;
+
 // ─── MCP (Model Context Protocol) ────────────────────────────────────────────
 // Implements JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05).
 // Three tools wrap existing Oracle logic — no new npm dependencies.
@@ -746,11 +859,11 @@ const MCP_TOOLS = [
 	{
 		name: 'get_market_status',
 		description:
-			'Check whether a stock exchange is currently open or closed for trading. ' +
-			'Use this before executing trades, scheduling market-hours-dependent workflows, ' +
-			'routing financial decisions, or any time you need tamper-proof verification of market state. ' +
-			'Returns a cryptographically signed receipt — always check the status field and treat ' +
-			'UNKNOWN or HALTED as CLOSED (halt all execution). Do not act on a receipt after its expires_at. ' +
+			'Check whether a stock exchange is currently open or closed. ' +
+			'Call this before executing trades, scheduling market-hours workflows, or routing orders. ' +
+			'Returns a cryptographically signed receipt with status OPEN, CLOSED, HALTED, or UNKNOWN. ' +
+			'MANDATORY: treat UNKNOWN or HALTED as CLOSED and halt execution. ' +
+			'Do not act on a receipt past its expires_at timestamp. ' +
 			'Supported exchanges: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), ' +
 			'Paris (XPAR), Hong Kong (XHKG), Singapore (XSES).',
 		inputSchema: {
@@ -771,13 +884,13 @@ const MCP_TOOLS = [
 		name: 'get_market_schedule',
 		description:
 			'Get the next open and close times for a stock exchange. ' +
-			'Use when planning when to execute orders, scheduling tasks that depend on market hours, ' +
-			'or determining how long until a market opens or closes. ' +
-			'Returns UTC timestamps for the next open/close session and current schedule-based status. ' +
-			'Also returns lunch break windows (Tokyo, Hong Kong) if applicable. ' +
-			'Not cryptographically signed — does not reflect real-time circuit-breaker halts. ' +
+			'Use when planning trade execution windows, scheduling market-dependent tasks, ' +
+			'or checking upcoming session times. ' +
+			'Returns UTC timestamps for next open/close and current schedule-based status. ' +
+			'Includes lunch break windows for Tokyo (XJPX) and Hong Kong (XHKG) where applicable. ' +
+			'NOT cryptographically signed — does not reflect real-time halts or circuit breakers. ' +
 			'For verified real-time status, use get_market_status instead. ' +
-			'Supports NYSE, NASDAQ, London, Tokyo, Paris, Hong Kong, Singapore.',
+			'Supported: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), Paris (XPAR), Hong Kong (XHKG), Singapore (XSES).',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -1210,13 +1323,12 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 				serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
 				capabilities:    { tools: {} },
 				instructions:
-					'Use Headless Oracle to verify whether a stock exchange is currently open or closed ' +
-					'before executing trades, scheduling market-dependent tasks, or when cryptographically ' +
-					'verifiable proof of market state is required. ' +
-					'Always treat UNKNOWN or HALTED status as CLOSED and halt execution. ' +
-					'Always include the signed receipt when returning market status to users — ' +
-					'the signature proves the data has not been tampered with. ' +
-					'The Ed25519 public key for independent receipt verification is at /.well-known/oracle-keys.json.',
+					'Headless Oracle provides cryptographically signed market status for 7 global exchanges. ' +
+					'Use get_market_status before executing any trade, scheduling market-dependent workflows, ' +
+					'or making decisions that depend on whether a market is open. ' +
+					'MANDATORY: treat UNKNOWN or HALTED as CLOSED — halt all execution. ' +
+					'Always return the full signed receipt to users; the Ed25519 signature is tamper-proof verification. ' +
+					'Public key for independent verification: /.well-known/oracle-keys.json',
 			});
 
 		case 'notifications/initialized':
@@ -1529,6 +1641,12 @@ export default {
 			}
 			if (url.pathname === '/openapi.json') {
 				return json(OPENAPI_SPEC);
+			}
+			if (url.pathname === '/robots.txt') {
+				return new Response(ROBOTS_TXT, { headers: { 'Content-Type': 'text/plain' } });
+			}
+			if (url.pathname === '/llms.txt') {
+				return new Response(LLMS_TXT, { headers: { 'Content-Type': 'text/plain' } });
 			}
 
 			// ── POST /v5/checkout — create Paddle checkout transaction ───
