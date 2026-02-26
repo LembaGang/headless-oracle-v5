@@ -883,7 +883,7 @@ describe('POST /mcp', () => {
 		const response = await fetchWorker('/mcp');
 		expect(response.status).toBe(405);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('error', 'Method Not Allowed');
+		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
 	});
 });
 
@@ -1421,7 +1421,7 @@ describe('POST /v5/checkout', () => {
 		const response = await fetchWorker('/v5/checkout');
 		expect(response.status).toBe(405);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('error', 'Method Not Allowed');
+		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
 	});
 
 	it('POST /v5/checkout → 200 with Paddle url when Paddle responds OK', async () => {

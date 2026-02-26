@@ -42,11 +42,24 @@ id = "aaf52e9a579242f48fc09bb3e8afb293"
 
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 # Rate limiting for public routes is configured in the Cloudflare Dashboard,
-# NOT in this file. See operator runbook for setup instructions.
+# NOT in this file. See OPERATOR_RUNBOOK.md → Section 5 for setup instructions.
 # Dashboard path: Workers & Pages → headless-oracle-v5 → Settings → Rate Limiting
-# Recommended rules (add before HN launch):
-#   /v5/demo*     → 100 req/min per IP → Block (429)
-#   /v5/schedule* → 60 req/min per IP  → Block (429)
-#   /v5/exchanges → 60 req/min per IP  → Block (429)
-#   /v5/keys      → 60 req/min per IP  → Block (429)
-# /v5/status is already protected by API key auth.
+#
+# Rules to add before HN launch (all: per IP, action: Block → 429):
+#   Path                 Limit         Notes
+#   /v5/demo*            100 req/min   Public demo endpoint
+#   /v5/schedule*        60 req/min    Schedule queries
+#   /v5/exchanges        60 req/min    Exchange directory
+#   /v5/keys             60 req/min    Public key registry
+#   /v5/checkout         10 req/min    Hits Paddle API — keep low
+#   /v5/health           60 req/min    Liveness probe
+#   /mcp                 60 req/min    MCP endpoint (agents)
+#   /openapi.json        60 req/min    API spec discovery
+#   /.well-known/*       60 req/min    Key/agent discovery
+#   /llms.txt            60 req/min    LLM crawler
+#
+# Do NOT add rules for:
+#   /v5/status   — protected by API key auth (401/403 on missing/invalid key)
+#   /v5/batch    — protected by API key auth
+#   /v5/account  — protected by API key auth
+#   /webhooks/paddle — Paddle retries on non-200; rate limiting would break retry logic

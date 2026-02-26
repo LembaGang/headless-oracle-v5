@@ -624,7 +624,7 @@ async function signPayload(payload: Record<string, string>, privKeyHex: string):
 //   4. KV miss        — lookup Supabase, warm KV, then check status
 //   5. Not found      — 403
 
-type AuthResult = { allowed: true } | { allowed: false; status: 402 | 403; error: string };
+type AuthResult = { allowed: true } | { allowed: false; status: 402 | 403; error: string; message: string };
 
 async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	// Step 1: master key — fastest possible path
@@ -646,7 +646,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 			const { status } = JSON.parse(cached) as { plan: string; status: string };
 			if (status === 'active') return { allowed: true };
 			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
-			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED' };
+			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
 	}
 
@@ -669,12 +669,12 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 				);
 			}
 			if (data.status === 'active') return { allowed: true };
-			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED' };
+			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
 	}
 
 	// Step 5: not found anywhere
-	return { allowed: false, status: 403, error: 'INVALID_API_KEY' };
+	return { allowed: false, status: 403, error: 'INVALID_API_KEY', message: 'Invalid API key' };
 }
 
 // ─── Paddle Webhook Signature Verification ────────────────────────────────────
@@ -1314,7 +1314,7 @@ const OPENAPI_SPEC = {
 			'Receipts expire at expires_at — do not act on stale receipts.',
 		contact: { url: 'https://headlessoracle.com' },
 	},
-	servers: [{ url: 'https://api.headlessoracle.com' }],
+	servers: [{ url: 'https://headlessoracle.com' }],
 	components: {
 		securitySchemes: {
 			ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-Oracle-Key' },
@@ -1455,21 +1455,21 @@ const OPENAPI_SPEC = {
 			},
 		},
 		'/v5/health': {
-					get: {
-						summary:     'Signed liveness probe',
-						description: 'Returns a signed receipt confirming the Oracle signing infrastructure is alive. ' +
-							'Use this to distinguish Oracle-is-down from market-is-UNKNOWN. ' +
-							'A 200 with valid signature means signing works. A 500 means signing is offline.',
-						responses: {
-							'200': {
-								description: 'Signed health receipt',
-								content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' } } } } },
-							},
-							'500': { description: 'Signing system offline — CRITICAL_FAILURE', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
-						},
+			get: {
+				summary:     'Signed liveness probe',
+				description: 'Returns a signed receipt confirming the Oracle signing infrastructure is alive. ' +
+					'Use this to distinguish Oracle-is-down from market-is-UNKNOWN. ' +
+					'A 200 with valid signature means signing works. A 500 means signing is offline.',
+				responses: {
+					'200': {
+						description: 'Signed health receipt',
+						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' } } } } },
 					},
+					'500': { description: 'Signing system offline — CRITICAL_FAILURE', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
-				'/openapi.json': {
+			},
+		},
+		'/openapi.json': {
 			get: {
 				summary:   'OpenAPI 3.1 specification',
 				responses: { '200': { description: 'This document' } },
@@ -1541,8 +1541,9 @@ const OPENAPI_SPEC = {
 						description: 'Checkout transaction created',
 						content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', format: 'uri' } } } } },
 					},
-					'503': { description: 'Billing not configured' },
-					'502': { description: 'Paddle API error' },
+					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'502': { description: 'Paddle API error', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'503': { description: 'Billing not configured', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
 		},
@@ -1567,10 +1568,68 @@ const OPENAPI_SPEC = {
 						description: 'Account info',
 						content: { 'application/json': { schema: { type: 'object', required: ['plan', 'status', 'key_prefix'], properties: { plan: { type: 'string', example: 'pro' }, status: { type: 'string', enum: ['active', 'suspended', 'cancelled'] }, key_prefix: { type: 'string', nullable: true, example: 'ok_live_a1b2c3' } } } } },
 					},
-					'401': { description: 'Missing API key' },
-					'402': { description: 'Payment required — subscription suspended or cancelled' },
-					'403': { description: 'Invalid API key' },
-					'404': { description: 'Account not found' },
+					'401': { description: 'Missing API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'402': { description: 'Payment required — subscription suspended or cancelled', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'403': { description: 'Invalid API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'404': { description: 'Account not found', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/robots.txt': {
+			get: {
+				summary:     'robots.txt',
+				description: 'Standard robots exclusion file. Explicitly permits AI crawlers to all public documentation endpoints.',
+				responses: {
+					'200': { description: 'robots.txt content', content: { 'text/plain': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/llms.txt': {
+			get: {
+				summary:     'llms.txt — machine-readable API summary for LLMs',
+				description: 'Structured plain-text summary of the Oracle API following the llmstxt.org convention. Covers all endpoints, receipt schema, fail-closed contract, code examples, and DST event calendar.',
+				responses: {
+					'200': { description: 'llms.txt content', content: { 'text/plain': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/SKILL.md': {
+			get: {
+				summary:     'Agent integration guide (Markdown)',
+				description: 'Step-by-step integration guide optimised for AI agents. Covers MCP setup, HTTP patterns, code examples, safety rules, verification SDK usage, and common mistakes. Returns Last-Modified and ETag headers for cache invalidation.',
+				responses: {
+					'200': {
+						description: 'Markdown integration guide',
+						content: { 'text/markdown': { schema: { type: 'string' } } },
+						headers: {
+							'ETag':          { schema: { type: 'string' }, description: 'FNV-1a hash of content, quoted (RFC 7232).' },
+							'Last-Modified': { schema: { type: 'string' }, description: 'RFC 7231 HTTP-date of last content change.' },
+						},
+					},
+				},
+			},
+		},
+		'/.well-known/agent.json': {
+			get: {
+				summary:     'Structured agent metadata',
+				description: 'Machine-readable JSON describing Oracle capabilities, MCP tools, REST endpoints, auth requirements, and trust anchors. Includes spec_version (YYYY-MM-DD) for staleness detection.',
+				responses: {
+					'200': {
+						description: 'Agent metadata',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								schema_version: { type: 'string', example: '1.0' },
+								spec_version:   { type: 'string', example: '2026-02-26', description: 'YYYY-MM-DD — compare against cached value to detect stale metadata.' },
+								name:           { type: 'string' },
+								capabilities:   { type: 'array', items: { type: 'string' } },
+								mcp:            { type: 'object' },
+								rest_api:       { type: 'object' },
+								trust:          { type: 'object' },
+								safety:         { type: 'object' },
+							},
+						} } },
+					},
 				},
 			},
 		},
@@ -1827,7 +1886,7 @@ export default {
 		// ── POST /mcp — MCP Streamable HTTP (outside main try/catch) ─
 		if (url.pathname === '/mcp') {
 			if (request.method !== 'POST') {
-				return json({ error: 'Method Not Allowed', message: 'MCP endpoint requires POST' }, 405);
+				return json({ error: 'METHOD_NOT_ALLOWED', message: 'MCP endpoint requires POST' }, 405);
 			}
 			return handleMcp(request, env);
 		}
@@ -1841,7 +1900,7 @@ export default {
 				}
 				const auth = await checkApiKey(apiKey, env);
 				if (!auth.allowed) {
-					return json({ error: auth.error }, auth.status);
+					return json({ error: auth.error, message: auth.message }, auth.status);
 				}
 			}
 
@@ -1924,7 +1983,7 @@ export default {
 				}
 				const batchAuth = await checkApiKey(apiKey, env);
 				if (!batchAuth.allowed) {
-					return json({ error: batchAuth.error }, batchAuth.status);
+					return json({ error: batchAuth.error, message: batchAuth.message }, batchAuth.status);
 				}
 
 				const micsParam = url.searchParams.get('mics');
@@ -2051,7 +2110,7 @@ export default {
 			// No auth required. Returns { url } to redirect the user to Paddle.
 			if (url.pathname === '/v5/checkout') {
 				if (request.method !== 'POST') {
-					return json({ error: 'Method Not Allowed', message: 'Use POST' }, 405);
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
 				}
 				if (!env.PADDLE_API_KEY || !env.PADDLE_PRICE_ID) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
@@ -2080,7 +2139,7 @@ export default {
 			// Returns 200 for all recognised events, 400/401 for bad requests.
 			if (url.pathname === '/webhooks/paddle') {
 				if (request.method !== 'POST') {
-					return json({ error: 'Method Not Allowed', message: 'Use POST' }, 405);
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
 				}
 				if (!env.PADDLE_WEBHOOK_SECRET) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Webhook not configured' }, 503);
@@ -2088,14 +2147,14 @@ export default {
 
 				const sigHeader = request.headers.get('Paddle-Signature');
 				if (!sigHeader) {
-					return json({ error: 'MISSING_SIGNATURE' }, 400);
+					return json({ error: 'MISSING_SIGNATURE', message: 'Include Paddle-Signature header' }, 400);
 				}
 
 				// Must read raw body before any other processing — HMAC is over raw bytes
 				const rawBody = await request.text();
 				const valid   = await verifyPaddleSignature(rawBody, sigHeader, env.PADDLE_WEBHOOK_SECRET);
 				if (!valid) {
-					return json({ error: 'INVALID_SIGNATURE' }, 401);
+					return json({ error: 'INVALID_SIGNATURE', message: 'Paddle-Signature verification failed' }, 401);
 				}
 
 				const event = JSON.parse(rawBody) as { event_type: string; data: Record<string, unknown> };
@@ -2151,7 +2210,7 @@ export default {
 					});
 					if (dbError) {
 						console.error(`WEBHOOK_DB_ERROR: ${dbError.message}`);
-						return json({ error: 'DB_ERROR' }, 500);
+						return json({ error: 'DB_ERROR', message: 'Failed to store API key — contact support@headlessoracle.com' }, 500);
 					}
 
 					// Warm the KV cache immediately
@@ -2178,8 +2237,8 @@ export default {
 								html: `<p>Thank you for subscribing to Headless Oracle.</p>
 <p>Your API key (save this — it will not be shown again):</p>
 <pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
-<p>Use it in your requests as the <code>X-Oracle-Key</code> header against <code>https://api.headlessoracle.com/v5/status</code>.</p>
-<p>Check your account status anytime: <a href="https://api.headlessoracle.com/v5/account">GET /v5/account</a></p>
+<p>Use it in your requests as the <code>X-Oracle-Key</code> header against <code>https://headlessoracle.com/v5/status</code>.</p>
+<p>Check your account status anytime: <a href="https://headlessoracle.com/v5/account">GET /v5/account</a></p>
 <p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
 							}),
 						});
@@ -2238,7 +2297,7 @@ export default {
 				}
 				const accountAuth = await checkApiKey(apiKey, env);
 				if (!accountAuth.allowed) {
-					return json({ error: accountAuth.error }, accountAuth.status);
+					return json({ error: accountAuth.error, message: accountAuth.message }, accountAuth.status);
 				}
 
 				// Internal keys (master / beta) are not Supabase records
@@ -2273,11 +2332,11 @@ export default {
 					}
 				}
 
-				return json({ error: 'ACCOUNT_NOT_FOUND' }, 404);
+				return json({ error: 'ACCOUNT_NOT_FOUND', message: 'No account found for this API key' }, 404);
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────
-			return json({ error: 'Not Found' }, 404);
+			return json({ error: 'NOT_FOUND', message: 'Route not found' }, 404);
 
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : 'Internal server error';
