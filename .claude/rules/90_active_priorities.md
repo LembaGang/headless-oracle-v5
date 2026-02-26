@@ -3,8 +3,17 @@
 
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
-**Test suite**: 141/141 tests passing (worker) + 24/24 tests passing (SDK)
-**Last significant work**: Feb 25 2026 — full website audit + LLMS_TXT expansion + deploy:
+**Test suite**: 148/148 tests passing (worker) + 24/24 tests passing (SDK)
+**Last significant work**: Feb 26 2026 — error code standardisation + SEO audit + content creation:
+  - **Error codes**: All 405 errors now `METHOD_NOT_ALLOWED` (SCREAMING_SNAKE_CASE); all auth errors include `message` field
+  - **OpenAPI**: Server URL corrected (`headlessoracle.com`); new paths added (`/robots.txt`, `/llms.txt`, `/SKILL.md`, `/.well-known/agent.json`); error response schemas completed for all routes
+  - **wrangler.toml**: Rate limiting comments expanded to all 10 public routes with notes on what NOT to rate-limit
+  - **docs/hn-launch-post.md**: Three Show HN variants for March 10 launch
+  - **docs/dst-risk-article.md**: ~1100-word technical article on DST risks for trading agents
+  - **Web SEO**: All 6 HTML pages now have `<meta description>`, `og:title`, `og:description`, `og:type`, `og:url`, `<meta name="robots">`. index.html and docs.html have `link rel="alternate"` for openapi.json and llms.txt. Fixed stale `workers.dev` URL in status.html.
+  - **Deployed**: Worker (commit 2b24036) + Pages (commit a294d19) both live
+  - 148/148 tests passing
+**Previous significant work**: Feb 25 2026 — full website audit + LLMS_TXT expansion + deploy:
   - **LLMS_TXT**: Added `## Code Examples` (Python PyNaCl, JS Web Crypto, fail-closed bot pattern, key fetching), `## Known Schedule Risk Events` (DST table 2026), and full docs for /v5/batch, /v5/keys, /v5/health, /v5/account, POST /v5/checkout — every public route now covered
   - **docs.html**: Added `#mcp` section (MCP setup for Claude Desktop, 3 tools documented), `/v5/batch` docs, `#billing` section (/v5/account, /v5/checkout, error codes 401/402/403), sidebar updated with new anchors
   - **index.html**: Added MCP server mention with link to docs.html#mcp and llms.txt
@@ -146,6 +155,9 @@
 - [x] All internal frontend links fixed (extensionless paths)
 - [x] Operator runbook written (headless-oracle-v5/OPERATOR_RUNBOOK.md)
 - [x] Business handover document written (C:/Users/User/Headless Oracle/Business/HANDOVER.md)
+- [x] DST risk article written (headless-oracle-v5/docs/dst-risk-article.md)
+- [x] HN launch post drafted (3 variants in headless-oracle-v5/docs/hn-launch-post.md)
+- [x] All HTML pages have OG tags and robots meta
 - [ ] Phantom Hour article published (human task — Gemini draft ready)
 - [ ] Twitter/X thread posted (human task)
 - [ ] 15 targeted DMs sent (human task — begins Feb 28)
