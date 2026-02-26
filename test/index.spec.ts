@@ -1186,8 +1186,8 @@ describe('GET /SKILL.md', () => {
 		const response = await fetchWorker('/SKILL.md');
 		const lastMod = response.headers.get('Last-Modified');
 		const etag    = response.headers.get('ETag');
-		expect(lastMod).toBeTruthy();
-		expect(lastMod).toContain('2026');
+		// RFC 7231 HTTP-date: "Day, DD Mon YYYY HH:MM:SS GMT"
+		expect(lastMod).toMatch(/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/);
 		// ETag must be a quoted string (RFC 7232)
 		expect(etag).toMatch(/^"[0-9a-f]+"$/);
 	});

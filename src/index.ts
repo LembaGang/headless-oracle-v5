@@ -1148,17 +1148,18 @@ function fnv1a32(str: string): string {
 	return hash.toString(16).padStart(8, '0');
 }
 
-// Computed once at module load — both values are derived from the static SKILL_MD string.
-// Update SKILL_MD_LAST_MOD whenever SKILL_MD is changed; the ETag updates automatically.
+// Computed once at module load. SKILL_MD_LAST_MOD and DEPLOY_DATE update automatically
+// on every deploy — no manual bump needed. ETag is derived from content, not date.
 const SKILL_MD_ETAG     = `"${fnv1a32(SKILL_MD)}"`;
-const SKILL_MD_LAST_MOD = 'Thu, 26 Feb 2026 00:00:00 GMT';
+const SKILL_MD_LAST_MOD = new Date().toUTCString();         // RFC 7231 HTTP-date format
+const DEPLOY_DATE       = new Date().toISOString().slice(0, 10); // YYYY-MM-DD for spec_version
 
 // agent.json — structured agent metadata for programmatic discovery.
 // Follows the emerging agent.json convention (no formal spec yet — designed to be stable).
 // Intentionally minimal: capabilities, tools, endpoints, and trust anchors only.
 const AGENT_JSON = {
 	schema_version: '1.0',
-	spec_version:   '2026-02-26',
+	spec_version:   DEPLOY_DATE,
 	name:           'Headless Oracle',
 	description:    'Cryptographically signed market-state attestations for AI agents. Ed25519-signed receipts for 7 global exchanges. Fail-closed: UNKNOWN always means CLOSED.',
 	url:            'https://headlessoracle.com',
