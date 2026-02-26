@@ -1164,6 +1164,57 @@ describe('GET /llms.txt', () => {
 	});
 });
 
+// ─── GET /SKILL.md ───────────────────────────────────────────────────────────
+
+describe('GET /SKILL.md', () => {
+	it('returns 200 with text/markdown content-type', async () => {
+		const response = await fetchWorker('/SKILL.md');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains MCP setup, safety rules, and supported MIC codes', async () => {
+		const body = await fetchWorker('/SKILL.md').then((r) => r.text());
+		expect(body).toContain('UNKNOWN means CLOSED');
+		expect(body).toContain('expires_at');
+		expect(body).toContain('XNYS');
+		expect(body).toContain('get_market_status');
+		expect(body).toContain('@headlessoracle/verify');
+	});
+});
+
+// ─── GET /.well-known/agent.json ─────────────────────────────────────────────
+
+describe('GET /.well-known/agent.json', () => {
+	it('returns 200 with application/json content-type', async () => {
+		const response = await fetchWorker('/.well-known/agent.json');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('contains MCP endpoint, tool names, REST endpoints, and trust anchors', async () => {
+		const body = await fetchWorker('/.well-known/agent.json').then((r) => r.json()) as Record<string, unknown>;
+		expect(body).toHaveProperty('name', 'Headless Oracle');
+		expect(body).toHaveProperty('mcp');
+		const mcp = body.mcp as { endpoint: string; tools: Array<{ name: string }> };
+		expect(mcp.endpoint).toBe('https://headlessoracle.com/mcp');
+		expect(Array.isArray(mcp.tools)).toBe(true);
+		const toolNames = mcp.tools.map((t) => t.name);
+		expect(toolNames).toContain('get_market_status');
+		expect(toolNames).toContain('get_market_schedule');
+		expect(toolNames).toContain('list_exchanges');
+		const trust = body.trust as { fail_closed?: boolean };
+		const safety = body.safety as { fail_closed: boolean; unknown_means: string };
+		expect(safety.fail_closed).toBe(true);
+		expect(safety.unknown_means).toContain('CLOSED');
+	});
+
+	it('robots.txt allows /SKILL.md', async () => {
+		const body = await fetchWorker('/robots.txt').then((r) => r.text());
+		expect(body).toContain('Allow: /SKILL.md');
+	});
+});
+
 // ─── Billing: Auth hot path — paid keys via KV ───────────────────────────────
 
 // Shared helper: compute sha256(string) in the test Workers runtime

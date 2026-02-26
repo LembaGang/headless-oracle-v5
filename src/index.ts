@@ -733,6 +733,7 @@ const RECEIPT_TTL_SECONDS = 60;
 
 const ROBOTS_TXT = `User-agent: *
 Allow: /llms.txt
+Allow: /SKILL.md
 Allow: /openapi.json
 Allow: /.well-known/
 Allow: /v5/demo
@@ -865,7 +866,7 @@ Setup: Add the Headless Oracle MCP server to your agent's tool configuration. Se
 
 - [Receipt Verifier](https://headlessoracle.com/verify.html): Client-side browser tool for verifying any Liability Receipt. Paste JSON, verify Ed25519 signature instantly. Zero server-side processing.
 
-- [Status Page](https://headless-oracle-v5.mmsebenzi-oracle.workers.dev/v5/status): Real-time infrastructure health.
+- [Status Page](https://headlessoracle.com/v5/health): Real-time infrastructure health (signed liveness probe).
 
 ## Use Cases
 
@@ -988,10 +989,224 @@ Any bot using hardcoded UTC offsets will compute incorrect open/close times afte
 
 - [Privacy Policy](https://headlessoracle.com/privacy.html): Minimal data collection. Collected: API key identifier, request timestamp, MIC code. NOT collected: portfolio data, positions, balances, wallet addresses.
 
+## Agent Discovery
+
+- [Skill File](https://headlessoracle.com/SKILL.md): Step-by-step integration guide optimised for AI agents. Covers MCP setup, HTTP patterns, code examples, safety rules, and common mistakes.
+- [Agent Metadata](https://headlessoracle.com/.well-known/agent.json): Structured JSON describing capabilities, MCP tools, and discovery endpoints.
+- [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API contract (OpenAPI 3.1).
+- [MCP Endpoint](https://headlessoracle.com/mcp): Protocol version 2024-11-05. Tools: get_market_status, get_market_schedule, list_exchanges.
+
 ## Robots
 
-AI crawlers are welcome. This file is at /llms.txt. The robots.txt permits crawling of /llms.txt and all public documentation.
+AI crawlers are welcome. This file is at /llms.txt. The robots.txt permits crawling of /llms.txt, /SKILL.md, and all public documentation.
 `;
+
+// SKILL.md — step-by-step integration guide optimised for AI agents.
+// Intentionally concise and action-first: agents parse this to decide how to integrate.
+const SKILL_MD = `# Headless Oracle — Agent Integration Guide
+
+## What This Is
+
+Headless Oracle returns cryptographically signed receipts that tell you whether a stock exchange is **OPEN**, **CLOSED**, **HALTED**, or **UNKNOWN**. Every receipt includes an Ed25519 signature you can verify offline.
+
+**Primary consumer**: autonomous agents making execution decisions that depend on market state.
+
+---
+
+## Safety Rules (Read First)
+
+1. **UNKNOWN means CLOSED.** If the receipt status is UNKNOWN, halt all execution. Do not proceed.
+2. **Check expires_at.** Receipts expire 60 seconds after issuance. Reject expired receipts.
+3. **Verify the signature.** Use \`@headlessoracle/verify\` (npm) or implement Ed25519 verification via Web Crypto. Never trust an unverified receipt.
+4. **HALTED overrides OPEN.** If a KV override is active, the receipt will say HALTED with a reason. Treat HALTED as CLOSED.
+
+---
+
+## Option A: MCP (Recommended for Claude/Cursor/MCP-compatible agents)
+
+Add to your MCP config:
+
+\`\`\`json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://headlessoracle.com/mcp"]
+    }
+  }
+}
+\`\`\`
+
+**Available tools:**
+- \`get_market_status\` — signed receipt for one exchange. Required param: \`mic\` (e.g. "XNYS")
+- \`get_market_schedule\` — next open/close times for one exchange. Required param: \`mic\`
+- \`list_exchanges\` — all 7 supported exchanges with names and timezones
+
+The MCP tools call the same logic as the REST API. Safety tiers apply identically.
+
+---
+
+## Option B: HTTP REST
+
+**Check if NYSE is open (no auth required for demo):**
+\`\`\`
+GET https://headlessoracle.com/v5/demo?mic=XNYS
+\`\`\`
+
+**Authenticated status check:**
+\`\`\`
+GET https://headlessoracle.com/v5/status?mic=XNYS
+X-Oracle-Key: your_api_key
+\`\`\`
+
+**Batch — multiple exchanges in one request:**
+\`\`\`
+GET https://headlessoracle.com/v5/batch?mics=XNYS,XNAS,XLON
+X-Oracle-Key: your_api_key
+\`\`\`
+
+**Response shape (signed receipt):**
+\`\`\`json
+{
+  "receipt_id": "uuid",
+  "issued_at":  "2026-02-26T09:00:00Z",
+  "expires_at": "2026-02-26T09:01:00Z",
+  "mic":        "XNYS",
+  "status":     "OPEN",
+  "source":     "SCHEDULE",
+  "schema_version": "v5.0",
+  "public_key_id":  "03dc2799...",
+  "signature":      "hex..."
+}
+\`\`\`
+
+---
+
+## Option C: Verify a Receipt
+
+Install the SDK:
+\`\`\`
+npm install @headlessoracle/verify
+\`\`\`
+
+\`\`\`typescript
+import { verify } from '@headlessoracle/verify';
+
+const result = await verify(receipt);
+if (!result.ok) {
+  // result.reason: MISSING_FIELDS | EXPIRED | UNKNOWN_KEY | INVALID_SIGNATURE | KEY_FETCH_FAILED | INVALID_KEY_FORMAT
+  haltExecution();
+}
+if (receipt.status !== 'OPEN') {
+  haltExecution();
+}
+\`\`\`
+
+---
+
+## Supported Exchanges (MIC codes)
+
+| MIC   | Exchange                   | Timezone             |
+|-------|----------------------------|----------------------|
+| XNYS  | NYSE                       | America/New_York     |
+| XNAS  | NASDAQ                     | America/New_York     |
+| XLON  | London Stock Exchange      | Europe/London        |
+| XJPX  | Japan Exchange Group       | Asia/Tokyo           |
+| XPAR  | Euronext Paris             | Europe/Paris         |
+| XHKG  | Hong Kong Exchanges        | Asia/Hong_Kong       |
+| XSES  | Singapore Exchange         | Asia/Singapore       |
+
+---
+
+## Common Mistakes
+
+- **Caching OPEN receipts across open/close boundaries.** Receipts expire in 60s. Re-fetch before each execution decision.
+- **Ignoring UNKNOWN.** UNKNOWN means the oracle cannot determine state. Treat as CLOSED — always.
+- **Using a workers.dev URL.** The canonical base URL is \`https://headlessoracle.com\`. The workers.dev URL is not stable.
+- **Skipping signature verification.** The signature is the trust anchor. Without it you are trusting the network, not the oracle.
+
+---
+
+## Discovery Endpoints
+
+- \`GET /v5/keys\` — public key + canonical payload spec for independent verification
+- \`GET /.well-known/oracle-keys.json\` — RFC 8615 key discovery
+- \`GET /.well-known/agent.json\` — structured agent metadata (capabilities, tools, endpoints)
+- \`GET /openapi.json\` — OpenAPI 3.1 machine-readable spec
+- \`GET /v5/health\` — signed liveness probe (verify oracle is up before a batch)
+- \`GET /v5/schedule?mic=XNYS\` — next open/close times, lunch breaks, public holidays
+`;
+
+// agent.json — structured agent metadata for programmatic discovery.
+// Follows the emerging agent.json convention (no formal spec yet — designed to be stable).
+// Intentionally minimal: capabilities, tools, endpoints, and trust anchors only.
+const AGENT_JSON = {
+	schema_version: '1.0',
+	name:           'Headless Oracle',
+	description:    'Cryptographically signed market-state attestations for AI agents. Ed25519-signed receipts for 7 global exchanges. Fail-closed: UNKNOWN always means CLOSED.',
+	url:            'https://headlessoracle.com',
+	capabilities: [
+		'market_status',
+		'market_schedule',
+		'exchange_directory',
+		'batch_query',
+		'signed_receipts',
+		'mcp_tools',
+	],
+	mcp: {
+		endpoint:         'https://headlessoracle.com/mcp',
+		protocol_version: '2024-11-05',
+		tools: [
+			{
+				name:        'get_market_status',
+				description: 'Signed receipt: OPEN, CLOSED, HALTED, or UNKNOWN for one exchange.',
+				parameters:  { mic: 'string (required) — ISO 10383 MIC code, e.g. XNYS' },
+			},
+			{
+				name:        'get_market_schedule',
+				description: 'Next open/close times for one exchange, in UTC.',
+				parameters:  { mic: 'string (required) — ISO 10383 MIC code' },
+			},
+			{
+				name:        'list_exchanges',
+				description: 'All supported exchanges with names and timezones.',
+				parameters:  {},
+			},
+		],
+	},
+	rest_api: {
+		base_url:     'https://headlessoracle.com',
+		openapi_spec: 'https://headlessoracle.com/openapi.json',
+		endpoints: [
+			{ path: '/v5/demo',               method: 'GET',  auth: false, description: 'Public signed receipt' },
+			{ path: '/v5/status',             method: 'GET',  auth: true,  description: 'Authenticated signed receipt' },
+			{ path: '/v5/batch',              method: 'GET',  auth: true,  description: 'Batch signed receipts for multiple MICs' },
+			{ path: '/v5/schedule',           method: 'GET',  auth: false, description: 'Next open/close times' },
+			{ path: '/v5/exchanges',          method: 'GET',  auth: false, description: 'All supported exchanges' },
+			{ path: '/v5/keys',               method: 'GET',  auth: false, description: 'Public key registry + canonical payload spec' },
+			{ path: '/v5/health',             method: 'GET',  auth: false, description: 'Signed liveness probe' },
+			{ path: '/.well-known/oracle-keys.json', method: 'GET', auth: false, description: 'RFC 8615 key discovery' },
+		],
+		auth: {
+			header:  'X-Oracle-Key',
+			missing: 401,
+			invalid: 403,
+			payment_required: 402,
+		},
+	},
+	trust: {
+		algorithm:     'Ed25519',
+		key_id_prefix: '03dc2799',
+		key_registry:  'https://headlessoracle.com/v5/keys',
+		well_known:    'https://headlessoracle.com/.well-known/oracle-keys.json',
+		verify_sdk:    'npm:@headlessoracle/verify',
+	},
+	safety: {
+		fail_closed:     true,
+		unknown_means:   'CLOSED — halt all execution',
+		receipt_ttl_sec: 60,
+	},
+};
 
 // ─── MCP (Model Context Protocol) ────────────────────────────────────────────
 // Implements JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05).
@@ -1800,6 +2015,12 @@ export default {
 			}
 			if (url.pathname === '/llms.txt') {
 				return new Response(LLMS_TXT, { headers: { 'Content-Type': 'text/plain' } });
+			}
+			if (url.pathname === '/SKILL.md') {
+				return new Response(SKILL_MD, { headers: { 'Content-Type': 'text/markdown; charset=utf-8' } });
+			}
+			if (url.pathname === '/.well-known/agent.json') {
+				return json(AGENT_JSON);
 			}
 
 			// ── POST /v5/checkout — create Paddle checkout transaction ───
