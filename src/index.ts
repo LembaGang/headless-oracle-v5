@@ -1137,11 +1137,28 @@ if (receipt.status !== 'OPEN') {
 - \`GET /v5/schedule?mic=XNYS\` — next open/close times, lunch breaks, public holidays
 `;
 
+// FNV-1a 32-bit hash — deterministic, synchronous, no crypto API needed.
+// Only used for cache-invalidation ETags; not a security primitive.
+function fnv1a32(str: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < str.length; i++) {
+		hash ^= str.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, '0');
+}
+
+// Computed once at module load — both values are derived from the static SKILL_MD string.
+// Update SKILL_MD_LAST_MOD whenever SKILL_MD is changed; the ETag updates automatically.
+const SKILL_MD_ETAG     = `"${fnv1a32(SKILL_MD)}"`;
+const SKILL_MD_LAST_MOD = 'Thu, 26 Feb 2026 00:00:00 GMT';
+
 // agent.json — structured agent metadata for programmatic discovery.
 // Follows the emerging agent.json convention (no formal spec yet — designed to be stable).
 // Intentionally minimal: capabilities, tools, endpoints, and trust anchors only.
 const AGENT_JSON = {
 	schema_version: '1.0',
+	spec_version:   '2026-02-26',
 	name:           'Headless Oracle',
 	description:    'Cryptographically signed market-state attestations for AI agents. Ed25519-signed receipts for 7 global exchanges. Fail-closed: UNKNOWN always means CLOSED.',
 	url:            'https://headlessoracle.com',
@@ -2017,7 +2034,13 @@ export default {
 				return new Response(LLMS_TXT, { headers: { 'Content-Type': 'text/plain' } });
 			}
 			if (url.pathname === '/SKILL.md') {
-				return new Response(SKILL_MD, { headers: { 'Content-Type': 'text/markdown; charset=utf-8' } });
+				return new Response(SKILL_MD, {
+					headers: {
+						'Content-Type':  'text/markdown; charset=utf-8',
+						'Last-Modified': SKILL_MD_LAST_MOD,
+						'ETag':          SKILL_MD_ETAG,
+					},
+				});
 			}
 			if (url.pathname === '/.well-known/agent.json') {
 				return json(AGENT_JSON);

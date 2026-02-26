@@ -1181,6 +1181,16 @@ describe('GET /SKILL.md', () => {
 		expect(body).toContain('get_market_status');
 		expect(body).toContain('@headlessoracle/verify');
 	});
+
+	it('includes Last-Modified and ETag headers for cache invalidation', async () => {
+		const response = await fetchWorker('/SKILL.md');
+		const lastMod = response.headers.get('Last-Modified');
+		const etag    = response.headers.get('ETag');
+		expect(lastMod).toBeTruthy();
+		expect(lastMod).toContain('2026');
+		// ETag must be a quoted string (RFC 7232)
+		expect(etag).toMatch(/^"[0-9a-f]+"$/);
+	});
 });
 
 // ─── GET /.well-known/agent.json ─────────────────────────────────────────────
@@ -1203,10 +1213,17 @@ describe('GET /.well-known/agent.json', () => {
 		expect(toolNames).toContain('get_market_status');
 		expect(toolNames).toContain('get_market_schedule');
 		expect(toolNames).toContain('list_exchanges');
-		const trust = body.trust as { fail_closed?: boolean };
 		const safety = body.safety as { fail_closed: boolean; unknown_means: string };
 		expect(safety.fail_closed).toBe(true);
 		expect(safety.unknown_means).toContain('CLOSED');
+	});
+
+	it('includes spec_version for staleness detection', async () => {
+		const body = await fetchWorker('/.well-known/agent.json').then((r) => r.json()) as Record<string, unknown>;
+		expect(body).toHaveProperty('spec_version');
+		// Must be a date string (YYYY-MM-DD) so agents can compare against a cached value
+		expect(typeof body.spec_version).toBe('string');
+		expect(body.spec_version as string).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 	});
 
 	it('robots.txt allows /SKILL.md', async () => {
