@@ -10,6 +10,7 @@ routes = [
   { pattern = "headlessoracle.com/openapi.json", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/robots.txt", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/llms.txt", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/SKILL.md", zone_name = "headlessoracle.com" },
 ]
 
 [vars]
