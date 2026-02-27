@@ -4,6 +4,7 @@
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
 **Test suite**: 148/148 tests passing (worker) + 24/24 tests passing (SDK)
+**Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **Last significant work**: Feb 26 2026 — error code standardisation + SEO audit + content creation:
   - **Error codes**: All 405 errors now `METHOD_NOT_ALLOWED` (SCREAMING_SNAKE_CASE); all auth errors include `message` field
   - **OpenAPI**: Server URL corrected (`headlessoracle.com`); new paths added (`/robots.txt`, `/llms.txt`, `/SKILL.md`, `/.well-known/agent.json`); error response schemas completed for all routes
