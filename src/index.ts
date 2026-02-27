@@ -985,7 +985,7 @@ Any bot using hardcoded UTC offsets will compute incorrect open/close times afte
 
 ## Legal
 
-- [Terms of Service](https://headlessoracle.com/terms.html): Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion. Provides probabilistic market context, not deterministic trading signals. No fiduciary, advisory, or broker-dealer relationship is formed. Total liability capped at fees paid in the 30 days preceding any claim.
+- [Terms of Service](https://headlessoracle.com/terms.html): Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion. Provides probabilistic market context, not deterministic trading signals. No fiduciary, advisory, or broker-dealer relationship is formed. Total liability capped at fees paid in the 12 months preceding any claim.
 
 - [Privacy Policy](https://headlessoracle.com/privacy.html): Minimal data collection. Collected: API key identifier, request timestamp, MIC code. NOT collected: portfolio data, positions, balances, wallet addresses.
 
