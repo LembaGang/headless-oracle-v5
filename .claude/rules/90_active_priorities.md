@@ -3,10 +3,18 @@
 
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
-**Test suite**: 148/148 tests passing (worker) + 24/24 tests passing (SDK)
+**Test suite**: 154/154 tests passing (worker) + 24/24 tests passing (SDK)
 **Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
-**Last significant work**: Feb 28 2026 — legal fixes, SEO, www redirect, llms.txt single source of truth:
+**@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published 4 days ago, auth token in ~/.npmrc)
+**Last significant work**: Feb 28 2026 (evening) — content + computed edge-case utility:
+  - **llms.txt**: Added `## Edge Cases This API Handles` section (7 bullet points covering DST, holidays, early closes, lunch breaks, circuit breakers, weekends, UNKNOWN handling; closes with ~1,300/year figure)
+  - **SKILL.md**: Added `## When to Use Headless Oracle vs a Timezone Library` comparison table (8-row two-column with rule-of-thumb)
+  - **edgeCaseCount(year)**: Exported utility function that computes schedule edge cases directly from MARKET_CONFIGS — holidays, halfDays, DST transitions (detected via Intl UTC-offset Jan vs Jul), lunchBreakSessions (weekdays minus weekday holidays per lunch-break exchange), weekendDays. Replaces hardcoded ~1,311 comment.
+  - **6 new tests**: Assert 2026 values component-by-component; total = 1,319 (81 + 9 + 8 + 493 + 728). Drift is now test-caught.
+  - **npm publish status confirmed**: @headlessoracle/verify@1.0.0 live on npm, published by mbeenz. Auth token in ~/.npmrc.
+  - **Deployed**: Worker (commit d917197) live and verified. 154/154 tests passing.
+**Previous significant work**: Feb 28 2026 — legal fixes, SEO, www redirect, llms.txt single source of truth:
   - **Legal**: 4 playbook fixes in terms.html + api-disclaimer-draft.md (12-month cap, no retroactive voiding, third-party data disclaimer, signature scope clarification)
   - **llms.txt**: Deleted orphaned copies from web repo; LLMS_TXT constant in src/index.ts is sole source of truth — no manual sync ever needed again
   - **www redirect**: Worker handles www.headlessoracle.com/* with 301 → bare domain; prevents Pages cache divergence permanently
@@ -104,6 +112,7 @@
   - 4 new lunch_break tests + 1 valid_until assertion added (76 total)
 **Previous significant work**: Feb 22 2026 — HIGH gap 7 resolved (holiday time bomb)
 **Next session trigger**: User completes human tasks → HN launch March 10.
+**npm publish**: @headlessoracle/verify@1.0.0 confirmed live on npmjs.com. Auth token already in ~/.npmrc. Human task marked DONE.
 
 ## Immediate Next Engineering Tasks (when user returns)
 1. **Before deploy: Supabase schema** — create the `api_keys` table (human task):
@@ -170,16 +179,21 @@
 - [x] DST risk article written (headless-oracle-v5/docs/dst-risk-article.md)
 - [x] HN launch post drafted (3 variants in headless-oracle-v5/docs/hn-launch-post.md)
 - [x] All HTML pages have OG tags and robots meta
+- [x] @headlessoracle/verify published to npm (v1.0.0 — confirmed live)
+- [x] llms.txt ## Edge Cases This API Handles section added
+- [x] SKILL.md timezone library comparison table added
+- [x] edgeCaseCount() utility built — 6 tests, total 1,319 for 2026, drift is now test-caught
 - [ ] Phantom Hour article published (human task — Gemini draft ready)
 - [ ] Twitter/X thread posted (human task)
 - [ ] 15 targeted DMs sent (human task — begins Feb 28)
 - [ ] Rate limiting configured in Cloudflare Dashboard (human task — before March 10)
 
 ## Codebase Health
-- **Worker**: headless-oracle-v5 | main branch | deployed to Cloudflare Workers
+- **Worker**: headless-oracle-v5 | main branch | deployed to Cloudflare Workers (commit d917197)
 - **Frontend**: headless-oracle-web | main branch | deployed to Cloudflare Pages via `npm run deploy`
 - **DST Demo**: dst-exploit-demo | master branch | published on GitHub
-- **Tests**: 72/72 passing. `.dev.vars` populated with test-only keypair.
+- **SDK**: @headlessoracle/verify@1.0.0 | npmjs.com/package/@headlessoracle/verify | 24/24 tests passing
+- **Tests**: 154/154 passing. `.dev.vars` populated with test-only keypair.
 - **Public key**: `03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178` (production)
 - **All live pages**: headlessoracle.com, /docs, /status, /verify, /terms, /privacy, /llms.txt, /openapi.json
 
