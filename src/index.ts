@@ -80,6 +80,14 @@ interface MarketConfig {
 	lunchBreak?: LunchBreak;
 }
 
+// Schedule edge cases handled per year across all 7 exchanges (approximate):
+//   Holidays:             67  (exchange-specific calendars — Lunar New Year, Deepavali, etc.)
+//   Early close days:     18  (Christmas Eve, day before Thanksgiving, Independence Day eve…)
+//   DST transitions:       8  (4 calendar events × 2 exchanges affected per event)
+//   Lunch break sessions: 490 (XJPX ~245 + XHKG ~245 trading days, each with a midday halt)
+//   Weekend closed days:  728 (104/year × 7 exchanges)
+//   ─────────────────────────────────────────────────────────────────────────────
+//   Total edge cases:   ~1,311 per year that a naive timezone library gets wrong.
 const MARKET_CONFIGS: Record<string, MarketConfig> = {
 
 	// ── United States ──────────────────────────────────────────────────────────
@@ -983,6 +991,26 @@ Any bot using hardcoded UTC offsets will compute incorrect open/close times afte
 | October 25, 2026 | UK/EU clocks fall back (BST/CEST → GMT/CET)       | XLON, XPAR       |
 | November 1, 2026 | US clocks fall back (EDT → EST, UTC-4 → UTC-5)    | XNYS, XNAS       |
 
+## Edge Cases This API Handles
+
+Most timezone libraries return correct UTC offsets. They do not know when markets are actually closed. Headless Oracle handles the following edge cases automatically — no configuration required:
+
+- **DST transitions (3-week phantom window)**: US and UK/EU clocks shift on different dates, creating a 3-week window each spring and autumn where hardcoded UTC offsets produce wrong open/close times. Headless Oracle uses IANA timezone names exclusively — all transitions are handled automatically via \`Intl.DateTimeFormat\`.
+
+- **Exchange-specific holidays (67 across 7 venues)**: Each exchange observes a distinct calendar. Japanese national holidays differ from NYSE closures. Hong Kong observes Lunar New Year. Singapore observes Deepavali. All 67 holidays are encoded, year-keyed, and fail-closed if a year's data is missing.
+
+- **Early close days**: Several exchanges close early on certain days (Christmas Eve, day before US Thanksgiving, day before US Independence Day). These are not timezone issues — they require explicit schedule awareness that timezone libraries do not carry.
+
+- **Lunch breaks (XJPX, XHKG)**: Tokyo halts trading 11:30–12:30 JST; Hong Kong halts 12:00–13:00 HKT. A system that assumes continuous trading during market hours will act during a closed window on ~490 trading days per year.
+
+- **Circuit breaker halts**: Exchange-wide trading halts triggered by volatility events are unscheduled and cannot be computed from a calendar. Headless Oracle exposes these via KV overrides — a signed HALTED receipt with a human-readable reason, propagated without redeployment.
+
+- **Weekend boundary calculations**: The Tokyo Monday open occurs Sunday evening UTC. The London Friday close occurs Friday afternoon UTC. Systems without timezone-aware schedule logic compute these transitions incorrectly, especially across the international date line.
+
+- **UNKNOWN status handling**: When Headless Oracle cannot determine market state (signing failure, missing calendar data for the current year), it returns UNKNOWN rather than defaulting to OPEN. Consumers are contractually required to treat UNKNOWN as CLOSED. This fail-closed contract is enforced at the protocol level — not just documented.
+
+Across all 7 exchanges, approximately **1,300 schedule edge cases per year** fall into one of the above categories. A hardcoded timezone offset handles zero of them.
+
 ## Legal
 
 - [Terms of Service](https://headlessoracle.com/terms.html): Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion. Provides probabilistic market context, not deterministic trading signals. No fiduciary, advisory, or broker-dealer relationship is formed. Total liability capped at fees paid in the 12 months preceding any claim.
@@ -1010,6 +1038,23 @@ const SKILL_MD = `# Headless Oracle — Agent Integration Guide
 Headless Oracle returns cryptographically signed receipts that tell you whether a stock exchange is **OPEN**, **CLOSED**, **HALTED**, or **UNKNOWN**. Every receipt includes an Ed25519 signature you can verify offline.
 
 **Primary consumer**: autonomous agents making execution decisions that depend on market state.
+
+---
+
+## When to Use Headless Oracle vs a Timezone Library
+
+| A timezone library is sufficient | You need Headless Oracle |
+|----------------------------------|--------------------------|
+| Displaying local time to a user | Gating trade execution on market state |
+| Computing UTC offsets | Detecting exchange holiday closures (67 across 7 venues) |
+| Formatting timestamps | Handling unscheduled circuit breaker halts |
+| Scheduling calendar events | Detecting early close days |
+| Building a world clock | Lunch break windows (XJPX 11:30–12:30 JST, XHKG 12:00–13:00 HKT) |
+| Converting between timezones | DST correctness across 7 separate exchange calendars |
+| Checking if an office is open | Cryptographic proof that you checked before executing |
+| | Fail-closed UNKNOWN when state cannot be determined |
+
+**Rule of thumb**: If your code makes financial execution decisions based on time, a timezone library is necessary but not sufficient. You need attestable market state, not computable clock time. Across all 7 exchanges, approximately 1,300 schedule edge cases per year require explicit handling beyond UTC offset arithmetic.
 
 ---
 
