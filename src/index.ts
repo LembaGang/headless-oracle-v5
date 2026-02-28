@@ -1864,6 +1864,14 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 export default {
 	async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
+
+		// Redirect www → bare domain (permanent). Keeps canonical URL consistent
+		// and ensures www never serves stale Pages-cached content for Worker routes.
+		if (url.hostname === 'www.headlessoracle.com') {
+			url.hostname = 'headlessoracle.com';
+			return Response.redirect(url.toString(), 301);
+		}
+
 		const now = new Date();
 		const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
 
