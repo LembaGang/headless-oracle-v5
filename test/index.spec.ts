@@ -1,6 +1,6 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, vi } from 'vitest';
-import worker from '../src';
+import worker, { edgeCaseCount } from '../src';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1664,5 +1664,38 @@ describe('POST /webhooks/paddle', () => {
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
+	});
+});
+
+// ─── edgeCaseCount() ─────────────────────────────────────────────────────────
+
+describe('edgeCaseCount()', () => {
+	it('2026: holidays = sum of all 7 exchange holiday lists', () => {
+		// XNYS 10 + XNAS 10 + XLON 8 + XJPX 18 + XPAR 12 + XHKG 14 + XSES 9 = 81
+		expect(edgeCaseCount(2026).holidays).toBe(81);
+	});
+
+	it('2026: halfDays = sum of all early-close entries', () => {
+		// XNYS 2 + XNAS 2 + XLON 2 + XJPX 0 + XPAR 2 + XHKG 1 + XSES 0 = 9
+		expect(edgeCaseCount(2026).halfDays).toBe(9);
+	});
+
+	it('2026: dstTransitions = 8 (XNYS, XNAS, XLON, XPAR each spring-forward + fall-back)', () => {
+		expect(edgeCaseCount(2026).dstTransitions).toBe(8);
+	});
+
+	it('2026: lunchBreakSessions = XJPX trading days + XHKG trading days', () => {
+		// 2026 has 261 weekdays; XJPX has 17 weekday holidays → 244; XHKG has 12 → 249; total 493
+		expect(edgeCaseCount(2026).lunchBreakSessions).toBe(493);
+	});
+
+	it('2026: weekendDays = 104 weekend days × 7 exchanges = 728', () => {
+		expect(edgeCaseCount(2026).weekendDays).toBe(728);
+	});
+
+	it('2026: total is the sum of all components and matches the expected value', () => {
+		const { holidays, halfDays, dstTransitions, lunchBreakSessions, weekendDays, total } = edgeCaseCount(2026);
+		expect(total).toBe(holidays + halfDays + dstTransitions + lunchBreakSessions + weekendDays);
+		expect(total).toBe(1319);
 	});
 });

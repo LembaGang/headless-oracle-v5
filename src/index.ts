@@ -80,14 +80,8 @@ interface MarketConfig {
 	lunchBreak?: LunchBreak;
 }
 
-// Schedule edge cases handled per year across all 7 exchanges (approximate):
-//   Holidays:             67  (exchange-specific calendars — Lunar New Year, Deepavali, etc.)
-//   Early close days:     18  (Christmas Eve, day before Thanksgiving, Independence Day eve…)
-//   DST transitions:       8  (4 calendar events × 2 exchanges affected per event)
-//   Lunch break sessions: 490 (XJPX ~245 + XHKG ~245 trading days, each with a midday halt)
-//   Weekend closed days:  728 (104/year × 7 exchanges)
-//   ─────────────────────────────────────────────────────────────────────────────
-//   Total edge cases:   ~1,311 per year that a naive timezone library gets wrong.
+// Schedule edge cases per year are computed from live config by edgeCaseCount(year) below.
+// The ~1,300/year figure in llms.txt and SKILL.md is derived from that function, not hardcoded.
 const MARKET_CONFIGS: Record<string, MarketConfig> = {
 
 	// ── United States ──────────────────────────────────────────────────────────
@@ -387,6 +381,82 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		},
 	},
 };
+
+// ─── Edge Case Counter ────────────────────────────────────────────────────────
+// Computes schedule edge cases directly from MARKET_CONFIGS for a given calendar year.
+// Exported for testing — not part of the public HTTP surface.
+
+function utcOffsetMinutes(timezone: string, at: Date): number {
+	const parts = new Intl.DateTimeFormat('en-US', {
+		timeZone: timezone,
+		year: 'numeric', month: '2-digit', day: '2-digit',
+		hour: '2-digit', minute: '2-digit', second: '2-digit',
+		hour12: false,
+	}).formatToParts(at);
+	const get = (t: Intl.DateTimeFormatPartTypes) =>
+		parseInt(parts.find((p) => p.type === t)!.value, 10);
+	const localMs = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+	return (localMs - at.getTime()) / 60_000;
+}
+
+export function edgeCaseCount(year: number): {
+	holidays: number;
+	halfDays: number;
+	dstTransitions: number;
+	lunchBreakSessions: number;
+	weekendDays: number;
+	total: number;
+} {
+	const yearStr = String(year);
+
+	// Count every day of the year to get weekday/weekend totals
+	let weekdaysInYear = 0;
+	let weekendDaysInYear = 0;
+	const cursor = new Date(Date.UTC(year, 0, 1));
+	while (cursor.getUTCFullYear() === year) {
+		const dow = cursor.getUTCDay(); // 0 = Sun, 6 = Sat
+		if (dow === 0 || dow === 6) weekendDaysInYear++;
+		else weekdaysInYear++;
+		cursor.setUTCDate(cursor.getUTCDate() + 1);
+	}
+
+	// Mid-winter and mid-summer samples for DST detection
+	const janSample = new Date(Date.UTC(year, 0, 15));
+	const julSample = new Date(Date.UTC(year, 6, 15));
+
+	let holidays = 0;
+	let halfDays = 0;
+	let dstTransitions = 0;
+	let lunchBreakSessions = 0;
+
+	for (const config of Object.values(MARKET_CONFIGS)) {
+		const yearHols = config.holidays[yearStr] ?? [];
+
+		holidays += yearHols.length;
+
+		if (config.halfDays) {
+			halfDays += config.halfDays.filter((h) => h.date.startsWith(yearStr)).length;
+		}
+
+		// Compare UTC offset in January vs July — a difference means DST is observed
+		if (utcOffsetMinutes(config.timezone, janSample) !== utcOffsetMinutes(config.timezone, julSample)) {
+			dstTransitions += 2; // spring forward + fall back
+		}
+
+		if (config.lunchBreak) {
+			// Trading days = weekdays minus holidays that actually fall on a weekday
+			const weekdayHolidayCount = yearHols.filter((dateStr) => {
+				const dow = new Date(dateStr + 'T12:00:00Z').getUTCDay();
+				return dow !== 0 && dow !== 6;
+			}).length;
+			lunchBreakSessions += weekdaysInYear - weekdayHolidayCount;
+		}
+	}
+
+	const weekendDays = weekendDaysInYear * Object.keys(MARKET_CONFIGS).length;
+	const total = holidays + halfDays + dstTransitions + lunchBreakSessions + weekendDays;
+	return { holidays, halfDays, dstTransitions, lunchBreakSessions, weekendDays, total };
+}
 
 // ─── Local Time Helper ────────────────────────────────────────────────────────
 
