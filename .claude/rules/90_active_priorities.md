@@ -5,7 +5,18 @@
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
 **Test suite**: 148/148 tests passing (worker) + 24/24 tests passing (SDK)
 **Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
-**Last significant work**: Feb 26 2026 — error code standardisation + SEO audit + content creation:
+**www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
+**Last significant work**: Feb 28 2026 — legal fixes, SEO, www redirect, llms.txt single source of truth:
+  - **Legal**: 4 playbook fixes in terms.html + api-disclaimer-draft.md (12-month cap, no retroactive voiding, third-party data disclaimer, signature scope clarification)
+  - **llms.txt**: Deleted orphaned copies from web repo; LLMS_TXT constant in src/index.ts is sole source of truth — no manual sync ever needed again
+  - **www redirect**: Worker handles www.headlessoracle.com/* with 301 → bare domain; prevents Pages cache divergence permanently
+  - **SEO**: All 6 HTML pages have meta description, og:*, robots meta; index+docs have link rel alternate for openapi.json and llms.txt
+  - **MCP auth prompts**: Suppressed via permissions.deny in ~/.claude/settings.json (8 legal plugin OAuth connectors blocked — skill still works)
+  - **.gitignore**: MCP token files (.mcpregistry_*) and .claude/settings.local.json excluded
+  - **legal-playbook.md**: Committed to worker repo
+  - **Deployed**: Worker (commit 1414dc1) + Pages (commit a1b0d86) both live and verified
+  - 148/148 tests passing
+**Previous significant work**: Feb 26 2026 — error code standardisation + SEO audit + content creation:
   - **Error codes**: All 405 errors now `METHOD_NOT_ALLOWED` (SCREAMING_SNAKE_CASE); all auth errors include `message` field
   - **OpenAPI**: Server URL corrected (`headlessoracle.com`); new paths added (`/robots.txt`, `/llms.txt`, `/SKILL.md`, `/.well-known/agent.json`); error response schemas completed for all routes
   - **wrangler.toml**: Rate limiting comments expanded to all 10 public routes with notes on what NOT to rate-limit
