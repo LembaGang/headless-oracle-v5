@@ -1,0 +1,124 @@
+# Smithery MCP Registry — Headless Oracle
+# https://smithery.ai
+#
+# Submit at: https://smithery.ai/new
+# After submission, Smithery crawls this file for tool metadata.
+
+name: headless-oracle
+display_name: Headless Oracle — Signed Market Status
+description: |
+  Cryptographically signed real-time market status for 7 global stock exchanges.
+  Returns Ed25519-signed receipts (OPEN/CLOSED/HALTED/UNKNOWN) with 60-second TTL.
+  Agents can verify receipts offline. Fail-closed: UNKNOWN always means CLOSED.
+version: "5.0"
+homepage: https://headlessoracle.com
+license: Commercial
+author:
+  name: LembaGang
+  url: https://headlessoracle.com
+
+server:
+  type: http
+  url: https://headlessoracle.com/mcp
+  protocol_version: "2024-11-05"
+  transport: streamable-http
+
+categories:
+  - finance
+  - data
+  - trading
+  - compliance
+
+tags:
+  - market-status
+  - stock-exchange
+  - signed-receipt
+  - ed25519
+  - fail-closed
+  - NYSE
+  - NASDAQ
+  - LSE
+  - Tokyo
+  - Hong-Kong
+  - Singapore
+  - Paris
+
+tools:
+  - name: get_market_status
+    description: |
+      Returns a cryptographically signed receipt for one exchange indicating
+      whether the market is OPEN, CLOSED, HALTED, or UNKNOWN.
+      Receipt includes Ed25519 signature, 60-second TTL, and receipt_mode.
+      MANDATORY: treat UNKNOWN and HALTED as CLOSED — halt all execution.
+    parameters:
+      mic:
+        type: string
+        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES
+        required: true
+        example: XNYS
+
+  - name: get_market_schedule
+    description: |
+      Returns next open and close times in UTC for a given exchange.
+      Includes lunch break windows for XJPX (11:30–12:30 JST) and XHKG (12:00–13:00 HKT).
+      Not signed — use get_market_status for authoritative signed receipts.
+      data_coverage_years shows the range of holiday data available.
+    parameters:
+      mic:
+        type: string
+        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES
+        required: true
+        example: XNYS
+
+  - name: list_exchanges
+    description: |
+      Returns all 7 supported exchanges with MIC codes, names, and timezones.
+      Use to discover supported markets before calling get_market_status.
+    parameters: {}
+
+supported_exchanges:
+  - mic: XNYS
+    name: New York Stock Exchange
+    timezone: America/New_York
+  - mic: XNAS
+    name: NASDAQ
+    timezone: America/New_York
+  - mic: XLON
+    name: London Stock Exchange
+    timezone: Europe/London
+  - mic: XJPX
+    name: Japan Exchange Group (Tokyo)
+    timezone: Asia/Tokyo
+  - mic: XPAR
+    name: Euronext Paris
+    timezone: Europe/Paris
+  - mic: XHKG
+    name: Hong Kong Exchanges and Clearing
+    timezone: Asia/Hong_Kong
+  - mic: XSES
+    name: Singapore Exchange
+    timezone: Asia/Singapore
+
+safety_guarantees:
+  - "Fail-closed: UNKNOWN means CLOSED — never defaults to OPEN on error"
+  - "4-tier architecture: KV override → schedule → UNKNOWN fallback → CRITICAL_FAILURE"
+  - "Ed25519 signed receipts — tamper-proof, independently verifiable"
+  - "60-second TTL enforced in signed payload — agents cannot act on stale receipts"
+  - "receipt_mode field distinguishes demo (unauthenticated) from live (API key required)"
+
+authentication:
+  demo_endpoint:
+    required: false
+    description: "/v5/demo is public — no API key required. receipt_mode: 'demo'."
+  live_endpoints:
+    required: true
+    description: "/v5/status and /v5/batch require X-Oracle-Key header. receipt_mode: 'live'."
+  mcp_tools:
+    required: false
+    description: "MCP tools use demo-mode signing — no API key required."
+
+verification:
+  public_key_url: https://headlessoracle.com/.well-known/oracle-keys.json
+  algorithm: Ed25519
+  sdk: "@headlessoracle/verify (npm) — zero production dependencies, Web Crypto API"
+  sdk_url: https://www.npmjs.com/package/@headlessoracle/verify
