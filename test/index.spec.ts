@@ -70,6 +70,8 @@ describe('GET /v5/demo', () => {
 
 		// status must be one of the valid values
 		expect(VALID_STATUSES).toContain(body.status);
+		// receipt_mode must be 'demo' on the public demo endpoint
+		expect(body).toHaveProperty('receipt_mode', 'demo');
 		// source must be one of the valid values
 		expect(VALID_SOURCES).toContain(body.source);
 		// Signature is 128-char hex (64 bytes of Ed25519 output)
@@ -182,6 +184,7 @@ describe('GET /v5/status', () => {
 			expect(body).toHaveProperty('receipt_id');
 			expect(body).toHaveProperty('issued_at');
 			expect(body).toHaveProperty('schema_version', 'v5.0');
+			expect(body).toHaveProperty('receipt_mode', 'live');
 		});
 	}
 
@@ -580,7 +583,7 @@ describe('Receipt structure', () => {
 		const body = await fetchJSON('/v5/demo');
 		const requiredFields = [
 			'receipt_id', 'issued_at', 'expires_at', 'mic', 'status',
-			'source', 'schema_version', 'public_key_id', 'signature',
+			'source', 'receipt_mode', 'schema_version', 'public_key_id', 'signature',
 		];
 		for (const field of requiredFields) {
 			expect(body).toHaveProperty(field);

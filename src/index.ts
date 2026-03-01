@@ -858,7 +858,7 @@ Primary endpoint. Returns cryptographically signed market status for a single ex
 
 - Required parameter: \`mic\` (ISO 10383 MIC code)
 - Required header: \`X-Oracle-Key\` (your API key)
-- Response fields: \`receipt_id\` (UUID), \`issued_at\` (ISO 8601), \`expires_at\` (ISO 8601), \`mic\` (string), \`status\` (enum: OPEN | CLOSED | HALTED | UNKNOWN), \`source\` (enum: SCHEDULE | OVERRIDE | SYSTEM), \`schema_version\` (string), \`public_key_id\` (string), \`signature\` (hex-encoded Ed25519)
+- Response fields: \`receipt_id\` (UUID), \`issued_at\` (ISO 8601), \`expires_at\` (ISO 8601), \`mic\` (string), \`status\` (enum: OPEN | CLOSED | HALTED | UNKNOWN), \`source\` (enum: SCHEDULE | OVERRIDE | SYSTEM), \`receipt_mode\` (enum: demo | live), \`schema_version\` (string), \`public_key_id\` (string), \`signature\` (hex-encoded Ed25519)
 - [Full API docs](https://headlessoracle.com/docs.html)
 
 ### GET /v5/schedule — Market Schedule Lookup (Unsigned)
@@ -1446,7 +1446,7 @@ const OPENAPI_SPEC = {
 			},
 			SignedReceipt: {
 				type: 'object',
-				required: ['receipt_id', 'issued_at', 'expires_at', 'mic', 'status', 'source', 'schema_version', 'public_key_id', 'signature'],
+				required: ['receipt_id', 'issued_at', 'expires_at', 'mic', 'status', 'source', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
 				properties: {
 					receipt_id:    { type: 'string', format: 'uuid' },
 					issued_at:     { type: 'string', format: 'date-time' },
@@ -1455,6 +1455,7 @@ const OPENAPI_SPEC = {
 					status:        { '$ref': '#/components/schemas/Status' },
 					source:        { '$ref': '#/components/schemas/Source' },
 					reason:        { type: 'string', description: 'Present when source is OVERRIDE.' },
+					receipt_mode:  { type: 'string', enum: ['demo', 'live'], description: "'demo' for unauthenticated /v5/demo; 'live' for /v5/status, /v5/batch, and MCP tool receipts." },
 					schema_version: { type: 'string', example: 'v5.0', description: 'Receipt schema version. Consumers should verify this matches the version they were built against.' },
 					public_key_id: { type: 'string', example: 'key_2026_v1' },
 					signature:     { type: 'string', description: 'Ed25519 signature of canonical payload as 128-char hex string.' },
@@ -1760,6 +1761,7 @@ async function buildSignedReceipt(
 	env: Env,
 	now: Date,
 	expiresAt: string,
+	mode: 'demo' | 'live',
 ): Promise<{ receipt: Record<string, unknown>; status: number }> {
 	try {
 		// ─ TIER 0: Manual Override (circuit breakers, emergency halts) ─
@@ -1780,6 +1782,7 @@ async function buildSignedReceipt(
 						status:         override.status,
 						source:         'OVERRIDE',
 						reason:         override.reason,
+						receipt_mode:   mode,
 						schema_version: 'v5.0',
 						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 					};
@@ -1798,6 +1801,7 @@ async function buildSignedReceipt(
 			mic,
 			status,
 			source,
+			receipt_mode:   mode,
 			schema_version: 'v5.0',
 			public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 		};
@@ -1817,6 +1821,7 @@ async function buildSignedReceipt(
 				mic,
 				status:         'UNKNOWN',
 				source:         'SYSTEM',
+				receipt_mode:   mode,
 				schema_version: 'v5.0',
 				public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 			};
@@ -1917,7 +1922,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 				}
 				const now       = new Date();
 				const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
-				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt);
+				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, 'live');
 				return rpcResult({
 					...(status === 500 ? { isError: true } : {}),
 					content: [{ type: 'text', text: JSON.stringify(receipt) }],
@@ -2045,8 +2050,8 @@ export default {
 					}],
 					canonical_payload_spec: {
 						description:     'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
-						receipt_fields:  ['expires_at', 'issued_at', 'mic', 'public_key_id', 'receipt_id', 'schema_version', 'source', 'status'],
-						override_fields: ['expires_at', 'issued_at', 'mic', 'public_key_id', 'reason', 'receipt_id', 'schema_version', 'source', 'status'],
+						receipt_fields:  ['expires_at', 'issued_at', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						override_fields: ['expires_at', 'issued_at', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
 					health_fields:   ['expires_at', 'issued_at', 'public_key_id', 'receipt_id', 'source', 'status'],
 					},
 				});
@@ -2092,7 +2097,8 @@ export default {
 						supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
 					}, 400);
 				}
-				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt);
+				const mode = url.pathname === '/v5/demo' ? 'demo' : 'live';
+				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode);
 				return json(receipt, status);
 			}
 
@@ -2142,7 +2148,7 @@ export default {
 
 				// Build signed receipts in parallel — each is independently signed
 				const results = await Promise.all(
-					requestedMics.map((mic) => buildSignedReceipt(mic, env, now, expiresAt)),
+					requestedMics.map((mic) => buildSignedReceipt(mic, env, now, expiresAt, 'live')),
 				);
 
 				// If signing itself is offline (Tier 3), fail the whole batch — signing failure is total
