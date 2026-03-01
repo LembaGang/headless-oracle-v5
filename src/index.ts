@@ -2542,4 +2542,31 @@ export default {
 			}, 500);
 		}
 	},
+
+	// ─── Cron: npm download tracking ─────────────────────────────────────────
+	// Runs daily at 09:00 UTC (see wrangler.toml [triggers]).
+	// Fetches @headlessoracle/verify download counts from the npm registry API
+	// and logs them to Cloudflare Workers Logs for monitoring.
+	async scheduled(_event: ScheduledEvent, _env: Env, _ctx: ExecutionContext): Promise<void> {
+		try {
+			const [week, month] = await Promise.all([
+				fetch('https://api.npmjs.org/downloads/point/last-week/@headlessoracle/verify'),
+				fetch('https://api.npmjs.org/downloads/point/last-month/@headlessoracle/verify'),
+			]);
+			const [weekData, monthData] = await Promise.all([
+				week.json() as Promise<{ downloads?: number; package?: string }>,
+				month.json() as Promise<{ downloads?: number }>,
+			]);
+			console.log(JSON.stringify({
+				event:         'NPM_DOWNLOADS',
+				package:       weekData.package ?? '@headlessoracle/verify',
+				last_7_days:   weekData.downloads  ?? 0,
+				last_30_days:  monthData.downloads ?? 0,
+				sampled_at:    new Date().toISOString(),
+			}));
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : 'unknown error';
+			console.error(`NPM_TRACKING_ERROR: ${msg}`);
+		}
+	},
 };

@@ -64,3 +64,10 @@ id = "aaf52e9a579242f48fc09bb3e8afb293"
 #   /v5/batch    — protected by API key auth
 #   /v5/account  — protected by API key auth
 #   /webhooks/paddle — Paddle retries on non-200; rate limiting would break retry logic
+
+# ─── Cron Triggers ────────────────────────────────────────────────────────────
+# scheduled() handler in src/index.ts fetches npm download stats for
+# @headlessoracle/verify and logs them. Runs daily at 09:00 UTC.
+# View logs: Cloudflare Dashboard → Workers → headless-oracle-v5 → Logs
+[triggers]
+crons = ["0 9 * * *"]
