@@ -1081,6 +1081,38 @@ Most timezone libraries return correct UTC offsets. They do not know when market
 
 Across all 7 exchanges, approximately **1,300 schedule edge cases per year** fall into one of the above categories. A hardcoded timezone offset handles zero of them.
 
+## Receipt Portability
+
+Signed receipts are self-contained and verifiable by any party that holds the public key. This enables a multi-agent trust pattern where receipt verification is decoupled from receipt issuance.
+
+**Pattern: Agent A fetches, Agent B verifies**
+
+1. Agent A calls \`GET /v5/demo\` (or \`/v5/status\` with an API key) and receives a signed receipt.
+2. Agent A passes the receipt JSON to Agent B as part of its output or context.
+3. Agent B independently verifies the receipt using the public key at \`/.well-known/oracle-keys.json\` — without making a new API call.
+4. Agent B checks \`expires_at\` to ensure the receipt has not gone stale (60-second TTL).
+5. Agent B checks \`receipt_mode\`: \`'demo'\` receipts are unauthenticated (suitable for testing); \`'live'\` receipts require an API key (suitable for production decisions).
+
+**Verification steps (any language)**:
+
+\`\`\`
+1. Fetch public key: GET /.well-known/oracle-keys.json → keys[0].public_key (hex)
+2. Build canonical payload: collect all receipt fields except signature, sort keys alphabetically, JSON.stringify with no whitespace
+3. Verify Ed25519 signature: ed25519.verify(hex_decode(receipt.signature), utf8_encode(canonical), hex_decode(public_key))
+4. Check expiry: new Date(receipt.expires_at) > Date.now()
+5. Check receipt_mode: assert 'live' for production decisions
+6. Trust status: treat UNKNOWN or HALTED as CLOSED — never execute on ambiguous state
+\`\`\`
+
+**Why this matters at agent scale**: An orchestrator agent can check market state once and distribute the signed receipt to 10 sub-agents. Each sub-agent independently verifies without rate-limit pressure on the Oracle API. The cryptographic proof travels with the data.
+
+**Convenience**: Use the \`@headlessoracle/verify\` npm package for a 3-line verification wrapper (zero production dependencies, Web Crypto API, ESM + CJS):
+
+\`\`\`js
+import { verify } from '@headlessoracle/verify';
+const result = await verify(receipt);
+if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATURE | ...
+\`\`\`
 ## Legal
 
 - [Terms of Service](https://headlessoracle.com/terms.html): Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion. Provides probabilistic market context, not deterministic trading signals. No fiduciary, advisory, or broker-dealer relationship is formed. Total liability capped at fees paid in the 12 months preceding any claim.
