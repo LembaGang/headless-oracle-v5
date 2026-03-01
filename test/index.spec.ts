@@ -378,6 +378,49 @@ describe('Lunch break in /v5/schedule', () => {
 			expect(body.lunch_break).toBeNull();
 		}
 	});
+
+	// ── Year boundary safety: data_coverage_years ───────────────────────────────
+	it('schedule response includes data_coverage_years as sorted array of strings', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XNYS');
+		expect(body).toHaveProperty('data_coverage_years');
+		const years = body.data_coverage_years as string[];
+		expect(Array.isArray(years)).toBe(true);
+		expect(years.length).toBeGreaterThanOrEqual(2);
+		// Should include 2026 and 2027
+		expect(years).toContain('2026');
+		expect(years).toContain('2027');
+		// Should be sorted ascending
+		const sorted = [...years].sort();
+		expect(years).toEqual(sorted);
+	});
+
+	it('all 7 MICs include data_coverage_years in schedule response', async () => {
+		for (const mic of ALL_MICS) {
+			const body = await fetchJSON(`/v5/schedule?mic=${mic}`);
+			expect(body).toHaveProperty('data_coverage_years');
+			const years = body.data_coverage_years as string[];
+			expect(Array.isArray(years)).toBe(true);
+			expect(years.length).toBeGreaterThanOrEqual(2);
+		}
+	});
+
+	it('next_open is null when year coverage runs out (Dec 31 last covered year)', async () => {
+		vi.useFakeTimers();
+		// Set time to Dec 31, 2027 at 23:00 UTC — session done for XNYS (4pm ET close).
+		// Next trading day is Jan 2, 2028 but 2028 has no holiday data → getNextSession returns null.
+		vi.setSystemTime(new Date('2027-12-31T23:00:00Z'));
+		try {
+			const body = await fetchJSON('/v5/schedule?mic=XNYS');
+			// next_open must be null — not a guess at uncovered dates
+			expect(body.next_open).toBeNull();
+			expect(body.next_close).toBeNull();
+			// data_coverage_years still present so agent knows why
+			const years = body.data_coverage_years as string[];
+			expect(years).not.toContain('2028');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 // ─── GET /v5/exchanges ───────────────────────────────────────────────────────

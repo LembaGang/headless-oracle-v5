@@ -2072,18 +2072,23 @@ export default {
 				const nextSession   = getNextSession(mic, now);
 				const config        = MARKET_CONFIGS[mic];
 
+				// data_coverage_years: sorted list of years with holiday data.
+				// Agents querying near year-end should check coverage before trusting next_open.
+				// If the current year is absent, next_open will be null (fail-closed).
+				const data_coverage_years = Object.keys(config.holidays).sort();
 				return json({
 					mic,
-					name:           config.name,
-					timezone:       config.timezone,
-					queried_at:     now.toISOString(),
-					current_status: currentStatus.status,
-					next_open:      nextSession?.next_open  ?? null,
-					next_close:     nextSession?.next_close ?? null,
-					lunch_break:    config.lunchBreak
+					name:                config.name,
+					timezone:            config.timezone,
+					queried_at:          now.toISOString(),
+					current_status:      currentStatus.status,
+					next_open:           nextSession?.next_open  ?? null,
+					next_close:          nextSession?.next_close ?? null,
+					data_coverage_years,
+					lunch_break:         config.lunchBreak
 						? { start: `${pad2(config.lunchBreak.startHour)}:${pad2(config.lunchBreak.startMinute)}`, end: `${pad2(config.lunchBreak.endHour)}:${pad2(config.lunchBreak.endMinute)}` }
 						: null,
-					note:           'Times are UTC. lunch_break times are local exchange time (see timezone field).',
+					note:                'Times are UTC. lunch_break times are local exchange time (see timezone field). next_open is null when coverage for the current year is unavailable.',
 				});
 			}
 
