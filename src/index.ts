@@ -1171,7 +1171,11 @@ Headless Oracle returns cryptographically signed receipts that tell you whether 
 
 ## Option A: MCP (Recommended for Claude/Cursor/MCP-compatible agents)
 
-Add to your MCP config:
+MCP (Model Context Protocol) lets Claude, Cursor, and any MCP-compatible agent call Headless Oracle as a native tool — no API key required for demo, no HTTP code to write.
+
+### Claude Desktop setup
+
+Open \`~/Library/Application Support/Claude/claude_desktop_config.json\` (macOS) or \`%APPDATA%\Claude\claude_desktop_config.json\` (Windows). Add:
 
 \`\`\`json
 {
@@ -1184,12 +1188,35 @@ Add to your MCP config:
 }
 \`\`\`
 
-**Available tools:**
-- \`get_market_status\` — signed receipt for one exchange. Required param: \`mic\` (e.g. "XNYS")
-- \`get_market_schedule\` — next open/close times for one exchange. Required param: \`mic\`
-- \`list_exchanges\` — all 7 supported exchanges with names and timezones
+Restart Claude Desktop. You will see "headless-oracle" in the tool list. Ask Claude: *"Is the NYSE open right now?"*
 
-The MCP tools call the same logic as the REST API. Safety tiers apply identically.
+### Cursor setup
+
+Open Cursor → Settings → MCP Servers → Add Server. Enter:
+- Name: \`headless-oracle\`
+- Command: \`npx\`
+- Args: \`-y mcp-remote https://headlessoracle.com/mcp\`
+
+### Custom agent (any MCP client)
+
+\`\`\`
+POST https://headlessoracle.com/mcp
+Content-Type: application/json
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}
+\`\`\`
+
+Then call tools/call with \`get_market_status\`, \`get_market_schedule\`, or \`list_exchanges\`.
+
+### Available tools
+
+| Tool | Description | Required params |
+|------|-------------|-----------------|
+| \`get_market_status\` | Signed receipt (OPEN/CLOSED/HALTED/UNKNOWN) | \`mic\` (e.g. "XNYS") |
+| \`get_market_schedule\` | Next open/close times in UTC | \`mic\` |
+| \`list_exchanges\` | All 7 supported exchanges with names and timezones | none |
+
+The MCP tools use the same 4-tier fail-closed logic as the REST API. UNKNOWN always means CLOSED.
 
 ---
 
