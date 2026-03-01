@@ -3,11 +3,21 @@
 
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
-**Test suite**: 154/154 tests passing (worker) + 24/24 tests passing (SDK)
+**Test suite**: 160/160 tests passing (worker) + 24/24 tests passing (SDK)
 **Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published 4 days ago, auth token in ~/.npmrc)
-**Last significant work**: Feb 28 2026 (evening) — content + computed edge-case utility:
+**Last significant work**: Mar 1 2026 — 8-task pre-launch sprint:
+  - **Task 1 (receipt_mode)**: Added `receipt_mode: 'demo' | 'live'` as a signed field to all market receipts. `/v5/demo` → `'demo'`, `/v5/status`+batch+MCP → `'live'`. canonical_payload_spec updated. Schema tamper-proof: an adversary can't strip or flip receipt_mode.
+  - **Task 2 (year boundary)**: `/v5/schedule` now returns `data_coverage_years: string[]` so agents know when holiday data runs out. Note text explains `next_open: null` semantics. Dec 31 2027 boundary test confirmed.
+  - **Task 3 (portability docs)**: Added `## Receipt Portability` section to llms.txt: multi-agent pattern, 6 verification steps, why it matters at scale, SDK convenience link.
+  - **Task 4 (MCP guide)**: Expanded SKILL.md MCP section with per-client setup steps (Claude Desktop macOS+Windows, Cursor, custom agents with raw JSON-RPC), tool reference table.
+  - **Task 5 (MCP metadata)**: Created `smithery.yaml` for Smithery registry submission. Covers server URL, protocol, all 3 tools, 7 exchanges, safety guarantees, auth, verification.
+  - **Task 6 (npm tracking)**: Added Cloudflare Cron trigger (daily 09:00 UTC) + `scheduled()` handler. Fetches npm last-7/30 day downloads for @headlessoracle/verify, logs structured JSON to Workers Logs.
+  - **Task 7 (FAQ)**: Created `docs/faq.md` with 14 prepared Q&A answers for HN launch (why not free API, why signing, weekend project objection, downtime, legal, SLA, vs Polygon, self-hosting, coverage, verification, receipt_mode, free tier, data privacy).
+  - **Task 8 (health enhanced)**: `/v5/health` now includes unsigned `exchange_count: 7` and `supported_mics: string[]` alongside the signed receipt. Agents can confirm what they're talking to without a /v5/exchanges call.
+  - **8 commits, 160/160 tests passing.**
+**Previous significant work**: Feb 28 2026 (evening) — content + computed edge-case utility:
   - **llms.txt**: Added `## Edge Cases This API Handles` section (7 bullet points covering DST, holidays, early closes, lunch breaks, circuit breakers, weekends, UNKNOWN handling; closes with ~1,300/year figure)
   - **SKILL.md**: Added `## When to Use Headless Oracle vs a Timezone Library` comparison table (8-row two-column with rule-of-thumb)
   - **edgeCaseCount(year)**: Exported utility function that computes schedule edge cases directly from MARKET_CONFIGS — holidays, halfDays, DST transitions (detected via Intl UTC-offset Jan vs Jul), lunchBreakSessions (weekdays minus weekday holidays per lunch-break exchange), weekendDays. Replaces hardcoded ~1,311 comment.
