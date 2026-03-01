@@ -762,6 +762,33 @@ describe('GET /v5/health', () => {
 		// Health is system-level, not exchange-specific
 		expect(Object.prototype.hasOwnProperty.call(body, 'mic')).toBe(false);
 	});
+
+	it('health response includes exchange_count = 7 (unsigned metadata)', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('exchange_count', 7);
+	});
+
+	it('health response includes supported_mics with all 7 MICs (unsigned metadata)', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('supported_mics');
+		const mics = body.supported_mics as string[];
+		expect(Array.isArray(mics)).toBe(true);
+		expect(mics.length).toBe(7);
+		for (const mic of ALL_MICS) {
+			expect(mics).toContain(mic);
+		}
+	});
+
+	it('health exchange_count and supported_mics are outside the signed payload', async () => {
+		// Confirms these are unsigned annotations — not part of canonical health payload.
+		const body = await fetchJSON('/v5/health');
+		const { exchange_count, supported_mics } = body as Record<string, unknown>;
+		expect(exchange_count).toBe(7);
+		expect(Array.isArray(supported_mics)).toBe(true);
+		// Core signed fields must still be present
+		expect(body).toHaveProperty('signature');
+		expect(body).toHaveProperty('status', 'OK');
+	});
 });
 
 // ─── POST /mcp — MCP Streamable HTTP ─────────────────────────────────────────

@@ -1638,7 +1638,7 @@ const OPENAPI_SPEC = {
 				responses: {
 					'200': {
 						description: 'Signed health receipt',
-						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' } } } } },
+						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature', 'exchange_count', 'supported_mics'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' }, exchange_count: { type: 'integer', example: 7, description: 'Number of exchanges currently configured (unsigned).' }, supported_mics: { type: 'array', items: { type: 'string' }, example: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'], description: 'List of supported MIC codes (unsigned).' } } } } },
 					},
 					'500': { description: 'Signing system offline — CRITICAL_FAILURE', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
@@ -2247,7 +2247,14 @@ export default {
 						public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
 					};
 					const signature = await signPayload(healthPayload, env.ED25519_PRIVATE_KEY);
-					return json({ ...healthPayload, signature });
+					// exchange_count and supported_mics are unsigned informational fields —
+					// they annotate the signed health receipt but are not part of the signed payload.
+					return json({
+						...healthPayload,
+						signature,
+						exchange_count:  SUPPORTED_EXCHANGES.length,
+						supported_mics:  SUPPORTED_EXCHANGES.map((e) => e.mic),
+					});
 				} catch (healthError: unknown) {
 					const msg = healthError instanceof Error ? healthError.message : 'Unknown error';
 					console.error();
