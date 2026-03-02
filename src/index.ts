@@ -1085,6 +1085,8 @@ Across all 7 exchanges, approximately **1,300 schedule edge cases per year** fal
 
 Signed receipts are self-contained and verifiable by any party that holds the public key. This enables a multi-agent trust pattern where receipt verification is decoupled from receipt issuance.
 
+Every receipt contains an \`issuer\` field identifying the oracle (value: \`"headlessoracle.com"\`). Agents encountering an unfamiliar receipt can resolve the issuer domain to discover the oracle's public key endpoint at \`{issuer}/v5/keys\` — no prior knowledge of Headless Oracle required.
+
 **Pattern: Agent A fetches, Agent B verifies**
 
 1. Agent A calls \`GET /v5/demo\` (or \`/v5/status\` with an API key) and receives a signed receipt.
@@ -1351,6 +1353,10 @@ const SKILL_MD_ETAG     = `"${fnv1a32(SKILL_MD)}"`;
 const SKILL_MD_LAST_MOD = new Date().toUTCString();         // RFC 7231 HTTP-date format
 const DEPLOY_DATE       = new Date().toISOString().slice(0, 10); // YYYY-MM-DD for spec_version
 
+// Canonical issuer identifier — included in every signed payload so receipts are self-describing.
+// Agents encountering an unfamiliar receipt can resolve {issuer}/v5/keys to find the public key.
+const ORACLE_ISSUER = 'headlessoracle.com';
+
 // agent.json — structured agent metadata for programmatic discovery.
 // Follows the emerging agent.json convention (no formal spec yet — designed to be stable).
 // Intentionally minimal: capabilities, tools, endpoints, and trust anchors only.
@@ -1529,11 +1535,12 @@ const OPENAPI_SPEC = {
 			},
 			SignedReceipt: {
 				type: 'object',
-				required: ['receipt_id', 'issued_at', 'expires_at', 'mic', 'status', 'source', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
+				required: ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic', 'status', 'source', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
 				properties: {
 					receipt_id:    { type: 'string', format: 'uuid' },
 					issued_at:     { type: 'string', format: 'date-time' },
 					expires_at:    { type: 'string', format: 'date-time', description: 'Do not act on this receipt after this time.' },
+					issuer:        { type: 'string', example: 'headlessoracle.com', description: 'Domain of the oracle that issued this receipt. Resolve {issuer}/v5/keys to retrieve the public key.' },
 					mic:           { type: 'string', example: 'XNYS' },
 					status:        { '$ref': '#/components/schemas/Status' },
 					source:        { '$ref': '#/components/schemas/Source' },
@@ -1861,6 +1868,7 @@ async function buildSignedReceipt(
 						receipt_id:     crypto.randomUUID(),
 						issued_at:      now.toISOString(),
 						expires_at:     expiresAt,
+						issuer:         ORACLE_ISSUER,
 						mic,
 						status:         override.status,
 						source:         'OVERRIDE',
@@ -1881,6 +1889,7 @@ async function buildSignedReceipt(
 			receipt_id:     crypto.randomUUID(),
 			issued_at:      now.toISOString(),
 			expires_at:     expiresAt,
+			issuer:         ORACLE_ISSUER,
 			mic,
 			status,
 			source,
@@ -1901,6 +1910,7 @@ async function buildSignedReceipt(
 				receipt_id:     crypto.randomUUID(),
 				issued_at:      now.toISOString(),
 				expires_at:     expiresAt,
+				issuer:         ORACLE_ISSUER,
 				mic,
 				status:         'UNKNOWN',
 				source:         'SYSTEM',
@@ -2133,9 +2143,9 @@ export default {
 					}],
 					canonical_payload_spec: {
 						description:     'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
-						receipt_fields:  ['expires_at', 'issued_at', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
-						override_fields: ['expires_at', 'issued_at', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
-					health_fields:   ['expires_at', 'issued_at', 'public_key_id', 'receipt_id', 'source', 'status'],
+						receipt_fields:  ['expires_at', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						override_fields: ['expires_at', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						health_fields:   ['expires_at', 'issued_at', 'issuer', 'public_key_id', 'receipt_id', 'source', 'status'],
 					},
 				});
 			}
@@ -2266,6 +2276,7 @@ export default {
 						receipt_id:    crypto.randomUUID(),
 						issued_at:     now.toISOString(),
 						expires_at:    expiresAt,
+						issuer:        ORACLE_ISSUER,
 						status:        'OK',
 						source:        'SYSTEM',
 						public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',

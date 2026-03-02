@@ -126,6 +126,11 @@ describe('GET /v5/demo', () => {
 		const response = await fetchWorker('/v5/demo?mic=NYSE_WRONG');
 		expect(response.status).toBe(400);
 	});
+
+	it('demo receipt includes issuer: "headlessoracle.com"', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(body).toHaveProperty('issuer', 'headlessoracle.com');
+	});
 });
 
 // ─── GET /v5/status ───────────────────────────────────────────────────────────
@@ -185,6 +190,7 @@ describe('GET /v5/status', () => {
 			expect(body).toHaveProperty('issued_at');
 			expect(body).toHaveProperty('schema_version', 'v5.0');
 			expect(body).toHaveProperty('receipt_mode', 'live');
+			expect(body).toHaveProperty('issuer', 'headlessoracle.com');
 		});
 	}
 
