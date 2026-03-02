@@ -127,4 +127,84 @@ No. We log: API key identifier (hashed), request timestamp, MIC code, HTTP statu
 
 ---
 
+## "What is the `issuer` field in receipts? What is it for?"
+
+Every receipt now contains `issuer: "headlessoracle.com"`. It serves two purposes:
+
+1. **Self-describing receipts**: an agent encountering a receipt it has never seen before can resolve `{issuer}/v5/keys` to find the signing public key — no prior configuration needed.
+
+2. **Multi-agent forwarding**: when Agent A forwards a receipt to Agent B, Agent B can verify it by following the issuer domain. Receipts are self-contained proofs that work across agent handoffs without shared context.
+
+The field is included in the canonical signing payload, so it's tamper-proof: an adversary cannot change the issuer field without invalidating the signature.
+
+---
+
+## "Is there a Python SDK? A JavaScript client?"
+
+Yes:
+
+- **Python**: `pip install headless-oracle` — includes `verify()`, `OracleClient`, and integrations for LangChain and CrewAI.
+- **JavaScript/TypeScript**: `npm install @headlessoracle/client` — typed client for all endpoints. Pair with `npm install @headlessoracle/verify` for built-in signature verification.
+- **Verification only**: `npm install @headlessoracle/verify` — zero production dependencies, Web Crypto API, 3-line usage.
+
+---
+
+## "Can I use Headless Oracle with LangChain or CrewAI?"
+
+Yes. The Python SDK includes ready-to-use tool classes:
+
+```python
+# LangChain
+from integrations.langchain_tool import MarketStatusTool
+tool = MarketStatusTool(api_key="ok_live_...")
+
+# CrewAI
+from integrations.crewai_tool import MarketStatusTool
+tool = MarketStatusTool(api_key="ok_live_...")
+```
+
+Both tools are fail-closed: network errors and signature failures return `UNKNOWN` in the tool output, not exceptions that break the agent loop.
+
+---
+
+## "Can I add Headless Oracle to a Custom GPT?"
+
+Yes. Use the OpenAPI action spec at `https://headlessoracle.com/docs/custom-gpt-action.yaml` in the GPT's Actions configuration. It covers `getMarketStatusDemo`, `getMarketSchedule`, and `listExchanges` — all public (no API key required for demo mode).
+
+The `/v5/demo` endpoint is permanently free, making it suitable for Custom GPTs that don't want to embed an API key.
+
+---
+
+## "Is there a Cursor plugin?"
+
+Cursor supports MCP natively. Add this to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://headlessoracle.com/mcp"]
+    }
+  }
+}
+```
+
+Full setup guide: `headless-oracle-v5/docs/cursor-setup.md`. Same config format works for Claude Desktop.
+
+---
+
+## "I want to build a trading bot that uses Oracle — where do I start?"
+
+See `trading-bot-starter` (github.com/LembaGang/trading-bot-starter) — a minimal TypeScript template that shows the correct gate pattern:
+
+1. Fetch a signed receipt from `/v5/status`
+2. Verify the Ed25519 signature (no network call — public key inlined)
+3. Check `expires_at`
+4. Only call your broker API when `status === 'OPEN'`
+
+The `executeTrade()` function is a stub — swap in any broker's API. The Oracle gate is independent of trading logic.
+
+---
+
 *Last updated: March 2026. Update before HN launch if pricing / tier details change.*

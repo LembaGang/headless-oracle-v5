@@ -1,0 +1,242 @@
+openapi: "3.1.0"
+info:
+  title: Headless Oracle — Market Status API
+  description: |
+    Cryptographically signed market status receipts for stock exchanges worldwide.
+    Every receipt is Ed25519-signed and includes an issuer field — paste any receipt
+    into https://headlessoracle.com/verify to confirm its authenticity.
+
+    **IMPORTANT**: Always treat `UNKNOWN` status as `CLOSED`. Never execute trades
+    or financial operations when status is UNKNOWN, HALTED, or CLOSED.
+  version: "5.0"
+  contact:
+    url: https://headlessoracle.com
+
+servers:
+  - url: https://headlessoracle.com
+
+paths:
+  /v5/demo:
+    get:
+      operationId: getMarketStatusDemo
+      summary: Get market status (no API key required)
+      description: |
+        Returns a cryptographically signed market status receipt.
+        Use this for demonstrations and testing. For production use
+        requiring a 'live' receipt_mode, use /v5/status with an API key.
+
+        **Always treat UNKNOWN as CLOSED.**
+      parameters:
+        - name: mic
+          in: query
+          required: false
+          description: |
+            Exchange MIC code. Defaults to XNYS (NYSE).
+            Supported: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES
+          schema:
+            type: string
+            default: XNYS
+            enum: [XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES]
+      responses:
+        "200":
+          description: Signed market status receipt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignedReceipt"
+        "400":
+          description: Invalid MIC code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v5/schedule:
+    get:
+      operationId: getMarketSchedule
+      summary: Get next open and close times for an exchange
+      description: |
+        Returns the next open and close times in UTC for the specified exchange.
+        Includes lunch break windows for XJPX (Tokyo) and XHKG (Hong Kong).
+        Also returns data_coverage_years — the years for which holiday data is available.
+      parameters:
+        - name: mic
+          in: query
+          required: false
+          description: Exchange MIC code. Defaults to XNYS (NYSE).
+          schema:
+            type: string
+            default: XNYS
+            enum: [XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES]
+      responses:
+        "200":
+          description: Schedule data for the exchange
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleResponse"
+        "400":
+          description: Invalid MIC code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v5/exchanges:
+    get:
+      operationId: listExchanges
+      summary: List all supported exchanges
+      description: |
+        Returns the directory of all 7 supported exchanges with their MIC codes,
+        names, and IANA timezones.
+      responses:
+        "200":
+          description: Exchange directory
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exchanges:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Exchange"
+                  count:
+                    type: integer
+                    example: 7
+
+components:
+  schemas:
+    SignedReceipt:
+      type: object
+      required:
+        - receipt_id
+        - issued_at
+        - expires_at
+        - issuer
+        - mic
+        - status
+        - source
+        - receipt_mode
+        - schema_version
+        - public_key_id
+        - signature
+      properties:
+        receipt_id:
+          type: string
+          format: uuid
+          description: Unique identifier for this receipt.
+        issued_at:
+          type: string
+          format: date-time
+          description: UTC timestamp when this receipt was issued.
+        expires_at:
+          type: string
+          format: date-time
+          description: Do not act on this receipt after this time (60s TTL).
+        issuer:
+          type: string
+          example: headlessoracle.com
+          description: |
+            Domain of the oracle that issued this receipt.
+            Resolve {issuer}/v5/keys to find the signing public key.
+            Resolve {issuer}/verify to verify the receipt in a browser.
+        mic:
+          type: string
+          example: XNYS
+          description: Exchange MIC code (ISO 10383).
+        status:
+          type: string
+          enum: [OPEN, CLOSED, HALTED, UNKNOWN]
+          description: |
+            Current market status. ALWAYS treat UNKNOWN as CLOSED.
+            Never execute trades when status is UNKNOWN, HALTED, or CLOSED.
+        source:
+          type: string
+          enum: [SCHEDULE, OVERRIDE, SYSTEM]
+          description: |
+            SCHEDULE — derived from market calendar.
+            OVERRIDE — manual circuit breaker active (see reason field).
+            SYSTEM — oracle internal error; status will be UNKNOWN.
+        reason:
+          type: string
+          description: Present when source is OVERRIDE. Explains why the override was applied.
+        receipt_mode:
+          type: string
+          enum: [demo, live]
+          description: "'demo' from /v5/demo (no auth). 'live' from /v5/status (authenticated)."
+        schema_version:
+          type: string
+          example: "v5.0"
+          description: Receipt schema version.
+        public_key_id:
+          type: string
+          example: key_2026_v1
+          description: Identifies which key in the /v5/keys registry was used to sign.
+        signature:
+          type: string
+          description: 128-char hex Ed25519 signature over the canonical payload.
+
+    ScheduleResponse:
+      type: object
+      properties:
+        mic:
+          type: string
+          example: XNYS
+        timezone:
+          type: string
+          example: America/New_York
+        current_status:
+          type: string
+          enum: [OPEN, CLOSED, HALTED, UNKNOWN]
+        next_open:
+          type: string
+          format: date-time
+          nullable: true
+          description: UTC timestamp of the next market open. Null if beyond data coverage.
+        next_close:
+          type: string
+          format: date-time
+          nullable: true
+          description: UTC timestamp of the next market close.
+        lunch_break:
+          type: object
+          nullable: true
+          description: Present for XJPX and XHKG only. Times are local exchange time.
+          properties:
+            start:
+              type: string
+              example: "11:30"
+            end:
+              type: string
+              example: "12:30"
+        data_coverage_years:
+          type: array
+          items:
+            type: string
+          example: ["2026", "2027"]
+          description: Years for which holiday and half-day data is available.
+        note:
+          type: string
+
+    Exchange:
+      type: object
+      properties:
+        mic:
+          type: string
+          example: XNYS
+        name:
+          type: string
+          example: New York Stock Exchange
+        timezone:
+          type: string
+          example: America/New_York
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
