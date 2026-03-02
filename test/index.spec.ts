@@ -977,11 +977,20 @@ describe('POST /mcp', () => {
 		expect(data).toHaveProperty('error', 'UNKNOWN_MIC');
 	});
 
-	it('unknown method prompts/list → JSON-RPC error code -32601', async () => {
-		const body = await postMcpJSON({ jsonrpc: '2.0', id: 8, method: 'prompts/list' });
-		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(true);
-		const error = body.error as Record<string, unknown>;
-		expect(error).toHaveProperty('code', -32601);
+	it('resources/list → { resources: [] }', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 8, method: 'resources/list' });
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
+		const result = body.result as Record<string, unknown>;
+		expect(result).toHaveProperty('resources');
+		expect(result.resources).toEqual([]);
+	});
+
+	it('prompts/list → { prompts: [] }', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 9, method: 'prompts/list' });
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
+		const result = body.result as Record<string, unknown>;
+		expect(result).toHaveProperty('prompts');
+		expect(result.prompts).toEqual([]);
 	});
 
 	it('GET /mcp → 405 Method Not Allowed', async () => {

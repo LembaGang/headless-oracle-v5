@@ -2067,6 +2067,12 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 			return rpcError(-32601, `Method not found: tools/call/${name}`);
 		}
 
+		case 'resources/list':
+			return rpcResult({ resources: [] });
+
+		case 'prompts/list':
+			return rpcResult({ prompts: [] });
+
 		default:
 			return rpcError(-32601, `Method not found: ${method}`);
 	}
