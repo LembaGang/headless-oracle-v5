@@ -1301,6 +1301,29 @@ if (receipt.status !== 'OPEN') {
 
 ---
 
+## Sharing Receipts Between Agents
+
+Receipts are portable bearer attestations. If your agent receives a receipt from another agent or system, you can verify it independently without calling the API:
+
+1. Fetch the public key: \`GET /.well-known/oracle-keys.json\` → \`keys[0].public_key\` (hex). Cache for 5 minutes.
+2. Reconstruct the canonical payload: collect all receipt fields except \`signature\`, sort keys alphabetically, \`JSON.stringify\` with no whitespace.
+3. Verify the Ed25519 signature: \`ed25519.verify(hex_decode(receipt.signature), utf8_encode(canonical), hex_decode(public_key))\`
+4. Check expiry: \`new Date(receipt.expires_at) > Date.now()\`
+5. Check \`receipt_mode\`: assert \`'live'\` for production decisions. \`'demo'\` receipts are unauthenticated.
+6. If all pass, trust the receipt as if you fetched it yourself.
+
+This eliminates redundant API calls when multiple agents in a pipeline need market status. An orchestrator can check once and distribute the signed receipt to sub-agents — each verifies locally, no rate-limit pressure on the oracle.
+
+Use \`@headlessoracle/verify\` (npm, zero deps) for a 3-line wrapper:
+
+\`\`\`js
+import { verify } from '@headlessoracle/verify';
+const result = await verify(receipt);
+if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATURE | ...
+\`\`\`
+
+---
+
 ## Discovery Endpoints
 
 - \`GET /v5/keys\` — public key + canonical payload spec for independent verification
@@ -1343,6 +1366,7 @@ const AGENT_JSON = {
 		'exchange_directory',
 		'batch_query',
 		'signed_receipts',
+		'portable_receipts',
 		'mcp_tools',
 	],
 	mcp: {
@@ -2247,13 +2271,38 @@ export default {
 						public_key_id: env.PUBLIC_KEY_ID || 'key_2026_v1',
 					};
 					const signature = await signPayload(healthPayload, env.ED25519_PRIVATE_KEY);
-					// exchange_count and supported_mics are unsigned informational fields —
-					// they annotate the signed health receipt but are not part of the signed payload.
+
+					// Compute data coverage: years where ALL exchanges have holiday data (intersection).
+					// This tells agents which years are safe to query without risk of UNKNOWN.
+					const allYearSets = Object.values(MARKET_CONFIGS).map(
+						(c) => new Set(Object.keys(c.holidays)),
+					);
+					const holidayCoverageYears = [...(allYearSets[0] ?? new Set())].filter(
+						(y) => allYearSets.every((s) => s.has(y)),
+					).sort();
+
+					// Half-day coverage: unique years that appear in any exchange's halfDays array.
+					const halfDayCoverageYears = [...new Set(
+						Object.values(MARKET_CONFIGS).flatMap(
+							(c) => (c.halfDays ?? []).map((h) => h.date.slice(0, 4)),
+						),
+					)].sort();
+
+					const currentYear = now.getFullYear();
+
+					// exchange_count, supported_mics, data_coverage, and edge_case_count are unsigned
+					// informational fields — they annotate the signed health receipt but are not part
+					// of the signed payload.
 					return json({
 						...healthPayload,
 						signature,
-						exchange_count:  SUPPORTED_EXCHANGES.length,
-						supported_mics:  SUPPORTED_EXCHANGES.map((e) => e.mic),
+						exchange_count:             SUPPORTED_EXCHANGES.length,
+						supported_mics:             SUPPORTED_EXCHANGES.map((e) => e.mic),
+						data_coverage:              {
+							holidays:  holidayCoverageYears,
+							half_days: halfDayCoverageYears,
+						},
+						edge_case_count_current_year: edgeCaseCount(currentYear).total,
 					});
 				} catch (healthError: unknown) {
 					const msg = healthError instanceof Error ? healthError.message : 'Unknown error';

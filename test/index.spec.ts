@@ -789,6 +789,32 @@ describe('GET /v5/health', () => {
 		expect(body).toHaveProperty('signature');
 		expect(body).toHaveProperty('status', 'OK');
 	});
+
+	it('health response includes data_coverage with holidays and half_days year arrays', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('data_coverage');
+		const dc = body.data_coverage as Record<string, unknown>;
+		expect(Array.isArray(dc.holidays)).toBe(true);
+		expect(Array.isArray(dc.half_days)).toBe(true);
+		// All 7 exchanges have 2026 and 2027 holiday data
+		expect(dc.holidays).toContain('2026');
+		expect(dc.holidays).toContain('2027');
+	});
+
+	it('health data_coverage.holidays is sorted and contains only years all exchanges share', async () => {
+		const body = await fetchJSON('/v5/health');
+		const years = (body.data_coverage as Record<string, string[]>).holidays;
+		const sorted = [...years].sort();
+		expect(years).toEqual(sorted);
+	});
+
+	it('health response includes edge_case_count_current_year (number > 0)', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('edge_case_count_current_year');
+		const count = body.edge_case_count_current_year as number;
+		expect(typeof count).toBe('number');
+		expect(count).toBeGreaterThan(0);
+	});
 });
 
 // ─── POST /mcp — MCP Streamable HTTP ─────────────────────────────────────────
