@@ -1,0 +1,15 @@
+{
+  "name": "Headless Oracle",
+  "id": "headless-oracle-mcp",
+  "version": "1.0.0",
+  "description": "Real-time, cryptographically signed (Ed25519) market status for 7 global exchanges. Fail-closed architecture designed for autonomous trading agents.",
+  "publisher": "LembaGang",
+  "icon": "https://headlessoracle.com/favicon.ico",
+  "mcpServers": [
+    {
+      "name": "Headless Oracle",
+      "url": "https://headlessoracle.com/mcp"
+    }
+  ],
+  "repository": "https://github.com/LembaGang/headless-oracle-v5"
+}
