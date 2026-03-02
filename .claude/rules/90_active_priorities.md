@@ -3,11 +3,23 @@
 
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
-**Test suite**: 163/163 tests passing (worker) + 24/24 tests passing (SDK)
+**Test suite**: 164/164 tests passing (worker) + 24/24 tests passing (SDK)
 **Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 2 2026 — gap-fill sprint completing Mar 1 spec:
+**Last significant work**: Mar 3 2026 — 10-task distribution sprint:
+  - **Task 1 (issuer field)**: `issuer: "headlessoracle.com"` added to all 4 signed receipt builders (normal, override, UNKNOWN, health). canonical_payload_spec updated. OpenAPI updated. SKILL_MD updated. 1 new test → 164 total. Deployed (Version 8f4ac458).
+  - **Task 2 (Python SDK)**: `headless-oracle-python` repo created at `C:\Users\User\headless-oracle-python`. `pip install headless-oracle` (v0.1.0). verify() + OracleClient + LangChain/CrewAI tools. 11 pytest tests. NOT yet on PyPI.
+  - **Task 3 (JS client)**: `@headlessoracle/client` at `C:\Users\User\headless-oracle-client`. Typed TS client for all 7 endpoints. Optional verify:true (peer dep). Dual ESM+CJS. NOT yet on npm.
+  - **Task 4 (LangChain+CrewAI)**: MarketStatusTool + MarketScheduleTool (LangChain). MarketStatusTool + BatchMarketStatusTool (CrewAI). In `headless-oracle-python/integrations/`.
+  - **Task 5 (Custom GPT spec)**: `docs/custom-gpt-action.yaml` — OpenAPI 3.1 for Custom GPT Actions (getMarketStatusDemo, getMarketSchedule, listExchanges). Public endpoints only.
+  - **Task 6 (trading bot)**: `trading-bot-starter` at `C:\Users\User\trading-bot-starter`. TS, @headlessoracle/client + @headlessoracle/verify. Correct 4-step gate: fetch → verify sig → TTL → OPEN check.
+  - **Task 7 (receipt spec)**: `docs/receipt-spec.md` — implementation-agnostic open spec. Field reference, signing algo, canonical payload pseudocode, impl checklist, changelog.
+  - **Task 8 (Cursor plugin)**: `docs/cursor-setup.md` — mcp.json config, macOS+Windows paths, 5 example prompts, troubleshooting.
+  - **Task 9 (FAQ update)**: `docs/faq.md` +7 Q&As: issuer field, Python/JS SDKs, LangChain/CrewAI, Custom GPT, Cursor, trading bot.
+  - **Task 10 (was in-progress)**: see Task 1 above — issuer IS the "open receipt spec" seed.
+  - **3 commits to worker repo, 2 new repos created, 1 new repo created.**
+**Previous significant work**: Mar 2 2026 — gap-fill sprint completing Mar 1 spec:
   - **SKILL.md**: Added `## Sharing Receipts Between Agents` section with 6-step verification protocol and @headlessoracle/verify convenience reference.
   - **agent.json**: Added `portable_receipts` to capabilities array (alongside signed_receipts, mcp_tools, etc.).
   - **/v5/health**: Added `data_coverage` (holidays: ['2026','2027'], half_days: ['2026','2027'] — intersection of all 7 exchanges) and `edge_case_count_current_year: 1319` (from edgeCaseCount()). Agents can now confirm data coverage before relying on oracle.
