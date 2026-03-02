@@ -3,19 +3,29 @@
 
 ## Current Status
 **Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
-**Test suite**: 160/160 tests passing (worker) + 24/24 tests passing (SDK)
+**Test suite**: 163/163 tests passing (worker) + 24/24 tests passing (SDK)
 **Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
-**@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published 4 days ago, auth token in ~/.npmrc)
-**Last significant work**: Mar 1 2026 — 8-task pre-launch sprint:
+**@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
+**Last significant work**: Mar 2 2026 — gap-fill sprint completing Mar 1 spec:
+  - **SKILL.md**: Added `## Sharing Receipts Between Agents` section with 6-step verification protocol and @headlessoracle/verify convenience reference.
+  - **agent.json**: Added `portable_receipts` to capabilities array (alongside signed_receipts, mcp_tools, etc.).
+  - **/v5/health**: Added `data_coverage` (holidays: ['2026','2027'], half_days: ['2026','2027'] — intersection of all 7 exchanges) and `edge_case_count_current_year: 1319` (from edgeCaseCount()). Agents can now confirm data coverage before relying on oracle.
+  - **docs.html MCP section**: Added macOS/Windows config file paths, "~30 seconds" label, 5 example prompts to try after setup.
+  - **docs/mcp-listing.md**: Full YAML block for MCP directory submissions (Smithery, mcp.so). Includes all 7 exchanges, safety guarantees, all discovery links, reviewer notes.
+  - **docs/metrics.md**: Weekly/monthly tracking checklist with alert thresholds and post-launch benchmark table.
+  - **docs/faq-prepared-answers.md**: 8 prepared answers for HN and protocol conversations (circuit breakers, timezone libs, signing rationale, weekend objection, clones, on-chain, uptime, Ed25519 choice).
+  - **3 new tests** (163 total): health data_coverage structure, sorted holidays check, edge_case_count_current_year > 0.
+  - **2 commits (worker) + 1 commit (web), both deployed and pushed.**
+**Previous significant work**: Mar 1 2026 — 8-task pre-launch sprint:
   - **Task 1 (receipt_mode)**: Added `receipt_mode: 'demo' | 'live'` as a signed field to all market receipts. `/v5/demo` → `'demo'`, `/v5/status`+batch+MCP → `'live'`. canonical_payload_spec updated. Schema tamper-proof: an adversary can't strip or flip receipt_mode.
   - **Task 2 (year boundary)**: `/v5/schedule` now returns `data_coverage_years: string[]` so agents know when holiday data runs out. Note text explains `next_open: null` semantics. Dec 31 2027 boundary test confirmed.
   - **Task 3 (portability docs)**: Added `## Receipt Portability` section to llms.txt: multi-agent pattern, 6 verification steps, why it matters at scale, SDK convenience link.
   - **Task 4 (MCP guide)**: Expanded SKILL.md MCP section with per-client setup steps (Claude Desktop macOS+Windows, Cursor, custom agents with raw JSON-RPC), tool reference table.
   - **Task 5 (MCP metadata)**: Created `smithery.yaml` for Smithery registry submission. Covers server URL, protocol, all 3 tools, 7 exchanges, safety guarantees, auth, verification.
   - **Task 6 (npm tracking)**: Added Cloudflare Cron trigger (daily 09:00 UTC) + `scheduled()` handler. Fetches npm last-7/30 day downloads for @headlessoracle/verify, logs structured JSON to Workers Logs.
-  - **Task 7 (FAQ)**: Created `docs/faq.md` with 14 prepared Q&A answers for HN launch (why not free API, why signing, weekend project objection, downtime, legal, SLA, vs Polygon, self-hosting, coverage, verification, receipt_mode, free tier, data privacy).
-  - **Task 8 (health enhanced)**: `/v5/health` now includes unsigned `exchange_count: 7` and `supported_mics: string[]` alongside the signed receipt. Agents can confirm what they're talking to without a /v5/exchanges call.
+  - **Task 7 (FAQ)**: Created `docs/faq.md` with 14 prepared Q&A answers for HN launch.
+  - **Task 8 (health enhanced)**: `/v5/health` now includes unsigned `exchange_count: 7` and `supported_mics: string[]` alongside the signed receipt.
   - **8 commits, 160/160 tests passing.**
 **Previous significant work**: Feb 28 2026 (evening) — content + computed edge-case utility:
   - **llms.txt**: Added `## Edge Cases This API Handles` section (7 bullet points covering DST, holidays, early closes, lunch breaks, circuit breakers, weekends, UNKNOWN handling; closes with ~1,300/year figure)
