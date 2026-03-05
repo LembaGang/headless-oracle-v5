@@ -1,0 +1,8 @@
+name: headless-oracle
+version: 1.0.0
+schema: v1
+mcpServers:
+  - name: headless-oracle
+    url: https://headlessoracle.com/mcp
+    headers:
+      X-Oracle-Key: ""

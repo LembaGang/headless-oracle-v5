@@ -1,0 +1,32 @@
+{
+  "name": "headless-oracle",
+  "description": "Real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 7 global stock exchanges with Ed25519 signed receipts. Designed for AI agents and automated trading systems. Fail-closed: any error defaults to CLOSED.",
+  "vendor": "LembaGang",
+  "sourceUrl": "https://github.com/LembaGang/headless-oracle-v5",
+  "homepage": "https://headlessoracle.com",
+  "license": "Proprietary",
+  "runtime": {
+    "transport": "sse",
+    "url": "https://headlessoracle.com/mcp"
+  },
+  "packages": {
+    "npm": "@headlessoracle/verify",
+    "pypi": "headless-oracle"
+  },
+  "tools": [
+    {
+      "name": "get_market_status",
+      "description": "Check if a stock exchange is currently OPEN, CLOSED, HALTED, or UNKNOWN. Returns a cryptographically signed Ed25519 receipt. Input: MIC code (XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES). ALWAYS check before executing any trade."
+    },
+    {
+      "name": "get_market_schedule",
+      "description": "Get the next open and close times for a specific exchange, including holidays and early close days. Input: MIC code."
+    },
+    {
+      "name": "list_exchanges",
+      "description": "List all 7 supported exchanges with names, MIC codes, timezones, and current status."
+    }
+  ],
+  "categories": ["finance", "trading", "market-data"],
+  "tags": ["market-status", "trading", "defi", "rwa", "ed25519", "fail-closed", "temporal-risk"]
+}
