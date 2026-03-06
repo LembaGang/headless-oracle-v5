@@ -6,7 +6,7 @@
   "homepage": "https://headlessoracle.com",
   "license": "Proprietary",
   "runtime": {
-    "transport": "sse",
+    "transport": "streamable-http",
     "url": "https://headlessoracle.com/mcp"
   },
   "packages": {
