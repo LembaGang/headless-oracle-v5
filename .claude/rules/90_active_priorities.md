@@ -2,12 +2,24 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Production-ready. Billing implemented. Pre-launch (March 10 HN launch).
-**Test suite**: 164/164 tests passing (worker) + 24/24 tests passing (SDK)
+**Phase**: Post-launch (HN March 10). Developer gravity loop active.
+**Test suite**: 168/168 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
 **Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 3 2026 — 10-task distribution sprint:
+**Last significant work**: Mar 14 2026 — Multi-tier Paddle billing upgrade (commit 5e8e28a, deployed cf28ea3c):
+  - Key format changed from `ok_live_` → `ho_live_` (8-char prefix + 32 hex chars)
+  - Multi-tier pricing: PADDLE_PRICE_ID_BUILDER/PRO/PROTOCOL env vars, plan derived from items[0].price_id
+  - KV storage now persistent (no TTL); value expanded to { plan, status, paddle_customer_id, paddle_subscription_id, email, created_at }
+  - subscription.canceled: fetches key_hash from Supabase, deactivates KV immediately (status: inactive)
+  - 4 new tests → 168 total. All passing. Deployed + pushed.
+  - .dev.vars: added PADDLE_PRICE_ID_BUILDER/PRO/PROTOCOL test values
+**Previous significant work**: Mar 12 2026 — Developer Gravity Loop sprint (strategic pivot from advisory committee):
+  - **safe-trading-agent-template**: NEW repo at `C:\Users\User\safe-trading-agent-template`. LangGraph agent with 4-step Headless Oracle execution gate. 26/26 tests passing. Committed (5ed0a4e). HUMAN TASK: create GitHub repo + push.
+  - **docs/simulator-architecture.md**: Full architecture for Trading Halt Capital Loss Simulator (Streamlit, DST + circuit breaker scenarios, slippage/MEV/rejected-fill loss model). Ready to build.
+  - **docs/algotrading-community-posts.md**: Polished posts for r/algotrading, QuantConnect forum, Twitter/X thread. Integrates Cloudflare crawler limitation (March 10) and Anthropic/Time Magazine narrative (March 11).
+  - **Strategic pivot confirmed**: Kill Discord scatter-gun. Deprioritize ERC-8183. Identity locked: "execution safety primitive for autonomous financial agents." Focus: TradFi hybrid agents.
+**Previous significant work**: Mar 3 2026 — 10-task distribution sprint:
   - **Task 1 (issuer field)**: `issuer: "headlessoracle.com"` added to all 4 signed receipt builders (normal, override, UNKNOWN, health). canonical_payload_spec updated. OpenAPI updated. SKILL_MD updated. 1 new test → 164 total. Deployed (Version 8f4ac458).
   - **Task 2 (Python SDK)**: `headless-oracle-python` repo created at `C:\Users\User\headless-oracle-python`. `pip install headless-oracle` (v0.1.0). verify() + OracleClient + LangChain/CrewAI tools. 11 pytest tests. NOT yet on PyPI.
   - **Task 3 (JS client)**: `@headlessoracle/client` at `C:\Users\User\headless-oracle-client`. Typed TS client for all 7 endpoints. Optional verify:true (peer dep). Dual ESM+CJS. NOT yet on npm.
