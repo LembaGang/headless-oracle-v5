@@ -2395,6 +2395,24 @@ export default {
 			if (url.pathname === '/.well-known/agent.json') {
 				return json(AGENT_JSON);
 			}
+			if (url.pathname === '/.well-known/mcp/server-card.json') {
+				return json({
+					name:           'Headless Oracle',
+					description:    'Real-time market status verification for AI agents. Ed25519 signed receipts, fail-closed architecture.',
+					url:            'https://headlessoracle.com/mcp',
+					version:        '1.0.0',
+					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges'],
+					authentication: 'none',
+				});
+			}
+			if (url.pathname === '/.well-known/oauth-protected-resource') {
+				return json({
+					resource:                 'https://headlessoracle.com',
+					authorization_servers:    [],
+					bearer_methods_supported: [],
+					scopes_supported:         [],
+				});
+			}
 
 			// ── POST /v5/checkout — create Paddle checkout transaction ───
 			// No auth required. Returns { url } to redirect the user to Paddle.

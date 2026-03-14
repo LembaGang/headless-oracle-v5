@@ -1350,6 +1350,60 @@ describe('GET /.well-known/agent.json', () => {
 	});
 });
 
+// ─── GET /.well-known/mcp/server-card.json ───────────────────────────────────
+
+describe('GET /.well-known/mcp/server-card.json', () => {
+	it('returns 200 with application/json content-type', async () => {
+		const response = await fetchWorker('/.well-known/mcp/server-card.json');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('contains required server-card fields', async () => {
+		const body = await fetchJSON('/.well-known/mcp/server-card.json');
+		expect(body).toHaveProperty('name', 'Headless Oracle');
+		expect(body).toHaveProperty('url', 'https://headlessoracle.com/mcp');
+		expect(body).toHaveProperty('version', '1.0.0');
+		expect(body).toHaveProperty('authentication', 'none');
+		expect(body).toHaveProperty('description');
+		expect(typeof body.description).toBe('string');
+	});
+
+	it('lists the three MCP tools', async () => {
+		const body = await fetchJSON('/.well-known/mcp/server-card.json');
+		const tools = body.tools as string[];
+		expect(tools).toContain('get_market_status');
+		expect(tools).toContain('get_market_schedule');
+		expect(tools).toContain('list_exchanges');
+	});
+});
+
+// ─── GET /.well-known/oauth-protected-resource ───────────────────────────────
+
+describe('GET /.well-known/oauth-protected-resource', () => {
+	it('returns 200 with application/json content-type', async () => {
+		const response = await fetchWorker('/.well-known/oauth-protected-resource');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('contains required RFC 9728 fields', async () => {
+		const body = await fetchJSON('/.well-known/oauth-protected-resource');
+		expect(body).toHaveProperty('resource', 'https://headlessoracle.com');
+		expect(body).toHaveProperty('authorization_servers');
+		expect(body).toHaveProperty('bearer_methods_supported');
+		expect(body).toHaveProperty('scopes_supported');
+	});
+
+	it('returns empty arrays — Oracle has no OAuth requirement', async () => {
+		const body = await fetchJSON('/.well-known/oauth-protected-resource');
+		expect(Array.isArray(body.authorization_servers)).toBe(true);
+		expect((body.authorization_servers as unknown[]).length).toBe(0);
+		expect(Array.isArray(body.bearer_methods_supported)).toBe(true);
+		expect(Array.isArray(body.scopes_supported)).toBe(true);
+	});
+});
+
 // ─── Billing: Auth hot path — paid keys via KV ───────────────────────────────
 
 // Shared helper: compute sha256(string) in the test Workers runtime
