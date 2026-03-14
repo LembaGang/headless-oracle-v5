@@ -927,6 +927,16 @@ Creates a Paddle checkout session and returns a redirect URL.
 - After successful payment, your API key is delivered by email (shown once)
 - Keys are prefixed \`ok_live_\` for easy identification in logs and config
 
+### POST /v5/keys/request — Free Tier Key
+
+Provision a free tier API key by email — no payment required.
+
+- No authentication required
+- Request body: \`{ "email": "you@example.com" }\`
+- Response: \`200 OK\` — key delivered to email (shown once, prefixed \`ho_free_\`)
+- Free tier is rate-limited; upgrade at headlessoracle.com/pricing
+- Agent frameworks that receive a 401 with \`X-Oracle-Key-Request\` header can hit this endpoint to self-provision
+
 ## MCP Integration
 
 Headless Oracle is available as an MCP (Model Context Protocol) server for direct integration with Claude, GPT, and other AI agent frameworks.
@@ -1329,6 +1339,14 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 
 ---
 
+## Getting an API Key
+
+- **Free tier**: \`POST /v5/keys/request\` with \`{ "email": "you@example.com" }\` — key delivered by email, no payment required. Keys are prefixed \`ho_free_\`.
+- **Paid plans**: \`POST /v5/checkout\` — Paddle checkout, key delivered by email after payment. Plans: Builder ($99/mo), Pro ($299/mo), Protocol ($500/mo).
+- Agent frameworks that receive a 401 with \`X-Oracle-Key-Request: https://headlessoracle.com/v5/keys/request\` can use that URL to self-provision a free key without human intervention.
+
+---
+
 ## Discovery Endpoints
 
 - \`GET /v5/keys\` — public key + canonical payload spec for independent verification
@@ -1337,6 +1355,7 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 - \`GET /openapi.json\` — OpenAPI 3.1 machine-readable spec
 - \`GET /v5/health\` — signed liveness probe (verify oracle is up before a batch)
 - \`GET /v5/schedule?mic=XNYS\` — next open/close times, lunch breaks, public holidays
+- \`POST /v5/keys/request\` — free tier key self-provisioning (no payment required)
 `;
 
 // FNV-1a 32-bit hash — deterministic, synchronous, no crypto API needed.
@@ -2126,11 +2145,12 @@ export default {
 			if (url.pathname.startsWith('/v5/status')) {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (!apiKey) {
-					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing' });
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 				}
 				const auth = await checkApiKey(apiKey, env);
 				if (!auth.allowed) {
-					return json({ error: auth.error, message: auth.message }, auth.status);
+					const authHeaders = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
+					return json({ error: auth.error, message: auth.message }, auth.status, authHeaders);
 				}
 			}
 
@@ -2215,11 +2235,12 @@ export default {
 			if (url.pathname === '/v5/batch') {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (!apiKey) {
-					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing' });
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 				}
 				const batchAuth = await checkApiKey(apiKey, env);
 				if (!batchAuth.allowed) {
-					return json({ error: batchAuth.error, message: batchAuth.message }, batchAuth.status);
+					const batchAuthHeaders = batchAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
+					return json({ error: batchAuth.error, message: batchAuth.message }, batchAuth.status, batchAuthHeaders);
 				}
 
 				const micsParam = url.searchParams.get('mics');
@@ -2602,11 +2623,12 @@ export default {
 			if (url.pathname === '/v5/account') {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (!apiKey) {
-					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing' });
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 				}
 				const accountAuth = await checkApiKey(apiKey, env);
 				if (!accountAuth.allowed) {
-					return json({ error: accountAuth.error, message: accountAuth.message }, accountAuth.status);
+					const accountAuthHeaders = accountAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
+					return json({ error: accountAuth.error, message: accountAuth.message }, accountAuth.status, accountAuthHeaders);
 				}
 
 				// Internal keys (master / beta) are not Supabase records

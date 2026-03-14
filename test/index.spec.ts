@@ -141,6 +141,8 @@ describe('GET /v5/status', () => {
 		expect(response.status).toBe(401);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
+		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+		expect(response.headers.get('X-Oracle-Key-Request')).toBe('https://headlessoracle.com/v5/keys/request');
 	});
 
 	it('returns 403 with an invalid API key', async () => {
@@ -1009,6 +1011,8 @@ describe('GET /v5/batch', () => {
 		expect(response.status).toBe(401);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
+		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+		expect(response.headers.get('X-Oracle-Key-Request')).toBe('https://headlessoracle.com/v5/keys/request');
 	});
 
 	it('returns 403 with an invalid API key', async () => {
@@ -1403,6 +1407,8 @@ describe('Auth hot path — paid keys via KV', () => {
 			expect(response.status).toBe(402);
 			const body = await response.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('error', 'PAYMENT_REQUIRED');
+			expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+			expect(response.headers.get('X-Oracle-Plans')).toBe('free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500');
 		} finally {
 			await env.ORACLE_API_KEYS.delete(hash);
 		}
