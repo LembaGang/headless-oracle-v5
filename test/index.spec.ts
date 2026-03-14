@@ -1539,14 +1539,15 @@ describe('POST /v5/checkout', () => {
 	});
 
 	it('POST /v5/checkout → 200 with Paddle url when Paddle responds OK', async () => {
-		const mockCheckoutUrl = 'https://buy.paddle.com/checkout/cs_test_mock_txn';
+		const mockTransactionId = 'txn_01abc123mock';
+		const mockCheckoutUrl = `https://buy.paddle.com/checkout/${mockTransactionId}`;
 
 		const originalFetch = globalThis.fetch;
 		// Replace global fetch only for Paddle API calls
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
 			if (urlStr.includes('api.paddle.com')) {
-				return new Response(JSON.stringify({ data: { checkout: { url: mockCheckoutUrl } } }), {
+				return new Response(JSON.stringify({ data: { id: mockTransactionId, checkout: { url: 'https://headlessoracle.com?_ptxn=mock' } } }), {
 					status: 200,
 					headers: { 'Content-Type': 'application/json' },
 				});

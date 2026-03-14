@@ -2400,13 +2400,13 @@ export default {
 						items: [{ price_id: priceId, quantity: 1 }],
 					}),
 				});
-				const paddleBody = await paddleRes.json() as { data?: { checkout?: { url?: string } }; error?: { detail: string } };
-				const checkoutUrl = paddleBody.data?.checkout?.url;
-				if (!paddleRes.ok || !checkoutUrl) {
+				const paddleBody = await paddleRes.json() as { data?: { id?: string; checkout?: { url?: string } }; error?: { detail: string } };
+				const transactionId = paddleBody.data?.id;
+				if (!paddleRes.ok || !transactionId) {
 					console.error(`PADDLE_CHECKOUT_ERROR: ${paddleBody.error?.detail ?? 'unknown'}`);
 					return json({ error: 'CHECKOUT_FAILED', message: 'Could not create checkout session' }, 502);
 				}
-				return json({ url: checkoutUrl });
+				return json({ url: `https://buy.paddle.com/checkout/${transactionId}` });
 			}
 
 			// ── POST /webhooks/paddle — handle Paddle events ─────────────
