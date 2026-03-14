@@ -2107,10 +2107,10 @@ export default {
 			return new Response(null, { headers: corsHeaders });
 		}
 
-		const json = (body: unknown, status = 200) =>
+		const json = (body: unknown, status = 200, extraHeaders: Record<string, string> = {}) =>
 			new Response(JSON.stringify(body), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json', ...extraHeaders },
 			});
 
 		// ── POST /mcp — MCP Streamable HTTP (outside main try/catch) ─
@@ -2126,7 +2126,7 @@ export default {
 			if (url.pathname.startsWith('/v5/status')) {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (!apiKey) {
-					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing' });
 				}
 				const auth = await checkApiKey(apiKey, env);
 				if (!auth.allowed) {
@@ -2215,7 +2215,7 @@ export default {
 			if (url.pathname === '/v5/batch') {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (!apiKey) {
-					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing' });
 				}
 				const batchAuth = await checkApiKey(apiKey, env);
 				if (!batchAuth.allowed) {
@@ -2602,7 +2602,7 @@ export default {
 			if (url.pathname === '/v5/account') {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (!apiKey) {
-					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing' });
 				}
 				const accountAuth = await checkApiKey(apiKey, env);
 				if (!accountAuth.allowed) {
@@ -2642,6 +2642,82 @@ export default {
 				}
 
 				return json({ error: 'ACCOUNT_NOT_FOUND', message: 'No account found for this API key' }, 404);
+			}
+
+			// ── POST /v5/keys/request — free tier key provisioning ────────
+			// No auth required. Validates email, generates ho_free_ key,
+			// stores in KV + Supabase, sends via Resend.
+			if (url.pathname === '/v5/keys/request') {
+				if (request.method !== 'POST') {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
+				}
+				const body = await request.json().catch(() => null) as { email?: unknown } | null;
+				const email = body?.email;
+				if (typeof email !== 'string' || !email.trim()) {
+					return json({ error: 'INVALID_EMAIL', message: 'email is required' }, 400);
+				}
+				// Simple RFC-5322-compatible email check: local@domain.tld
+				const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+				if (!emailRegex.test(email.trim())) {
+					return json({ error: 'INVALID_EMAIL', message: 'email format is invalid' }, 400);
+				}
+				const normalizedEmail = email.trim().toLowerCase();
+
+				// Generate ho_free_ key — shown to the user exactly once via email
+				const rawKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+				const keyValue    = 'ho_free_' + toHex(rawKeyBytes);
+				const keyHash     = await sha256Hex(keyValue);
+				const createdAt   = new Date().toISOString();
+
+				// Store in KV — persistent (no TTL), plan = "free"
+				if (env.ORACLE_API_KEYS) {
+					await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({
+						plan:       'free',
+						status:     'active',
+						email:      normalizedEmail,
+						created_at: createdAt,
+					}));
+				}
+
+				// Store in Supabase
+				if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					await supabase.from('api_keys').insert({
+						id:         crypto.randomUUID(),
+						key_hash:   keyHash,
+						key_prefix: keyValue.substring(0, 14), // 'ho_free_' + 6 chars
+						plan:       'free',
+						status:     'active',
+						email:      normalizedEmail,
+						created_at: createdAt,
+					});
+				}
+
+				// Send key via Resend (shown once — user cannot recover it)
+				if (env.RESEND_API_KEY) {
+					const emailRes = await fetch('https://api.resend.com/emails', {
+						method:  'POST',
+						headers: {
+							'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+							'Content-Type':  'application/json',
+						},
+						body: JSON.stringify({
+							from:    'Headless Oracle <keys@headlessoracle.com>',
+							to:      [normalizedEmail],
+							subject: 'Your free Headless Oracle API key',
+							html: `<p>Here is your free Headless Oracle API key (save this — it will not be shown again):</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
+<p>Use it as the <code>X-Oracle-Key</code> header when calling <code>https://headlessoracle.com/v5/status</code>.</p>
+<p>Free tier is rate-limited. Upgrade anytime at <a href="https://headlessoracle.com/pricing">headlessoracle.com/pricing</a>.</p>
+<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
+						}),
+					});
+					if (!emailRes.ok) {
+						console.error(`RESEND_ERROR: failed to send free key email to ${normalizedEmail}`);
+					}
+				}
+
+				return json({ plan: 'free', message: 'API key sent to your email' });
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────

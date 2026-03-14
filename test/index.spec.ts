@@ -1528,6 +1528,112 @@ describe('GET /v5/account', () => {
 	});
 });
 
+// ─── POST /v5/keys/request — free tier key provisioning ──────────────────────
+
+describe('POST /v5/keys/request', () => {
+	it('GET /v5/keys/request → 405 Method Not Allowed', async () => {
+		const response = await fetchWorker('/v5/keys/request');
+		expect(response.status).toBe(405);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
+	});
+
+	it('missing email → 400 INVALID_EMAIL', async () => {
+		const response = await fetchWorker('/v5/keys/request', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({}),
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_EMAIL');
+	});
+
+	it('malformed email → 400 INVALID_EMAIL', async () => {
+		const response = await fetchWorker('/v5/keys/request', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ email: 'notanemail' }),
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_EMAIL');
+	});
+
+	it('valid email → 200 { plan: "free", message } + KV entry + Resend called', async () => {
+		let capturedEmailHtml = '';
+		let resendCalled = false;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('resend.com')) {
+				resendCalled = true;
+				const emailBody = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { html?: string };
+				capturedEmailHtml = emailBody.html ?? '';
+				return new Response(JSON.stringify({ id: 'email_free_001' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/v5/keys/request', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ email: 'test@example.com' }),
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('plan', 'free');
+			expect(body).toHaveProperty('message');
+			expect(typeof body.message).toBe('string');
+			// email must contain the ho_free_ key
+			expect(resendCalled).toBe(true);
+			expect(capturedEmailHtml).toContain('ho_free_');
+			// KV must have an entry for the key hash
+			const allKeys = await env.ORACLE_API_KEYS.list();
+			// At least one entry should be a free-plan key created during this test
+			let foundFreeKey = false;
+			for (const { name } of allKeys.keys) {
+				const val = await env.ORACLE_API_KEYS.get(name);
+				if (val) {
+					const parsed = JSON.parse(val) as Record<string, unknown>;
+					if (parsed.plan === 'free' && parsed.email === 'test@example.com') {
+						foundFreeKey = true;
+						expect(parsed.status).toBe('active');
+						expect(typeof parsed.created_at).toBe('string');
+					}
+				}
+			}
+			expect(foundFreeKey).toBe(true);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('401 on /v5/status without key includes X-Oracle-Upgrade header', async () => {
+		const response = await fetchWorker('/v5/status?mic=XNYS');
+		expect(response.status).toBe(401);
+		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+	});
+
+	it('401 on /v5/batch without key includes X-Oracle-Upgrade header', async () => {
+		const response = await fetchWorker('/v5/batch?mics=XNYS');
+		expect(response.status).toBe(401);
+		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+	});
+
+	it('401 on /v5/account without key includes X-Oracle-Upgrade header', async () => {
+		const response = await fetchWorker('/v5/account');
+		expect(response.status).toBe(401);
+		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+	});
+});
+
 // ─── Billing: POST /v5/checkout ──────────────────────────────────────────────
 
 describe('POST /v5/checkout', () => {
