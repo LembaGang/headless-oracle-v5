@@ -15,11 +15,14 @@ export interface Env {
 	PUBLIC_KEY_VALID_FROM?: string;
 	PUBLIC_KEY_VALID_UNTIL?: string; // ISO 8601 — set when a key rotation is scheduled
 	ORACLE_OVERRIDES: KVNamespace;   // Cloudflare KV — manual circuit-breaker overrides
-	ORACLE_API_KEYS:  KVNamespace;   // Cloudflare KV — paid key cache: sha256(key) → { plan, status }, TTL 300s
+	ORACLE_API_KEYS:  KVNamespace;   // Cloudflare KV — paid key cache: sha256(key) → { plan, status, ... }, persistent
 	// Billing secrets — set via `wrangler secret put`
 	PADDLE_API_KEY?:            string;
 	PADDLE_WEBHOOK_SECRET?:     string;
-	PADDLE_PRICE_ID?:           string;
+	PADDLE_PRICE_ID?:           string; // legacy — kept for backward compat; use tier-specific vars instead
+	PADDLE_PRICE_ID_BUILDER?:   string; // pri_* for builder plan ($99/mo)
+	PADDLE_PRICE_ID_PRO?:       string; // pri_* for pro plan ($299/mo)
+	PADDLE_PRICE_ID_PROTOCOL?:  string; // pri_* for protocol plan ($500+/mo)
 	SUPABASE_URL?:               string;
 	SUPABASE_SERVICE_ROLE_KEY?:  string;
 	RESEND_API_KEY?:             string;
@@ -2442,6 +2445,16 @@ export default {
 						.from('api_keys').select('id').eq('stripe_subscription_id', txn['subscription_id'] as string).single();
 					if (existing) return json({ received: true });
 
+					// Determine plan from transaction items price_id — fail-safe to 'pro' if unrecognised
+					const items = txn['items'] as Array<{ price_id?: string }> | undefined;
+					const priceId = items?.[0]?.price_id ?? null;
+					let plan = 'pro';
+					if (priceId) {
+						if (env.PADDLE_PRICE_ID_BUILDER && priceId === env.PADDLE_PRICE_ID_BUILDER)       plan = 'builder';
+						else if (env.PADDLE_PRICE_ID_PRO && priceId === env.PADDLE_PRICE_ID_PRO)           plan = 'pro';
+						else if (env.PADDLE_PRICE_ID_PROTOCOL && priceId === env.PADDLE_PRICE_ID_PROTOCOL) plan = 'protocol';
+					}
+
 					// Fetch email from Paddle customer API (not included in transaction payload)
 					let email: string | null = null;
 					if (env.PADDLE_API_KEY && txn['customer_id']) {
@@ -2456,18 +2469,18 @@ export default {
 						}
 					}
 
-					// Generate ok_live_ key — shown to the user exactly once via email
+					// Generate ho_live_ key — shown to the user exactly once via email
 					const rawKeyBytes = crypto.getRandomValues(new Uint8Array(32));
-					const keyValue    = 'ok_live_' + toHex(rawKeyBytes);
+					const keyValue    = 'ho_live_' + toHex(rawKeyBytes);
 					const keyHash     = await sha256Hex(keyValue);
-					const keyPrefix   = keyValue.substring(0, 14); // 'ok_live_' + 6 chars
+					const keyPrefix   = keyValue.substring(0, 14); // 'ho_live_' + 6 chars
 
 					// Store in Supabase (stripe_customer_id / stripe_subscription_id store Paddle IDs)
 					const { error: dbError } = await supabase.from('api_keys').insert({
 						id:                    crypto.randomUUID(),
 						key_hash:              keyHash,
 						key_prefix:            keyPrefix,
-						plan:                  'pro',
+						plan,
 						status:                'active',
 						stripe_customer_id:    txn['customer_id'] as string | null,
 						stripe_subscription_id: txn['subscription_id'] as string | null,
@@ -2479,12 +2492,18 @@ export default {
 						return json({ error: 'DB_ERROR', message: 'Failed to store API key — contact support@headlessoracle.com' }, 500);
 					}
 
-					// Warm the KV cache immediately
+					// Store in KV — persistent, no TTL; deactivated on subscription.canceled
 					if (env.ORACLE_API_KEYS) {
 						await env.ORACLE_API_KEYS.put(
 							keyHash,
-							JSON.stringify({ plan: 'pro', status: 'active' }),
-							{ expirationTtl: 300 },
+							JSON.stringify({
+								plan,
+								status:                 'active',
+								paddle_customer_id:     txn['customer_id'] as string | null,
+								paddle_subscription_id: txn['subscription_id'] as string | null,
+								email,
+								created_at:             new Date().toISOString(),
+							}),
 						);
 					}
 
@@ -2543,9 +2562,23 @@ export default {
 					const sub = event.data;
 					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+						// Fetch key_hash before updating status — needed to deactivate KV
+						const { data: keyRow } = await supabase
+							.from('api_keys').select('key_hash').eq('stripe_subscription_id', sub['id'] as string).single();
 						await supabase.from('api_keys')
 							.update({ status: 'cancelled' })
 							.eq('stripe_subscription_id', sub['id'] as string);
+						// Deactivate in KV so auth hot path reflects immediately
+						if (keyRow?.key_hash && env.ORACLE_API_KEYS) {
+							const current = await env.ORACLE_API_KEYS.get(keyRow.key_hash as string);
+							if (current) {
+								const parsed = JSON.parse(current) as Record<string, unknown>;
+								await env.ORACLE_API_KEYS.put(
+									keyRow.key_hash as string,
+									JSON.stringify({ ...parsed, status: 'inactive' }),
+								);
+							}
+						}
 					}
 					return json({ received: true });
 				}

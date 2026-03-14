@@ -1779,6 +1779,162 @@ describe('POST /webhooks/paddle', () => {
 			globalThis.fetch = originalFetch;
 		}
 	});
+
+	it('POST /webhooks/paddle transaction.completed -> generates ho_live_ key, stores builder plan', async () => {
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id: 'txn_test_builder_001',
+				customer_id: 'ctm_test_builder_001',
+				subscription_id: 'sub_builder_new_001',
+				items: [{ price_id: 'pri_test_builder_placeholder', quantity: 1 }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+		let capturedEmailHtml = '';
+		let capturedSupabaseInsertBody: Record<string, unknown> = {};
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && (!init?.method || init.method === 'GET')) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'not found' } }), {
+					status: 406, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
+				const bodyText = typeof init.body === 'string' ? init.body : '';
+				const parsed = JSON.parse(bodyText);
+				const row = Array.isArray(parsed) ? parsed[0] : parsed;
+				if (row) capturedSupabaseInsertBody = row as Record<string, unknown>;
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'builder@example.com' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('resend.com')) {
+				const emailBody = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { html?: string };
+				capturedEmailHtml = emailBody.html ?? '';
+				return new Response(JSON.stringify({ id: 'email_mock_001' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			expect(capturedEmailHtml).toContain('ho_live_');
+			expect(capturedSupabaseInsertBody.plan).toBe('builder');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('POST /webhooks/paddle transaction.completed -> defaults to pro plan for unrecognised price ID', async () => {
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id: 'txn_test_unknown_price',
+				customer_id: 'ctm_test_unknown',
+				subscription_id: 'sub_unknown_price_001',
+				items: [{ price_id: 'pri_totally_unrecognised', quantity: 1 }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+		let capturedPlan = '';
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && (!init?.method || init.method === 'GET')) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116' } }), {
+					status: 406, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
+				const bodyText = typeof init.body === 'string' ? init.body : '';
+				const parsed = JSON.parse(bodyText);
+				const row = Array.isArray(parsed) ? parsed[0] : parsed;
+				if (row) capturedPlan = (row as Record<string, unknown>).plan as string;
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'unknown@example.com' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('resend.com')) {
+				return new Response(JSON.stringify({ id: 'email_mock_003' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			expect(capturedPlan).toBe('pro');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('POST /webhooks/paddle subscription.canceled -> deactivates key in KV (status: inactive)', async () => {
+		const testKeyHash = 'aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344';
+		await env.ORACLE_API_KEYS.put(testKeyHash, JSON.stringify({
+			plan: 'pro', status: 'active', paddle_subscription_id: 'sub_cancel_kv_test',
+		}));
+
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.canceled',
+			data: { id: 'sub_cancel_kv_test' },
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && (!init?.method || init.method === 'GET')) {
+				// supabase-js wraps the raw HTTP body as { data: httpBody }; return the raw row
+				return new Response(JSON.stringify({ key_hash: testKeyHash }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('supabase.co') && init?.method === 'PATCH') {
+				return new Response(JSON.stringify([{}]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const kvVal = await env.ORACLE_API_KEYS.get(testKeyHash);
+			expect(kvVal).not.toBeNull();
+			const parsed = JSON.parse(kvVal!) as Record<string, unknown>;
+			expect(parsed.status).toBe('inactive');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 });
 
 // ─── edgeCaseCount() ─────────────────────────────────────────────────────────
