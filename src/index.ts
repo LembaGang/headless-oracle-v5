@@ -2381,9 +2381,15 @@ export default {
 				if (request.method !== 'POST') {
 					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
 				}
-				if (!env.PADDLE_API_KEY || !env.PADDLE_PRICE_ID) {
+				if (!env.PADDLE_API_KEY || !env.PADDLE_PRICE_ID_BUILDER) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
 				}
+				const body = await request.json().catch(() => ({})) as { plan?: string };
+				const plan = body.plan || 'builder';
+				const priceId =
+					plan === 'pro'      ? env.PADDLE_PRICE_ID_PRO :
+					plan === 'protocol' ? env.PADDLE_PRICE_ID_PROTOCOL :
+					                      env.PADDLE_PRICE_ID_BUILDER;
 				const paddleRes = await fetch('https://api.paddle.com/transactions', {
 					method: 'POST',
 					headers: {
@@ -2391,7 +2397,7 @@ export default {
 						'Content-Type':  'application/json',
 					},
 					body: JSON.stringify({
-						items: [{ price_id: env.PADDLE_PRICE_ID, quantity: 1 }],
+						items: [{ price_id: priceId, quantity: 1 }],
 					}),
 				});
 				const paddleBody = await paddleRes.json() as { data?: { checkout?: { url?: string } }; error?: { detail: string } };
