@@ -2406,7 +2406,11 @@ export default {
 					console.error(`PADDLE_CHECKOUT_ERROR: ${paddleBody.error?.detail ?? 'unknown'}`);
 					return json({ error: 'CHECKOUT_FAILED', message: 'Could not create checkout session' }, 502);
 				}
-				return json({ url: `https://buy.paddle.com/checkout/${transactionId}` });
+				return json({
+					url:            `https://buy.paddle.com/checkout/${transactionId}`,
+					overlay_url:    paddleBody.data?.checkout?.url ?? null,
+					transaction_id: transactionId,
+				});
 			}
 
 			// ── POST /webhooks/paddle — handle Paddle events ─────────────
