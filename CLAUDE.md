@@ -57,6 +57,9 @@ DST is handled automatically via IANA timezone names in `Intl.DateTimeFormat`. N
 
 **ORACLE_OVERRIDES must never contain telemetry data.** Operators scan it for active circuit breakers.
 
+## Scaling Reminder
+When ORACLE_TELEMETRY daily unique clients approaches 100/day, add cursor pagination to the 17:00 cron's KV list() call. Current implementation silently truncates at 1,000 keys. The fix is a list_complete cursor loop. Check metrics weekly via /v5/metrics endpoint (to be built) or Cloudflare KV dashboard.
+
 ## Circuit Breaker Overrides (KV)
 Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - Key: MIC code (e.g. `XNYS`)
