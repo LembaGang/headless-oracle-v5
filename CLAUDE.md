@@ -5,13 +5,13 @@
 - **Build/Deploy**: Wrangler (`wrangler.toml`)
 - **Crypto**: Ed25519 signing via `@noble/ed25519` + `@noble/hashes`
 - **Testing**: Vitest 112-test suite with `@cloudflare/vitest-pool-workers`
-- **KV**: Cloudflare KV (`ORACLE_OVERRIDES`) for manual circuit-breaker halts
+- **KV**: Three Cloudflare KV namespaces — `ORACLE_OVERRIDES` (circuit-breaker halts), `ORACLE_API_KEYS` (paid key cache), `ORACLE_TELEMETRY` (MCP client analytics)
 
 ## Project Structure
 - `src/index.ts` — Main worker (all routes, 7-exchange config, signing, fail-closed logic)
-- `test/index.spec.ts` — 90 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks, health endpoint, MCP tools
+- `test/index.spec.ts` — 184 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks, health endpoint, MCP tools, billing, MCP client telemetry
 - `vitest.config.mts` — Points to `wrangler.toml` (NOT wrangler.jsonc — that file is deleted)
-- `wrangler.toml` — Worker config + KV namespace binding (`ORACLE_OVERRIDES`)
+- `wrangler.toml` — Worker config + KV namespace bindings (`ORACLE_OVERRIDES`, `ORACLE_API_KEYS`, `ORACLE_TELEMETRY`)
 - `.dev.vars` — Local dev/test secrets (test-only keypair, NOT production keys)
 
 ## Supported Exchanges (7 total)
@@ -47,6 +47,16 @@ DST is handled automatically via IANA timezone names in `Intl.DateTimeFormat`. N
 - **Tier 3**: If signing itself fails — return unsigned CRITICAL_FAILURE 500 with UNKNOWN status
 - Consumers MUST treat UNKNOWN as CLOSED and halt all execution
 
+## KV Namespaces
+
+| Binding | Purpose | Key Pattern |
+|---|---|---|
+| `ORACLE_OVERRIDES` | Manual circuit-breaker market halts — **MIC codes only** | `XNYS`, `XNAS`, etc. |
+| `ORACLE_API_KEYS` | Paid API key cache (sha256 → plan/status) | `{sha256(key)}` |
+| `ORACLE_TELEMETRY` | MCP client analytics (privacy-safe, hashed IPs) | `mcp_clients:{YYYY-MM-DD}:{sha256(ip)}` |
+
+**ORACLE_OVERRIDES must never contain telemetry data.** Operators scan it for active circuit breakers.
+
 ## Circuit Breaker Overrides (KV)
 Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - Key: MIC code (e.g. `XNYS`)
@@ -72,7 +82,7 @@ Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - `BETA_API_KEYS=test_beta_key_1,test_beta_key_2`
 
 ## Commands
-- `npm test` — Run 80-test suite with Vitest (requires `.dev.vars` to be populated)
+- `npm test` — Run 184-test suite with Vitest (requires `.dev.vars` to be populated)
 - `npm run dev` — Local development server
 - `npm run deploy` — Deploy to Cloudflare Workers (`wrangler deploy`)
 

@@ -14,8 +14,9 @@ export interface Env {
 	PUBLIC_KEY_ID: string;
 	PUBLIC_KEY_VALID_FROM?: string;
 	PUBLIC_KEY_VALID_UNTIL?: string; // ISO 8601 — set when a key rotation is scheduled
-	ORACLE_OVERRIDES: KVNamespace;   // Cloudflare KV — manual circuit-breaker overrides
-	ORACLE_API_KEYS:  KVNamespace;   // Cloudflare KV — paid key cache: sha256(key) → { plan, status, ... }, persistent
+	ORACLE_OVERRIDES:  KVNamespace;  // Cloudflare KV — manual circuit-breaker overrides (MIC codes only)
+	ORACLE_API_KEYS:   KVNamespace;  // Cloudflare KV — paid key cache: sha256(key) → { plan, status, ... }, persistent
+	ORACLE_TELEMETRY:  KVNamespace;  // Cloudflare KV — MCP client telemetry: mcp_clients:{date}:{ip_hash}
 	// Billing secrets — set via `wrangler secret put`
 	PADDLE_API_KEY?:            string;
 	PADDLE_WEBHOOK_SECRET?:     string;
@@ -2013,7 +2014,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 	// Read current daily aggregate, increment, write back non-blocking.
 	const kvKey  = `mcp_clients:${today}:${ipHash}`;
-	const stored = await env.ORACLE_OVERRIDES.get(kvKey);
+	const stored = await env.ORACLE_TELEMETRY.get(kvKey);
 	const prev   = stored ? JSON.parse(stored) as McpClientRecord : null;
 	const requestCount = (prev?.request_count ?? 0) + 1;
 	const updated: McpClientRecord = {
@@ -2026,7 +2027,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		city,
 	};
 	// 8-day TTL so daily records expire automatically — KV stays clean.
-	ctx.waitUntil(env.ORACLE_OVERRIDES.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 }));
+	ctx.waitUntil(env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 }));
 
 	let body: JsonRpcRequest;
 	try {
@@ -2870,7 +2871,7 @@ export default {
 			try {
 				const today  = new Date().toISOString().slice(0, 10);
 				const prefix = `mcp_clients:${today}:`;
-				const list   = await env.ORACLE_OVERRIDES.list({ prefix });
+				const list   = await env.ORACLE_TELEMETRY.list({ prefix });
 
 				if (list.keys.length === 0) {
 					console.log(JSON.stringify({
@@ -2884,7 +2885,7 @@ export default {
 				}
 
 				const records = await Promise.all(
-					list.keys.map((k) => env.ORACLE_OVERRIDES.get(k.name)),
+					list.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name)),
 				);
 				const valid = records
 					.filter((r): r is string => r !== null)
