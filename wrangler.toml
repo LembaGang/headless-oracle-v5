@@ -9,6 +9,7 @@ routes = [
   { pattern = "headlessoracle.com/webhooks/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/.well-known/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/openapi.json", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/mics.json", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/robots.txt", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/llms.txt", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/SKILL.md", zone_name = "headlessoracle.com" },

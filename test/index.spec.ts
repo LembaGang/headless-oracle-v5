@@ -50,6 +50,92 @@ describe('CORS', () => {
 	});
 });
 
+// ─── GET /mics.json ───────────────────────────────────────────────────────────
+
+describe('GET /mics.json', () => {
+	const ALL_MIC_CODES = ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'];
+
+	it('returns 200 with correct Content-Type', async () => {
+		const response = await fetchWorker('/mics.json');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('includes CORS headers', async () => {
+		const response = await fetchWorker('/mics.json');
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+
+	it('sets Cache-Control for public caching', async () => {
+		const response = await fetchWorker('/mics.json');
+		expect(response.headers.get('Cache-Control')).toContain('public');
+	});
+
+	it('returns an array of exactly 7 exchanges', async () => {
+		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
+		expect(Array.isArray(body)).toBe(true);
+		expect((body as unknown[]).length).toBe(7);
+	});
+
+	it('every entry has required fields: mic, name, country, timezone, currency, sameAs', async () => {
+		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
+		for (const entry of body) {
+			expect(typeof entry.mic).toBe('string');
+			expect(typeof entry.name).toBe('string');
+			expect(typeof entry.country).toBe('string');
+			expect(typeof entry.timezone).toBe('string');
+			expect(typeof entry.currency).toBe('string');
+			expect(typeof entry.sameAs).toBe('string');
+		}
+	});
+
+	it('contains all 7 expected MIC codes', async () => {
+		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
+		const mics = body.map((e) => e.mic);
+		for (const mic of ALL_MIC_CODES) {
+			expect(mics).toContain(mic);
+		}
+	});
+
+	it('country codes are valid ISO 3166-1 alpha-2 (2 uppercase letters)', async () => {
+		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
+		for (const entry of body) {
+			expect(entry.country as string).toMatch(/^[A-Z]{2}$/);
+		}
+	});
+
+	it('currency codes are valid ISO 4217 (3 uppercase letters)', async () => {
+		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
+		for (const entry of body) {
+			expect(entry.currency as string).toMatch(/^[A-Z]{3}$/);
+		}
+	});
+
+	it('sameAs points to the ISO 20022 MIC registry for every entry', async () => {
+		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
+		for (const entry of body) {
+			expect(entry.sameAs).toBe('https://www.iso20022.org/market-identifier-codes');
+		}
+	});
+
+	it('XNYS entry has correct metadata', async () => {
+		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
+		const xnys = body.find((e) => e.mic === 'XNYS');
+		expect(xnys).toBeDefined();
+		expect(xnys!.name).toBe('New York Stock Exchange');
+		expect(xnys!.country).toBe('US');
+		expect(xnys!.timezone).toBe('America/New_York');
+		expect(xnys!.currency).toBe('USD');
+	});
+
+	it('does not require authentication', async () => {
+		const response = await fetchWorker('/mics.json');
+		expect(response.status).toBe(200);
+		expect(response.status).not.toBe(401);
+		expect(response.status).not.toBe(403);
+	});
+});
+
 // ─── GET /v5/demo ─────────────────────────────────────────────────────────────
 
 describe('GET /v5/demo', () => {

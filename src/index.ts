@@ -804,6 +804,21 @@ const SUPPORTED_EXCHANGES = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => (
 	timezone: cfg.timezone,
 }));
 
+// ─── MICs Registry ────────────────────────────────────────────────────────────
+// Full exchange metadata served at GET /mics.json for agent discovery.
+// Fields: mic (ISO 10383), name, country (ISO 3166-1 alpha-2), timezone (IANA),
+// currency (ISO 4217), sameAs (ISO 20022 MIC registry).
+// Order is canonical — do not reorder without updating clients that depend on index.
+const MICS_REGISTRY = [
+	{ mic: 'XNYS', name: 'New York Stock Exchange',    country: 'US', timezone: 'America/New_York',  currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	{ mic: 'XNAS', name: 'NASDAQ',                     country: 'US', timezone: 'America/New_York',  currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	{ mic: 'XLON', name: 'London Stock Exchange',      country: 'GB', timezone: 'Europe/London',     currency: 'GBP', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	{ mic: 'XJPX', name: 'Japan Exchange Group',       country: 'JP', timezone: 'Asia/Tokyo',        currency: 'JPY', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	{ mic: 'XPAR', name: 'Euronext Paris',             country: 'FR', timezone: 'Europe/Paris',      currency: 'EUR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	{ mic: 'XHKG', name: 'Hong Kong Stock Exchange',   country: 'HK', timezone: 'Asia/Hong_Kong',    currency: 'HKD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	{ mic: 'XSES', name: 'Singapore Exchange',         country: 'SG', timezone: 'Asia/Singapore',    currency: 'SGD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+] as const;
+
 // ─── Receipt TTL ─────────────────────────────────────────────────────────────
 // Signed receipts expire this many seconds after issued_at.
 // Consumers MUST NOT act on a receipt whose expires_at has passed.
@@ -823,6 +838,7 @@ Allow: /v5/schedule
 Allow: /v5/exchanges
 Allow: /v5/keys
 Allow: /v5/health
+Allow: /mics.json
 Disallow:
 `;
 
@@ -2440,6 +2456,20 @@ export default {
 			}
 			if (url.pathname === '/openapi.json') {
 				return json(OPENAPI_SPEC);
+			}
+			// ── GET /mics.json — machine-readable exchange registry ───────
+			// Static, cacheable. Lists all supported MICs with country, timezone,
+			// currency, and sameAs pointer to the ISO 20022 MIC registry.
+			// No auth required. Consumed by agents building MIC-selection logic
+			// without needing to parse prose documentation.
+			if (url.pathname === '/mics.json') {
+				return new Response(JSON.stringify(MICS_REGISTRY, null, 2), {
+					headers: {
+						...corsHeaders,
+						'Content-Type':  'application/json',
+						'Cache-Control': 'public, max-age=86400',
+					},
+				});
 			}
 			if (url.pathname === '/robots.txt') {
 				return new Response(ROBOTS_TXT, { headers: { 'Content-Type': 'text/plain' } });
