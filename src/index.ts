@@ -805,19 +805,33 @@ const SUPPORTED_EXCHANGES = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => (
 }));
 
 // ─── MICs Registry ────────────────────────────────────────────────────────────
-// Full exchange metadata served at GET /mics.json for agent discovery.
-// Fields: mic (ISO 10383), name, country (ISO 3166-1 alpha-2), timezone (IANA),
-// currency (ISO 4217), sameAs (ISO 20022 MIC registry).
-// Order is canonical — do not reorder without updating clients that depend on index.
-const MICS_REGISTRY = [
-	{ mic: 'XNYS', name: 'New York Stock Exchange',    country: 'US', timezone: 'America/New_York',  currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
-	{ mic: 'XNAS', name: 'NASDAQ',                     country: 'US', timezone: 'America/New_York',  currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
-	{ mic: 'XLON', name: 'London Stock Exchange',      country: 'GB', timezone: 'Europe/London',     currency: 'GBP', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
-	{ mic: 'XJPX', name: 'Japan Exchange Group',       country: 'JP', timezone: 'Asia/Tokyo',        currency: 'JPY', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
-	{ mic: 'XPAR', name: 'Euronext Paris',             country: 'FR', timezone: 'Europe/Paris',      currency: 'EUR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
-	{ mic: 'XHKG', name: 'Hong Kong Stock Exchange',   country: 'HK', timezone: 'Asia/Hong_Kong',    currency: 'HKD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
-	{ mic: 'XSES', name: 'Singapore Exchange',         country: 'SG', timezone: 'Asia/Singapore',    currency: 'SGD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
-] as const;
+// Served at GET /mics.json for agent discovery.
+//
+// DESIGN: mic, name, timezone are derived from MARKET_CONFIGS (single source of
+// truth). MICS_SUPPLEMENT holds only the fields that MARKET_CONFIGS does not
+// carry: country (ISO 3166-1 alpha-2), currency (ISO 4217), sameAs.
+// One change to MARKET_CONFIGS propagates automatically — no manual sync needed.
+
+const MICS_SUPPLEMENT: Record<string, { country: string; currency: string; sameAs: string }> = {
+	XNYS: { country: 'US', currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XNAS: { country: 'US', currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XLON: { country: 'GB', currency: 'GBP', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XJPX: { country: 'JP', currency: 'JPY', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XPAR: { country: 'FR', currency: 'EUR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XHKG: { country: 'HK', currency: 'HKD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XSES: { country: 'SG', currency: 'SGD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+};
+
+// Derived: mic, name, timezone from MARKET_CONFIGS; supplementary fields from MICS_SUPPLEMENT.
+// Order follows MARKET_CONFIGS insertion order — canonical across all endpoints.
+const MICS_REGISTRY = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => ({
+	mic,
+	name:     cfg.name,
+	country:  MICS_SUPPLEMENT[mic].country,
+	timezone: cfg.timezone,
+	currency: MICS_SUPPLEMENT[mic].currency,
+	sameAs:   MICS_SUPPLEMENT[mic].sameAs,
+}));
 
 // ─── Receipt TTL ─────────────────────────────────────────────────────────────
 // Signed receipts expire this many seconds after issued_at.
@@ -891,6 +905,15 @@ Returns next open/close times for a given exchange. Use for planning execution w
 ### GET /v5/exchanges — Exchange Discovery
 
 Returns all 7 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
+
+### GET /mics.json — Exchange Registry (ISO Metadata)
+
+All 7 supported exchanges with MIC codes, names, timezones, currencies, and ISO 20022 registry links. No auth required.
+
+- Fields per entry: \`mic\` (ISO 10383), \`name\`, \`country\` (ISO 3166-1 alpha-2), \`timezone\` (IANA), \`currency\` (ISO 4217), \`sameAs\` (ISO 20022 MIC registry URL)
+- Response is a JSON array, not an object wrapper — parse with \`JSON.parse(body)\` directly
+- Cache-Control: public, max-age=86400 — safe to cache for 24 hours
+- Use to build MIC-selection UI, validate MIC codes, or resolve exchange metadata without calling the live API
 
 ### GET /v5/demo — Try It Live
 
@@ -1731,6 +1754,40 @@ const OPENAPI_SPEC = {
 			get: {
 				summary:   'OpenAPI 3.1 specification',
 				responses: { '200': { description: 'This document' } },
+			},
+		},
+		'/mics.json': {
+			get: {
+				summary:     'Exchange registry — full ISO metadata',
+				description: 'Static JSON array of all 7 supported exchanges. Each entry carries: ' +
+					'mic (ISO 10383), name, country (ISO 3166-1 alpha-2), timezone (IANA), ' +
+					'currency (ISO 4217), and sameAs (ISO 20022 MIC registry URL). ' +
+					'No authentication required. Response is a top-level array, not an object wrapper. ' +
+					'Cache-Control: public, max-age=86400.',
+				responses: {
+					'200': {
+						description: 'Array of exchange metadata objects',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'array',
+									items: {
+										type: 'object',
+										required: ['mic', 'name', 'country', 'timezone', 'currency', 'sameAs'],
+										properties: {
+											mic:      { type: 'string', example: 'XNYS', description: 'ISO 10383 Market Identifier Code.' },
+											name:     { type: 'string', example: 'New York Stock Exchange' },
+											country:  { type: 'string', example: 'US', description: 'ISO 3166-1 alpha-2 country code.' },
+											timezone: { type: 'string', example: 'America/New_York', description: 'IANA timezone identifier.' },
+											currency: { type: 'string', example: 'USD', description: 'ISO 4217 currency code.' },
+											sameAs:   { type: 'string', format: 'uri', example: 'https://www.iso20022.org/market-identifier-codes', description: 'ISO 20022 MIC registry URL.' },
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 		'/v5/batch': {
