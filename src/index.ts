@@ -1467,6 +1467,7 @@ const AGENT_JSON = {
 			{ path: '/v5/batch',              method: 'GET',  auth: true,  description: 'Batch signed receipts for multiple MICs' },
 			{ path: '/v5/schedule',           method: 'GET',  auth: false, description: 'Next open/close times' },
 			{ path: '/v5/exchanges',          method: 'GET',  auth: false, description: 'All supported exchanges' },
+			{ path: '/mics.json',             method: 'GET',  auth: false, description: 'GET /mics.json — all 7 supported MICs with exchange metadata and ISO 20022 registry links' },
 			{ path: '/v5/keys',               method: 'GET',  auth: false, description: 'Public key registry + canonical payload spec' },
 			{ path: '/v5/health',             method: 'GET',  auth: false, description: 'Signed liveness probe' },
 			{ path: '/.well-known/oracle-keys.json', method: 'GET', auth: false, description: 'RFC 8615 key discovery' },
