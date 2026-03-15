@@ -80,3 +80,7 @@ id = "6fcde4c94b6b40f1913a44f410a06c5d"
 # View logs: Cloudflare Dashboard → Workers → headless-oracle-v5 → Logs
 [triggers]
 crons = ["0 9 * * *", "0 17 * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1

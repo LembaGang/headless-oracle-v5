@@ -2298,3 +2298,66 @@ describe('edgeCaseCount()', () => {
 		expect(total).toBe(1319);
 	});
 });
+
+// ─── GET /v5/metrics ─────────────────────────────────────────────────────────
+
+describe('GET /v5/metrics', () => {
+	it('returns correct shape with zero counts when KV is empty', async () => {
+		const response = await fetchWorker('/v5/metrics');
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('total_mcp_requests_today');
+		expect(body).toHaveProperty('unique_mcp_clients_today');
+		expect(body).toHaveProperty('exchanges_covered', 7);
+		expect(body).toHaveProperty('edge_cases_per_year', 1319);
+		expect(body).toHaveProperty('uptime_status', 'operational');
+		expect(typeof body.total_mcp_requests_today).toBe('number');
+		expect(typeof body.unique_mcp_clients_today).toBe('number');
+	});
+
+	it('reflects MCP telemetry counts when KV has entries', async () => {
+		const today  = new Date().toISOString().slice(0, 10);
+		const key1   = `mcp_clients:${today}:aaaa`;
+		const key2   = `mcp_clients:${today}:bbbb`;
+		await env.ORACLE_TELEMETRY.put(key1, JSON.stringify({ request_count: 5 }));
+		await env.ORACLE_TELEMETRY.put(key2, JSON.stringify({ request_count: 3 }));
+		try {
+			const response = await fetchWorker('/v5/metrics');
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body.unique_mcp_clients_today).toBeGreaterThanOrEqual(2);
+			expect(body.total_mcp_requests_today).toBeGreaterThanOrEqual(8);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(key1);
+			await env.ORACLE_TELEMETRY.delete(key2);
+		}
+	});
+});
+
+// ─── POST /v5/keys/request — rate limiting ────────────────────────────────────
+
+describe('POST /v5/keys/request — rate limiting', () => {
+	it('fourth request from the same IP within 24h returns 429 RATE_LIMITED', async () => {
+		const testIp   = '10.0.0.99';
+		const encoded  = new TextEncoder().encode(testIp);
+		const hashBuf  = await crypto.subtle.digest('SHA-256', encoded);
+		const ipHash   = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+		const today    = new Date().toISOString().slice(0, 10);
+		const rlKey    = `ratelimit:keys:${ipHash}:${today}`;
+		// Pre-seed counter at the limit
+		await env.ORACLE_TELEMETRY.put(rlKey, '3');
+		try {
+			const response = await fetchWorker('/v5/keys/request', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': testIp },
+				body:    JSON.stringify({ email: 'rate@example.com' }),
+			});
+			expect(response.status).toBe(429);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'RATE_LIMITED');
+			expect(typeof body.message).toBe('string');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(rlKey);
+		}
+	});
+});

@@ -1508,7 +1508,7 @@ interface JsonRpcRequest {
 	params?: unknown;
 }
 
-// Shape of daily MCP client aggregates stored in ORACLE_OVERRIDES KV.
+// Shape of daily MCP client aggregates stored in ORACLE_TELEMETRY KV.
 // Key pattern: mcp_clients:{YYYY-MM-DD}:{sha256(client-ip)}
 // Expires after 8 days. Raw IPs are never stored.
 interface McpClientRecord {
@@ -1925,6 +1925,44 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/metrics': {
+			get: {
+				summary:     'Public usage stats',
+				description: 'Returns today\'s MCP request totals and unique client count from ORACLE_TELEMETRY KV. No authentication required. Metrics are best-effort — KV unavailability returns zeros rather than 500.',
+				responses: {
+					'200': {
+						description: 'Usage statistics',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							required: ['total_mcp_requests_today', 'unique_mcp_clients_today', 'exchanges_covered', 'edge_cases_per_year', 'uptime_status'],
+							properties: {
+								total_mcp_requests_today: { type: 'integer', description: 'Sum of all MCP request_count values for today.' },
+								unique_mcp_clients_today: { type: 'integer', description: 'Distinct MCP client IPs seen today (hashed).' },
+								exchanges_covered:        { type: 'integer', example: 7 },
+								edge_cases_per_year:      { type: 'integer', example: 1319 },
+								uptime_status:            { type: 'string', enum: ['operational'] },
+							},
+						} } },
+					},
+				},
+			},
+		},
+		'/v5/keys/request': {
+			post: {
+				summary:     'Provision a free-tier API key',
+				description: 'Generates a ho_free_ prefixed API key and emails it to the provided address. Rate-limited to 3 requests per IP per 24 hours. No authentication required.',
+				requestBody: {
+					required: true,
+					content:  { 'application/json': { schema: { type: 'object', required: ['email'], properties: { email: { type: 'string', format: 'email' } } } } },
+				},
+				responses: {
+					'200': { description: 'Key sent to email', content: { 'application/json': { schema: { type: 'object', properties: { plan: { type: 'string', example: 'free' }, message: { type: 'string' } } } } } },
+					'400': { description: 'Invalid or missing email', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'429': { description: 'Rate limited — max 3 free keys per day per IP', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
 		'/.well-known/agent.json': {
 			get: {
 				summary:     'Structured agent metadata',
@@ -2063,7 +2101,7 @@ const MCP_RESPONSE_HEADERS = {
 async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	// ── Client Intelligence ────────────────────────────────────────────────────
 	// Privacy-safe: IPs are hashed (SHA-256), never stored raw.
-	// Aggregates land in ORACLE_OVERRIDES KV as mcp_clients:{date}:{ip_hash}.
+	// Aggregates land in ORACLE_TELEMETRY KV as mcp_clients:{date}:{ip_hash}.
 	const cf         = (request as unknown as { cf?: Record<string, string> }).cf;
 	const userAgent  = request.headers.get('User-Agent') ?? '';
 	const rawIp      = request.headers.get('CF-Connecting-IP') ?? '';
@@ -2836,6 +2874,39 @@ export default {
 				return json({ error: 'ACCOUNT_NOT_FOUND', message: 'No account found for this API key' }, 404);
 			}
 
+			// ── GET /v5/metrics — public usage stats ─────────────────────
+			if (url.pathname === '/v5/metrics') {
+				const today  = new Date().toISOString().slice(0, 10);
+				const prefix = `mcp_clients:${today}:`;
+				let uniqueMcpClientsToday    = 0;
+				let totalMcpRequestsToday    = 0;
+				try {
+					const list = await env.ORACLE_TELEMETRY.list({ prefix });
+					uniqueMcpClientsToday = list.keys.length;
+					if (list.keys.length > 0) {
+						const records = await Promise.all(
+							list.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name)),
+						);
+						for (const r of records) {
+							if (r) {
+								const parsed = JSON.parse(r) as { request_count?: number };
+								totalMcpRequestsToday += parsed.request_count ?? 0;
+							}
+						}
+					}
+				} catch {
+					// KV unavailable — return zeros rather than 500
+				}
+				const currentYear = new Date().getFullYear();
+				return json({
+					total_mcp_requests_today: totalMcpRequestsToday,
+					unique_mcp_clients_today: uniqueMcpClientsToday,
+					exchanges_covered:        7,
+					edge_cases_per_year:      edgeCaseCount(currentYear).total,
+					uptime_status:            'operational',
+				});
+			}
+
 			// ── POST /v5/keys/request — free tier key provisioning ────────
 			// No auth required. Validates email, generates ho_free_ key,
 			// stores in KV + Supabase, sends via Resend.
@@ -2843,6 +2914,22 @@ export default {
 				if (request.method !== 'POST') {
 					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
 				}
+
+				// IP-based rate limit: max 3 free key requests per IP per 24 hours.
+				// Key: ratelimit:keys:{ip_hash}:{YYYY-MM-DD} in ORACLE_TELEMETRY KV.
+				const rawIpRl   = request.headers.get('CF-Connecting-IP') ?? '';
+				const ipHashRl  = await sha256Hex(rawIpRl || 'unknown');
+				const dateRl    = new Date().toISOString().slice(0, 10);
+				const rlKey     = `ratelimit:keys:${ipHashRl}:${dateRl}`;
+				const rlStored  = await env.ORACLE_TELEMETRY.get(rlKey).catch(() => null);
+				const rlCount   = rlStored ? parseInt(rlStored, 10) : 0;
+				if (rlCount >= 3) {
+					return json({
+						error:   'RATE_LIMITED',
+						message: 'Max 3 free keys per day. Upgrade at headlessoracle.com/pricing',
+					}, 429);
+				}
+
 				const body = await request.json().catch(() => null) as { email?: unknown } | null;
 				const email = body?.email;
 				if (typeof email !== 'string' || !email.trim()) {
@@ -2908,6 +2995,9 @@ export default {
 						console.error(`RESEND_ERROR: failed to send free key email to ${normalizedEmail}`);
 					}
 				}
+
+				// Increment rate limit counter — 25-hour TTL (covers the full calendar day + drift).
+				ctx.waitUntil(env.ORACLE_TELEMETRY.put(rlKey, String(rlCount + 1), { expirationTtl: 25 * 3600 }));
 
 				return json({ plan: 'free', message: 'API key sent to your email' });
 			}
