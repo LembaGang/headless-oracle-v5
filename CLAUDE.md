@@ -108,6 +108,27 @@ architecture does not yet solve that will matter when agent consumption scales.
 
 Full strategic context: `.claude/rules/05_strategic_vision.md`
 
+## Ecosystem Artefacts (Mar 15 2026)
+
+| Artefact | Location | Status |
+|---|---|---|
+| Halt Simulator | `github.com/LembaGang/halt-simulator` | Live — 31/31 tests passing |
+| Agent Pre-Trade Safety Standard | `docs/agent-safety-standard/STANDARD.md` | Public draft v1.0.0 — Apache 2.0 |
+| SMA Protocol Specification | `docs/sma-spec.md` | v1.0.0 — Apache 2.0 |
+| ERC-8183 Evaluator Spec | `docs/erc-8183-evaluator-spec.md` | Draft — for Virtuals + EF dAI submission |
+
+**Halt Simulator:** Streamlit app (`app.py`) — 4 scenarios (DST US/UK, circuit breaker L1, exchange holiday), 5 position parameters, side-by-side naive bot vs safe bot comparison, live oracle toggle, loss breakdown + annual exposure charts. Run: `streamlit run app.py`.
+
+**Agent Pre-Trade Safety Standard:** Vendor-neutral 6-check checklist (fetch signed attestation → verify circuit breakers → verify settlement window → verify TTL → verify Ed25519 signature → halt on any failure). Conformance table, failure mode reference, JS/Python reference implementations.
+
+**SMA Protocol Spec:** Formal field definitions, canonical serialisation (alphabetical key sort, compact JSON), Ed25519 signing + verification algorithms in Python and JS, key discovery protocol, machine-readable error codes, Verifiable Intent and ERC-8183 compatibility sections.
+
+**ERC-8183 Evaluator Spec:** Receipt → EvaluationResult mapping, TypeScript/Python reference implementations, on-chain verification sketch (EIP-665), multi-exchange Jobs via `/v5/batch`, submission notes for Virtuals Protocol and EF dAI working group.
+
+## Backlog
+
+**Multi-party attestation aggregation spec** — the document that makes SMA foundational rather than trusted-by-reputation. Specify how a consumer verifies that two or more independent oracle operators agree before acting: threshold signing (e.g. 2-of-3 quorum), aggregation protocol, and the on-chain settlement pattern. Ed25519 was chosen to compose into this cleanly. Without this spec, SMA trust is operator-reputation trust — sufficient for early adopters, insufficient for infrastructure-scale adoption.
+
 ## Workflow & Session Context
 This project uses `.claude/rules/` for persistent engineering context. Read these at session start:
 1. `.claude/rules/05_strategic_vision.md` — north star, decision filters, why this matters
