@@ -1467,6 +1467,19 @@ interface JsonRpcRequest {
 	params?: unknown;
 }
 
+// Shape of daily MCP client aggregates stored in ORACLE_OVERRIDES KV.
+// Key pattern: mcp_clients:{YYYY-MM-DD}:{sha256(client-ip)}
+// Expires after 8 days. Raw IPs are never stored.
+interface McpClientRecord {
+	first_seen:    string; // ISO 8601
+	last_seen:     string; // ISO 8601
+	request_count: number;
+	user_agent:    string;
+	asn_org:       string;
+	country:       string;
+	city:          string;
+}
+
 const MCP_TOOLS = [
 	{
 		name: 'get_market_status',
@@ -1972,7 +1985,49 @@ const MCP_RESPONSE_HEADERS = {
 	'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-async function handleMcp(request: Request, env: Env): Promise<Response> {
+async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+	// ── Client Intelligence ────────────────────────────────────────────────────
+	// Privacy-safe: IPs are hashed (SHA-256), never stored raw.
+	// Aggregates land in ORACLE_OVERRIDES KV as mcp_clients:{date}:{ip_hash}.
+	const cf         = (request as unknown as { cf?: Record<string, string> }).cf;
+	const userAgent  = request.headers.get('User-Agent') ?? '';
+	const rawIp      = request.headers.get('CF-Connecting-IP') ?? '';
+	const ipHash     = await sha256Hex(rawIp);
+	const asnOrg     = cf?.asOrganization ?? '';
+	const country    = cf?.country ?? '';
+	const city       = cf?.city ?? '';
+	const contentLen = request.headers.get('Content-Length') ?? '';
+	const timestamp  = new Date().toISOString();
+	const today      = timestamp.slice(0, 10);
+
+	console.log(JSON.stringify({
+		event:          'MCP_REQUEST',
+		timestamp,
+		ip_hash:        ipHash,
+		user_agent:     userAgent,
+		asn_org:        asnOrg,
+		country,
+		city,
+		content_length: contentLen,
+	}));
+
+	// Read current daily aggregate, increment, write back non-blocking.
+	const kvKey  = `mcp_clients:${today}:${ipHash}`;
+	const stored = await env.ORACLE_OVERRIDES.get(kvKey);
+	const prev   = stored ? JSON.parse(stored) as McpClientRecord : null;
+	const requestCount = (prev?.request_count ?? 0) + 1;
+	const updated: McpClientRecord = {
+		first_seen:    prev?.first_seen ?? timestamp,
+		last_seen:     timestamp,
+		request_count: requestCount,
+		user_agent:    userAgent,
+		asn_org:       asnOrg,
+		country,
+		city,
+	};
+	// 8-day TTL so daily records expire automatically — KV stays clean.
+	ctx.waitUntil(env.ORACLE_OVERRIDES.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 }));
+
 	let body: JsonRpcRequest;
 	try {
 		body = await request.json() as JsonRpcRequest;
@@ -2015,8 +2070,16 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 			// Notification — per JSON-RPC/MCP spec, no response body
 			return new Response(null, { status: 202, headers: MCP_RESPONSE_HEADERS });
 
-		case 'tools/list':
-			return rpcResult({ tools: MCP_TOOLS });
+		case 'tools/list': {
+			// Conversion nudge: anonymous clients with > 50 requests see a non-breaking hint.
+			// Only in tools/list — not in tool call responses — so agent behaviour is unaffected.
+			const toolsResult: Record<string, unknown> = { tools: MCP_TOOLS };
+			if (requestCount > 50) {
+				toolsResult['x-oracle-note'] =
+					"You're using the demo tier. Get a free API key at https://headlessoracle.com/v5/keys/request for higher limits and production receipts.";
+			}
+			return rpcResult(toolsResult);
+		}
 
 		case 'tools/call': {
 			const p    = params as { name?: string; arguments?: Record<string, unknown> } | undefined;
@@ -2103,7 +2166,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
 // ─── Worker ───────────────────────────────────────────────────────────────────
 
 export default {
-	async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 
 		// Redirect www → bare domain (permanent). Keeps canonical URL consistent
@@ -2137,7 +2200,7 @@ export default {
 			if (request.method !== 'POST') {
 				return json({ error: 'METHOD_NOT_ALLOWED', message: 'MCP endpoint requires POST' }, 405);
 			}
-			return handleMcp(request, env);
+			return handleMcp(request, env, ctx);
 		}
 
 		try {
@@ -2775,30 +2838,81 @@ export default {
 		}
 	},
 
-	// ─── Cron: npm download tracking ─────────────────────────────────────────
-	// Runs daily at 09:00 UTC (see wrangler.toml [triggers]).
-	// Fetches @headlessoracle/verify download counts from the npm registry API
-	// and logs them to Cloudflare Workers Logs for monitoring.
-	async scheduled(_event: ScheduledEvent, _env: Env, _ctx: ExecutionContext): Promise<void> {
-		try {
-			const [week, month] = await Promise.all([
-				fetch('https://api.npmjs.org/downloads/point/last-week/@headlessoracle/verify'),
-				fetch('https://api.npmjs.org/downloads/point/last-month/@headlessoracle/verify'),
-			]);
-			const [weekData, monthData] = await Promise.all([
-				week.json() as Promise<{ downloads?: number; package?: string }>,
-				month.json() as Promise<{ downloads?: number }>,
-			]);
-			console.log(JSON.stringify({
-				event:         'NPM_DOWNLOADS',
-				package:       weekData.package ?? '@headlessoracle/verify',
-				last_7_days:   weekData.downloads  ?? 0,
-				last_30_days:  monthData.downloads ?? 0,
-				sampled_at:    new Date().toISOString(),
-			}));
-		} catch (err: unknown) {
-			const msg = err instanceof Error ? err.message : 'unknown error';
-			console.error(`NPM_TRACKING_ERROR: ${msg}`);
+	// ─── Cron handlers ────────────────────────────────────────────────────────
+	// 09:00 UTC — npm download tracking for @headlessoracle/verify
+	// 17:00 UTC — MCP anonymous client usage summary (high-engagement detection)
+	async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+		if (event.cron === '0 9 * * *') {
+			// Fetch @headlessoracle/verify download counts and log for monitoring.
+			try {
+				const [week, month] = await Promise.all([
+					fetch('https://api.npmjs.org/downloads/point/last-week/@headlessoracle/verify'),
+					fetch('https://api.npmjs.org/downloads/point/last-month/@headlessoracle/verify'),
+				]);
+				const [weekData, monthData] = await Promise.all([
+					week.json() as Promise<{ downloads?: number; package?: string }>,
+					month.json() as Promise<{ downloads?: number }>,
+				]);
+				console.log(JSON.stringify({
+					event:         'NPM_DOWNLOADS',
+					package:       weekData.package ?? '@headlessoracle/verify',
+					last_7_days:   weekData.downloads  ?? 0,
+					last_30_days:  monthData.downloads ?? 0,
+					sampled_at:    new Date().toISOString(),
+				}));
+			} catch (err: unknown) {
+				const msg = err instanceof Error ? err.message : 'unknown error';
+				console.error(`NPM_TRACKING_ERROR: ${msg}`);
+			}
+		} else if (event.cron === '0 17 * * *') {
+			// Scan today's MCP client aggregates in KV and log a summary.
+			// Identifies high-engagement anonymous clients (>10 requests/day) for conversion.
+			try {
+				const today  = new Date().toISOString().slice(0, 10);
+				const prefix = `mcp_clients:${today}:`;
+				const list   = await env.ORACLE_OVERRIDES.list({ prefix });
+
+				if (list.keys.length === 0) {
+					console.log(JSON.stringify({
+						event:                   'MCP_CLIENT_SUMMARY',
+						date:                    today,
+						high_engagement_clients: 0,
+						total_unique_clients:    0,
+						top_asn_orgs:            [],
+					}));
+					return;
+				}
+
+				const records = await Promise.all(
+					list.keys.map((k) => env.ORACLE_OVERRIDES.get(k.name)),
+				);
+				const valid = records
+					.filter((r): r is string => r !== null)
+					.map((r) => JSON.parse(r) as McpClientRecord);
+
+				const highEngagement = valid.filter((r) => r.request_count > 10);
+
+				// Rank ASN orgs by unique client count for pipeline prioritisation.
+				const asnCounts = new Map<string, number>();
+				for (const r of valid) {
+					if (r.asn_org) asnCounts.set(r.asn_org, (asnCounts.get(r.asn_org) ?? 0) + 1);
+				}
+				const topAsnOrgs = [...asnCounts.entries()]
+					.sort((a, b) => b[1] - a[1])
+					.slice(0, 10)
+					.map(([org]) => org);
+
+				console.log(JSON.stringify({
+					event:                   'MCP_CLIENT_SUMMARY',
+					date:                    today,
+					high_engagement_clients: highEngagement.length,
+					total_unique_clients:    valid.length,
+					top_asn_orgs:            topAsnOrgs,
+				}));
+			} catch (err: unknown) {
+				const msg = err instanceof Error ? err.message : 'unknown error';
+				console.error(`MCP_SUMMARY_ERROR: ${msg}`);
+			}
 		}
 	},
 };

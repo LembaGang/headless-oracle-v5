@@ -1001,6 +1001,82 @@ describe('POST /mcp', () => {
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
 	});
+
+	it('tools/list → no x-oracle-note on first use (request_count = 1)', async () => {
+		// Fresh IP — will have count 1 after this call, well below the 50-request threshold.
+		const testIp = '192.0.2.1';
+		const ipHash = await sha256Hex(testIp);
+		const today  = new Date().toISOString().slice(0, 10);
+		const kvKey  = `mcp_clients:${today}:${ipHash}`;
+		await env.ORACLE_OVERRIDES.delete(kvKey); // ensure clean slate
+
+		try {
+			const response = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': testIp },
+				body:    JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/list' }),
+			});
+			const body   = await response.json() as Record<string, unknown>;
+			const result = body.result as Record<string, unknown>;
+			expect(result).toHaveProperty('tools');
+			expect(Object.prototype.hasOwnProperty.call(result, 'x-oracle-note')).toBe(false);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete(kvKey);
+		}
+	});
+
+	it('tools/list → x-oracle-note appears when request_count exceeds 50', async () => {
+		// Pre-seed KV with count=50; handleMcp increments to 51 → note appears.
+		const testIp  = '192.0.2.2';
+		const ipHash  = await sha256Hex(testIp);
+		const today   = new Date().toISOString().slice(0, 10);
+		const kvKey   = `mcp_clients:${today}:${ipHash}`;
+		const now     = new Date().toISOString();
+		await env.ORACLE_OVERRIDES.put(kvKey, JSON.stringify({
+			first_seen: now, last_seen: now, request_count: 50,
+			user_agent: 'test-agent', asn_org: 'DATACAMP', country: 'US', city: 'New York',
+		}));
+
+		try {
+			const response = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': testIp },
+				body:    JSON.stringify({ jsonrpc: '2.0', id: 11, method: 'tools/list' }),
+			});
+			const body   = await response.json() as Record<string, unknown>;
+			const result = body.result as Record<string, unknown>;
+			expect(result).toHaveProperty('x-oracle-note');
+			expect(typeof result['x-oracle-note']).toBe('string');
+			expect(result['x-oracle-note'] as string).toContain('https://headlessoracle.com/v5/keys/request');
+		} finally {
+			await env.ORACLE_OVERRIDES.delete(kvKey);
+		}
+	});
+
+	it('MCP request writes client aggregate to ORACLE_OVERRIDES KV (hashed IP, request_count increments)', async () => {
+		const testIp = '192.0.2.3';
+		const ipHash = await sha256Hex(testIp);
+		const today  = new Date().toISOString().slice(0, 10);
+		const kvKey  = `mcp_clients:${today}:${ipHash}`;
+		await env.ORACLE_OVERRIDES.delete(kvKey);
+
+		try {
+			await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': testIp },
+				body:    JSON.stringify({ jsonrpc: '2.0', id: 12, method: 'resources/list' }),
+			});
+
+			const raw    = await env.ORACLE_OVERRIDES.get(kvKey);
+			expect(raw).not.toBeNull();
+			const record = JSON.parse(raw!) as Record<string, unknown>;
+			expect(record.request_count).toBe(1);
+			expect(typeof record.first_seen).toBe('string');
+			expect(typeof record.last_seen).toBe('string');
+		} finally {
+			await env.ORACLE_OVERRIDES.delete(kvKey);
+		}
+	});
 });
 
 // ─── GET /v5/batch ────────────────────────────────────────────────────────────
