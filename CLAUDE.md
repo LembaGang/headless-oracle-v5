@@ -116,6 +116,7 @@ Full strategic context: `.claude/rules/05_strategic_vision.md`
 | Agent Pre-Trade Safety Standard | `docs/agent-safety-standard/STANDARD.md` | Public draft v1.0.0 — Apache 2.0 |
 | SMA Protocol Specification | `docs/sma-spec.md` | v1.0.0 — Apache 2.0 |
 | ERC-8183 Evaluator Spec | `docs/erc-8183-evaluator-spec.md` | Draft — for Virtuals + EF dAI submission |
+| Python SDK | PyPI: `headless-oracle` v0.1.0 (published Mar 2) | `pip install headless-oracle` — includes `OracleClient`, `verify()`, LangChain tool, CrewAI tool |
 
 **Halt Simulator:** Streamlit app (`app.py`) — 4 scenarios (DST US/UK, circuit breaker L1, exchange holiday), 5 position parameters, side-by-side naive bot vs safe bot comparison, live oracle toggle, loss breakdown + annual exposure charts. Run: `streamlit run app.py`.
 

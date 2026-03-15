@@ -60,15 +60,11 @@ I mapped all of this for 7 exchanges through 2027 and built a signed market stat
 **The 4-step gate pattern (what the fix looks like in practice):**
 
 ```python
-import requests
-from headless_oracle_verify import verify  # npm: @headlessoracle/verify for JS
+from headless_oracle import OracleClient, verify  # pip install headless-oracle
 
 # Step 1: Fetch signed receipt
-receipt = requests.get(
-    "https://headlessoracle.com/v5/status",
-    params={"mic": "XNYS"},
-    headers={"X-Oracle-Key": os.environ["ORACLE_KEY"]}
-).json()
+with OracleClient(api_key=os.environ["ORACLE_KEY"]) as client:
+    receipt = client.get_status("XNYS")
 
 # Step 2: Verify the Ed25519 signature offline
 # Public key: headlessoracle.com/.well-known/oracle-keys.json
