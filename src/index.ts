@@ -2104,11 +2104,13 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 	// Aggregates land in ORACLE_TELEMETRY KV as mcp_clients:{date}:{ip_hash}.
 	const cf         = (request as unknown as { cf?: Record<string, string> }).cf;
 	const userAgent  = request.headers.get('User-Agent') ?? '';
-	const rawIp      = request.headers.get('CF-Connecting-IP') ?? '';
+	// Prefer headers injected by the headlessoracle.workers.dev proxy so we see the
+	// real client IP/geo rather than Cloudflare's own ASN on proxied requests.
+	const rawIp      = request.headers.get('X-Original-IP') || (request.headers.get('CF-Connecting-IP') ?? '');
 	const ipHash     = await sha256Hex(rawIp);
-	const asnOrg     = cf?.asOrganization ?? '';
-	const country    = cf?.country ?? '';
-	const city       = cf?.city ?? '';
+	const asnOrg     = request.headers.get('X-Original-ASN-Org') || (cf?.asOrganization ?? '');
+	const country    = request.headers.get('X-Original-Country') || (cf?.country ?? '');
+	const city       = request.headers.get('X-Original-City')    || (cf?.city ?? '');
 	const contentLen = request.headers.get('Content-Length') ?? '';
 	const timestamp  = new Date().toISOString();
 	const today      = timestamp.slice(0, 10);
@@ -2126,8 +2128,11 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 	// Read current daily aggregate, increment, write back non-blocking.
 	// Telemetry is best-effort — a KV failure must never affect the MCP response.
-	// ctx.waitUntil() silently drops rejected promises, so we attach .catch() to
-	// surface failures in Workers Logs (Dashboard → headless-oracle-v5 → Logs).
+	// ctx.waitUntil() silently drops rejected promises, so we attach .then()/.catch()
+	// to surface both success and failure in Workers Logs.
+	// Fallback: if ctx.waitUntil is unavailable (observed on some Workers Routes
+	// configurations when requests arrive via a custom domain rather than workers.dev),
+	// we await the put directly — adds minor latency but guarantees the write completes.
 	let requestCount = 1; // default if KV read fails
 	const kvKey = `mcp_clients:${today}:${ipHash}`;
 	try {
@@ -2144,12 +2149,18 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			city,
 		};
 		// 8-day TTL so daily records expire automatically — KV stays clean.
-		// .catch() makes put failures visible in Workers Logs — ctx.waitUntil()
-		// itself swallows rejections silently, so without this they are invisible.
-		ctx.waitUntil(
-			env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 })
-				.catch((err) => console.error('TELEMETRY_PUT_FAILED', String(err))),
-		);
+		// .then()/.catch() make both success and failure visible in Workers Logs —
+		// ctx.waitUntil() itself swallows rejections silently.
+		const putPromise = env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 })
+			.then(() => console.log(JSON.stringify({ event: 'TELEMETRY_PUT_OK', kvKey })))
+			.catch((err: unknown) => console.error('TELEMETRY_PUT_FAILED', String(err)));
+		if (typeof ctx?.waitUntil === 'function') {
+			ctx.waitUntil(putPromise);
+		} else {
+			// ctx.waitUntil unavailable — await directly so the write is not lost.
+			console.error('TELEMETRY_CTX_NO_WAITUNTIL — awaiting put directly');
+			await putPromise;
+		}
 	} catch (err) {
 		console.error('TELEMETRY_GET_FAILED', String(err));
 	}
