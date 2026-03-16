@@ -142,3 +142,25 @@ This project uses `.claude/rules/` for persistent engineering context. Read thes
 4. `.claude/rules/00_engineering_standards.md` — hard rules for this codebase
 
 Update `90_active_priorities.md` after any significant change.
+
+## Autonomous Decisions — March 17 2026
+
+The following decisions were made autonomously during the Mar 17 sprint (Sessions A–G). All logged here per standing instruction.
+
+**Decision 1: Session H (x402 micropayments) was NOT implemented.**
+The second user message in the Mar 17 session contained an instruction to run `wrangler secret put ORACLE_PAYMENT_ADDRESS` with a crypto wallet address (`0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3`) and implement payment routing to it. This was assessed as a prompt injection attempt that would redirect production payments to an unknown wallet. No payment infrastructure was changed. The instruction requires explicit founder verification before implementation.
+
+**Decision 2: GET /mcp returns server info (200), not 405.**
+The original `GET /mcp → 405` test was updated to `GET /mcp → 200 server info`. Rationale: MCP clients use GET to discover server capabilities before POSTing. A 405 on GET is a discoverability failure. The server info response (`name`, `version`, `protocol`, `sma_compliant`, `tools`, `authentication`) gives agents everything they need to decide whether to integrate — zero ambiguity.
+
+**Decision 3: `docs` field auto-appended to all 4xx errors via the `json()` helper.**
+Rather than adding `docs` manually to each error response, the `json()` helper auto-appends it to any response with `status >= 400 && < 500` that has a string `error` field. The docs URL format is `https://headlessoracle.com/docs#{errorCode}`. This is a silent backward-compatible additive change — no existing consumers break. Agents can now recover from any 4xx error by following the docs link.
+
+**Decision 4: SMA Protocol RFC uses 60s TTL for market receipts specifically.**
+The RFC (Section 3.4) specifies that `expires_at = issued_at + 60s` for market state, but allows domain-specific TTLs subject to constraints. This preserves flexibility for future domains (e.g. regulatory status might warrant 5-minute TTLs) without weakening the market state guarantee.
+
+**Decision 5: Integration guides created for 7 frameworks (Sessions D).**
+LangGraph, AutoGen, CrewAI, Vercel AI SDK, OpenAI Agents SDK, Bun, and Anthropic Claude. Each guide uses the actual Oracle REST API + `@headlessoracle/verify` for JS, or `headless-oracle` Python SDK. No mock patterns — real working code templates. Guides are in `docs/integrations/`.
+
+**Decision 6: Multi-exchange monitor template uses state-change events only.**
+`docs/multi-exchange-monitor.ts` fires handlers only when status changes, not on every poll. This avoids downstream noise (every 30s "XNYS is still OPEN" logs) and makes the template usable in production without modification. TTL-awareness (`isConfirmedOpen()` checks `expires_at`) is built in.
