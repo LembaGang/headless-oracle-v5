@@ -1174,12 +1174,41 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 
 - [Privacy Policy](https://headlessoracle.com/privacy.html): Minimal data collection. Collected: API key identifier, request timestamp, MIC code. NOT collected: portfolio data, positions, balances, wallet addresses.
 
+## Compliance and Standards
+
+### GET /v5/compliance — APTS Self-Report
+
+Returns a machine-readable compliance report for the Agent Pre-Trade Safety Standard (APTS v1.0). Use to verify that Oracle meets your compliance requirements before integrating.
+
+- No authentication required
+- Response: \`checks\` array — 6 pre-trade safety checks, each with \`id\`, \`description\`, \`status\` ("pass" | "fail")
+- Also returns \`standard\`, \`standard_version\`, \`sma_spec_version\`, \`verify_sdk\`, \`standard_url\`
+
+Checks performed:
+1. \`signed_attestation\` — All market status responses are cryptographically signed (Ed25519)
+2. \`circuit_breaker_detection\` — Unscheduled halts propagated via KV override within operator SLA
+3. \`settlement_window_verification\` — Exchange schedule includes pre-open and post-close windows
+4. \`receipt_ttl_enforcement\` — All receipts include expires_at (60s TTL), signed in canonical payload
+5. \`signature_verification\` — Ed25519 signatures verifiable via @headlessoracle/verify SDK
+6. \`fail_closed_on_unknown\` — UNKNOWN status contractually requires halt — never treated as OPEN
+
+### Signed Market Attestation (SMA) Protocol v1.0
+
+Headless Oracle receipts conform to the SMA Protocol v1.0 — a vendor-neutral open standard for cryptographically attested market state.
+
+SMA receipt fields: \`mic\`, \`status\`, \`timestamp\`, \`expires_at\`, \`issuer\`, \`key_id\`, \`receipt_mode\`, \`signature\`
+
+Signing algorithm: Ed25519 over alphabetically-sorted compact JSON (excluding \`signature\` field).
+
+Any conforming oracle can issue SMA receipts. Any conforming verifier can verify them independently.
+
 ## Agent Discovery
 
 - [Skill File](https://headlessoracle.com/SKILL.md): Step-by-step integration guide optimised for AI agents. Covers MCP setup, HTTP patterns, code examples, safety rules, and common mistakes.
 - [Agent Metadata](https://headlessoracle.com/.well-known/agent.json): Structured JSON describing capabilities, MCP tools, and discovery endpoints.
 - [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API contract (OpenAPI 3.1).
 - [MCP Endpoint](https://headlessoracle.com/mcp): Protocol version 2024-11-05. Tools: get_market_status, get_market_schedule, list_exchanges.
+- [APTS Compliance](https://headlessoracle.com/v5/compliance): Machine-readable Agent Pre-Trade Safety Standard compliance self-report.
 
 ## Robots
 
@@ -1395,7 +1424,20 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 - \`GET /openapi.json\` — OpenAPI 3.1 machine-readable spec
 - \`GET /v5/health\` — signed liveness probe (verify oracle is up before a batch)
 - \`GET /v5/schedule?mic=XNYS\` — next open/close times, lunch breaks, public holidays
+- \`GET /v5/compliance\` — APTS v1.0 compliance self-report (6 pre-trade safety checks)
 - \`POST /v5/keys/request\` — free tier key self-provisioning (no payment required)
+
+---
+
+## Compliance Standards
+
+Headless Oracle conforms to two open standards. Agents can verify conformance programmatically:
+
+**Agent Pre-Trade Safety Standard (APTS) v1.0** — 6 pre-trade checks every autonomous agent should perform before execution. Check: \`GET /v5/compliance\` returns all 6 with \`status: "pass"\`.
+
+**Signed Market Attestation (SMA) Protocol v1.0** — vendor-neutral format for cryptographically attested market state. All receipts are SMA-compliant: alphabetically-sorted compact JSON signed with Ed25519.
+
+SMA conformance means: any independent verifier with the public key can validate receipts without calling Oracle again.
 `;
 
 // FNV-1a 32-bit hash — deterministic, synchronous, no crypto API needed.
@@ -1436,7 +1478,15 @@ const AGENT_JSON = {
 		'signed_receipts',
 		'portable_receipts',
 		'mcp_tools',
+		'compliance_check',
+		'sma_attestation',
 	],
+	standards: {
+		sma_version:  '1.0',
+		apts_version: '1.0',
+		sma_spec:     'https://headlessoracle.com/docs#sma-spec',
+		apts_spec:    'https://headlessoracle.com/docs#agent-safety-standard',
+	},
 	mcp: {
 		endpoint:         'https://headlessoracle.com/mcp',
 		protocol_version: '2024-11-05',
@@ -1471,6 +1521,8 @@ const AGENT_JSON = {
 			{ path: '/v5/keys',               method: 'GET',  auth: false, description: 'Public key registry + canonical payload spec' },
 			{ path: '/v5/health',             method: 'GET',  auth: false, description: 'Signed liveness probe' },
 			{ path: '/.well-known/oracle-keys.json', method: 'GET', auth: false, description: 'RFC 8615 key discovery' },
+			{ path: '/v5/compliance',               method: 'GET', auth: false, description: 'APTS compliance self-report — 6 pre-trade safety checks' },
+			{ path: '/v5/metrics',                  method: 'GET', auth: false, description: 'MCP client telemetry — today\'s request and unique client counts' },
 		],
 		auth: {
 			header:  'X-Oracle-Key',

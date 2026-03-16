@@ -3,11 +3,27 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active.
-**Test suite**: 198/198 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
+**Test suite**: 219/219 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All 200 + /v5/compliance — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /v5/compliance, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 16 2026 — Surface ORACLE_TELEMETRY write outcomes and guard ctx.waitUntil (worker commit bdeb158):
+**Last significant work**: Mar 17 2026 — MCP compliance, production headers, /v5/compliance endpoint + Session G docs (worker commit a7a2bd3):
+  - Sessions B+E: GET /mcp → server info, PUT/PATCH/DELETE → 405, invalid JSON → -32700, unknown method → -32601
+  - Session B: tools/call content blocks always include type:'text', initialize returns instructions
+  - Session E: X-Oracle-Version: v5 on all responses, Cache-Control: no-store on signed receipts
+  - Session E: 4xx errors include docs field (agent-readable recovery URL auto-appended by json() helper)
+  - Session E: GET /v5/compliance — 6 APTS checks, sma_spec_version, verify_sdk, standard_url
+  - Session E: /v5/health enriched with version, sma_spec_version, mcp_protocol_version, uptime_since, fail_closed
+  - Session G: agent.json updated with compliance_check + sma_attestation capabilities + standards object
+  - Session G: LLMS_TXT updated with /v5/compliance docs + SMA Protocol section + APTS section + updated Agent Discovery
+  - Session G: SKILL_MD updated with /v5/compliance + Compliance Standards section
+  - Session G: docs/multi-exchange-monitor.ts — production-ready 7-exchange polling template (Ed25519-verified, fail-closed)
+  - Session G: docs/sma-protocol-repo/ — SMA v1.0 open standard publication (6 files, background agent)
+  - Session G: docs/integrations/ — 7 framework guides: LangGraph, AutoGen, CrewAI, Vercel AI SDK, OpenAI Agents, Bun, Anthropic Claude (background agent)
+  - Session G: docs/agent-safety-standard/ — APTS docs completed (README, CHECKLIST.yaml, BADGE.md, CI-INTEGRATION.md)
+  - OpenAPI spec updated for /v5/compliance
+  - 219/219 tests passing. Deploy pending.
+**Previous significant work**: Mar 16 2026 — Surface ORACLE_TELEMETRY write outcomes and guard ctx.waitUntil (worker commit bdeb158):
   - Problem: direct MCP requests via headlessoracle.com/mcp logged MCP_REQUEST but never wrote to ORACLE_TELEMETRY KV; proxy path worked
   - Root cause 1: ctx.waitUntil called unconditionally — if unavailable on custom-domain execution context, throws, caught as TELEMETRY_GET_FAILED, masking the real issue
   - Root cause 2: only PUT failures were logged (TELEMETRY_PUT_FAILED); no success log, making it impossible to distinguish "put never called" from "put silently failed"
