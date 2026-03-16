@@ -2125,21 +2125,34 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 	}));
 
 	// Read current daily aggregate, increment, write back non-blocking.
-	const kvKey  = `mcp_clients:${today}:${ipHash}`;
-	const stored = await env.ORACLE_TELEMETRY.get(kvKey);
-	const prev   = stored ? JSON.parse(stored) as McpClientRecord : null;
-	const requestCount = (prev?.request_count ?? 0) + 1;
-	const updated: McpClientRecord = {
-		first_seen:    prev?.first_seen ?? timestamp,
-		last_seen:     timestamp,
-		request_count: requestCount,
-		user_agent:    userAgent,
-		asn_org:       asnOrg,
-		country,
-		city,
-	};
-	// 8-day TTL so daily records expire automatically — KV stays clean.
-	ctx.waitUntil(env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 }));
+	// Telemetry is best-effort — a KV failure must never affect the MCP response.
+	// ctx.waitUntil() silently drops rejected promises, so we attach .catch() to
+	// surface failures in Workers Logs (Dashboard → headless-oracle-v5 → Logs).
+	let requestCount = 1; // default if KV read fails
+	const kvKey = `mcp_clients:${today}:${ipHash}`;
+	try {
+		const stored = await env.ORACLE_TELEMETRY.get(kvKey);
+		const prev   = stored ? JSON.parse(stored) as McpClientRecord : null;
+		requestCount = (prev?.request_count ?? 0) + 1;
+		const updated: McpClientRecord = {
+			first_seen:    prev?.first_seen ?? timestamp,
+			last_seen:     timestamp,
+			request_count: requestCount,
+			user_agent:    userAgent,
+			asn_org:       asnOrg,
+			country,
+			city,
+		};
+		// 8-day TTL so daily records expire automatically — KV stays clean.
+		// .catch() makes put failures visible in Workers Logs — ctx.waitUntil()
+		// itself swallows rejections silently, so without this they are invisible.
+		ctx.waitUntil(
+			env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 })
+				.catch((err) => console.error('TELEMETRY_PUT_FAILED', String(err))),
+		);
+	} catch (err) {
+		console.error('TELEMETRY_GET_FAILED', String(err));
+	}
 
 	let body: JsonRpcRequest;
 	try {
@@ -2894,8 +2907,10 @@ export default {
 							}
 						}
 					}
-				} catch {
-					// KV unavailable — return zeros rather than 500
+				} catch (err) {
+					// KV unavailable — return zeros rather than 500.
+					// Log so the error is visible in Workers Logs.
+					console.error('METRICS_KV_ERROR', String(err));
 				}
 				const currentYear = new Date().getFullYear();
 				return json({
