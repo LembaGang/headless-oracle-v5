@@ -7,13 +7,21 @@
 **Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 16 2026 — Fix silent ORACLE_TELEMETRY KV write failures (worker commit 963dfd6):
+**Last significant work**: Mar 16 2026 — Surface ORACLE_TELEMETRY write outcomes and guard ctx.waitUntil (worker commit bdeb158):
+  - Problem: direct MCP requests via headlessoracle.com/mcp logged MCP_REQUEST but never wrote to ORACLE_TELEMETRY KV; proxy path worked
+  - Root cause 1: ctx.waitUntil called unconditionally — if unavailable on custom-domain execution context, throws, caught as TELEMETRY_GET_FAILED, masking the real issue
+  - Root cause 2: only PUT failures were logged (TELEMETRY_PUT_FAILED); no success log, making it impossible to distinguish "put never called" from "put silently failed"
+  - Fix 1: split put into named const with both .then() → TELEMETRY_PUT_OK and .catch() → TELEMETRY_PUT_FAILED
+  - Fix 2: guard ctx.waitUntil with typeof check; fall back to direct await if unavailable (guarantees write completes)
+  - Fix 3: carry forward X-Original-{IP,ASN-Org,Country,City} header fallbacks so real client fingerprint is captured on direct custom-domain requests
+  - Workers Logs will now show TELEMETRY_PUT_OK (success), TELEMETRY_PUT_FAILED (KV error), or TELEMETRY_CTX_NO_WAITUNTIL (execution context issue)
+  - 198/198 tests passing. Deployed (bc1534d1). Pushed.
+**Previous significant work**: Mar 16 2026 — Fix silent ORACLE_TELEMETRY KV write failures (worker commit 963dfd6):
   - Root cause: ctx.waitUntil() silently drops rejected promises — any KV put failure was invisible
   - Secondary: unprotected await env.ORACLE_TELEMETRY.get() would crash all MCP requests if KV unavailable
   - Fix: wrap telemetry GET/PUT block in try/catch; add .catch(err => console.error(...)) to waitUntil put
   - Fix: add console.error to /v5/metrics catch block so read failures are visible in Workers Logs
   - Telemetry is now best-effort (non-fatal): KV failure no longer propagates to MCP response
-  - To diagnose root cause: check Workers Logs for TELEMETRY_PUT_FAILED / TELEMETRY_GET_FAILED events
   - 198/198 tests passing. Deployed (3f2d3e80). Pushed.
 **Previous significant work**: Mar 15 2026 — Observability, metrics, rate limiting, Paddle dedup (worker commit cb13d7f, web commit c3eef5a):
   - wrangler.toml: [observability] enabled=true head_sampling_rate=1 — matches dashboard settings

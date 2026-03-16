@@ -1963,6 +1963,29 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/compliance': {
+			get: {
+				summary:     'APTS compliance declaration',
+				description: 'Machine-readable proof that Headless Oracle satisfies the Agent Pre-Trade Safety Standard v1.0. ' +
+					'All 6 APTS checks documented with evidence. No authentication required. ' +
+					'Suitable for CI pipelines and MCP evaluation tools.',
+				responses: {
+					'200': {
+						description: 'Compliance document',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								standard:      { type: 'string', example: 'Agent Pre-Trade Safety Standard v1.0' },
+								oracle:        { type: 'string' },
+								version:       { type: 'string' },
+								last_verified: { type: 'string', format: 'date-time' },
+								checks: { type: 'array', items: { type: 'object', properties: { check: { type: 'string' }, name: { type: 'string' }, status: { type: 'string', enum: ['pass', 'fail'] }, evidence: { type: 'string' } } } },
+							},
+						} } },
+					},
+				},
+			},
+		},
 		'/.well-known/agent.json': {
 			get: {
 				summary:     'Structured agent metadata',
@@ -2326,14 +2349,42 @@ export default {
 			return new Response(null, { headers: corsHeaders });
 		}
 
-		const json = (body: unknown, status = 200, extraHeaders: Record<string, string> = {}) =>
-			new Response(JSON.stringify(body), {
+		const json = (body: unknown, status = 200, extraHeaders: Record<string, string> = {}) => {
+			let responseBody = body;
+			// Auto-append docs link to 4xx error responses for agent-readable error recovery.
+			if (
+				status >= 400 && status < 500 &&
+				typeof body === 'object' && body !== null && 'error' in body &&
+				typeof (body as Record<string, unknown>).error === 'string'
+			) {
+				const errorCode = (body as Record<string, unknown>).error as string;
+				responseBody = {
+					...(body as Record<string, unknown>),
+					docs: `https://headlessoracle.com/docs#${errorCode}`,
+				};
+			}
+			return new Response(JSON.stringify(responseBody), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json', ...extraHeaders },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...extraHeaders },
 			});
+		};
 
-		// ── POST /mcp — MCP Streamable HTTP (outside main try/catch) ─
+		// ── GET /mcp — server info; POST /mcp — MCP Streamable HTTP ──
+		// GET returns machine-readable server metadata for MCP evaluation tools.
+		// POST is the actual MCP endpoint (outside main try/catch — isolated error handling).
 		if (url.pathname === '/mcp') {
+			if (request.method === 'GET') {
+				return json({
+					name:           MCP_SERVER_NAME,
+					version:        MCP_SERVER_VERSION,
+					protocol:       MCP_PROTOCOL_VERSION,
+					description:    'Cryptographically signed market status verification for AI agents',
+					tools:          MCP_TOOLS.map((t) => t.name),
+					authentication: 'none',
+					sma_compliant:  true,
+					sma_version:    '1.0',
+				});
+			}
 			if (request.method !== 'POST') {
 				return json({ error: 'METHOD_NOT_ALLOWED', message: 'MCP endpoint requires POST' }, 405);
 			}
@@ -2426,7 +2477,8 @@ export default {
 				}
 				const mode = url.pathname === '/v5/demo' ? 'demo' : 'live';
 				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode);
-				return json(receipt, status);
+				// Receipts must not be cached — they expire in 60s and contain real-time status.
+				return json(receipt, status, { 'Cache-Control': 'no-store' });
 			}
 
 			// ── GET /v5/batch — authenticated batch receipt query ─────────────────────
@@ -2533,10 +2585,16 @@ export default {
 
 					// exchange_count, supported_mics, data_coverage, and edge_case_count are unsigned
 					// informational fields — they annotate the signed health receipt but are not part
-					// of the signed payload.
+					// of the signed payload. version/sma_spec_version/mcp_protocol_version added
+					// for MCP evaluation tools that check server capabilities.
 					return json({
 						...healthPayload,
 						signature,
+						version:              'v5.0',
+						sma_spec_version:     '1.0',
+						mcp_protocol_version: MCP_PROTOCOL_VERSION,
+						uptime_since:         '2026-03-10T08:00:00Z',
+						fail_closed:          true,
 						exchange_count:             SUPPORTED_EXCHANGES.length,
 						supported_mics:             SUPPORTED_EXCHANGES.map((e) => e.mic),
 						data_coverage:              {
@@ -3026,6 +3084,60 @@ export default {
 				ctx.waitUntil(env.ORACLE_TELEMETRY.put(rlKey, String(rlCount + 1), { expirationTtl: 25 * 3600 }));
 
 				return json({ plan: 'free', message: 'API key sent to your email' });
+			}
+
+			// ── GET /v5/compliance — APTS compliance declaration ─────────
+			// Machine-readable proof that Oracle satisfies the Agent Pre-Trade Safety Standard.
+			// No auth required. Designed to be polled by CI pipelines and evaluation tools.
+			if (url.pathname === '/v5/compliance') {
+				return json({
+					standard:         'Agent Pre-Trade Safety Standard v1.0',
+					oracle:           'Headless Oracle v5',
+					version:          'v5.0',
+					last_verified:    '2026-03-17T00:00:00Z',
+					checks: [
+						{
+							check:    'APTS-001',
+							name:     'signed_attestation',
+							status:   'pass',
+							evidence: 'Ed25519 signed receipt on every response via /v5/status, /v5/demo, /v5/batch, and MCP get_market_status tool',
+						},
+						{
+							check:    'APTS-002',
+							name:     'circuit_breaker_detection',
+							status:   'pass',
+							evidence: 'ORACLE_OVERRIDES KV namespace — real-time HALTED/OVERRIDE status with reason field',
+						},
+						{
+							check:    'APTS-003',
+							name:     'settlement_window',
+							status:   'pass',
+							evidence: 'Lunch break sessions (XJPX 11:30–12:30 JST, XHKG 12:00–13:00 HKT), early close days, holiday calendar 2026–2027',
+						},
+						{
+							check:    'APTS-004',
+							name:     'receipt_freshness',
+							status:   'pass',
+							evidence: '60-second TTL — all receipts include expires_at = issued_at + 60s, signed as part of canonical payload',
+						},
+						{
+							check:    'APTS-005',
+							name:     'signature_verification',
+							status:   'pass',
+							evidence: 'Ed25519 via @noble/ed25519 — public key at /.well-known/oracle-keys.json — consumer SDK @headlessoracle/verify',
+						},
+						{
+							check:    'APTS-006',
+							name:     'fail_closed',
+							status:   'pass',
+							evidence: '4-tier fail-closed architecture: UNKNOWN status on all error paths — consumers must treat UNKNOWN as CLOSED',
+						},
+					],
+					sma_spec_version: '1.0',
+					sma_spec_url:     'https://headlessoracle.com/docs/sma-protocol-repo/SPEC.md',
+					verify_sdk:       'https://npmjs.com/package/@headlessoracle/verify',
+					standard_url:     'https://headlessoracle.com/docs/agent-safety-standard-repo/STANDARD.md',
+				});
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────

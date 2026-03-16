@@ -1081,11 +1081,74 @@ describe('POST /mcp', () => {
 		expect(result.prompts).toEqual([]);
 	});
 
-	it('GET /mcp → 405 Method Not Allowed', async () => {
+	it('GET /mcp → 200 server info (name, version, protocol, tools, sma_compliant)', async () => {
 		const response = await fetchWorker('/mcp');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('name', 'headless-oracle');
+		expect(body).toHaveProperty('version', '5.0.0');
+		expect(body).toHaveProperty('protocol', '2024-11-05');
+		expect(body).toHaveProperty('authentication', 'none');
+		expect(body).toHaveProperty('sma_compliant', true);
+		expect(body).toHaveProperty('sma_version', '1.0');
+		const tools = body.tools as string[];
+		expect(Array.isArray(tools)).toBe(true);
+		expect(tools).toContain('get_market_status');
+		expect(tools).toContain('get_market_schedule');
+		expect(tools).toContain('list_exchanges');
+	});
+
+	it('PUT /mcp → 405 Method Not Allowed', async () => {
+		const response = await fetchWorker('/mcp', { method: 'PUT' });
 		expect(response.status).toBe(405);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
+	});
+
+	it('POST /mcp invalid JSON → -32700 parse error', async () => {
+		const response = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    'not-valid-json{{{',
+		});
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('jsonrpc', '2.0');
+		const err = body.error as Record<string, unknown>;
+		expect(err).toHaveProperty('code', -32700);
+	});
+
+	it('POST /mcp unknown method → -32601 method not found', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 99, method: 'nonexistent/method' });
+		expect(body).toHaveProperty('jsonrpc', '2.0');
+		const err = body.error as Record<string, unknown>;
+		expect(err).toHaveProperty('code', -32601);
+	});
+
+	it('POST /mcp Content-Type is application/json on all responses', async () => {
+		const response = await postMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('POST /mcp tools/call content block has type:text and text field', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 50, method: 'tools/call',
+			params: { name: 'list_exchanges', arguments: {} },
+		});
+		const result = body.result as Record<string, unknown>;
+		const content = result.content as Array<Record<string, unknown>>;
+		expect(Array.isArray(content)).toBe(true);
+		expect(content[0]).toHaveProperty('type', 'text');
+		expect(typeof content[0].text).toBe('string');
+	});
+
+	it('POST /mcp initialize returns instructions field', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 51, method: 'initialize', params: {} });
+		const result = body.result as Record<string, unknown>;
+		expect(typeof result.instructions).toBe('string');
+		expect((result.instructions as string).length).toBeGreaterThan(0);
 	});
 
 	it('tools/list → no x-oracle-note on first use (request_count = 1)', async () => {
@@ -2359,5 +2422,119 @@ describe('POST /v5/keys/request — rate limiting', () => {
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(rlKey);
 		}
+	});
+});
+
+// ─── Session B/E: Production headers, compliance, health enrichment ─────────────────────
+
+describe('X-Oracle-Version response header', () => {
+	it('GET /v5/demo includes X-Oracle-Version: v5', async () => {
+		const response = await fetchWorker('/v5/demo');
+		expect(response.headers.get('X-Oracle-Version')).toBe('v5');
+	});
+
+	it('GET /v5/exchanges includes X-Oracle-Version: v5', async () => {
+		const response = await fetchWorker('/v5/exchanges');
+		expect(response.headers.get('X-Oracle-Version')).toBe('v5');
+	});
+
+	it('GET /v5/health includes X-Oracle-Version: v5', async () => {
+		const response = await fetchWorker('/v5/health');
+		expect(response.headers.get('X-Oracle-Version')).toBe('v5');
+	});
+
+	it('404 response includes X-Oracle-Version: v5', async () => {
+		const response = await fetchWorker('/v5/nonexistent');
+		expect(response.headers.get('X-Oracle-Version')).toBe('v5');
+	});
+});
+
+describe('Cache-Control on signed receipts', () => {
+	it('GET /v5/demo returns Cache-Control: no-store', async () => {
+		const response = await fetchWorker('/v5/demo');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+	});
+
+	it('GET /v5/status returns Cache-Control: no-store', async () => {
+		const response = await fetchWorker('/v5/status', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+	});
+});
+
+describe('Error responses include docs field', () => {
+	it('401 API_KEY_REQUIRED includes docs field', async () => {
+		const body = await fetchJSON('/v5/status');
+		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
+		expect(typeof body.docs).toBe('string');
+		expect((body.docs as string)).toContain('API_KEY_REQUIRED');
+	});
+
+	it('400 UNKNOWN_MIC includes docs field', async () => {
+		const body = await fetchJSON('/v5/demo?mic=FAKE');
+		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
+		expect(typeof body.docs).toBe('string');
+	});
+
+	it('404 NOT_FOUND includes docs field', async () => {
+		const body = await fetchJSON('/v5/nonexistent');
+		expect(body).toHaveProperty('error', 'NOT_FOUND');
+		expect(typeof body.docs).toBe('string');
+	});
+});
+
+describe('GET /v5/compliance', () => {
+	it('returns 200 with standard and oracle fields', async () => {
+		const response = await fetchWorker('/v5/compliance');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('application/json');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('standard');
+		expect(body).toHaveProperty('oracle');
+		expect(body).toHaveProperty('version');
+		expect(body).toHaveProperty('last_verified');
+	});
+
+	it('returns 6 APTS checks all with status: pass', async () => {
+		const body = await fetchJSON('/v5/compliance');
+		const checks = body.checks as Array<Record<string, unknown>>;
+		expect(Array.isArray(checks)).toBe(true);
+		expect(checks).toHaveLength(6);
+		for (const check of checks) {
+			expect(check).toHaveProperty('status', 'pass');
+			expect(typeof check.check).toBe('string');
+			expect(typeof check.evidence).toBe('string');
+		}
+	});
+
+	it('check IDs are APTS-001 through APTS-006', async () => {
+		const body = await fetchJSON('/v5/compliance');
+		const checks = body.checks as Array<Record<string, unknown>>;
+		const ids = checks.map((c) => c.check as string);
+		expect(ids).toContain('APTS-001');
+		expect(ids).toContain('APTS-006');
+	});
+
+	it('includes sma_spec_version and verify_sdk links', async () => {
+		const body = await fetchJSON('/v5/compliance');
+		expect(body).toHaveProperty('sma_spec_version', '1.0');
+		expect(typeof body.verify_sdk).toBe('string');
+		expect(typeof body.standard_url).toBe('string');
+	});
+});
+
+describe('GET /v5/health enrichment (Session E)', () => {
+	it('returns version, sma_spec_version, mcp_protocol_version fields', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('version', 'v5.0');
+		expect(body).toHaveProperty('sma_spec_version', '1.0');
+		expect(body).toHaveProperty('mcp_protocol_version', '2024-11-05');
+	});
+
+	it('returns fail_closed: true and uptime_since', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('fail_closed', true);
+		expect(typeof body.uptime_since).toBe('string');
 	});
 });
