@@ -1,0 +1,125 @@
+version: "1.0.0"
+standard: "Agent Pre-Trade Safety Standard"
+canonical_url: "https://github.com/LembaGang/headless-oracle-v5/blob/main/docs/agent-safety-standard/STANDARD.md"
+license: "Apache-2.0"
+
+# Machine-readable checklist for APTS v1.0.
+# Intended for use by compliance tooling, CI pipelines, and agent frameworks.
+# All checks are required. failure_action for every check is halt.
+
+checks:
+  - id: signed_attestation
+    name: "Obtain a Signed Market Status Attestation"
+    description: >
+      Before any order submission, the agent must obtain a Signed Attestation for
+      the target exchange from a conforming oracle. The response must be parseable
+      as a valid signed JSON receipt containing at minimum: status, source,
+      expires_at, signature, and mic fields.
+    required: true
+    failure_action: halt
+    failure_conditions:
+      - "Oracle unreachable or returns non-200"
+      - "Response body is not a valid Signed Attestation"
+    verify_method: "GET https://headlessoracle.com/v5/status?mic={MIC} with X-Oracle-Key header"
+    verify_url: "https://headlessoracle.com/v5/status"
+
+  - id: circuit_breaker
+    name: "Verify No Active Circuit Breakers"
+    description: >
+      The receipt source field must not be OVERRIDE or SYSTEM. OVERRIDE indicates
+      a manual operator halt (circuit breaker active). SYSTEM indicates an oracle
+      infrastructure error. Both must be treated as HALT conditions regardless of
+      the status field value.
+    required: true
+    failure_action: halt
+    failure_conditions:
+      - "source == 'OVERRIDE' (manual circuit breaker active)"
+      - "source == 'SYSTEM' (oracle infrastructure error)"
+    verify_method: "Check receipt.source field: must equal 'SCHEDULE'"
+    fields_checked:
+      - source
+
+  - id: settlement_window
+    name: "Verify the Settlement Window Is Open"
+    description: >
+      Exchange-level OPEN status is necessary but not sufficient. The agent must
+      also verify that the settlement window for the specific instrument is open.
+      This includes T+1 settlement cut-offs, futures expiry, and options expiration
+      deadlines. Instrument-level verification is the agent's responsibility and
+      requires data from the broker or exchange API in addition to the oracle receipt.
+    required: true
+    failure_action: halt
+    failure_conditions:
+      - "Exchange is OPEN but instrument settlement window is closed"
+      - "Futures/options expiration in progress"
+      - "T+1 cut-off has passed for the session"
+    verify_method: "Combine oracle receipt with instrument metadata from broker/exchange API"
+    note: "This check is instrument-specific and cannot be fully automated via the oracle alone"
+
+  - id: receipt_freshness
+    name: "Verify the Oracle Receipt Is Fresh"
+    description: >
+      The Signed Attestation must have a non-expired expires_at timestamp at the
+      time of trade submission. Receipts must not be cached and reused across
+      trading decisions. The reference oracle issues receipts with a 60-second TTL.
+      An agent caching a receipt past its TTL risks acting on a stale OPEN signal
+      that has since become CLOSED (e.g., intraday halt).
+    required: true
+    failure_action: "fetch_fresh_receipt_then_halt_if_unavailable"
+    failure_conditions:
+      - "expires_at is in the past"
+      - "expires_at field is missing or unparseable"
+    verify_method: "Compare receipt.expires_at (ISO 8601 UTC) against current UTC time"
+    fields_checked:
+      - expires_at
+    ttl_seconds: 60
+
+  - id: signature_verification
+    name: "Verify the Ed25519 Signature"
+    description: >
+      The agent must cryptographically verify the receipt signature before acting
+      on it. A receipt that passes structural validation but fails signature
+      verification indicates tampering or key mismatch. Canonical payload is all
+      receipt fields except signature, with keys sorted alphabetically, serialised
+      as compact JSON (no whitespace).
+    required: true
+    failure_action: halt
+    failure_conditions:
+      - "Signature invalid (payload tampered or wrong key)"
+      - "Public key unavailable or fetch failed"
+      - "Signature field missing or not valid hex"
+    verify_method: "Ed25519 verify(signature, canonical_payload, public_key)"
+    public_key_url: "https://headlessoracle.com/v5/keys"
+    well_known_url: "https://headlessoracle.com/.well-known/oracle-keys.json"
+    canonical_payload_spec:
+      key_order: "alphabetical"
+      serialisation: "compact JSON (no whitespace)"
+      exclude_fields:
+        - signature
+    sdks:
+      javascript: "@headlessoracle/verify (npmjs.com/package/@headlessoracle/verify)"
+      python: "headless-oracle (pip install headless-oracle)"
+
+  - id: fail_closed
+    name: "Halt on Any Failure — No Permissive Fallback"
+    description: >
+      If ANY of the preceding checks fails or produces an ambiguous result, the
+      agent must halt and log the failure. The agent must not fall back to a
+      permissive default, retry without backoff, or proceed with a degraded
+      confidence level. An unknown state is always the safe/restricted state.
+      This is not a conservative bias — it is the only correct behaviour for an
+      agent that cannot ask a human for clarification.
+    required: true
+    failure_action: halt
+    failure_conditions:
+      - "Any preceding check returns false or throws"
+      - "status is not 'OPEN'"
+      - "status value is unknown (not in enum)"
+      - "Any field required by the standard is missing"
+    prohibited_behaviours:
+      - "Assume OPEN if oracle is unreachable"
+      - "Proceed with 'probably open' confidence"
+      - "Retry indefinitely without exponential backoff"
+      - "Log failure but continue execution"
+    verify_method: "Audit log must contain pass/fail result and timestamp for each check"
+    logging_required: true
