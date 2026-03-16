@@ -3,11 +3,28 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active.
-**Test suite**: 168/168 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
+**Test suite**: 198/198 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All 200 — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 14 2026 — Multi-tier Paddle billing upgrade (commit 5e8e28a, deployed cf28ea3c):
+**Last significant work**: Mar 16 2026 — Fix silent ORACLE_TELEMETRY KV write failures (worker commit 963dfd6):
+  - Root cause: ctx.waitUntil() silently drops rejected promises — any KV put failure was invisible
+  - Secondary: unprotected await env.ORACLE_TELEMETRY.get() would crash all MCP requests if KV unavailable
+  - Fix: wrap telemetry GET/PUT block in try/catch; add .catch(err => console.error(...)) to waitUntil put
+  - Fix: add console.error to /v5/metrics catch block so read failures are visible in Workers Logs
+  - Telemetry is now best-effort (non-fatal): KV failure no longer propagates to MCP response
+  - To diagnose root cause: check Workers Logs for TELEMETRY_PUT_FAILED / TELEMETRY_GET_FAILED events
+  - 198/198 tests passing. Deployed (3f2d3e80). Pushed.
+**Previous significant work**: Mar 15 2026 — Observability, metrics, rate limiting, Paddle dedup (worker commit cb13d7f, web commit c3eef5a):
+  - wrangler.toml: [observability] enabled=true head_sampling_rate=1 — matches dashboard settings
+  - GET /v5/metrics: public endpoint; total_mcp_requests_today + unique_mcp_clients_today from ORACLE_TELEMETRY; fail-safe zeros on KV error
+  - POST /v5/keys/request: IP-based rate limit (max 3/day, ORACLE_TELEMETRY key: ratelimit:keys:{ip_hash}:{date}, 25h TTL, 429 RATE_LIMITED)
+  - OpenAPI: added /v5/metrics and /v5/keys/request paths with full schemas
+  - Fixed stale comment: ORACLE_OVERRIDES → ORACLE_TELEMETRY in MCP handler + McpClientRecord comment
+  - headless-oracle-web: extracted Paddle init to public/js/paddle-init.js; removed 8 identical inline script blocks
+  - Tests: 168→198 (+3 new: metrics shape, metrics with KV data, rate limit 429)
+  - Both repos deployed and pushed.
+**Previous significant work**: Mar 14 2026 — Multi-tier Paddle billing upgrade (commit 5e8e28a, deployed cf28ea3c):
   - Key format changed from `ok_live_` → `ho_live_` (8-char prefix + 32 hex chars)
   - Multi-tier pricing: PADDLE_PRICE_ID_BUILDER/PRO/PROTOCOL env vars, plan derived from items[0].price_id
   - KV storage now persistent (no TTL); value expanded to { plan, status, paddle_customer_id, paddle_subscription_id, email, created_at }
