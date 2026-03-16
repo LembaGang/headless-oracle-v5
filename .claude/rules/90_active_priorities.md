@@ -22,7 +22,7 @@
   - Session G: docs/integrations/ — 7 framework guides: LangGraph, AutoGen, CrewAI, Vercel AI SDK, OpenAI Agents, Bun, Anthropic Claude (background agent)
   - Session G: docs/agent-safety-standard/ — APTS docs completed (README, CHECKLIST.yaml, BADGE.md, CI-INTEGRATION.md)
   - OpenAPI spec updated for /v5/compliance
-  - 219/219 tests passing. Deploy pending.
+  - 219/219 tests passing. Deployed (Version c90b7aaf). Pushed.
 **Previous significant work**: Mar 16 2026 — Surface ORACLE_TELEMETRY write outcomes and guard ctx.waitUntil (worker commit bdeb158):
   - Problem: direct MCP requests via headlessoracle.com/mcp logged MCP_REQUEST but never wrote to ORACLE_TELEMETRY KV; proxy path worked
   - Root cause 1: ctx.waitUntil called unconditionally — if unavailable on custom-domain execution context, throws, caught as TELEMETRY_GET_FAILED, masking the real issue
