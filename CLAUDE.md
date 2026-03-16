@@ -62,6 +62,8 @@ When ORACLE_TELEMETRY daily unique clients approaches 100/day, add cursor pagina
 
 When daily unique MCP clients approaches 100, refactor /v5/metrics to read a pre-aggregated `metrics:{date}` key written by the 17:00 cron instead of fanning out list()+get() at request time. Current implementation reads all today's client keys on every request — acceptable at low volume, latency cliff at scale.
 
+When telemetry integrity matters commercially (e.g. billing disputes, audit requirements): add X-Proxy-Token shared secret validation in the headlessoracle proxy Worker and verify it in headless-oracle-v5 handleMcp before trusting X-Original-* headers. Currently X-Original-* headers can be spoofed by any direct caller.
+
 ## Circuit Breaker Overrides (KV)
 Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - Key: MIC code (e.g. `XNYS`)
