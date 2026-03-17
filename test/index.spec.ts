@@ -1536,6 +1536,57 @@ describe('GET /SKILL.md', () => {
 	});
 });
 
+// ─── GET /docs/integrations/* and /docs/x402-payments ───────────────────────
+
+describe('GET /docs/integrations/datacamp-workspace', () => {
+	it('returns 200 with text/plain content-type (extensionless email link)', async () => {
+		const response = await fetchWorker('/docs/integrations/datacamp-workspace');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains DataCamp-specific content: pip install and safe_market_check', async () => {
+		const body = await fetchWorker('/docs/integrations/datacamp-workspace').then((r) => r.text());
+		expect(body).toContain('pip install headless-oracle');
+		expect(body).toContain('safe_market_check');
+		expect(body).toContain('pd.DataFrame');
+	});
+
+	it('.md variant returns text/markdown', async () => {
+		const response = await fetchWorker('/docs/integrations/datacamp-workspace.md');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+});
+
+describe('GET /docs/integrations/bun', () => {
+	it('returns 200 with text/plain content-type (extensionless)', async () => {
+		const response = await fetchWorker('/docs/integrations/bun');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains Bun integration content', async () => {
+		const body = await fetchWorker('/docs/integrations/bun').then((r) => r.text());
+		expect(body).toContain('@headlessoracle/verify');
+		expect(body).toContain('Bun.serve');
+	});
+});
+
+describe('GET /docs/x402-payments', () => {
+	it('returns 200 with text/plain content-type (extensionless)', async () => {
+		const response = await fetchWorker('/docs/x402-payments');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains x402 payment content', async () => {
+		const body = await fetchWorker('/docs/x402-payments').then((r) => r.text());
+		expect(body).toContain('x402');
+		expect(body).toContain('USDC');
+	});
+});
+
 // ─── GET /.well-known/agent.json ─────────────────────────────────────────────
 
 describe('GET /.well-known/agent.json', () => {

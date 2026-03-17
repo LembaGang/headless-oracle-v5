@@ -17,6 +17,11 @@ routes = [
   { pattern = "headlessoracle.com/docs/agent-safety-standard/STANDARD.md", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/agent-safety-standard-repo/STANDARD.md", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/x402-payments.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/x402-payments", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/integrations/datacamp-workspace", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/integrations/datacamp-workspace.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/integrations/bun", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/integrations/bun.md", zone_name = "headlessoracle.com" },
 ]
 
 [vars]

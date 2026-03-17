@@ -1244,6 +1244,314 @@ GET /v5/credits/balance — check remaining credits
 - Verify paymentAddress before sending funds
 `;
 
+const DATACAMP_WORKSPACE_MD = `# Headless Oracle — DataCamp Workspace Integration
+
+Use Headless Oracle in a DataCamp Workspace (Jupyter) notebook to gate financial analysis
+on cryptographically verified market state. Every cell that touches live market data should
+call \`safe_market_check()\` first — if the market is not OPEN, the analysis halts automatically.
+
+## Setup
+
+Run this cell once at the top of your workspace:
+
+\`\`\`python
+# Cell 1 — Install SDK
+!pip install headless-oracle
+\`\`\`
+
+\`\`\`python
+# Cell 2 — Configuration
+import os
+
+# Set your Oracle API key.
+# In DataCamp Workspaces: Environment → Secrets → add ORACLE_KEY
+# Locally: export ORACLE_KEY=your_key_here
+ORACLE_KEY = os.environ["ORACLE_KEY"]
+ORACLE_BASE = "https://headlessoracle.com"
+\`\`\`
+
+## safe_market_check() Pattern
+
+\`\`\`python
+# Cell 3 — Market safety gate
+from headless_oracle import OracleClient, verify
+import pandas as pd
+from datetime import datetime, timezone
+
+client = OracleClient(api_key=ORACLE_KEY)
+
+def safe_market_check(mic: str = "XNYS") -> dict:
+    """
+    Fetch and verify a signed market receipt from Headless Oracle.
+
+    Returns a dict with:
+      - safe_to_trade (bool): True only when status is OPEN and signature is valid
+      - status (str): OPEN | CLOSED | HALTED | UNKNOWN
+      - mic (str): exchange MIC code
+      - expires_at (str | None): ISO 8601 UTC expiry of this receipt
+      - reason (str): human-readable explanation
+
+    UNKNOWN means the Oracle's signing infrastructure returned an unverifiable state.
+    Treat UNKNOWN as CLOSED — do not proceed with analysis that depends on live data.
+    """
+    try:
+        receipt = client.status(mic=mic)
+        result  = verify(receipt)
+
+        if not result["valid"]:
+            return {
+                "safe_to_trade": False,
+                "status":        "UNKNOWN",
+                "mic":           mic,
+                "expires_at":    None,
+                "reason":        f"Signature invalid: {result['reason']}",
+            }
+
+        is_open = receipt.get("status") == "OPEN"
+        return {
+            "safe_to_trade": is_open,
+            "status":        receipt.get("status", "UNKNOWN"),
+            "mic":           mic,
+            "expires_at":    receipt.get("expires_at"),
+            "reason":        "Verified OPEN." if is_open else f"Market is {receipt.get('status')} — halting analysis.",
+        }
+    except Exception as exc:
+        return {
+            "safe_to_trade": False,
+            "status":        "UNKNOWN",
+            "mic":           mic,
+            "expires_at":    None,
+            "reason":        f"Oracle error: {exc}",
+        }
+\`\`\`
+
+## Full Notebook Cell Sequence — Safe Market Analysis
+
+\`\`\`python
+# Cell 4 — Run safety check before any live-data analysis
+gate = safe_market_check("XNYS")
+print(f"[{gate['mic']}] {gate['status']} — safe_to_trade={gate['safe_to_trade']}")
+print(f"  Reason   : {gate['reason']}")
+print(f"  Expires  : {gate['expires_at']}")
+
+if not gate["safe_to_trade"]:
+    raise SystemExit(f"Market gate failed: {gate['reason']}. Analysis halted.")
+\`\`\`
+
+\`\`\`python
+# Cell 5 — Build a summary DataFrame (only reached when market is OPEN)
+# Replace the data source below with your own: yfinance, DataCamp datasets, CSV, etc.
+
+import yfinance as yf  # or any data source you use in DataCamp
+
+tickers = ["AAPL", "MSFT", "GOOGL"]
+data    = yf.download(tickers, period="5d", interval="1d", auto_adjust=True)["Close"]
+
+summary = pd.DataFrame({
+    "ticker":    tickers,
+    "last_close": [data[t].iloc[-1] for t in tickers],
+    "5d_change":  [(data[t].iloc[-1] / data[t].iloc[0] - 1) * 100 for t in tickers],
+    "oracle_verified_at": gate["expires_at"],
+})
+
+summary
+\`\`\`
+
+\`\`\`python
+# Cell 6 — Multi-exchange batch check (optional)
+# Check all 7 supported markets at once before a multi-region analysis
+
+mics = ["XNYS", "XNAS", "XLON", "XJPX", "XPAR", "XHKG", "XSES"]
+rows = []
+for mic in mics:
+    g = safe_market_check(mic)
+    rows.append(g)
+
+status_df = pd.DataFrame(rows)[["mic", "status", "safe_to_trade", "reason", "expires_at"]]
+print(status_df.to_string(index=False))
+
+# Halt if any exchange you need is not OPEN
+required = {"XNYS", "XLON"}
+unsafe   = {r["mic"] for r in rows if r["mic"] in required and not r["safe_to_trade"]}
+if unsafe:
+    raise SystemExit(f"Required exchanges not OPEN: {unsafe}. Analysis halted.")
+\`\`\`
+
+## Important
+
+- **Always run \`safe_market_check()\` before cells that fetch or act on live prices.**
+  Market data fetched outside trading hours may be stale, delayed, or from a prior session.
+- **The receipt expires in 60 seconds.** Do not cache the result across cells; call
+  \`safe_market_check()\` at each decision point in a long-running notebook.
+- **UNKNOWN is not a soft signal.** An UNKNOWN status means the Oracle could not produce
+  a cryptographically verified receipt. Treat it as CLOSED and halt the cell.
+- **Use \`raise SystemExit(...)\`** rather than a conditional skip — it stops all subsequent
+  cells from running automatically, which is the correct fail-closed behaviour in a notebook.
+
+## Links
+
+- Python SDK: \`pip install headless-oracle\` — [PyPI](https://pypi.org/project/headless-oracle/)
+- API docs: https://headlessoracle.com/docs
+- Supported exchanges: https://headlessoracle.com/v5/exchanges
+- Get a free API key: https://headlessoracle.com/v5/keys/request
+`;
+
+const BUN_MD = `# Bun Integration
+
+Use Headless Oracle in a Bun TypeScript runtime: fetch and verify signed receipts with native \`fetch\`, gate a \`Bun.serve()\` webhook on market status, and schedule periodic checks with a cron-style pattern. \`@headlessoracle/verify\` uses the Web Crypto API which Bun provides natively — no polyfills required.
+
+## Prerequisites
+
+\`\`\`bash
+bun add @headlessoracle/verify
+\`\`\`
+
+## Complete Example
+
+\`\`\`typescript
+// oracle-gate.ts
+import { verify } from "@headlessoracle/verify";
+
+const ORACLE_BASE = "https://headlessoracle.com";
+const ORACLE_KEY = Bun.env.ORACLE_KEY!;
+
+// Cache the public key after first fetch to avoid a network round-trip per receipt.
+// The key at /v5/keys rotates infrequently — safe to hold in memory for a process lifetime.
+let cachedPublicKey: string | null = null;
+
+async function getPublicKey(): Promise<string> {
+  if (cachedPublicKey) return cachedPublicKey;
+  const res = await fetch(\`\${ORACLE_BASE}/v5/keys\`);
+  const data = await res.json() as { keys: Array<{ public_key: string }> };
+  cachedPublicKey = data.keys[0].public_key;
+  return cachedPublicKey;
+}
+
+interface OracleResult {
+  mic: string;
+  status: string;
+  safeToTrade: boolean;
+  reason: string;
+  expiresAt: string | null;
+}
+
+export async function checkMarket(mic: string): Promise<OracleResult> {
+  try {
+    const res = await fetch(\`\${ORACLE_BASE}/v5/status?mic=\${mic}\`, {
+      headers: { "X-Oracle-Key": ORACLE_KEY },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) {
+      return { mic, status: "UNKNOWN", safeToTrade: false,
+               reason: \`HTTP \${res.status}\`, expiresAt: null };
+    }
+
+    const receipt = await res.json() as Record<string, unknown>;
+    const publicKey = await getPublicKey();
+
+    // Pass the cached key — skips the /v5/keys fetch inside verify()
+    const result = await verify(receipt, { publicKey });
+
+    if (!result.valid) {
+      return { mic, status: "UNKNOWN", safeToTrade: false,
+               reason: \`Verification failed: \${result.reason}\`, expiresAt: null };
+    }
+
+    const isOpen = receipt.status === "OPEN";
+    return {
+      mic,
+      status: receipt.status as string,
+      safeToTrade: isOpen,
+      reason: isOpen ? "Verified OPEN." : \`Market is \${receipt.status}.\`,
+      expiresAt: receipt.expires_at as string,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { mic, status: "UNKNOWN", safeToTrade: false,
+             reason: \`Error: \${message}\`, expiresAt: null };
+  }
+}
+
+
+// --- Webhook server: gate trade signals on market status ---
+
+const server = Bun.serve({
+  port: 3000,
+
+  async fetch(req) {
+    const url = new URL(req.url);
+
+    if (req.method === "POST" && url.pathname === "/trade-signal") {
+      const body = await req.json() as { mic: string; symbol: string; action: string };
+      const { mic, symbol, action } = body;
+
+      // Gate every incoming trade signal on live Oracle check
+      const oracle = await checkMarket(mic);
+
+      if (!oracle.safeToTrade) {
+        return Response.json(
+          { accepted: false, reason: oracle.reason, mic, oracle_status: oracle.status },
+          { status: 422 }
+        );
+      }
+
+      // Market is verified OPEN — process the signal
+      console.log(\`[trade] \${action} \${symbol} on \${mic} — Oracle verified OPEN\`);
+      return Response.json({ accepted: true, mic, oracle_status: oracle.status });
+    }
+
+    if (req.method === "GET" && url.pathname === "/health") {
+      const oracle = await checkMarket("XNYS");
+      return Response.json({ oracle });
+    }
+
+    return new Response("Not Found", { status: 404 });
+  },
+});
+
+console.log(\`Webhook server listening on http://localhost:\${server.port}\`);
+
+
+// --- Scheduled market check (cron-style) ---
+// Bun does not have a built-in cron scheduler; use setInterval for periodic checks.
+// For production, prefer a Cloudflare Worker Cron or system cron calling this endpoint.
+
+const CHECK_INTERVAL_MS = 60_000; // check every 60 seconds
+
+const MICs = ["XNYS", "XNAS", "XLON"] as const;
+
+async function scheduledMarketCheck() {
+  console.log(\`[cron] Running market status check for \${MICs.join(", ")}\`);
+  for (const mic of MICs) {
+    const result = await checkMarket(mic);
+    if (!result.safeToTrade) {
+      console.warn(\`[cron] HALT signal: \${mic} — \${result.reason}\`);
+      // Emit to your alerting system here (e.g. webhook, Slack, PagerDuty)
+    } else {
+      console.log(\`[cron] \${mic} OPEN — verified until \${result.expiresAt}\`);
+    }
+  }
+}
+
+// Run immediately on startup, then on interval
+scheduledMarketCheck();
+setInterval(scheduledMarketCheck, CHECK_INTERVAL_MS);
+\`\`\`
+
+Run with:
+
+\`\`\`bash
+bun run oracle-gate.ts
+\`\`\`
+
+## Important
+
+- **Cache the public key, not the receipt.** The public key is stable across a process lifetime. The receipt expires in 60 seconds and must never be cached or reused between requests.
+- **\`AbortSignal.timeout(5000)\` is Bun-native.** It works without any polyfill. On timeout, \`checkMarket\` returns \`safeToTrade: false\` — fail-closed.
+- **Return \`422 Unprocessable Entity\` (not \`200\`) for rejected signals.** A 200 response with \`accepted: false\` in the body is ambiguous for agent callers. A 4xx status is deterministic.
+`;
+
 const ROBOTS_TXT = `User-agent: *
 Allow: /llms.txt
 Allow: /SKILL.md
@@ -3242,30 +3550,38 @@ export default {
 					},
 				});
 			}
-			// ── /docs/*.md — embedded markdown docs (raw content for agents/LLMs) ──
-			// HTML versions are served by Cloudflare Pages at the same paths without .md
-			if (url.pathname.startsWith('/docs/') && url.pathname.endsWith('.md')) {
+			// ── /docs/*.md and extensionless /docs/* — embedded markdown docs ───────
+			// .md variants: Content-Type text/markdown (for agents/LLMs)
+			// Extensionless variants: Content-Type text/plain (for direct browser/email links)
+			if (url.pathname.startsWith('/docs/')) {
 				const mdHeaders = {
 					'Content-Type':  'text/markdown; charset=utf-8',
 					'Cache-Control': 'public, max-age=3600',
 				};
+				const plainHeaders = {
+					'Content-Type':  'text/plain; charset=utf-8',
+					'Cache-Control': 'public, max-age=3600',
+				};
 				const p = url.pathname;
+				// .md variants (canonical for agents)
 				if (p === '/docs/sma-protocol-repo/SPEC.md')
 					return new Response(SMA_SPEC_MD, { headers: mdHeaders });
 				if (p === '/docs/agent-safety-standard/STANDARD.md' || p === '/docs/agent-safety-standard-repo/STANDARD.md')
 					return new Response(APTS_STANDARD_MD, { headers: mdHeaders });
 				if (p === '/docs/x402-payments.md')
 					return new Response(X402_PAYMENTS_MD, { headers: mdHeaders });
-				// Unknown .md path — return 404 with discovery hints
-				return json({
-					error: 'NOT_FOUND',
-					message: `No embedded markdown at ${p}`,
-					available: [
-						'/docs/sma-protocol-repo/SPEC.md',
-						'/docs/agent-safety-standard/STANDARD.md',
-						'/docs/x402-payments.md',
-					],
-				}, 404);
+				if (p === '/docs/integrations/datacamp-workspace.md')
+					return new Response(DATACAMP_WORKSPACE_MD, { headers: mdHeaders });
+				if (p === '/docs/integrations/bun.md')
+					return new Response(BUN_MD, { headers: mdHeaders });
+				// Extensionless variants (for email links and browser navigation)
+				if (p === '/docs/x402-payments')
+					return new Response(X402_PAYMENTS_MD, { headers: plainHeaders });
+				if (p === '/docs/integrations/datacamp-workspace')
+					return new Response(DATACAMP_WORKSPACE_MD, { headers: plainHeaders });
+				if (p === '/docs/integrations/bun')
+					return new Response(BUN_MD, { headers: plainHeaders });
+				// Unknown /docs/ path — fall through to 404 below
 			}
 
 			// ── /v5/errors/{code} — machine-readable error documentation ─────────
