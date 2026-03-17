@@ -1,5 +1,21 @@
 # Headless Oracle V5
 
+## Operational Defaults (Solo Founder Repo)
+
+Auto-approved — no confirmation needed:
+- Auto-deploy after all tests pass
+- Push directly to main — no PR required
+- File edits, test runs, npm installs
+- Cloudflare deployments when tests pass
+- New endpoint additions
+- Documentation updates
+
+Still requires explicit confirmation in the message:
+- `git push --force`
+- `rm -rf` operations
+- Secret rotation or credential changes
+- Anything that permanently deletes existing data
+
 ## Tech Stack
 - **Runtime**: Cloudflare Workers (TypeScript)
 - **Build/Deploy**: Wrangler (`wrangler.toml`)
