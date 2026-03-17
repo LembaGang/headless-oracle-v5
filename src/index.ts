@@ -1798,6 +1798,27 @@ An implementation is conformant if it:
 | 1.0.0-draft | 2026-03-15 | Initial public draft |
 `;
 
+const RFC_EXTERNAL_STATE_MD = `# RFC: Verifiable External State Attestation for Autonomous Agent Systems
+
+**Document type**: Informational RFC
+**Working group**: Verifiable Intent / Agent Interoperability
+**Status**: Draft v1.0
+**Date**: March 2026
+**Author**: Headless Oracle Project
+**License**: Apache 2.0
+**Submitted**: 2026-03-17 to https://github.com/agent-intent/verifiable-intent
+
+---
+
+## Abstract
+
+This document defines a protocol for cryptographically attested external state claims consumed by autonomous agent systems. As AI agents increasingly make consequential decisions, they require a trustworthy, independently verifiable ground truth about the state of the external world. This RFC proposes a minimal, composable attestation format and consumption protocol suitable for any external state domain, with market state as the primary reference implementation.
+
+Full RFC: https://github.com/agent-intent/verifiable-intent/pulls
+Reference implementation: https://headlessoracle.com/v5/compliance
+Stack context: https://headlessoracle.com/v5/stack
+`;
+
 const X402_PAYMENTS_MD = `# x402 Micropayments — Headless Oracle
 
 Headless Oracle supports the x402 protocol for per-request USDC micropayments on Base mainnet.
@@ -2622,6 +2643,13 @@ Authenticated endpoint that returns the standard signed receipt plus halt monito
 - [SMA Specification](https://github.com/LembaGang/sma-protocol): Signed Market Attestation Protocol v1.0 (GitHub — Apache 2.0).
 - [Error Docs](https://headlessoracle.com/v5/errors/PAYMENT_REQUIRED): Machine-readable error documentation for any error code.
 
+## Standards & RFCs
+
+- SMA Protocol v1.0: https://github.com/LembaGang/sma-protocol
+- External State Attestation RFC: submitted to https://github.com/agent-intent/verifiable-intent on 2026-03-17
+- Agent Pre-Trade Safety Standard: https://github.com/LembaGang/agent-pretrade-safety-standard
+- Verifiable Intent compatibility: headlessoracle.com implements the reference oracle for the proposed environment.market_state constraint type
+
 ## Robots
 
 AI crawlers are welcome. This file is at /llms.txt. The robots.txt permits crawling of /llms.txt, /SKILL.md, and all public documentation.
@@ -2904,10 +2932,11 @@ const AGENT_JSON = {
 		free_tier_daily_limit: FREE_TIER_DAILY_LIMIT,
 	},
 	standards: {
-		sma_version:  '1.0',
-		apts_version: '1.0',
-		sma_spec:     'https://github.com/LembaGang/sma-protocol',
-		apts_spec:    'https://github.com/LembaGang/agent-pretrade-safety-standard',
+		sma_version:           '1.0',
+		apts_version:          '1.0',
+		sma_spec:              'https://github.com/LembaGang/sma-protocol',
+		apts_spec:             'https://github.com/LembaGang/agent-pretrade-safety-standard',
+		verifiable_intent_rfc: 'https://github.com/agent-intent/verifiable-intent/pulls',
 	},
 	mcp: {
 		endpoint:         'https://headlessoracle.com/mcp',
@@ -4451,6 +4480,8 @@ export default {
 					return new Response(DATACAMP_WORKSPACE_MD, { headers: mdHeaders });
 				if (p === '/docs/integrations/bun.md')
 					return new Response(BUN_MD, { headers: mdHeaders });
+				if (p === '/docs/rfc.md' || p === '/docs/rfc-external-state-attestation.md')
+					return new Response(RFC_EXTERNAL_STATE_MD, { headers: mdHeaders });
 				// Extensionless variants (for email links and browser navigation)
 				if (p === '/docs/x402-payments')
 					return new Response(X402_PAYMENTS_MD, { headers: plainHeaders });
@@ -4458,6 +4489,8 @@ export default {
 					return new Response(DATACAMP_WORKSPACE_MD, { headers: plainHeaders });
 				if (p === '/docs/integrations/bun')
 					return new Response(BUN_MD, { headers: plainHeaders });
+				if (p === '/docs/rfc')
+					return new Response(RFC_EXTERNAL_STATE_MD, { headers: plainHeaders });
 				// Unknown /docs/ path — fall through to 404 below
 			}
 
@@ -4969,11 +5002,45 @@ export default {
 					sma_spec_url:     'https://github.com/LembaGang/sma-protocol/blob/master/SPEC.md',
 					verify_sdk:       'https://npmjs.com/package/@headlessoracle/verify',
 					standard_url:     'https://github.com/LembaGang/agent-pretrade-safety-standard/blob/master/STANDARD.md',
+					rfc: {
+						title:     'External State Attestation for Verifiable Intent',
+						url:       'https://github.com/agent-intent/verifiable-intent/pulls',
+						spec_url:  'https://headlessoracle.com/docs/rfc',
+						submitted: '2026-03-17',
+					},
 				});
 			}
 
 			// ── POST /v5/credits/purchase — buy prepaid credits via x402 ─
-			if (url.pathname === '/v5/credits/purchase') {
+			// -- GET /v5/stack -- autonomous finance stack positioning
+				// Public endpoint. No auth required. Returns three-layer stack positioning.
+				if (url.pathname === '/v5/stack') {
+					return json({
+						stack: {
+							layer_1: {
+								name:     'Authorization',
+								standard: 'Mastercard Verifiable Intent',
+								url:      'https://verifiableintent.dev',
+							},
+							layer_2: {
+								name:     'Execution',
+								standard: 'BVNK Layer1 / Mastercard',
+								url:      'https://bvnk.com',
+							},
+							layer_3: {
+								name:       'Verification',
+								standard:   'Headless Oracle SMA Protocol v1.0',
+								url:        'https://headlessoracle.com',
+								rfc:        'https://github.com/agent-intent/verifiable-intent/pulls',
+								compliance: 'https://headlessoracle.com/v5/compliance',
+							},
+						},
+						description: 'Headless Oracle provides the verification layer in the autonomous finance stack. When an agent has authorization (Verifiable Intent) and payment rails (BVNK), it still needs cryptographic proof the market was open at execution time.',
+						reference_implementation: 'https://headlessoracle.com/v5/compliance',
+					});
+				}
+
+				if (url.pathname === '/v5/credits/purchase') {
 				if (request.method !== 'POST') {
 					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
 				}

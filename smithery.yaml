@@ -10,6 +10,9 @@ description: |
   Cryptographically signed real-time market status for 23 global stock exchanges.
   Returns Ed25519-signed receipts (OPEN/CLOSED/HALTED/UNKNOWN) with 60-second TTL.
   Agents can verify receipts offline. Fail-closed: UNKNOWN always means CLOSED.
+  SMA Protocol v1.0 compliant. Supports x402 per-request micropayments (0.001 USDC/req on Base).
+  Reference implementation for the External State Attestation RFC submitted to the Verifiable Intent specification.
+  Verification layer in the autonomous finance stack (Authorization: Verifiable Intent, Execution: BVNK/Mastercard, Verification: Headless Oracle).
 version: "5.0"
 homepage: https://headlessoracle.com
 license: Commercial
@@ -35,6 +38,10 @@ tags:
   - signed-receipt
   - ed25519
   - fail-closed
+  - x402-micropayments
+  - sma-protocol
+  - verifiable-intent
+  - autonomous-agents
   - NYSE
   - NASDAQ
   - LSE
@@ -150,6 +157,12 @@ supported_exchanges:
   - mic: XNZE
     name: New Zealand Exchange
     timezone: Pacific/Auckland
+
+standards:
+  - "SMA Protocol v1.0: https://github.com/LembaGang/sma-protocol"
+  - "APTS v1.0: https://github.com/LembaGang/agent-pretrade-safety-standard"
+  - "External State Attestation RFC: https://github.com/agent-intent/verifiable-intent/pulls"
+  - "Verifiable Intent compatibility: implements environment.market_state constraint type"
 
 safety_guarantees:
   - "Fail-closed: UNKNOWN means CLOSED — never defaults to OPEN on error"

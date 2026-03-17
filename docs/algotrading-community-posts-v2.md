@@ -55,7 +55,7 @@ The phantom window isn't the only failure mode. There are also:
 - **Circuit breakers**: Real-time halts are not in any calendar library. If NYSE triggers L1 at 2:47 PM and your bot checked at 9:31 AM, your cached "OPEN" is stale.
 - **Exchange-specific holidays**: NYSE closed for Juneteenth. LSE didn't. If your system shares one "is it a holiday?" function across exchanges, one of them is wrong.
 
-I mapped all of this for 23 exchanges through 2027 and built a signed market status API around it. The full calendar complexity: 81 exchange-specific holidays per year, 9 early-close days, 8 DST transitions, 493 lunch-break sessions — 1,319 schedule edge cases annually that a timezone library handles zero of.
+I mapped all of this for 23 exchanges through 2027 and built a signed market status API around it. The full calendar complexity: 292 exchange-specific holidays per year, 13 early-close days, 22 DST transitions, 977 lunch-break sessions — 3,691 schedule edge cases annually that a timezone library handles zero of.
 
 **The 4-step gate pattern (what the fix looks like in practice):**
 
@@ -365,6 +365,135 @@ Free API key, no credit card: https://headlessoracle.com/v5/keys/request
 
 ---
 
+---
+
+## Post 6: Hacker News / r/algotrading
+
+**Title:** Mastercard just acquired BVNK for $1.8B. Here's the verification layer they still need.
+
+**Body:**
+
+The autonomous finance stack is assembling in real time.
+
+Mastercard acquired BVNK — programmable stablecoin payment rails for institutional settlement — for $1.8B. That's the execution layer: an agent can now instruct a cross-border USDC settlement through a Mastercard-grade institution.
+
+Mastercard also runs the Verifiable Intent framework: a specification for autonomous agents to carry cryptographic proof of authorisation before executing. That's the authorization layer: an agent proves it has permission before spending.
+
+What's missing from the stack is the **verification layer**: cryptographic proof that the underlying market was actually open at execution time.
+
+Consider the failure mode. An autonomous agent holds an authorisation (Verifiable Intent) to liquidate a tokenized equity position. It has payment rails (BVNK). It executes at 20:47 UTC on March 11. NYSE closed 47 minutes ago due to the US/EU DST phantom window. The settlement fails. There is no signed, independently verifiable record of what market state the agent checked before it acted.
+
+This is the gap we've been formalising in the External State Attestation RFC, submitted to the Verifiable Intent specification repository today.
+
+**The three-layer stack:**
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  Layer 1: Authorization                                    │
+│  Mastercard Verifiable Intent                              │
+│  "The agent is authorised to execute this action"          │
+├────────────────────────────────────────────────────────────┤
+│  Layer 2: Execution                                        │
+│  BVNK / Mastercard programmable stablecoin rails          │
+│  "The payment moves from A to B"                          │
+├────────────────────────────────────────────────────────────┤
+│  Layer 3: Verification                                     │
+│  Headless Oracle — External State Attestation             │
+│  "The market was OPEN at execution time, Ed25519-signed,  │
+│   independently verifiable, 60s TTL, fail-closed"         │
+└────────────────────────────────────────────────────────────┘
+```
+
+An agent that has layers 1 and 2 without layer 3 is authorised to pay and able to pay — but it cannot prove the external state it acted on was valid. That's not just an operational risk. It's a gap in the audit trail that breaks legal defensibility.
+
+The RFC defines what a State Receipt needs to carry (issuer, subject, status, issued_at, expires_at, receipt_id, key_id, signature), how to sign it (Ed25519 over alphabetically-sorted compact JSON), how agents discover keys (FQDN + /.well-known/oracle-keys.json), and what constitutes fail-closed consumption (UNKNOWN = halt, network failure = halt, expired receipt = re-fetch or halt).
+
+Headless Oracle is the reference implementation: 23 exchanges, 3,691 schedule edge cases per year, 60-second signed receipts, APTS v1.0 compliant. Five separate compliance checks came in from an unknown client at 18:58 UTC today. The infrastructure need is being evaluated by production systems.
+
+RFC: https://github.com/agent-intent/verifiable-intent/pulls
+Compliance endpoint: https://headlessoracle.com/v5/compliance
+Stack metadata: https://headlessoracle.com/v5/stack
+
+The open questions in the RFC that I'm most interested in feedback on:
+1. Should batch receipts be a single signed envelope or an array of independently signed receipts?
+2. How should subscription / push-based receipt delivery work for latency-sensitive agents?
+3. Multi-party signing (threshold Ed25519) for federation — is there demand for this before v1.1?
+
+---
+
+## Post 7: Reddit r/algotrading
+
+**Title:** How are you verifying market state in autonomous trading agents? We just submitted an RFC to Mastercard's Verifiable Intent framework.
+
+**Body:**
+
+Concrete technical question before the context: when your autonomous agent executes a trade, what does it check to confirm the market is actually open? Not "what does your backtesting framework check" — what does the agent-as-process check at execution time?
+
+I've found three common patterns in the wild, and they all have failure modes:
+
+**Pattern 1: Hardcoded UTC offset**
+```python
+NYSE_CLOSE_UTC = 21  # Built in January. Correct then. Wrong after US DST transition.
+```
+Fails during the 21-day US/EU DST phantom window (US springs forward March 8, EU springs forward March 29). NYSE closes at 20:00 UTC after March 8; your bot thinks it closes at 21:00.
+
+**Pattern 2: Calendar library (exchange_calendars, trading_calendars)**
+Handles the schedule. Doesn't know about a circuit breaker that tripped 20 minutes ago. Doesn't sign the response. Still requires client-side timezone math.
+
+**Pattern 3: Scraping the exchange website**
+Cloudflare just shipped a native web crawler — it self-identifies as a bot and fails against NYSE/CME enterprise CAPTCHA. "Just scrape it" is not a production solution.
+
+---
+
+**Context for today's post:**
+
+Mastercard just acquired BVNK for $1.8B — programmable stablecoin payment rails. Mastercard also runs the Verifiable Intent framework, which specifies how autonomous agents carry cryptographic proof of authorisation.
+
+The autonomous finance stack now has:
+- Authorization: Verifiable Intent (the agent is permitted to act)
+- Execution: BVNK/Mastercard rails (the payment moves)
+- **Missing**: Verification that the market was open at execution time
+
+We submitted the External State Attestation RFC to the Verifiable Intent spec repository today (March 17, 2026). The RFC defines:
+- A canonical State Receipt format (issuer, subject, status, expires_at, Ed25519 signature)
+- Signing and verification algorithm
+- Key discovery via /.well-known/oracle-keys.json (RFC 8615)
+- Fail-closed consumption requirements (UNKNOWN = halt, network failure = halt)
+
+**The reference implementation:**
+
+```python
+from headless_oracle import OracleClient, verify
+
+with OracleClient(api_key=os.environ["ORACLE_KEY"]) as client:
+    receipt = client.get_status("XNYS")
+
+if not verify(receipt):
+    raise RuntimeError("Signature invalid — do not act")
+
+if receipt["status"] != "OPEN":
+    raise RuntimeError(f"Market not OPEN: {receipt['status']} — halting")
+
+if datetime.utcnow() > datetime.fromisoformat(receipt["expires_at"].replace("Z", "+00:00")):
+    raise RuntimeError("Receipt expired — fetch fresh before acting")
+```
+
+23 global exchanges. 3,691 schedule edge cases per year handled. Ed25519-signed receipts with 60s TTL. Fail-closed by contract (UNKNOWN = CLOSED). Five compliance endpoint evaluations came in from an unknown client today at 18:58 UTC — the infrastructure is being evaluated in production.
+
+RFC: https://github.com/agent-intent/verifiable-intent/pulls
+Stack metadata: https://headlessoracle.com/v5/stack
+Free API key (no card): https://headlessoracle.com/v5/keys/request
+
+**Open questions I'd like community input on:**
+
+1. Are you running autonomous agents that execute directly against brokerage APIs (not inside a framework like QuantConnect)? If so, how are you handling the market-open check?
+
+2. Is Ed25519-signed external state something your compliance team would require, or is it overkill for your use case?
+
+3. The RFC has an open question on batch receipt format: single signed envelope vs array of independent receipts. The reference implementation uses independent receipts per exchange. Does your architecture prefer one or the other?
+
+---
+
 ## Contextual ammunition (use in responses to objections across all posts)
 
 **Cloudflare crawler angle (March 10 2026):**
@@ -380,4 +509,4 @@ This week: MCP clients from 49 countries. One client polled for 18+ hours contin
 195 tests passing against a miniflare-based Cloudflare Workers runtime. All 23 exchanges, all failure tiers, KV circuit breaker overrides, lunch break sessions, MCP tool calls, billing webhooks, key self-service.
 
 **What a timezone library doesn't cover:**
-A timezone library (pytz, dateutil, Luxon) handles DST offset computation. It does not handle: live circuit breakers, exchange-specific holidays that differ per country (NYSE closed Juneteenth, LSE didn't), lunch break sessions (Tokyo, Hong Kong), or early-close days (NYSE 1pm Good Friday, 1pm Christmas Eve). These are 1,319 edge cases per year across 23 exchanges. Zero of them are in pytz.
+A timezone library (pytz, dateutil, Luxon) handles DST offset computation. It does not handle: live circuit breakers, exchange-specific holidays that differ per country (NYSE closed Juneteenth, LSE didn't), lunch break sessions (Tokyo, Hong Kong, Shanghai, Shenzhen), or early-close days (NYSE 1pm Good Friday, 1pm Christmas Eve). These are 3,691 edge cases per year across 23 exchanges. Zero of them are in pytz.
