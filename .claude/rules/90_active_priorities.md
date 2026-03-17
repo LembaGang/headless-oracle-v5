@@ -7,7 +7,22 @@
 **Live endpoints**: All + /v5/credits/purchase, /v5/credits/balance — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /v5/compliance, /v5/credits/purchase, /v5/credits/balance, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 17 2026 — Session H: x402 micropayments + docs field fix (238 tests):
+**Last significant work**: Mar 18 2026 — Sessions I–K: web frontend x402 launch, doc routes, standalone repos (238 tests):
+  - Session I: pricing.html — Pay-per-use x402 tier added (5-column grid, indigo theme, $0.001/req)
+  - Session I: index.html — hero copy "The only market oracle autonomous agents can pay for themselves." + x402 badge
+  - Session I: /docs/integrations/datacamp-workspace — DataCamp/Jupyter guide (sent to Filip Schouwenaars)
+  - Session I: /docs/integrations/langgraph, /docs/integrations/bun, /docs/integrations/anthropic-claude — HTML guides
+  - Session I: /docs/x402-payments — Full x402 guide page (HTML, served by Pages)
+  - Session J: /docs/*.md Worker routes (4 specific paths — wildcard rejected by Cloudflare error 10022)
+  - Session J: /v5/errors/{code} — machine-readable error docs for 12 known codes
+  - Session J: EU DST cron triggers (0 9 28 3 *, 0 9 25 10 *) + scheduled() handler branches
+  - Session J: LLMS_TXT audit — x402 section, /v5/errors/{code}, /v5/credits/* all documented
+  - Session K: github.com/LembaGang/sma-protocol — standalone repo (Apache 2.0, master branch)
+  - Session K: github.com/LembaGang/agent-pretrade-safety-standard — standalone repo (Apache 2.0, master branch)
+  - Session K: agent.json standards + /v5/compliance + LLMS_TXT all updated to GitHub canonical URLs
+  - Session K: CLAUDE.md updated with all Session I–K autonomous decisions + MCP directory submission content
+  - 238/238 tests passing. Worker deployed (46a4c5eb). Both repos pushed.
+**Previous significant work**: Mar 17 2026 — Session H: x402 micropayments + docs field fix (238 tests):
   - Session H: ORACLE_PAYMENT_ADDRESS env var added to Env interface
   - Session H: Free tier (ho_free_*) gated at 500 req/day in ORACLE_TELEMETRY KV (free_usage:{hash}:{date})
   - Session H: x402 payment verification via Base mainnet public RPC (eth_getTransactionReceipt + eth_getBlockByNumber)

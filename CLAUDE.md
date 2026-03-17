@@ -198,3 +198,34 @@ LangGraph, AutoGen, CrewAI, Vercel AI SDK, OpenAI Agents SDK, Bun, and Anthropic
 
 **Decision 6: Multi-exchange monitor template uses state-change events only.**
 `docs/multi-exchange-monitor.ts` fires handlers only when status changes, not on every poll. This avoids downstream noise (every 30s "XNYS is still OPEN" logs) and makes the template usable in production without modification. TTL-awareness (`isConfirmedOpen()` checks `expires_at`) is built in.
+
+## Autonomous Decisions — Sessions I–K (Mar 17–18 2026)
+
+**Decision I-1: DataCamp integration guide created from scratch at `/docs/integrations/datacamp-workspace`.**
+No source markdown existed. Content created: `!pip install headless-oracle`, environment variable setup, `safe_market_check()` pattern with `pd.DataFrame`, full notebook cell sequence for safe analysis. URL was sent to Filip Schouwenaars at DataCamp — the page must remain live and correct.
+
+**Decision I-2: x402 Pay-per-use tier added to pricing page as 4th column (between Free Beta and Builder).**
+Grid changed from `lg:grid-cols-4` to `lg:grid-cols-5`. Indigo theme to visually distinguish from subscription tiers. "For agents that pay themselves" label. Links to `/docs/x402-payments`. Both the pricing card and the hero badge link to the same docs page for consistency.
+
+**Decision I-3: Hero copy updated: "The only market oracle autonomous agents can pay for themselves."**
+Previous copy was generic. The new copy is differentiated and agent-first — it names the x402 capability as the primary differentiator. This is the positioning for the x402 micropayment launch.
+
+**Decision J-1: Cloudflare route pattern `headlessoracle.com/docs/*.md` was rejected (error 10022).**
+Cloudflare Workers only allow wildcards at start of hostname or end of path — not mid-path extension matching. Fixed by using 4 specific route entries for the exact `.md` files in use: `/docs/sma-protocol-repo/SPEC.md`, `/docs/agent-safety-standard/STANDARD.md`, `/docs/agent-safety-standard-repo/STANDARD.md`, `/docs/x402-payments.md`. Pages HTML routes (`/docs/*/index.html`) are served by Cloudflare Pages and do not conflict.
+
+**Decision J-2: `/v5/errors/{code}` endpoint added with 12 machine-readable error code definitions.**
+Each entry contains `message`, `resolution`, `http_status`, `docs_url`, and `openapi`. Unknown codes return 404 with `available` list. Agents that receive a 4xx error can follow `GET /v5/errors/{ERROR_CODE}` to get a structured recovery path without reading documentation. This closes the agent-recovery loop for all known error codes.
+
+**Decision J-3: EU DST cron triggers added to wrangler.toml and scheduled() handler.**
+`0 9 28 3 *` fires March 28 at 09:00 UTC (day before EU spring forward). `0 9 25 10 *` fires October 25 (day before EU fall back). Both log a structured `DST_REMINDER` JSON event to Workers Logs. US DST already had equivalent reminders from a prior session.
+
+**Decision K-1: SMA Protocol and APTS published as standalone Apache 2.0 GitHub repos.**
+- `github.com/LembaGang/sma-protocol` — SPEC.md, CONFORMANCE.md, FAQ.md, IMPLEMENTATIONS.md, README.md, LICENSE
+- `github.com/LembaGang/agent-pretrade-safety-standard` — STANDARD.md, CHECKLIST.yaml, BADGE.md, CI-INTEGRATION.md, README.md, LICENSE
+These are the canonical sources for both standards. agent.json `standards` object, `/v5/compliance` response, and LLMS_TXT all updated to reference GitHub URLs. The old `headlessoracle.com/docs/...` URLs remain functional (served by Worker as embedded markdown) but GitHub is the authoritative canonical URL.
+
+**MCP Directory submission content (human task — founder submits manually):**
+For Smithery (smithery.ai/new): use `smithery.yaml` at repo root — already complete.
+For mcp.so: use `docs/mcp-listing.md` YAML block — already complete.
+Both files reference `https://headlessoracle.com/mcp` as the endpoint, protocol `2024-11-05`, 3 tools.
+Update `standards` section to reference: sma_spec `github.com/LembaGang/sma-protocol`, apts `github.com/LembaGang/agent-pretrade-safety-standard`.
