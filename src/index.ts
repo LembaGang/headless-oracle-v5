@@ -1655,7 +1655,7 @@ Full guide: https://headlessoracle.com/docs/x402-payments.md
 - [MCP Endpoint](https://headlessoracle.com/mcp): Protocol version 2024-11-05. Tools: get_market_status, get_market_schedule, list_exchanges.
 - [APTS Compliance](https://headlessoracle.com/v5/compliance): Machine-readable Agent Pre-Trade Safety Standard compliance self-report.
 - [x402 Guide](https://headlessoracle.com/docs/x402-payments.md): Per-request micropayment protocol for agent-native API access.
-- [SMA Specification](https://headlessoracle.com/docs/sma-protocol-repo/SPEC.md): Signed Market Attestation Protocol v1.0.
+- [SMA Specification](https://github.com/LembaGang/sma-protocol): Signed Market Attestation Protocol v1.0 (GitHub — Apache 2.0).
 - [Error Docs](https://headlessoracle.com/v5/errors/PAYMENT_REQUIRED): Machine-readable error documentation for any error code.
 
 ## Robots
@@ -1942,8 +1942,8 @@ const AGENT_JSON = {
 	standards: {
 		sma_version:  '1.0',
 		apts_version: '1.0',
-		sma_spec:     'https://headlessoracle.com/docs#sma-spec',
-		apts_spec:    'https://headlessoracle.com/docs#agent-safety-standard',
+		sma_spec:     'https://github.com/LembaGang/sma-protocol',
+		apts_spec:    'https://github.com/LembaGang/agent-pretrade-safety-standard',
 	},
 	mcp: {
 		endpoint:         'https://headlessoracle.com/mcp',
@@ -3773,9 +3773,9 @@ export default {
 						},
 					],
 					sma_spec_version: '1.0',
-					sma_spec_url:     'https://headlessoracle.com/docs/sma-protocol-repo/SPEC.md',
+					sma_spec_url:     'https://github.com/LembaGang/sma-protocol/blob/master/SPEC.md',
 					verify_sdk:       'https://npmjs.com/package/@headlessoracle/verify',
-					standard_url:     'https://headlessoracle.com/docs/agent-safety-standard-repo/STANDARD.md',
+					standard_url:     'https://github.com/LembaGang/agent-pretrade-safety-standard/blob/master/STANDARD.md',
 				});
 			}
 
