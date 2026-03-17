@@ -4483,6 +4483,7 @@ export default {
 				if (batchAuth.plan === 'free') {
 					const batchKeyHash = await sha256Hex(apiKey);
 					const batchUsage   = await getDailyUsage(batchKeyHash, env);
+					freeTierPercentUsed = Math.round((batchUsage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
 					if (batchUsage >= FREE_TIER_DAILY_LIMIT) {
 						const paymentHeader = request.headers.get('X-Payment');
 						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
@@ -4559,11 +4560,11 @@ export default {
 					}, 500);
 				}
 
-				return json({
+				return withRateLimitWarning(json({
 					batch_id:   crypto.randomUUID(),
 					queried_at: now.toISOString(),
 					receipts:   results.map((r) => r.receipt),
-				});
+				}));
 			}
 
 			// ── GET /v5/health — signed liveness probe (public, no auth) ──
