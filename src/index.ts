@@ -27,6 +27,8 @@ export interface Env {
 	SUPABASE_URL?:               string;
 	SUPABASE_SERVICE_ROLE_KEY?:  string;
 	RESEND_API_KEY?:             string;
+	// x402 micropayments — set via `wrangler secret put ORACLE_PAYMENT_ADDRESS`
+	ORACLE_PAYMENT_ADDRESS?:     string;  // Base mainnet wallet for USDC micropayments
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -706,16 +708,16 @@ async function signPayload(payload: Record<string, string>, privKeyHex: string):
 //   4. KV miss        — lookup Supabase, warm KV, then check status
 //   5. Not found      — 403
 
-type AuthResult = { allowed: true } | { allowed: false; status: 402 | 403; error: string; message: string };
+type AuthResult = { allowed: true; plan: string } | { allowed: false; status: 402 | 403; error: string; message: string };
 
 async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	// Step 1: master key — fastest possible path
-	if (key === env.MASTER_API_KEY) return { allowed: true };
+	if (key === env.MASTER_API_KEY) return { allowed: true, plan: 'internal' };
 
 	// Step 2: beta keys — no lookup
 	if (env.BETA_API_KEYS) {
 		const betaKeys = env.BETA_API_KEYS.split(',').map((k) => k.trim());
-		if (betaKeys.includes(key)) return { allowed: true };
+		if (betaKeys.includes(key)) return { allowed: true, plan: 'internal' };
 	}
 
 	// Steps 3–5: paid key — hash once, use for KV and Supabase
@@ -725,8 +727,8 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	if (env.ORACLE_API_KEYS) {
 		const cached = await env.ORACLE_API_KEYS.get(keyHash);
 		if (cached) {
-			const { status } = JSON.parse(cached) as { plan: string; status: string };
-			if (status === 'active') return { allowed: true };
+			const { plan, status } = JSON.parse(cached) as { plan: string; status: string };
+			if (status === 'active') return { allowed: true, plan };
 			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
@@ -750,7 +752,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 					{ expirationTtl: 300 },
 				);
 			}
-			if (data.status === 'active') return { allowed: true };
+			if (data.status === 'active') return { allowed: true, plan: data.plan };
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
 	}
@@ -837,6 +839,208 @@ const MICS_REGISTRY = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => ({
 // Signed receipts expire this many seconds after issued_at.
 // Consumers MUST NOT act on a receipt whose expires_at has passed.
 const RECEIPT_TTL_SECONDS = 60;
+
+// ─── x402 Micropayment ────────────────────────────────────────────────────────
+
+// USDC ERC-20 contract on Base mainnet (chain ID 8453).
+const X402_USDC_CONTRACT    = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+// 0.001 USDC = 1000 units at 6 decimals. Minimum payment per request.
+const X402_MIN_AMOUNT_UNITS = BigInt(1000);
+// ERC-20 Transfer(address,address,uint256) event topic.
+const ERC20_TRANSFER_TOPIC  = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+// Base mainnet public JSON-RPC endpoint — no API key required.
+const BASE_RPC_URL          = 'https://mainnet.base.org';
+// Free tier: daily request cap before x402 micropayment is required.
+const FREE_TIER_DAILY_LIMIT = 500;
+// Response headers signalling to HTTP clients that a payment is required.
+const X402_RESPONSE_HEADERS: Record<string, string> = {
+	'X-Payment-Required': 'true',
+	'X-Payment-Scheme':   'x402',
+	'X-Payment-Network':  'base-mainnet',
+	'X-Payment-Chain-ID': '8453',
+	'X-Payment-Amount':   '0.001 USDC',
+};
+
+interface X402Payment {
+	txHash:         string;
+	network:        string;
+	amount:         string;
+	paymentAddress: string;
+	memo:           string;
+}
+
+interface EthLog {
+	address: string;
+	topics:  string[];
+	data:    string;
+}
+
+interface EthReceipt {
+	status:      string;
+	to:          string | null;
+	blockNumber: string;
+	logs:        EthLog[];
+}
+
+interface CreditRecord {
+	balance:        number;
+	last_purchased: string;
+}
+
+// Verifies a USDC payment on Base mainnet via public JSON-RPC.
+// Checks: tx status, USDC contract, recipient address, amount, age, replay.
+async function verifyX402Payment(
+	payment: X402Payment,
+	paymentAddress: string,
+	env: Env,
+): Promise<{ valid: boolean; detail?: string }> {
+	if (payment.network !== 'base-mainnet') {
+		return { valid: false, detail: 'WRONG_NETWORK: expected base-mainnet' };
+	}
+	const txHash = payment.txHash.toLowerCase();
+	if (!/^0x[0-9a-f]{64}$/.test(txHash)) {
+		return { valid: false, detail: 'INVALID_TX_HASH' };
+	}
+
+	// Replay check first — prevent double-spend before any network call
+	const replayKey   = `x402_used:${txHash}`;
+	const alreadyUsed = await env.ORACLE_TELEMETRY.get(replayKey).catch(() => null);
+	if (alreadyUsed !== null) {
+		return { valid: false, detail: 'TRANSACTION_ALREADY_USED' };
+	}
+
+	// Fetch receipt from Base mainnet (status, logs)
+	let receipt: EthReceipt | null = null;
+	try {
+		const rpcRes = await fetch(BASE_RPC_URL, {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({
+				jsonrpc: '2.0', id: 1,
+				method:  'eth_getTransactionReceipt',
+				params:  [txHash],
+			}),
+		});
+		const rpcData = await rpcRes.json() as { result: EthReceipt | null };
+		receipt = rpcData.result;
+	} catch {
+		return { valid: false, detail: 'RPC_FETCH_FAILED' };
+	}
+	if (!receipt) return { valid: false, detail: 'TRANSACTION_NOT_FOUND' };
+	if (receipt.status !== '0x1') return { valid: false, detail: 'TRANSACTION_FAILED' };
+
+	// Find the USDC Transfer event crediting our payment address
+	const transferLog = receipt.logs.find(
+		(log) =>
+			log.address.toLowerCase() === X402_USDC_CONTRACT.toLowerCase() &&
+			log.topics[0]?.toLowerCase() === ERC20_TRANSFER_TOPIC &&
+			log.topics[2] != null &&
+			('0x' + log.topics[2].slice(-40)).toLowerCase() === paymentAddress.toLowerCase(),
+	);
+	if (!transferLog) {
+		return { valid: false, detail: 'NO_USDC_TRANSFER_TO_PAYMENT_ADDRESS' };
+	}
+	const amountPaid = BigInt(transferLog.data);
+	if (amountPaid < X402_MIN_AMOUNT_UNITS) {
+		return { valid: false, detail: `INSUFFICIENT_AMOUNT: paid ${amountPaid}, required ${X402_MIN_AMOUNT_UNITS}` };
+	}
+
+	// Fetch block to verify transaction age (max 300 seconds)
+	let blockTimestampSec = 0;
+	try {
+		const blockRes = await fetch(BASE_RPC_URL, {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({
+				jsonrpc: '2.0', id: 2,
+				method:  'eth_getBlockByNumber',
+				params:  [receipt.blockNumber, false],
+			}),
+		});
+		const blockData = await blockRes.json() as { result: { timestamp: string } | null };
+		if (blockData.result?.timestamp) {
+			blockTimestampSec = parseInt(blockData.result.timestamp, 16);
+		}
+	} catch {
+		return { valid: false, detail: 'BLOCK_FETCH_FAILED' };
+	}
+
+	const ageSeconds = Math.floor(Date.now() / 1000) - blockTimestampSec;
+	if (ageSeconds > 300) {
+		return { valid: false, detail: `TRANSACTION_EXPIRED: ${ageSeconds}s old, max 300s` };
+	}
+
+	// Mark as used — 600s TTL prevents replay across the boundary window
+	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 600 }).catch(() => {});
+	console.log(JSON.stringify({ event: 'X402_PAYMENT_VERIFIED', tx_hash: txHash, amount_units: amountPaid.toString() }));
+	return { valid: true };
+}
+
+// Build the x402 payment payload for a 402 response.
+function build402Payload(paymentAddress: string, keyHash: string): Record<string, unknown> {
+	return {
+		error:   'PAYMENT_REQUIRED',
+		message: 'Free tier exhausted. Pay 0.001 USDC per request via x402 on Base network, or upgrade at headlessoracle.com/pricing',
+		x402: {
+			version:             '1',
+			scheme:              'exact',
+			network:             'base-mainnet',
+			chainId:             8453,
+			amount:              '1000',
+			currency:            'USDC',
+			decimals:            6,
+			paymentAddress,
+			usdcContractAddress: X402_USDC_CONTRACT,
+			memo:                `${keyHash}:${new Date().toISOString().slice(0, 10)}:${crypto.randomUUID()}`,
+			maxAge:              300,
+		},
+		alternatives: {
+			monthly:  'https://headlessoracle.com/pricing',
+			free_key: 'https://headlessoracle.com/v5/keys/request',
+			prepaid:  'https://headlessoracle.com/v5/credits/purchase',
+		},
+	};
+}
+
+// Get the number of requests made today by a free tier key.
+async function getDailyUsage(keyHash: string, env: Env): Promise<number> {
+	const key    = `free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
+	const stored = await env.ORACLE_TELEMETRY.get(key).catch(() => null);
+	return stored ? parseInt(stored, 10) : 0;
+}
+
+// Increment the daily usage counter for a free tier key (non-blocking).
+function incrementDailyUsage(keyHash: string, env: Env, ctx: ExecutionContext, current: number): void {
+	const key  = `free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
+	const putP = env.ORACLE_TELEMETRY.put(key, String(current + 1), { expirationTtl: 25 * 3600 }).catch(() => {});
+	if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
+}
+
+// Read credit balance for a key.
+async function getCreditBalance(keyHash: string, env: Env): Promise<CreditRecord> {
+	const stored = await env.ORACLE_TELEMETRY.get(`credits:${keyHash}`).catch(() => null);
+	return stored ? JSON.parse(stored) as CreditRecord : { balance: 0, last_purchased: '' };
+}
+
+// Add credits to a key's balance.
+async function addCredits(keyHash: string, credits: number, env: Env): Promise<void> {
+	const key     = `credits:${keyHash}`;
+	const current = await getCreditBalance(keyHash, env);
+	await env.ORACLE_TELEMETRY.put(key, JSON.stringify({
+		balance:        current.balance + credits,
+		last_purchased: new Date().toISOString(),
+	}));
+}
+
+// Consume 1 credit from a key's balance (non-blocking).
+function consumeCredit(keyHash: string, credits: CreditRecord, env: Env, ctx: ExecutionContext): void {
+	const key  = `credits:${keyHash}`;
+	const putP = env.ORACLE_TELEMETRY.put(key, JSON.stringify({
+		...credits,
+		balance: Math.max(0, credits.balance - 1),
+	})).catch(() => {});
+	if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
+}
 
 // ─── Static discovery files ───────────────────────────────────────────────────
 // Served as plain text. robots.txt signals to AI crawlers which paths are open.
@@ -1480,7 +1684,17 @@ const AGENT_JSON = {
 		'mcp_tools',
 		'compliance_check',
 		'sma_attestation',
+		'x402_micropayments',
 	],
+	payment: {
+		schemes:              ['x402'],
+		network:              'base-mainnet',
+		chain_id:             8453,
+		currency:             'USDC',
+		amount_per_request:   '0.001',
+		payment_address_env:  'ORACLE_PAYMENT_ADDRESS',
+		free_tier_daily_limit: FREE_TIER_DAILY_LIMIT,
+	},
 	standards: {
 		sma_version:  '1.0',
 		apts_version: '1.0',
@@ -2412,7 +2626,7 @@ export default {
 				const errorCode = (body as Record<string, unknown>).error as string;
 				responseBody = {
 					...(body as Record<string, unknown>),
-					docs: `https://headlessoracle.com/docs#${errorCode}`,
+					docs: `https://headlessoracle.com/docs`,
 				};
 			}
 			return new Response(JSON.stringify(responseBody), {
@@ -2454,6 +2668,40 @@ export default {
 				if (!auth.allowed) {
 					const authHeaders = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 					return json({ error: auth.error, message: auth.message }, auth.status, authHeaders);
+				}
+				// ── Free tier daily limit + x402 micropayment gate ───────────
+				if (auth.plan === 'free') {
+					const keyHash = await sha256Hex(apiKey);
+					const usage   = await getDailyUsage(keyHash, env);
+					if (usage >= FREE_TIER_DAILY_LIMIT) {
+						const paymentHeader = request.headers.get('X-Payment');
+						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
+							let payment: X402Payment;
+							try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
+								return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
+							}
+							const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+							if (!verify.valid) {
+								return json({
+									error:   'PAYMENT_VERIFICATION_FAILED',
+									message: `Payment verification failed: ${verify.detail ?? 'unknown'}`,
+									x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash).x402,
+								}, 402, X402_RESPONSE_HEADERS);
+							}
+							// Valid x402 payment — proceed without counting against daily usage
+						} else {
+							const credits = await getCreditBalance(keyHash, env);
+							if (credits.balance > 0) {
+								consumeCredit(keyHash, credits, env, ctx);
+							} else if (env.ORACLE_PAYMENT_ADDRESS) {
+								return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, X402_RESPONSE_HEADERS);
+							} else {
+								return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429);
+							}
+						}
+					} else {
+						incrementDailyUsage(keyHash, env, ctx, usage);
+					}
 				}
 			}
 
@@ -2545,6 +2793,39 @@ export default {
 				if (!batchAuth.allowed) {
 					const batchAuthHeaders = batchAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 					return json({ error: batchAuth.error, message: batchAuth.message }, batchAuth.status, batchAuthHeaders);
+				}
+				// Free tier limit check for batch
+				if (batchAuth.plan === 'free') {
+					const batchKeyHash = await sha256Hex(apiKey);
+					const batchUsage   = await getDailyUsage(batchKeyHash, env);
+					if (batchUsage >= FREE_TIER_DAILY_LIMIT) {
+						const paymentHeader = request.headers.get('X-Payment');
+						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
+							let payment: X402Payment;
+							try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
+								return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
+							}
+							const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+							if (!verify.valid) {
+								return json({
+									error:   'PAYMENT_VERIFICATION_FAILED',
+									message: `Payment verification failed: ${verify.detail ?? 'unknown'}`,
+									x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, batchKeyHash).x402,
+								}, 402, X402_RESPONSE_HEADERS);
+							}
+						} else {
+							const credits = await getCreditBalance(batchKeyHash, env);
+							if (credits.balance > 0) {
+								consumeCredit(batchKeyHash, credits, env, ctx);
+							} else if (env.ORACLE_PAYMENT_ADDRESS) {
+								return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, batchKeyHash), 402, X402_RESPONSE_HEADERS);
+							} else {
+								return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429);
+							}
+						}
+					} else {
+						incrementDailyUsage(batchKeyHash, env, ctx, batchUsage);
+					}
 				}
 
 				const micsParam = url.searchParams.get('mics');
@@ -2647,6 +2928,7 @@ export default {
 						mcp_protocol_version: MCP_PROTOCOL_VERSION,
 						uptime_since:         '2026-03-10T08:00:00Z',
 						fail_closed:          true,
+						payment_schemes:      ['x402'],
 						exchange_count:             SUPPORTED_EXCHANGES.length,
 						supported_mics:             SUPPORTED_EXCHANGES.map((e) => e.mic),
 						data_coverage:              {
@@ -3189,6 +3471,63 @@ export default {
 					sma_spec_url:     'https://headlessoracle.com/docs/sma-protocol-repo/SPEC.md',
 					verify_sdk:       'https://npmjs.com/package/@headlessoracle/verify',
 					standard_url:     'https://headlessoracle.com/docs/agent-safety-standard-repo/STANDARD.md',
+				});
+			}
+
+			// ── POST /v5/credits/purchase — buy prepaid credits via x402 ─
+			if (url.pathname === '/v5/credits/purchase') {
+				if (request.method !== 'POST') {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
+				}
+				if (!env.ORACLE_PAYMENT_ADDRESS) {
+					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Prepaid credits not available' }, 503);
+				}
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) {
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				}
+				const creditAuth = await checkApiKey(apiKey, env);
+				if (!creditAuth.allowed) {
+					return json({ error: creditAuth.error, message: creditAuth.message }, creditAuth.status);
+				}
+				const paymentHeader = request.headers.get('X-Payment');
+				if (!paymentHeader) {
+					return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, await sha256Hex(apiKey)), 402, X402_RESPONSE_HEADERS);
+				}
+				let payment: X402Payment;
+				try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
+					return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
+				}
+				const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+				if (!verify.valid) {
+					return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${verify.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
+				}
+				// Determine credit grant based on amount paid
+				const amountPaid = BigInt(payment.amount || '0');
+				let creditsToAdd = 1; // default: 1 credit per 0.001 USDC
+				if (amountPaid >= BigInt(800000)) creditsToAdd = 1000;       // 0.80 USDC → 1000 credits
+				else if (amountPaid >= BigInt(90000)) creditsToAdd = 100;    // 0.09 USDC → 100 credits
+				const keyHash = await sha256Hex(apiKey);
+				await addCredits(keyHash, creditsToAdd, env);
+				return json({ purchased: creditsToAdd, message: `${creditsToAdd} credits added to your account` });
+			}
+
+			// ── GET /v5/credits/balance — credit balance for the calling key
+			if (url.pathname === '/v5/credits/balance') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) {
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				}
+				const balanceAuth = await checkApiKey(apiKey, env);
+				if (!balanceAuth.allowed) {
+					return json({ error: balanceAuth.error, message: balanceAuth.message }, balanceAuth.status);
+				}
+				const keyHash = await sha256Hex(apiKey);
+				const credits = await getCreditBalance(keyHash, env);
+				return json({
+					balance:                      credits.balance,
+					estimated_requests_remaining: credits.balance,
+					last_purchased:               credits.last_purchased || null,
 				});
 			}
 

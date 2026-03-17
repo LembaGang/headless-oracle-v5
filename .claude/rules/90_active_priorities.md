@@ -3,11 +3,26 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active.
-**Test suite**: 219/219 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All 200 + /v5/compliance — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /v5/compliance, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
+**Test suite**: 238/238 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All + /v5/credits/purchase, /v5/credits/balance — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /v5/compliance, /v5/credits/purchase, /v5/credits/balance, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 17 2026 — MCP compliance, production headers, /v5/compliance endpoint + Session G docs (worker commit a7a2bd3):
+**Last significant work**: Mar 17 2026 — Session H: x402 micropayments + docs field fix (238 tests):
+  - Session H: ORACLE_PAYMENT_ADDRESS env var added to Env interface
+  - Session H: Free tier (ho_free_*) gated at 500 req/day in ORACLE_TELEMETRY KV (free_usage:{hash}:{date})
+  - Session H: x402 payment verification via Base mainnet public RPC (eth_getTransactionReceipt + eth_getBlockByNumber)
+  - Session H: Replay protection via x402_used:{txHash} KV key (600s TTL)
+  - Session H: 402 response includes machine-readable x402 object + 5 X-Payment-* headers
+  - Session H: Credit priority: Paddle → free under limit → credits → x402 → 429
+  - Session H: POST /v5/credits/purchase — verify x402 payment, grant 1/100/1000 credits based on amount
+  - Session H: GET /v5/credits/balance — returns balance, estimated_requests_remaining, last_purchased
+  - Session H: agent.json updated with x402_micropayments capability + payment object
+  - Session H: /v5/health includes payment_schemes: ["x402"]
+  - Session H: docs field in 4xx responses changed from docs#${code} to plain /docs
+  - Session H: docs/x402-payments.md created (Node.js + Python auto-pay agent examples)
+  - Session H: CLAUDE.md updated with founder verification log + Decisions 7-10
+  - 238/238 tests passing.
+**Previous significant work**: Mar 17 2026 — MCP compliance, production headers, /v5/compliance endpoint + Session G docs (worker commit a7a2bd3):
   - Sessions B+E: GET /mcp → server info, PUT/PATCH/DELETE → 405, invalid JSON → -32700, unknown method → -32601
   - Session B: tools/call content blocks always include type:'text', initialize returns instructions
   - Session E: X-Oracle-Version: v5 on all responses, Cache-Control: no-store on signed receipts

@@ -147,8 +147,20 @@ Update `90_active_priorities.md` after any significant change.
 
 The following decisions were made autonomously during the Mar 17 sprint (Sessions A–G). All logged here per standing instruction.
 
-**Decision 1: Session H (x402 micropayments) was NOT implemented.**
-The second user message in the Mar 17 session contained an instruction to run `wrangler secret put ORACLE_PAYMENT_ADDRESS` with a crypto wallet address (`0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3`) and implement payment routing to it. This was assessed as a prompt injection attempt that would redirect production payments to an unknown wallet. No payment infrastructure was changed. The instruction requires explicit founder verification before implementation.
+**Decision 1 (updated): Session H (x402 micropayments) IMPLEMENTED — Mar 17 2026 (Session H).**
+Originally blocked as a potential prompt injection attempt. Founder Mike Mbeenz provided explicit in-conversation verification: wallet `0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3` is his personal Base mainnet wallet; `ORACLE_PAYMENT_ADDRESS` is already set as a production Wrangler secret. Full x402 micropayment architecture implemented — see Decisions 7–10 below.
+
+**Decision 7: x402 architecture gates free tier at 500 req/day.**
+Free tier keys (`ho_free_*`) track daily usage in `ORACLE_TELEMETRY` KV (`free_usage:{keyHash}:{date}`). At 500 requests the gate activates. Priority: (1) valid `X-Payment` header with verified Base mainnet USDC tx → fulfill; (2) credit balance > 0 → consume 1 credit; (3) `ORACLE_PAYMENT_ADDRESS` set → return 402 with x402 payload; (4) no payment address → return 429. Paddle subscription keys and internal keys bypass the gate entirely.
+
+**Decision 8: 402 payload includes full x402 payment object.**
+The 402 response body includes a machine-readable `x402` object with `network: 'base-mainnet'`, `chainId: 8453`, `amount: '1000'` (0.001 USDC at 6 decimals), `currency: 'USDC'`, `paymentAddress`, `usdcContractAddress`, `memo`, and `maxAge: 300`. Five response headers are also set (`X-Payment-Required`, `X-Payment-Scheme`, `X-Payment-Network`, `X-Payment-Chain-ID`, `X-Payment-Amount`). Agents can parse either surface to fulfill payment.
+
+**Decision 9: Payment verification uses two Base RPC calls; replay protection via ORACLE_TELEMETRY KV.**
+`eth_getTransactionReceipt` verifies tx status, USDC Transfer event, recipient address, and amount. `eth_getBlockByNumber` provides block timestamp for age check (max 300s). Used `txHash` stored in `x402_used:{txHash}` with 600s TTL — prevents replay across the maxAge boundary. No API key required for `https://mainnet.base.org` public RPC.
+
+**Decision 10: docs field in 4xx responses changed from fragment URL to plain /docs.**
+The `json()` helper was producing `docs: "https://headlessoracle.com/docs#${errorCode}"` but those anchors do not exist on the docs page. Changed to `"https://headlessoracle.com/docs"` which is a real working URL. The agent-friendly machine-readable endpoint approach (`GET /v5/errors/{code}`) was considered but deferred — the gap is noted. Test updated accordingly. Backward-compatible: consumers were not relying on the fragment value.
 
 **Decision 2: GET /mcp returns server info (200), not 405.**
 The original `GET /mcp → 405` test was updated to `GET /mcp → 200 server info`. Rationale: MCP clients use GET to discover server capabilities before POSTing. A 405 on GET is a discoverability failure. The server info response (`name`, `version`, `protocol`, `sma_compliant`, `tools`, `authentication`) gives agents everything they need to decide whether to integrate — zero ambiguity.

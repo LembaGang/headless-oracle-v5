@@ -2464,11 +2464,11 @@ describe('Cache-Control on signed receipts', () => {
 });
 
 describe('Error responses include docs field', () => {
-	it('401 API_KEY_REQUIRED includes docs field', async () => {
+	it('401 API_KEY_REQUIRED includes docs field pointing to /docs', async () => {
 		const body = await fetchJSON('/v5/status');
 		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
 		expect(typeof body.docs).toBe('string');
-		expect((body.docs as string)).toContain('API_KEY_REQUIRED');
+		expect((body.docs as string)).toContain('headlessoracle.com/docs');
 	});
 
 	it('400 UNKNOWN_MIC includes docs field', async () => {
@@ -2536,5 +2536,252 @@ describe('GET /v5/health enrichment (Session E)', () => {
 		const body = await fetchJSON('/v5/health');
 		expect(body).toHaveProperty('fail_closed', true);
 		expect(typeof body.uptime_since).toBe('string');
+	});
+});
+
+// ─── x402 Micropayments ───────────────────────────────────────────────────────
+
+async function setupFreeKey(keyValue: string): Promise<string> {
+	const encoder = new TextEncoder();
+	const hashBuf = await crypto.subtle.digest('SHA-256', encoder.encode(keyValue));
+	const keyHash = Array.from(new Uint8Array(hashBuf), (b) => b.toString(16).padStart(2, '0')).join('');
+	await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({
+		plan: 'free', status: 'active', email: 'test@test.com', created_at: new Date().toISOString(),
+	}));
+	return keyHash;
+}
+
+async function exhaustDailyUsage(keyHash: string): Promise<void> {
+	const date = new Date().toISOString().slice(0, 10);
+	await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${date}`, '500');
+}
+
+function mockBaseRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number): () => void {
+	const original = globalThis.fetch;
+	globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+		const url = typeof input === 'string' ? input : (input as Request).url;
+		if (url === 'https://mainnet.base.org') {
+			const body = JSON.parse((init?.body as string) ?? '{}') as { method: string };
+			if (body.method === 'eth_getTransactionReceipt') {
+				return new Response(JSON.stringify({
+					result: {
+						status: '0x1',
+						to: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+						blockNumber: '0x1234',
+						logs: [{
+							address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+							topics: [
+								'0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+								'0x000000000000000000000000abcdef1234567890abcdef1234567890abcdef12',
+								'0x000000000000000000000000' + recipientAddress.slice(2).toLowerCase(),
+							],
+							data: '0x' + BigInt(amountUnits).toString(16).padStart(64, '0'),
+						}],
+					},
+				}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (body.method === 'eth_getBlockByNumber') {
+				return new Response(JSON.stringify({
+					result: { timestamp: '0x' + blockTimestamp.toString(16) },
+				}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+		}
+		return original(input, init);
+	};
+	return () => { globalThis.fetch = original; };
+}
+
+const TEST_PAYMENT_ADDRESS = '0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3';
+
+describe('x402 — free tier daily limit gate', () => {
+	it('returns 200 for free key under daily limit', async () => {
+		const key = 'ho_free_' + 'a'.repeat(64);
+		await setupFreeKey(key);
+		const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.status).toBe(200);
+	});
+
+	it('returns 402 when free tier exhausted and ORACLE_PAYMENT_ADDRESS is set', async () => {
+		const key  = 'ho_free_' + 'b'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'PAYMENT_REQUIRED');
+	});
+
+	it('402 includes x402 object with Base mainnet details', async () => {
+		const key  = 'ho_free_' + 'c'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const body = await fetchJSON('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		const x402 = body.x402 as Record<string, unknown>;
+		expect(x402).toBeDefined();
+		expect(x402.network).toBe('base-mainnet');
+		expect(x402.chainId).toBe(8453);
+		expect(x402.currency).toBe('USDC');
+		expect(x402.amount).toBe('1000');
+		expect(x402.decimals).toBe(6);
+		expect(x402.usdcContractAddress).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+	});
+
+	it('402 response includes X-Payment-Required and X-Payment-Network headers', async () => {
+		const key  = 'ho_free_' + 'd'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.headers.get('X-Payment-Required')).toBe('true');
+		expect(res.headers.get('X-Payment-Network')).toBe('base-mainnet');
+		expect(res.headers.get('X-Payment-Chain-ID')).toBe('8453');
+	});
+});
+
+describe('x402 — payment verification', () => {
+	it('accepts valid x402 payment and returns 200', async () => {
+		const txHash = '0x' + 'e'.repeat(64);
+		const key    = 'ho_free_' + 'e'.repeat(64);
+		const hash   = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const nowSec  = Math.floor(Date.now() / 1000);
+		const restore = mockBaseRpc(TEST_PAYMENT_ADDRESS, '1000', nowSec - 10);
+		const payment = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+		const res     = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+		restore();
+		expect(res.status).toBe(200);
+	});
+
+	it('rejects replay attack — same txHash used twice', async () => {
+		const txHash = '0x' + 'f'.repeat(64);
+		const key    = 'ho_free_' + 'f'.repeat(64);
+		const hash   = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		await env.ORACLE_TELEMETRY.put(`x402_used:${txHash}`, '1');
+		const payment = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+		const res     = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect((body.message as string)).toContain('TRANSACTION_ALREADY_USED');
+	});
+
+	it('rejects expired transaction — block older than 300s', async () => {
+		const txHash  = '0x' + '1'.repeat(64);
+		const key     = 'ho_free_' + 'g'.repeat(64);
+		const hash    = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const staleTs = Math.floor(Date.now() / 1000) - 400;
+		const restore = mockBaseRpc(TEST_PAYMENT_ADDRESS, '1000', staleTs);
+		const payment = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+		const res     = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+		restore();
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect((body.message as string)).toContain('TRANSACTION_EXPIRED');
+	});
+
+	it('rejects wrong recipient address', async () => {
+		const txHash   = '0x' + '2'.repeat(64);
+		const key      = 'ho_free_' + 'h'.repeat(64);
+		const hash     = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const nowSec   = Math.floor(Date.now() / 1000);
+		const wrongAddr = '0x1111111111111111111111111111111111111111';
+		const restore  = mockBaseRpc(wrongAddr, '1000', nowSec - 10);
+		const payment  = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+		const res      = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+		restore();
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect((body.message as string)).toContain('NO_USDC_TRANSFER_TO_PAYMENT_ADDRESS');
+	});
+
+	it('rejects wrong network in X-Payment', async () => {
+		const key  = 'ho_free_' + 'i'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const payment = JSON.stringify({ txHash: '0x' + 'i'.repeat(64), network: 'ethereum-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+		const res     = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect((body.message as string)).toContain('WRONG_NETWORK');
+	});
+
+	it('rejects invalid JSON in X-Payment', async () => {
+		const key  = 'ho_free_' + 'j'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': 'not-json' } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_PAYMENT');
+	});
+});
+
+describe('x402 — credit balance and consumption', () => {
+	it('GET /v5/credits/balance returns 0 for key with no credits', async () => {
+		const key = 'ho_free_' + 'k'.repeat(64);
+		await setupFreeKey(key);
+		const body = await fetchJSON('/v5/credits/balance', { headers: { 'X-Oracle-Key': key } });
+		expect(body).toHaveProperty('balance', 0);
+		expect(body).toHaveProperty('estimated_requests_remaining', 0);
+	});
+
+	it('GET /v5/credits/balance requires X-Oracle-Key', async () => {
+		const res = await fetchWorker('/v5/credits/balance');
+		expect(res.status).toBe(401);
+	});
+
+	it('POST /v5/credits/purchase requires X-Oracle-Key', async () => {
+		const res = await fetchWorker('/v5/credits/purchase', { method: 'POST' });
+		expect(res.status).toBe(401);
+	});
+
+	it('free key with credits fulfils request when daily limit exceeded', async () => {
+		const key  = 'ho_free_' + 'l'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		await env.ORACLE_TELEMETRY.put(`credits:${hash}`, JSON.stringify({ balance: 5, last_purchased: new Date().toISOString() }));
+		const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.status).toBe(200);
+	});
+
+	it('GET /v5/credits/balance returns correct seeded balance', async () => {
+		const key  = 'ho_free_' + 'n'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await env.ORACLE_TELEMETRY.put(`credits:${hash}`, JSON.stringify({ balance: 42, last_purchased: '2026-03-17T00:00:00Z' }));
+		const body = await fetchJSON('/v5/credits/balance', { headers: { 'X-Oracle-Key': key } });
+		expect(body).toHaveProperty('balance', 42);
+		expect(body).toHaveProperty('last_purchased', '2026-03-17T00:00:00Z');
+	});
+});
+
+describe('x402 — health includes payment_schemes', () => {
+	it('GET /v5/health includes payment_schemes: ["x402"]', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(Array.isArray(body.payment_schemes)).toBe(true);
+		expect((body.payment_schemes as string[])).toContain('x402');
+	});
+});
+
+describe('x402 — agent.json discovery', () => {
+	it('GET /.well-known/agent.json includes x402_micropayments capability', async () => {
+		const body = await fetchJSON('/.well-known/agent.json');
+		expect((body.capabilities as string[])).toContain('x402_micropayments');
+	});
+
+	it('GET /.well-known/agent.json includes payment object with Base mainnet', async () => {
+		const body    = await fetchJSON('/.well-known/agent.json');
+		const payment = body.payment as Record<string, unknown>;
+		expect(payment).toBeDefined();
+		expect(payment.network).toBe('base-mainnet');
+		expect(payment.chain_id).toBe(8453);
+		expect(payment.currency).toBe('USDC');
+	});
+});
+
+describe('docs field — points to headlessoracle.com/docs', () => {
+	it('docs field is exact URL without fragment', async () => {
+		const body = await fetchJSON('/v5/status');
+		expect((body.docs as string)).toBe('https://headlessoracle.com/docs');
 	});
 });
