@@ -1046,6 +1046,204 @@ function consumeCredit(keyHash: string, credits: CreditRecord, env: Env, ctx: Ex
 // Served as plain text. robots.txt signals to AI crawlers which paths are open.
 // llms.txt (llmstxt.org convention) provides a machine-readable summary for LLMs.
 
+// ─── Embedded doc files served at /docs/*.md ─────────────────────────────────
+// These are referenced from /v5/compliance and /.well-known/agent.json.
+// Content is embedded here rather than read from filesystem (Workers have no FS access).
+
+const SMA_SPEC_MD = `# SMA Protocol v1.0 — Specification
+
+**Version**: 1.0.0  **Status**: Stable  **License**: Apache 2.0
+
+Full specification: https://headlessoracle.com/docs/sma-protocol-repo/SPEC.md
+
+## Receipt Schema
+
+| Field | Type | Description |
+|---|---|---|
+| mic | string | ISO 10383 Market Identifier Code |
+| status | string | OPEN \| CLOSED \| HALTED \| UNKNOWN |
+| timestamp | string | ISO 8601 UTC datetime of receipt issuance |
+| expires_at | string | ISO 8601 UTC — receipt must not be acted on after this |
+| issuer | string | FQDN of the oracle operator (e.g. "headlessoracle.com") |
+| key_id | string | Signing key identifier |
+| receipt_mode | string | "demo" or "live" |
+| schema_version | string | Protocol schema version (e.g. "v5.0") |
+| public_key_id | string | Hex-encoded Ed25519 public key |
+| signature | string | Hex-encoded Ed25519 signature over canonical payload |
+
+## Status Enum
+
+OPEN — market is in a trading session
+CLOSED — market is outside trading hours
+HALTED — trading suspended (circuit breaker / operator override)
+UNKNOWN — oracle cannot determine state with confidence
+
+Consumers MUST treat UNKNOWN identically to CLOSED.
+
+## TTL
+
+expires_at = timestamp + 60 seconds
+
+Consumers MUST reject receipts where now > expires_at.
+
+## Canonical Payload Construction
+
+1. Take all fields except signature.
+2. Sort keys alphabetically (lexicographic, case-sensitive).
+3. Serialize to compact JSON (no whitespace).
+4. Encode as UTF-8 bytes.
+
+## Signing Algorithm
+
+Algorithm: Ed25519 (RFC 8032)
+Input: UTF-8 encoded canonical payload bytes
+Output: 64-byte signature, hex-encoded, stored in signature field
+
+## Consumer Requirements
+
+1. Fetch public key via /.well-known/oracle-keys.json
+2. Reconstruct canonical payload per above
+3. Verify Ed25519 signature before acting on any status field
+4. Reject receipts where now > expires_at
+5. Treat UNKNOWN as CLOSED
+6. Check receipt_mode — reject "demo" for production decisions
+7. On timeout or verification failure: default to UNKNOWN (fail closed)
+
+## Changelog
+
+| Version | Date | Notes |
+|---|---|---|
+| 1.0.0 | 2026-03-17 | Initial stable release |
+`;
+
+const APTS_STANDARD_MD = `# Agent Pre-Trade Safety Standard
+
+**Version:** 1.0.0-draft  **Status:** Public Draft  **License:** Apache 2.0
+
+Full standard: https://headlessoracle.com/docs/agent-safety-standard/STANDARD.md
+
+## Abstract
+
+This document defines a minimum pre-trade safety checklist for autonomous AI agents
+executing orders on financial exchanges. Vendor-neutral open standard.
+
+## The Six Checks
+
+### Check 1 — Obtain a Signed Market Status Attestation
+
+GET https://headlessoracle.com/v5/status?mic={MIC}
+X-Oracle-Key: {api_key}
+
+Fail: unable to reach oracle, non-200, or unparseable response → HALT.
+
+### Check 2 — Verify No Active Circuit Breakers
+
+If source == "OVERRIDE" → HALT (log the reason field).
+If source == "SYSTEM" → HALT (treat as UNKNOWN).
+
+### Check 3 — Verify the Settlement Window Is Open
+
+Exchange-level OPEN is necessary but not sufficient. Verify instrument settlement window
+separately via broker/exchange API.
+
+### Check 4 — Verify the Oracle Receipt Is Fresh
+
+Reject if expires_at < now. Fetch fresh receipt. If unavailable → HALT.
+
+### Check 5 — Verify the Ed25519 Signature
+
+\`\`\`js
+import { verify } from '@headlessoracle/verify';
+const { ok, reason } = await verify(receipt);
+if (!ok) halt(\`Signature failed: \${reason}\`);
+\`\`\`
+
+\`\`\`python
+from headless_oracle import verify
+result = verify(receipt)
+if not result.ok: halt(f"Signature failed: {result.reason}")
+\`\`\`
+
+### Check 6 — Halt on Any Failure
+
+On ANY check failure: halt and log. Never fall back to permissive default.
+
+## Conformance
+
+An implementation is conformant if it:
+- Obtains a Signed Attestation before each trade decision
+- Checks source for OVERRIDE/SYSTEM conditions
+- Verifies receipt is not expired
+- Cryptographically verifies the Ed25519 signature
+- Halts on ANY check failure without permissive fallback
+- Logs the outcome of each check for audit
+
+## Changelog
+
+| Version | Date | Change |
+|---|---|---|
+| 1.0.0-draft | 2026-03-15 | Initial public draft |
+`;
+
+const X402_PAYMENTS_MD = `# x402 Micropayments — Headless Oracle
+
+Headless Oracle supports the x402 protocol for per-request USDC micropayments on Base mainnet.
+Autonomous agents can pay for API access without a subscription or pre-registered API key.
+
+Guide: https://headlessoracle.com/docs/x402-payments
+
+## When x402 kicks in
+
+Free tier keys (ho_free_*) have a 500 requests/day limit. After the limit:
+
+1. If your account has prepaid credits → one credit is consumed automatically.
+2. If X-Payment header is present with a valid Base mainnet USDC transaction → request is fulfilled.
+3. Otherwise → HTTP 402 with machine-readable payment instruction.
+
+## The 402 Response
+
+\`\`\`json
+{
+  "error": "PAYMENT_REQUIRED",
+  "x402": {
+    "version": "1",
+    "scheme": "exact",
+    "network": "base-mainnet",
+    "chainId": 8453,
+    "amount": "1000",
+    "currency": "USDC",
+    "decimals": 6,
+    "paymentAddress": "0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3",
+    "usdcContractAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "maxAge": 300
+  }
+}
+\`\`\`
+
+## Paying with X-Payment header
+
+1. Send 0.001 USDC (1000 units at 6 decimals) to paymentAddress on Base mainnet.
+2. Retry the request with X-Payment header:
+
+\`\`\`
+X-Payment: {"txHash":"0x...","network":"base-mainnet","amount":"1000","paymentAddress":"0x26D4...","memo":""}
+\`\`\`
+
+## Prepaid Credits
+
+POST /v5/credits/purchase — send X-Payment header with bulk USDC payment
+GET /v5/credits/balance — check remaining credits
+
+100 credits = 90000 USDC units (0.09 USDC)
+1000 credits = 800000 USDC units (0.80 USDC)
+
+## Security Notes
+
+- Transactions expire after 300 seconds
+- Each txHash can only be used once (replay protection, 600s TTL)
+- Verify paymentAddress before sending funds
+`;
+
 const ROBOTS_TXT = `User-agent: *
 Allow: /llms.txt
 Allow: /SKILL.md
@@ -1406,13 +1604,59 @@ Signing algorithm: Ed25519 over alphabetically-sorted compact JSON (excluding \`
 
 Any conforming oracle can issue SMA receipts. Any conforming verifier can verify them independently.
 
+## x402 Micropayments
+
+Headless Oracle supports the x402 protocol: agents can pay per request in USDC on Base mainnet without a subscription.
+
+- **Amount**: 0.001 USDC (1000 units at 6 decimals) per request
+- **Network**: Base mainnet (chainId 8453)
+- **When it applies**: Free tier keys (ho_free_*) after 500 req/day limit
+- **How it works**: On limit exhaustion the server returns HTTP 402 with a machine-readable x402 payload. The agent sends USDC and retries with X-Payment header.
+
+### POST /v5/credits/purchase — Prepaid Credits
+
+Buy credits in bulk to avoid per-request on-chain payments.
+
+- Required header: X-Oracle-Key
+- Required header: X-Payment (USDC tx on Base mainnet)
+- 100 credits = 90000 USDC units (0.09 USDC)
+- 1000 credits = 800000 USDC units (0.80 USDC)
+- Credits are consumed before x402 per-request payments kick in
+
+### GET /v5/credits/balance — Credit Balance
+
+Returns remaining prepaid credit balance for the authenticated key.
+
+- Required header: X-Oracle-Key
+- Response: balance, estimated_requests_remaining, last_purchased
+
+### GET /v5/errors/{code} — Error Documentation
+
+Machine-readable documentation for any error code returned by the API.
+
+- No authentication required
+- Response: code, message, resolution, http_status, docs_url
+- Example: GET /v5/errors/PAYMENT_REQUIRED
+
+### GET /v5/metrics — Usage Metrics
+
+Returns today's MCP request count and unique client count from telemetry.
+
+- No authentication required
+- Response: total_mcp_requests_today, unique_mcp_clients_today, date
+
+Full guide: https://headlessoracle.com/docs/x402-payments.md
+
 ## Agent Discovery
 
 - [Skill File](https://headlessoracle.com/SKILL.md): Step-by-step integration guide optimised for AI agents. Covers MCP setup, HTTP patterns, code examples, safety rules, and common mistakes.
-- [Agent Metadata](https://headlessoracle.com/.well-known/agent.json): Structured JSON describing capabilities, MCP tools, and discovery endpoints.
+- [Agent Metadata](https://headlessoracle.com/.well-known/agent.json): Structured JSON describing capabilities, MCP tools, payment scheme, and discovery endpoints.
 - [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API contract (OpenAPI 3.1).
 - [MCP Endpoint](https://headlessoracle.com/mcp): Protocol version 2024-11-05. Tools: get_market_status, get_market_schedule, list_exchanges.
 - [APTS Compliance](https://headlessoracle.com/v5/compliance): Machine-readable Agent Pre-Trade Safety Standard compliance self-report.
+- [x402 Guide](https://headlessoracle.com/docs/x402-payments.md): Per-request micropayment protocol for agent-native API access.
+- [SMA Specification](https://headlessoracle.com/docs/sma-protocol-repo/SPEC.md): Signed Market Attestation Protocol v1.0.
+- [Error Docs](https://headlessoracle.com/v5/errors/PAYMENT_REQUIRED): Machine-readable error documentation for any error code.
 
 ## Robots
 
@@ -2998,6 +3242,67 @@ export default {
 					},
 				});
 			}
+			// ── /docs/*.md — embedded markdown docs (raw content for agents/LLMs) ──
+			// HTML versions are served by Cloudflare Pages at the same paths without .md
+			if (url.pathname.startsWith('/docs/') && url.pathname.endsWith('.md')) {
+				const mdHeaders = {
+					'Content-Type':  'text/markdown; charset=utf-8',
+					'Cache-Control': 'public, max-age=3600',
+				};
+				const p = url.pathname;
+				if (p === '/docs/sma-protocol-repo/SPEC.md')
+					return new Response(SMA_SPEC_MD, { headers: mdHeaders });
+				if (p === '/docs/agent-safety-standard/STANDARD.md' || p === '/docs/agent-safety-standard-repo/STANDARD.md')
+					return new Response(APTS_STANDARD_MD, { headers: mdHeaders });
+				if (p === '/docs/x402-payments.md')
+					return new Response(X402_PAYMENTS_MD, { headers: mdHeaders });
+				// Unknown .md path — return 404 with discovery hints
+				return json({
+					error: 'NOT_FOUND',
+					message: `No embedded markdown at ${p}`,
+					available: [
+						'/docs/sma-protocol-repo/SPEC.md',
+						'/docs/agent-safety-standard/STANDARD.md',
+						'/docs/x402-payments.md',
+					],
+				}, 404);
+			}
+
+			// ── /v5/errors/{code} — machine-readable error documentation ─────────
+			const errMatch = url.pathname.match(/^\/v5\/errors\/([A-Z_]+)$/);
+			if (errMatch) {
+				const code = errMatch[1];
+				const errorDocs: Record<string, { message: string; resolution: string; http_status: number }> = {
+					API_KEY_REQUIRED:      { message: 'No X-Oracle-Key header supplied.', resolution: 'Add X-Oracle-Key header. Get a free key at /v5/keys/request.', http_status: 401 },
+					INVALID_API_KEY:       { message: 'The supplied API key was not recognised.', resolution: 'Check the key value. Get a free key at /v5/keys/request.', http_status: 403 },
+					PAYMENT_REQUIRED:      { message: 'Free tier daily limit reached.', resolution: 'Supply X-Payment header with a valid Base mainnet USDC tx, or upgrade at /pricing. See /docs/x402-payments.md.', http_status: 402 },
+					RATE_LIMITED:          { message: 'Free tier daily limit (500 req/day) exhausted.', resolution: 'Wait for the daily reset, purchase credits at /v5/credits/purchase, or upgrade at /pricing.', http_status: 429 },
+					INVALID_MIC:           { message: 'Unsupported exchange MIC code.', resolution: 'Use one of: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES. See /v5/exchanges for the full list.', http_status: 400 },
+					METHOD_NOT_ALLOWED:    { message: 'HTTP method not allowed for this endpoint.', resolution: 'Check the HTTP method. See /openapi.json for allowed methods per route.', http_status: 405 },
+					NOT_FOUND:             { message: 'Route not found.', resolution: 'Check the path. See /openapi.json for all available routes.', http_status: 404 },
+					INVALID_TX_HASH:       { message: 'X-Payment txHash is not a valid 32-byte hex string.', resolution: 'Provide a valid Ethereum transaction hash (0x + 64 hex chars).', http_status: 402 },
+					INVALID_PAYMENT:       { message: 'X-Payment header is not valid JSON or missing required fields.', resolution: 'See /docs/x402-payments.md for the required X-Payment format.', http_status: 402 },
+					PAYMENT_VERIFICATION_FAILED: { message: 'The on-chain USDC payment could not be verified.', resolution: 'Ensure the transaction is confirmed on Base mainnet, sent to the correct paymentAddress, and is < 300 seconds old.', http_status: 402 },
+					PAYMENT_ALREADY_USED:  { message: 'This transaction hash has already been used for a payment.', resolution: 'Each txHash can only be used once. Send a new USDC transaction.', http_status: 402 },
+					PAYMENT_EXPIRED:       { message: 'The transaction is older than 300 seconds.', resolution: 'Send a new USDC transaction and retry immediately.', http_status: 402 },
+					ACCOUNT_NOT_FOUND:     { message: 'No account found for this API key.', resolution: 'Verify your X-Oracle-Key. If subscribed via Paddle, check your email for the key.', http_status: 404 },
+				};
+				const doc = errorDocs[code];
+				if (!doc) {
+					return json({
+						error: 'NOT_FOUND',
+						message: `No documentation for error code: ${code}`,
+						known_codes: Object.keys(errorDocs),
+					}, 404);
+				}
+				return json({
+					code,
+					...doc,
+					docs_url: `https://headlessoracle.com/docs#${code}`,
+					openapi:  'https://headlessoracle.com/openapi.json',
+				});
+			}
+
 			if (url.pathname === '/.well-known/agent.json') {
 				return json(AGENT_JSON);
 			}
@@ -3572,6 +3877,33 @@ export default {
 				const msg = err instanceof Error ? err.message : 'unknown error';
 				console.error(`NPM_TRACKING_ERROR: ${msg}`);
 			}
+		} else if (event.cron === '0 9 28 3 *') {
+			// EU/UK DST spring-forward reminder — fires March 28 (one day before transition).
+			// UK and EU clocks spring forward on the last Sunday of March (March 29, 2026).
+			// XLON (London) and XPAR (Paris) are affected.
+			console.log(JSON.stringify({
+				event:             'DST_REMINDER',
+				type:              'spring_forward',
+				region:            'EU_UK',
+				transition_date:   'March 29',
+				affected_exchanges: ['XLON', 'XPAR'],
+				impact:            'UK clocks GMT→BST (UTC+0→UTC+1), EU clocks CET→CEST (UTC+1→UTC+2)',
+				action_required:   'Verify schedule-based logic is using IANA timezone names, not hardcoded UTC offsets. Headless Oracle handles this automatically.',
+				sampled_at:        new Date().toISOString(),
+			}));
+		} else if (event.cron === '0 9 25 10 *') {
+			// EU/UK DST fall-back reminder — fires October 25 (transition day).
+			// UK and EU clocks fall back on the last Sunday of October (October 25, 2026).
+			console.log(JSON.stringify({
+				event:             'DST_REMINDER',
+				type:              'fall_back',
+				region:            'EU_UK',
+				transition_date:   'October 25',
+				affected_exchanges: ['XLON', 'XPAR'],
+				impact:            'UK clocks BST→GMT (UTC+1→UTC+0), EU clocks CEST→CET (UTC+2→UTC+1)',
+				action_required:   'Verify schedule-based logic is using IANA timezone names, not hardcoded UTC offsets. Headless Oracle handles this automatically.',
+				sampled_at:        new Date().toISOString(),
+			}));
 		} else if (event.cron === '0 17 * * *') {
 			// Scan today's MCP client aggregates in KV and log a summary.
 			// Identifies high-engagement anonymous clients (>10 requests/day) for conversion.

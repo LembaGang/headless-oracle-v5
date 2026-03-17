@@ -13,6 +13,10 @@ routes = [
   { pattern = "headlessoracle.com/robots.txt", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/llms.txt", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/SKILL.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/sma-protocol-repo/SPEC.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/agent-safety-standard/STANDARD.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/agent-safety-standard-repo/STANDARD.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/x402-payments.md", zone_name = "headlessoracle.com" },
 ]
 
 [vars]
@@ -79,7 +83,7 @@ id = "6fcde4c94b6b40f1913a44f410a06c5d"
 # @headlessoracle/verify and logs them. Runs daily at 09:00 UTC.
 # View logs: Cloudflare Dashboard → Workers → headless-oracle-v5 → Logs
 [triggers]
-crons = ["0 9 * * *", "0 17 * * *"]
+crons = ["0 9 * * *", "0 17 * * *", "0 9 28 3 *", "0 9 25 10 *"]
 
 [observability]
 enabled = true
