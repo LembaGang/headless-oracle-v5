@@ -2,7 +2,9 @@
 
 ## What It Does
 
-Headless Oracle runs an autonomous halt monitor every minute via Cloudflare Cron. It checks all exchanges that are currently scheduled OPEN against real-time market data sources. When a discrepancy is detected — the exchange is scheduled OPEN but real-time data says it is halted — the monitor writes a `REALTIME` circuit breaker override to the `ORACLE_OVERRIDES` KV namespace.
+Headless Oracle runs an autonomous halt monitor every minute via Cloudflare Cron. It checks exchanges that are currently scheduled OPEN against real-time market data sources. When a discrepancy is detected — the exchange is scheduled OPEN but real-time data says it is halted — the monitor writes a `REALTIME` circuit breaker override to the `ORACLE_OVERRIDES` KV namespace.
+
+> **Coverage note**: Real-time halt detection currently covers US markets (XNYS, XNAS) via Polygon.io (primary) and Alpaca (fallback). All 23 exchanges use schedule-based detection for holidays, weekends, and lunch breaks. Non-US exchanges use schedule-based detection unless you extend the `micToPolygon` mapping in `src/index.ts` with additional Polygon exchange names.
 
 This means `GET /v5/status` and `GET /v5/demo` will return `status: 'HALTED', source: 'REALTIME'` for affected exchanges within 60 seconds of detection.
 

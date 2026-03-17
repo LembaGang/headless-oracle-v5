@@ -46,7 +46,7 @@ Once connected, Cursor's AI can use these tools:
 |------|-------------|
 | `get_market_status` | Current open/closed status for an exchange (signed receipt) |
 | `get_market_schedule` | Next open and close times for an exchange |
-| `list_exchanges` | All 7 supported exchanges |
+| `list_exchanges` | All 23 supported exchanges |
 
 ---
 
@@ -58,7 +58,7 @@ After setup, ask Cursor:
 - "What time does the London Stock Exchange close today?"
 - "Check if both XNYS and XNAS are open before running my trading backtest."
 - "Get the signed market receipt for XJPX and include the receipt_id in my log."
-- "What markets are open right now across all 7 exchanges?"
+- "What markets are open right now across all 23 exchanges?"
 
 ---
 

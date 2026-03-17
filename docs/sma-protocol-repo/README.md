@@ -45,7 +45,7 @@ For conformance requirements, see [CONFORMANCE.md](./CONFORMANCE.md).
 
 ## Reference Implementation
 
-[Headless Oracle](https://headlessoracle.com) — 7 global exchanges, REST API, MCP server,
+[Headless Oracle](https://headlessoracle.com) — 23 global exchanges, REST API, MCP server,
 public key discovery at `/.well-known/oracle-keys.json`.
 
 - REST: `GET https://headlessoracle.com/v5/demo?mic=XNYS`

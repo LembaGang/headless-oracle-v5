@@ -9,7 +9,7 @@ implementation, open a pull request with a new row in the appropriate table.
 
 | Name | URL | Exchanges | Transport | Status |
 |---|---|---|---|---|
-| Headless Oracle | [headlessoracle.com](https://headlessoracle.com) | XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES | REST + MCP | Reference implementation — live |
+| Headless Oracle | [headlessoracle.com](https://headlessoracle.com) | XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE | REST + MCP | Reference implementation — live |
 
 ### Headless Oracle
 
@@ -19,7 +19,7 @@ The reference implementation of SMA v1.0.
 - **MCP server**: `POST /mcp` — tools: `get_market_status`, `get_market_schedule`, `list_exchanges`
 - **Key discovery**: `GET /.well-known/oracle-keys.json`
 - **OpenAPI spec**: `GET /openapi.json`
-- **7 exchanges**: NYSE, NASDAQ, LSE, JPX, Euronext Paris, HKEX, SGX
+- **23 exchanges**: NYSE, NASDAQ, LSE, JPX, Euronext Paris, HKEX, SGX
 - **Fail-closed**: 4-tier architecture — KV override → schedule → UNKNOWN → CRITICAL_FAILURE
 
 ---

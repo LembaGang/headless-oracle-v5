@@ -3222,7 +3222,7 @@ const OPENAPI_SPEC = {
 				responses: {
 					'200': {
 						description: 'Signed health receipt',
-						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature', 'exchange_count', 'supported_mics'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' }, exchange_count: { type: 'integer', example: 7, description: 'Number of exchanges currently configured (unsigned).' }, supported_mics: { type: 'array', items: { type: 'string' }, example: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'], description: 'List of supported MIC codes (unsigned).' } } } } },
+						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature', 'exchange_count', 'supported_mics'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' }, exchange_count: { type: 'integer', example: 23, description: 'Number of exchanges currently configured (unsigned).' }, supported_mics: { type: 'array', items: { type: 'string' }, example: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'], description: 'List of supported MIC codes (unsigned).' } } } } },
 					},
 					'500': { description: 'Signing system offline — CRITICAL_FAILURE', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
@@ -3695,7 +3695,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 				serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
 				capabilities:    { tools: {} },
 				instructions:
-					'Headless Oracle provides cryptographically signed market status for 7 global exchanges. ' +
+					'Headless Oracle provides cryptographically signed market status for 23 global exchanges. ' +
 					'Use get_market_status before executing any trade, scheduling market-dependent workflows, ' +
 					'or making decisions that depend on whether a market is open. ' +
 					'MANDATORY: treat UNKNOWN or HALTED as CLOSED — halt all execution. ' +
@@ -4944,7 +4944,7 @@ export default {
 							check:    'APTS-003',
 							name:     'settlement_window',
 							status:   'pass',
-							evidence: 'Lunch break sessions (XJPX 11:30–12:30 JST, XHKG 12:00–13:00 HKT), early close days, holiday calendar 2026–2027',
+							evidence: 'Lunch break sessions (XJPX, XHKG, XSHG, XSHE), early close days, religious holidays (Eid Al-Fitr for XSAU/XDFM), holiday calendars 2026–2027 for all 23 exchanges across 6 regions',
 						},
 						{
 							check:    'APTS-004',

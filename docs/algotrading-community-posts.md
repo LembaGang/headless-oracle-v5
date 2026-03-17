@@ -44,7 +44,7 @@ Public endpoint (no key): https://headlessoracle.com/v5/demo?mic=XNYS
 
 There's also a LangGraph template if you're building an agent: https://github.com/LembaGang/safe-trading-agent-template
 
-Happy to answer questions about the DST edge cases — I've mapped every exchange holiday, early close, and lunch break for 7 exchanges through 2027.
+Happy to answer questions about the DST edge cases — I've mapped every exchange holiday, early close, and lunch break for 23 exchanges through 2027.
 
 ---
 
@@ -109,7 +109,7 @@ local = tz.localize(datetime.now())  # ← wrong during transition
 During the phantom hour, your bot thinks NYSE is open. It isn't.
 
 **Tweet 2:**
-I mapped every DST transition, exchange holiday, and early close for 7 global exchanges.
+I mapped every DST transition, exchange holiday, and early close for 23 global exchanges.
 
 The fix: a cryptographically signed market status API. Ed25519 receipt, 60-second TTL.
 

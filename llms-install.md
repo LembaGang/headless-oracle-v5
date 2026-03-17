@@ -1,7 +1,7 @@
 # Headless Oracle MCP Server — Installation Instructions
 
 ## Purpose
-Headless Oracle is a remote MCP server that provides real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 7 global stock exchanges. Every response is cryptographically signed with Ed25519. Use this before any trade execution to verify the target market is open.
+Headless Oracle is a remote MCP server that provides real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 23 global stock exchanges. Every response is cryptographically signed with Ed25519. Use this before any trade execution to verify the target market is open.
 
 ## Requirements
 - No local installation required. The server is hosted remotely.
@@ -41,9 +41,9 @@ Step 4: Save the file. The Headless Oracle tools are now available.
 
 ## Available Tools
 
-- **get_market_status**: Check if a specific exchange is OPEN, CLOSED, HALTED, or UNKNOWN. Input: MIC code (XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES).
+- **get_market_status**: Check if a specific exchange is OPEN, CLOSED, HALTED, or UNKNOWN. Input: MIC code (XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE).
 - **get_market_schedule**: Get next open/close times for an exchange. Input: MIC code.
-- **list_exchanges**: List all 7 supported exchanges with metadata.
+- **list_exchanges**: List all 23 supported exchanges with metadata.
 
 ## Verification
 

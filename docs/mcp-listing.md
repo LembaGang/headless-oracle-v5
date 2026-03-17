@@ -6,7 +6,7 @@ Use this block for submissions to Smithery, MCP.so, and any other MCP registry.
 
 ```yaml
 name: Headless Oracle
-description: Real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 7 global stock exchanges
+description: Real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 23 global stock exchanges
   with Ed25519-signed receipts. Designed for AI agents and automated trading systems. Fail-closed:
   UNKNOWN always means CLOSED. Handles DST, holidays, lunch breaks, early closes, and circuit breakers.
 endpoint: https://headlessoracle.com/mcp
@@ -35,7 +35,7 @@ tools:
         description: ISO 10383 MIC code
   - name: list_exchanges
     description: >
-      List all 7 supported exchanges with MIC codes, names, timezones, and trading hours.
+      List all 23 supported exchanges with MIC codes, names, timezones, and trading hours.
       Use this to discover which exchanges are supported before calling get_market_status.
     inputs: []
 auth: None required for MCP tools (uses /v5/demo internally — public, no API key)

@@ -55,7 +55,7 @@ The phantom window isn't the only failure mode. There are also:
 - **Circuit breakers**: Real-time halts are not in any calendar library. If NYSE triggers L1 at 2:47 PM and your bot checked at 9:31 AM, your cached "OPEN" is stale.
 - **Exchange-specific holidays**: NYSE closed for Juneteenth. LSE didn't. If your system shares one "is it a holiday?" function across exchanges, one of them is wrong.
 
-I mapped all of this for 7 exchanges through 2027 and built a signed market status API around it. The full calendar complexity: 81 exchange-specific holidays per year, 9 early-close days, 8 DST transitions, 493 lunch-break sessions — 1,319 schedule edge cases annually that a timezone library handles zero of.
+I mapped all of this for 23 exchanges through 2027 and built a signed market status API around it. The full calendar complexity: 81 exchange-specific holidays per year, 9 early-close days, 8 DST transitions, 493 lunch-break sessions — 1,319 schedule edge cases annually that a timezone library handles zero of.
 
 **The 4-step gate pattern (what the fix looks like in practice):**
 
@@ -377,7 +377,7 @@ Anthropic refused Pentagon autonomy for military AI agents specifically because 
 This week: MCP clients from 49 countries. One client polled for 18+ hours continuous on a Saturday night — not a demo, not a one-off test. The infrastructure need exists and people are already building on it.
 
 **Test coverage:**
-195 tests passing against a miniflare-based Cloudflare Workers runtime. All 7 exchanges, all failure tiers, KV circuit breaker overrides, lunch break sessions, MCP tool calls, billing webhooks, key self-service.
+195 tests passing against a miniflare-based Cloudflare Workers runtime. All 23 exchanges, all failure tiers, KV circuit breaker overrides, lunch break sessions, MCP tool calls, billing webhooks, key self-service.
 
 **What a timezone library doesn't cover:**
-A timezone library (pytz, dateutil, Luxon) handles DST offset computation. It does not handle: live circuit breakers, exchange-specific holidays that differ per country (NYSE closed Juneteenth, LSE didn't), lunch break sessions (Tokyo, Hong Kong), or early-close days (NYSE 1pm Good Friday, 1pm Christmas Eve). These are 1,319 edge cases per year across 7 exchanges. Zero of them are in pytz.
+A timezone library (pytz, dateutil, Luxon) handles DST offset computation. It does not handle: live circuit breakers, exchange-specific holidays that differ per country (NYSE closed Juneteenth, LSE didn't), lunch break sessions (Tokyo, Hong Kong), or early-close days (NYSE 1pm Good Friday, 1pm Christmas Eve). These are 1,319 edge cases per year across 23 exchanges. Zero of them are in pytz.

@@ -261,7 +261,7 @@ Receipts are self-authenticating via their Ed25519 signatures — an attacker wh
 ### 9.1 Reference Implementation
 
 Headless Oracle (headlessoracle.com) is the reference implementation of this RFC:
-- 7 exchanges (XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES)
+- 23 exchanges (XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE)
 - REST API + MCP Streamable HTTP
 - Ed25519 signing via `@noble/ed25519`
 - `@headlessoracle/verify` npm SDK (zero production dependencies)

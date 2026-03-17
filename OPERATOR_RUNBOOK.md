@@ -24,7 +24,7 @@
 ## 1. System Overview
 
 Headless Oracle is a **Cloudflare Workers** edge API that provides cryptographically signed market
-status attestations for 7 global exchanges. Consumers (DeFi bots, RWA protocols) call the API before
+status attestations for 23 global exchanges. Consumers (DeFi bots, RWA protocols) call the API before
 executing trades to verify whether markets are open or closed.
 
 ### Architecture
@@ -242,7 +242,7 @@ wrangler kv key put --binding ORACLE_OVERRIDES XNYS '{"status":"HALTED","reason"
 wrangler kv key delete --binding ORACLE_OVERRIDES XNYS
 ```
 
-### Valid MIC codes: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES
+### Valid MIC codes: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
 
 ---
 

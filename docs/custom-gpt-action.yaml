@@ -32,11 +32,11 @@ paths:
           required: false
           description: |
             Exchange MIC code. Defaults to XNYS (NYSE).
-            Supported: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES
+            Supported: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
           schema:
             type: string
             default: XNYS
-            enum: [XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES]
+            enum: [XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE]
       responses:
         "200":
           description: Signed market status receipt
@@ -67,7 +67,7 @@ paths:
           schema:
             type: string
             default: XNYS
-            enum: [XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES]
+            enum: [XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE]
       responses:
         "200":
           description: Schedule data for the exchange
@@ -87,7 +87,7 @@ paths:
       operationId: listExchanges
       summary: List all supported exchanges
       description: |
-        Returns the directory of all 7 supported exchanges with their MIC codes,
+        Returns the directory of all 23 supported exchanges with their MIC codes,
         names, and IANA timezones.
       responses:
         "200":

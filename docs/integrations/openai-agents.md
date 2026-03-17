@@ -31,7 +31,7 @@ def check_market_status(mic: str) -> dict:
     signed receipt from Headless Oracle.
 
     Args:
-        mic: ISO 10383 MIC code. One of: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES.
+        mic: ISO 10383 MIC code. One of: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE.
 
     Returns:
         A dict with keys:
@@ -142,7 +142,7 @@ The MCP server exposes these tools automatically:
 |---|---|
 | `get_market_status` | Signed receipt for a single MIC — same 4-tier fail-closed as REST |
 | `get_market_schedule` | Next open/close times in UTC for a MIC |
-| `list_exchanges` | Directory of all 7 supported exchanges |
+| `list_exchanges` | Directory of all 23 supported exchanges |
 
 ---
 

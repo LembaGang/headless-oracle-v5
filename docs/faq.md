@@ -26,7 +26,7 @@ Multi-agent: if Agent A fetches a receipt and forwards it to Agent B, Agent B ca
 ## "Isn't this just a fancy cron job? I can build this in a weekend."
 
 Building a market hours checker is a weekend project. Building one that:
-- Handles DST transitions for 7 exchanges (US, UK, EU, Japan, HK, Singapore) correctly
+- Handles DST transitions for 23 exchanges (US, UK, EU, Japan, HK, Singapore) correctly
 - Tracks 67 holiday closures per year, year-keyed, with fail-closed guards
 - Handles half-days (Black Friday close at 13:00, Christmas Eve at 12:30 London)
 - Handles lunch breaks (Tokyo 11:30–12:30, HK 12:00–13:00) — ~490 trading days/year
@@ -78,14 +78,14 @@ We are a safety layer, not a data layer. The correct mental model is: check Head
 The core logic (schedule computation, holiday lists, signing) is in a single TypeScript file and runs on Cloudflare Workers. You could fork it. But:
 
 1. You'd need your own Ed25519 keypair — receipts signed by your key are not interoperable with consumers trusting the Oracle public key.
-2. You'd need to maintain holiday lists annually (all 7 exchanges, including lunar calendar venues).
+2. You'd need to maintain holiday lists annually (all 23 exchanges, including lunar calendar venues).
 3. You'd lose the KV circuit breaker system — the ability to propagate HALTED receipts without redeployment.
 
 Self-hosting makes sense for private deployments. For the network effect (agents that trust the Oracle key don't need per-operator configuration), the shared hosted service is more useful.
 
 ---
 
-## "Why only 7 exchanges?"
+## "Why only 23 exchanges?"
 
 7 covers the exchanges that matter most for global equities trading: NYSE, NASDAQ (US), LSE (UK), JPX (Japan), Euronext Paris (EU), HKEX (Hong Kong), SGX (Singapore). These 7 represent the bulk of global market capitalisation.
 
@@ -115,7 +115,7 @@ Python: `nacl.signing.VerifyKey(bytes.fromhex(public_key)).verify(canonical.enco
 
 ## "Is there a free tier?"
 
-`/v5/demo` is permanently free and unauthenticated. It returns a signed receipt (receipt_mode: 'demo') for any of the 7 exchanges. Use it for dashboards, testing, and integration verification.
+`/v5/demo` is permanently free and unauthenticated. It returns a signed receipt (receipt_mode: 'demo') for any of the 23 exchanges. Use it for dashboards, testing, and integration verification.
 
 `/v5/status`, `/v5/batch`, and the MCP tools (live mode) require an API key — sign up at headlessoracle.com.
 

@@ -40,7 +40,7 @@ The problem: markets have DST transitions, public holidays, lunch breaks (Tokyo,
 
 Headless Oracle returns Ed25519-signed receipts with a 60-second TTL. Status: OPEN, CLOSED, HALTED, or UNKNOWN. UNKNOWN is always treated as CLOSED — the API is explicitly fail-closed.
 
-Covers 7 exchanges (NYSE, NASDAQ, London, Tokyo, Paris, Hong Kong, Singapore). DST handled automatically via IANA timezone names. KV-backed circuit breaker for emergency halts.
+Covers 23 exchanges (NYSE, NASDAQ, London, Tokyo, Paris, Hong Kong, Singapore). DST handled automatically via IANA timezone names. KV-backed circuit breaker for emergency halts.
 
 MCP server for agent tool integrations. OpenAPI spec at /openapi.json. Consumer SDK: @headlessoracle/verify.
 
@@ -57,7 +57,7 @@ Site: https://headlessoracle.com | Free during beta
 ```
 Show HN: Headless Oracle – Signed market-status API for AI agents
 
-Is NYSE open right now? This API answers that — for 7 global exchanges — with an Ed25519-signed receipt agents can verify independently.
+Is NYSE open right now? This API answers that — for 23 global exchanges — with an Ed25519-signed receipt agents can verify independently.
 
 Status: OPEN / CLOSED / HALTED / UNKNOWN. Fail-closed: UNKNOWN means halt.
 

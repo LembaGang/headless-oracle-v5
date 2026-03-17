@@ -230,7 +230,7 @@ setInterval(() => {
 }, 60_000);
 
 const stop = monitor.start();
-console.log('[oracle-monitor] Monitoring 7 exchanges. Press Ctrl+C to stop.');
+console.log('[oracle-monitor] Monitoring 23 exchanges. Press Ctrl+C to stop.');
 
 process.on('SIGINT', () => {
   stop();

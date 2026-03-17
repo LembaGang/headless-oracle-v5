@@ -7,7 +7,7 @@
 name: headless-oracle
 display_name: Headless Oracle — Signed Market Status
 description: |
-  Cryptographically signed real-time market status for 7 global stock exchanges.
+  Cryptographically signed real-time market status for 23 global stock exchanges.
   Returns Ed25519-signed receipts (OPEN/CLOSED/HALTED/UNKNOWN) with 60-second TTL.
   Agents can verify receipts offline. Fail-closed: UNKNOWN always means CLOSED.
 version: "5.0"
@@ -42,6 +42,7 @@ tags:
   - Hong-Kong
   - Singapore
   - Paris
+  - global
 
 tools:
   - name: get_market_status
@@ -50,29 +51,30 @@ tools:
       whether the market is OPEN, CLOSED, HALTED, or UNKNOWN.
       Receipt includes Ed25519 signature, 60-second TTL, and receipt_mode.
       MANDATORY: treat UNKNOWN and HALTED as CLOSED — halt all execution.
+      Covers 23 global exchanges across Americas, Europe, Middle East, Africa, Asia, and Pacific.
     parameters:
       mic:
         type: string
-        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES
+        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
         required: true
         example: XNYS
 
   - name: get_market_schedule
     description: |
       Returns next open and close times in UTC for a given exchange.
-      Includes lunch break windows for XJPX (11:30–12:30 JST) and XHKG (12:00–13:00 HKT).
-      Not signed — use get_market_status for authoritative signed receipts.
-      data_coverage_years shows the range of holiday data available.
+      Includes lunch break windows for XJPX (11:30-12:30 JST), XHKG (12:00-13:00 HKT),
+      XSHG and XSHE (11:30-13:00 CST). Not signed — use get_market_status for authoritative
+      signed receipts. data_coverage_years shows the range of holiday data available.
     parameters:
       mic:
         type: string
-        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES
+        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
         required: true
         example: XNYS
 
   - name: list_exchanges
     description: |
-      Returns all 7 supported exchanges with MIC codes, names, and timezones.
+      Returns all 23 supported exchanges with MIC codes, names, and timezones.
       Use to discover supported markets before calling get_market_status.
     parameters: {}
 
@@ -83,25 +85,75 @@ supported_exchanges:
   - mic: XNAS
     name: NASDAQ
     timezone: America/New_York
+  - mic: XBSP
+    name: B3 (Sao Paulo Stock Exchange)
+    timezone: America/Sao_Paulo
   - mic: XLON
     name: London Stock Exchange
     timezone: Europe/London
-  - mic: XJPX
-    name: Japan Exchange Group (Tokyo)
-    timezone: Asia/Tokyo
   - mic: XPAR
     name: Euronext Paris
     timezone: Europe/Paris
+  - mic: XSWX
+    name: SIX Swiss Exchange
+    timezone: Europe/Zurich
+  - mic: XMIL
+    name: Borsa Italiana (Milan)
+    timezone: Europe/Rome
+  - mic: XHEL
+    name: Nasdaq Helsinki
+    timezone: Europe/Helsinki
+  - mic: XSTO
+    name: Nasdaq Stockholm
+    timezone: Europe/Stockholm
+  - mic: XIST
+    name: Borsa Istanbul
+    timezone: Europe/Istanbul
+  - mic: XSAU
+    name: Saudi Exchange (Tadawul)
+    timezone: Asia/Riyadh
+    weekends: [Fri, Sat]
+  - mic: XDFM
+    name: Dubai Financial Market
+    timezone: Asia/Dubai
+    weekends: [Fri, Sat]
+  - mic: XJSE
+    name: Johannesburg Stock Exchange
+    timezone: Africa/Johannesburg
+  - mic: XSHG
+    name: Shanghai Stock Exchange
+    timezone: Asia/Shanghai
+  - mic: XSHE
+    name: Shenzhen Stock Exchange
+    timezone: Asia/Shanghai
   - mic: XHKG
     name: Hong Kong Exchanges and Clearing
     timezone: Asia/Hong_Kong
+  - mic: XJPX
+    name: Japan Exchange Group (Tokyo)
+    timezone: Asia/Tokyo
+  - mic: XKRX
+    name: Korea Exchange (Seoul)
+    timezone: Asia/Seoul
+  - mic: XBOM
+    name: BSE Ltd (Bombay Stock Exchange)
+    timezone: Asia/Kolkata
+  - mic: XNSE
+    name: National Stock Exchange of India
+    timezone: Asia/Kolkata
   - mic: XSES
     name: Singapore Exchange
     timezone: Asia/Singapore
+  - mic: XASX
+    name: Australian Securities Exchange
+    timezone: Australia/Sydney
+  - mic: XNZE
+    name: New Zealand Exchange
+    timezone: Pacific/Auckland
 
 safety_guarantees:
   - "Fail-closed: UNKNOWN means CLOSED — never defaults to OPEN on error"
-  - "4-tier architecture: KV override → schedule → UNKNOWN fallback → CRITICAL_FAILURE"
+  - "4-tier architecture: KV override -> schedule -> UNKNOWN fallback -> CRITICAL_FAILURE"
   - "Ed25519 signed receipts — tamper-proof, independently verifiable"
   - "60-second TTL enforced in signed payload — agents cannot act on stale receipts"
   - "receipt_mode field distinguishes demo (unauthenticated) from live (API key required)"

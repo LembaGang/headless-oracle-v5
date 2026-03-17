@@ -92,7 +92,7 @@ llm_config = {
                     "properties": {
                         "mic": {
                             "type": "string",
-                            "description": "ISO 10383 MIC code. One of: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES.",
+                            "description": "ISO 10383 MIC code. One of: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE.",
                         }
                     },
                     "required": ["mic"],

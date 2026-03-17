@@ -29,14 +29,14 @@ VALID_MICS = {"XNYS", "XNAS", "XLON", "XJPX", "XPAR", "XHKG", "XSES"}
 class MarketStatusInput(BaseModel):
     mic: str = Field(
         description="ISO 10383 MIC code for the exchange. "
-                    "One of: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES."
+                    "One of: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE."
     )
 
 
 class BatchMarketStatusInput(BaseModel):
     mics: list[str] = Field(
         description="List of ISO 10383 MIC codes to check in a single request. "
-                    "Each MIC must be one of: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES."
+                    "Each MIC must be one of: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE."
     )
 
 
