@@ -270,3 +270,55 @@ Returns full signed receipt for the requested MIC plus `halt_monitor.active_real
 
 **Decision M-4: /v5/health includes halt_monitor section.**
 `halt_monitor.active_realtime_overrides` lists all MICs with active REALTIME overrides. Populated by checking all MICs in ORACLE_OVERRIDES KV at health check time. Agents can use this to see if the halt monitor has detected any real-time halts before sending a batch query.
+
+## Accuracy Audit — March 17 2026
+
+Full audit performed to update all "7 exchanges" references to "23 exchanges" across both repos and standalone repos.
+
+### Files Changed
+
+**headless-oracle-v5 (worker repo):**
+- `src/index.ts` — MCP `initialize` instructions (7→23), OpenAPI health endpoint `exchange_count` example (7→23) + `supported_mics` example expanded to all 23 MICs, compliance `settlement_window` evidence updated to mention all 4 lunch-break exchanges (XJPX/XHKG/XSHG/XSHE), Eid Al-Fitr holidays (XSAU/XDFM), and "all 23 exchanges across 6 regions"
+- `smithery.yaml` — complete rewrite: description, all tool descriptions, tool `mic` parameter enums, `supported_exchanges` expanded from 7 to all 23 MICs
+- `OPERATOR_RUNBOOK.md` — system overview count + valid MIC list
+- `docs/halt-monitor.md` — added coverage note: real-time detection is US-focused (Polygon.io/Alpaca); 22 non-US exchanges use schedule-based detection
+- `docs/custom-gpt-action.yaml` — MIC enum lists in 3 operations
+- `docs/integrations/autogen.md`, `crewai.md`, `openai-agents.md` — MIC lists in tool descriptions
+- `docs/registry-server.json` — description, list_exchanges description
+- `docs/mcp-listing.md` — description, list_exchanges description
+- `docs/multi-exchange-monitor.ts` — console.log monitoring count
+- `docs/rfc-external-state-attestation.md` — exchange count and MIC list
+- `docs/sma-protocol-repo/IMPLEMENTATIONS.md` — Headless Oracle implementation row
+- `docs/sma-protocol-repo/README.md` — reference implementation description
+- `docs/algotrading-community-posts.md`, `algotrading-community-posts-v2.md` — community post copy
+- `docs/hn-launch-post.md` — HN launch post copy
+- `docs/faq.md` — FAQ answers (including "Why only 7 exchanges?" → "Why 23 exchanges? Why not more?")
+- `docs/faq-prepared-answers.md` — prepared technical Q&A answers
+- `docs/cursor-setup.md`, `windsurf-config.md` — IDE integration guides
+- `llms-install.md` — MCP install guide
+- `.cursor-plugin/plugin.json` — plugin description
+
+**headless-oracle-web (web repo):**
+- `index.html` — meta description, og:description, JSON-LD (description, featureList, about with 23 orgs, potentialAction), hero paragraph, exchange pill badges expanded from 7 to all 23, edge case section heading, weekend days label, free tier footnote
+- `docs.html` — section heading, exchange table expanded from 7 to 23 full rows with hours/timezone/DST, MCP tool descriptions (7→23), /v5/status query hint
+- `pricing.html` — 5 occurrences of "7 exchanges" updated
+- `status.html` — meta description + footer text
+- `public/docs/integrations/datacamp-workspace/index.html` — free tier footnote
+
+**sma-protocol (standalone repo):**
+- `IMPLEMENTATIONS.md` — Headless Oracle row exchange list
+- `README.md` — reference implementation description
+
+### Updated Smithery Tool Description Text (for manual paste at smithery.ai)
+
+**get_market_status:**
+> Returns a cryptographically signed receipt for one exchange indicating whether the market is OPEN, CLOSED, HALTED, or UNKNOWN. Receipt includes Ed25519 signature, 60-second TTL, and receipt_mode. MANDATORY: treat UNKNOWN and HALTED as CLOSED — halt all execution. Covers 23 global exchanges across Americas, Europe, Middle East, Africa, Asia, and Pacific.
+
+**get_market_schedule:**
+> Returns next open and close times in UTC for a given exchange. Includes lunch break windows for XJPX (11:30-12:30 JST), XHKG (12:00-13:00 HKT), XSHG and XSHE (11:30-13:00 CST). Not signed — use get_market_status for authoritative signed receipts.
+
+**list_exchanges:**
+> Returns all 23 supported exchanges with MIC codes, names, and timezones. Use to discover supported markets before calling get_market_status.
+
+**Supported MIC codes (all 23):**
+XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE

@@ -7,7 +7,17 @@
 **Live endpoints**: All + /v5/credits/purchase, /v5/credits/balance, /v5/status/realtime — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /v5/compliance, /v5/credits/purchase, /v5/credits/balance, /v5/status/realtime, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 18 2026 — Sessions L+M: 23 exchanges + autonomous halt monitor (345 tests):
+**Last significant work**: Mar 17 2026 — Accuracy Audit: all surfaces updated to 23 exchanges (345 tests):
+  - src/index.ts: MCP initialize instructions, OpenAPI health endpoint exchange_count, compliance settlement_window evidence
+  - smithery.yaml: full rewrite to 23 exchanges, all 23 MICs in tool descriptions
+  - OPERATOR_RUNBOOK.md: 7->23 count + expanded MIC list
+  - docs/halt-monitor.md: added US-only real-time detection coverage note
+  - 20+ docs files: all "7 exchanges" -> "23 exchanges", old 7-MIC list -> all 23 MICs
+  - headless-oracle-web: index.html, docs.html, pricing.html, status.html all updated
+  - sma-protocol standalone repo: IMPLEMENTATIONS.md + README.md updated
+  - Deployed worker (Version 489d2ee2). All repos pushed to main.
+  - 345/345 tests passing.
+**Previous significant work**: Mar 18 2026 — Sessions L+M: 23 exchanges + autonomous halt monitor (345 tests):
   - Session L: weekends?: string[] field in MarketConfig — XSAU/XDFM use ['Fri','Sat'] (Sunday is a trading day)
   - Session L: 16 new exchanges added — XASX, XBOM, XNSE, XSHG, XSHE, XKRX, XJSE, XBSP, XSWX, XMIL, XIST, XSAU, XDFM, XNZE, XHEL, XSTO
   - Session L: XSHG/XSHE have lunchBreak 11:30–13:00 CST
