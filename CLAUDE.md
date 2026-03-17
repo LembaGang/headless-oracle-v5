@@ -30,7 +30,7 @@ Still requires explicit confirmation in the message:
 - `wrangler.toml` — Worker config + KV namespace bindings (`ORACLE_OVERRIDES`, `ORACLE_API_KEYS`, `ORACLE_TELEMETRY`)
 - `.dev.vars` — Local dev/test secrets (test-only keypair, NOT production keys)
 
-## Supported Exchanges (7 total)
+## Supported Exchanges (23 total)
 | MIC   | Exchange                         | Timezone            |
 |-------|----------------------------------|---------------------|
 | XNYS  | New York Stock Exchange          | America/New_York    |
@@ -40,8 +40,26 @@ Still requires explicit confirmation in the message:
 | XPAR  | Euronext Paris                   | Europe/Paris        |
 | XHKG  | Hong Kong Exchanges and Clearing | Asia/Hong_Kong      |
 | XSES  | Singapore Exchange               | Asia/Singapore      |
+| XASX  | Australian Securities Exchange   | Australia/Sydney    |
+| XBOM  | BSE India (Bombay Stock Exchange) | Asia/Kolkata       |
+| XNSE  | NSE India (National Stock Exchange) | Asia/Kolkata     |
+| XSHG  | Shanghai Stock Exchange (lunch break) | Asia/Shanghai  |
+| XSHE  | Shenzhen Stock Exchange (lunch break) | Asia/Shanghai  |
+| XKRX  | Korea Exchange                   | Asia/Seoul          |
+| XJSE  | Johannesburg Stock Exchange      | Africa/Johannesburg |
+| XBSP  | B3 Brazil                        | America/Sao_Paulo   |
+| XSWX  | SIX Swiss Exchange               | Europe/Zurich       |
+| XMIL  | Borsa Italiana                   | Europe/Rome         |
+| XIST  | Borsa Istanbul                   | Europe/Istanbul     |
+| XSAU  | Saudi Exchange (Tadawul) — Fri/Sat weekends | Asia/Riyadh |
+| XDFM  | Dubai Financial Market — Fri/Sat weekends | Asia/Dubai   |
+| XNZE  | New Zealand Exchange             | Pacific/Auckland    |
+| XHEL  | Nasdaq Helsinki                  | Europe/Helsinki     |
+| XSTO  | Nasdaq Stockholm                 | Europe/Stockholm    |
 
 DST is handled automatically via IANA timezone names in `Intl.DateTimeFormat`. No hardcoded UTC offsets anywhere.
+
+Middle Eastern exchanges (XSAU, XDFM) use `weekends: ['Fri', 'Sat']` — Sunday is a trading day. The `weekends` field in MarketConfig controls per-exchange weekend detection.
 
 ## Routes
 - `GET /v5/demo?mic=<MIC>` — Public signed receipt (no auth). Default MIC: XNYS.
@@ -229,3 +247,26 @@ For Smithery (smithery.ai/new): use `smithery.yaml` at repo root — already com
 For mcp.so: use `docs/mcp-listing.md` YAML block — already complete.
 Both files reference `https://headlessoracle.com/mcp` as the endpoint, protocol `2024-11-05`, 3 tools.
 Update `standards` section to reference: sma_spec `github.com/LembaGang/sma-protocol`, apts `github.com/LembaGang/agent-pretrade-safety-standard`.
+
+## Autonomous Decisions — Sessions L+M (Mar 18 2026)
+
+**Decision L-1: weekends?: string[] field added to MarketConfig interface.**
+Middle Eastern exchanges (XSAU, XDFM) use `weekends: ['Fri', 'Sat']` — Sunday is a regular trading day. The field uses `Intl.DateTimeFormat` weekday 'short' abbreviations ('Mon'–'Sun'). Default remains ['Sat', 'Sun'] for all other exchanges. `getScheduleStatus`, `getNextSession`, and `edgeCaseCount` all updated to use per-exchange weekend config.
+
+**Decision L-2: 16 new exchanges added (7 → 23 total).**
+XASX (Sydney), XBOM (Mumbai BSE), XNSE (Mumbai NSE), XSHG (Shanghai), XSHE (Shenzhen), XKRX (Seoul), XJSE (Johannesburg), XBSP (São Paulo), XSWX (Zurich), XMIL (Milan), XIST (Istanbul), XSAU (Riyadh), XDFM (Dubai), XNZE (Auckland), XHEL (Helsinki), XSTO (Stockholm). All with 2026+2027 holiday data. XSHG/XSHE have lunchBreak 11:30–13:00 CST.
+
+**Decision L-3: edgeCaseCount refactored for per-exchange weekend computation.**
+Old code used `weekendDaysInYear * exchangeCount` (assumed all Sat/Sun). New code computes per-exchange weekend counts using pre-computed `dowCountInYear` map. lunchBreakSessions also updated to use per-exchange trading day count.
+
+**Decision M-1: Autonomous halt monitor runs every minute via cron.**
+`runHaltMonitor()` checks exchanges scheduled OPEN against Polygon.io (primary) then Alpaca paper-api (fallback, US-only). Writes REALTIME override to ORACLE_OVERRIDES KV with 2h TTL when discrepancy detected. Fail-open: no false halts on API errors. Auto-clears REALTIME overrides when exchange resumes (does not touch manual operator overrides).
+
+**Decision M-2: 'REALTIME' added to SourceValue type.**
+Signed receipts can now carry `source: 'REALTIME'` to distinguish halt-monitor-triggered halts from manual operator overrides (`source: 'OVERRIDE'`). The OpenAPI Source schema enum is updated accordingly.
+
+**Decision M-3: GET /v5/status/realtime added (auth required).**
+Returns full signed receipt for the requested MIC plus `halt_monitor.active_realtime_override` (null if no active REALTIME override, populated if halt monitor wrote one). Auth already covered by the `/v5/status` prefix guard.
+
+**Decision M-4: /v5/health includes halt_monitor section.**
+`halt_monitor.active_realtime_overrides` lists all MICs with active REALTIME overrides. Populated by checking all MICs in ORACLE_OVERRIDES KV at health check time. Agents can use this to see if the halt monitor has detected any real-time halts before sending a batch query.
