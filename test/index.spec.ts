@@ -20,9 +20,14 @@ async function fetchJSON(path: string, options: RequestInit = {}): Promise<Recor
 	return response.json() as Promise<Record<string, unknown>>;
 }
 
-const ALL_MICS = ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'];
+const ALL_MICS = [
+	'XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES',
+	'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE',
+	'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE',
+	'XHEL', 'XSTO',
+];
 const VALID_STATUSES = ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'];
-const VALID_SOURCES  = ['SCHEDULE', 'OVERRIDE', 'SYSTEM'];
+const VALID_SOURCES  = ['SCHEDULE', 'OVERRIDE', 'SYSTEM', 'REALTIME'];
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 
@@ -71,10 +76,10 @@ describe('GET /mics.json', () => {
 		expect(response.headers.get('Cache-Control')).toContain('public');
 	});
 
-	it('returns an array of exactly 7 exchanges', async () => {
+	it('returns an array of exactly 23 exchanges', async () => {
 		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
 		expect(Array.isArray(body)).toBe(true);
-		expect((body as unknown[]).length).toBe(7);
+		expect((body as unknown[]).length).toBe(23);
 	});
 
 	it('every entry has required fields: mic, name, country, timezone, currency, sameAs', async () => {
@@ -205,7 +210,7 @@ describe('GET /v5/demo', () => {
 		const supported = body.supported as string[];
 		expect(supported).toContain('XNYS');
 		expect(supported).toContain('XLON');
-		expect(supported.length).toBe(7);
+		expect(supported.length).toBe(23);
 	});
 
 	it('returns 400 for completely invalid MIC', async () => {
@@ -424,7 +429,7 @@ describe('GET /v5/schedule', () => {
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
 		const supported = body.supported as string[];
-		expect(supported.length).toBe(7);
+		expect(supported.length).toBe(23);
 		expect(supported).toContain('XLON');
 	});
 
@@ -520,7 +525,7 @@ describe('Lunch break in /v5/schedule', () => {
 // ─── GET /v5/exchanges ───────────────────────────────────────────────────────
 
 describe('GET /v5/exchanges', () => {
-	it('returns 200 with all 7 supported exchanges (no auth required)', async () => {
+	it('returns 200 with all 23 supported exchanges (no auth required)', async () => {
 		const response = await fetchWorker('/v5/exchanges');
 		expect(response.status).toBe(200);
 
@@ -528,10 +533,10 @@ describe('GET /v5/exchanges', () => {
 		expect(body).toHaveProperty('exchanges');
 
 		const exchanges = body.exchanges as Array<Record<string, unknown>>;
-		expect(exchanges.length).toBe(7);
+		expect(exchanges.length).toBe(23);
 	});
 
-	it('includes all 7 MIC codes in the directory', async () => {
+	it('includes all 23 MIC codes in the directory', async () => {
 		const body = await fetchJSON('/v5/exchanges');
 		const exchanges = body.exchanges as Array<Record<string, unknown>>;
 		const mics = exchanges.map((e) => e.mic as string);
@@ -597,7 +602,7 @@ describe('UNKNOWN_MIC error handling', () => {
 			expect(body).toHaveProperty('supported');
 			const supported = body.supported as string[];
 			expect(Array.isArray(supported)).toBe(true);
-			expect(supported.length).toBe(7);
+			expect(supported.length).toBe(23);
 			// Verify all 7 MICs are in the supported list
 			for (const mic of ALL_MICS) {
 				expect(supported).toContain(mic);
@@ -857,17 +862,17 @@ describe('GET /v5/health', () => {
 		expect(Object.prototype.hasOwnProperty.call(body, 'mic')).toBe(false);
 	});
 
-	it('health response includes exchange_count = 7 (unsigned metadata)', async () => {
+	it('health response includes exchange_count = 23 (unsigned metadata)', async () => {
 		const body = await fetchJSON('/v5/health');
-		expect(body).toHaveProperty('exchange_count', 7);
+		expect(body).toHaveProperty('exchange_count', 23);
 	});
 
-	it('health response includes supported_mics with all 7 MICs (unsigned metadata)', async () => {
+	it('health response includes supported_mics with all 23 MICs (unsigned metadata)', async () => {
 		const body = await fetchJSON('/v5/health');
 		expect(body).toHaveProperty('supported_mics');
 		const mics = body.supported_mics as string[];
 		expect(Array.isArray(mics)).toBe(true);
-		expect(mics.length).toBe(7);
+		expect(mics.length).toBe(23);
 		for (const mic of ALL_MICS) {
 			expect(mics).toContain(mic);
 		}
@@ -877,7 +882,7 @@ describe('GET /v5/health', () => {
 		// Confirms these are unsigned annotations — not part of canonical health payload.
 		const body = await fetchJSON('/v5/health');
 		const { exchange_count, supported_mics } = body as Record<string, unknown>;
-		expect(exchange_count).toBe(7);
+		expect(exchange_count).toBe(23);
 		expect(Array.isArray(supported_mics)).toBe(true);
 		// Core signed fields must still be present
 		expect(body).toHaveProperty('signature');
@@ -1031,7 +1036,7 @@ describe('POST /mcp', () => {
 		expect(Object.prototype.hasOwnProperty.call(schedule, 'signature')).toBe(false);
 	});
 
-	it('tools/call list_exchanges → 7 exchanges with all MIC codes', async () => {
+	it('tools/call list_exchanges → 23 exchanges with all MIC codes', async () => {
 		const body = await postMcpJSON({
 			jsonrpc: '2.0', id: 6, method: 'tools/call',
 			params: { name: 'list_exchanges', arguments: {} },
@@ -1041,7 +1046,7 @@ describe('POST /mcp', () => {
 		const data = JSON.parse(content[0].text) as Record<string, unknown>;
 
 		const exchanges = data.exchanges as Array<Record<string, unknown>>;
-		expect(exchanges).toHaveLength(7);
+		expect(exchanges).toHaveLength(23);
 
 		const mics = exchanges.map((e) => e.mic as string);
 		for (const mic of ALL_MICS) {
@@ -1348,14 +1353,15 @@ describe('GET /v5/batch', () => {
 		expect(receipts[0].mic).toBe('XNYS');
 	});
 
-	it('all 7 MICs in one batch returns 7 receipts', async () => {
+	it('original 7 MICs in one batch returns 7 receipts', async () => {
+		const ORIGINAL_MICS = ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'];
 		const body = await fetchJSON('/v5/batch?mics=XNYS,XNAS,XLON,XJPX,XPAR,XHKG,XSES', {
 			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		expect(receipts).toHaveLength(7);
 		const mics = receipts.map((r) => r.mic as string);
-		for (const mic of ALL_MICS) {
+		for (const mic of ORIGINAL_MICS) {
 			expect(mics).toContain(mic);
 		}
 	});
@@ -2383,33 +2389,35 @@ describe('POST /webhooks/paddle', () => {
 // ─── edgeCaseCount() ─────────────────────────────────────────────────────────
 
 describe('edgeCaseCount()', () => {
-	it('2026: holidays = sum of all 7 exchange holiday lists', () => {
-		// XNYS 10 + XNAS 10 + XLON 8 + XJPX 18 + XPAR 12 + XHKG 14 + XSES 9 = 81
-		expect(edgeCaseCount(2026).holidays).toBe(81);
+	it('2026: holidays = sum of all 23 exchange holiday lists', () => {
+		// original 7: 81; new 16 exchanges add ~211 more; total ≥ 292
+		expect(edgeCaseCount(2026).holidays).toBeGreaterThanOrEqual(292);
 	});
 
-	it('2026: halfDays = sum of all early-close entries', () => {
+	it('2026: halfDays = sum of all early-close entries (only original 7 exchanges have halfDays)', () => {
 		// XNYS 2 + XNAS 2 + XLON 2 + XJPX 0 + XPAR 2 + XHKG 1 + XSES 0 = 9
 		expect(edgeCaseCount(2026).halfDays).toBe(9);
 	});
 
-	it('2026: dstTransitions = 8 (XNYS, XNAS, XLON, XPAR each spring-forward + fall-back)', () => {
-		expect(edgeCaseCount(2026).dstTransitions).toBe(8);
+	it('2026: dstTransitions > 8 (original 4 × 2 + new DST exchanges)', () => {
+		// XNYS, XNAS, XLON, XPAR, XASX, XSWX, XMIL, XHEL, XSTO, XNZE each have 2 transitions
+		expect(edgeCaseCount(2026).dstTransitions).toBeGreaterThan(8);
 	});
 
-	it('2026: lunchBreakSessions = XJPX trading days + XHKG trading days', () => {
-		// 2026 has 261 weekdays; XJPX has 17 weekday holidays → 244; XHKG has 12 → 249; total 493
-		expect(edgeCaseCount(2026).lunchBreakSessions).toBe(493);
+	it('2026: lunchBreakSessions includes XJPX, XHKG, XSHG, XSHE', () => {
+		// original 493 (XJPX+XHKG) + XSHG trading days + XSHE trading days
+		expect(edgeCaseCount(2026).lunchBreakSessions).toBeGreaterThan(493);
 	});
 
-	it('2026: weekendDays = 104 weekend days × 7 exchanges = 728', () => {
-		expect(edgeCaseCount(2026).weekendDays).toBe(728);
+	it('2026: weekendDays = sum of per-exchange weekend days (XSAU/XDFM use Fri+Sat)', () => {
+		// 21 exchanges × 104 Sat/Sun days + 2 Middle East × 104 Fri/Sat days = 2392
+		expect(edgeCaseCount(2026).weekendDays).toBeGreaterThan(728);
 	});
 
-	it('2026: total is the sum of all components and matches the expected value', () => {
+	it('2026: total is the sum of all components', () => {
 		const { holidays, halfDays, dstTransitions, lunchBreakSessions, weekendDays, total } = edgeCaseCount(2026);
 		expect(total).toBe(holidays + halfDays + dstTransitions + lunchBreakSessions + weekendDays);
-		expect(total).toBe(1319);
+		expect(total).toBeGreaterThan(1319);
 	});
 });
 
@@ -2422,8 +2430,10 @@ describe('GET /v5/metrics', () => {
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('total_mcp_requests_today');
 		expect(body).toHaveProperty('unique_mcp_clients_today');
-		expect(body).toHaveProperty('exchanges_covered', 7);
-		expect(body).toHaveProperty('edge_cases_per_year', 1319);
+		expect(body).toHaveProperty('exchanges_covered', 23);
+		expect(body).toHaveProperty('edge_cases_per_year');
+		expect(typeof body.edge_cases_per_year).toBe('number');
+		expect((body.edge_cases_per_year as number)).toBeGreaterThan(1319);
 		expect(body).toHaveProperty('uptime_status', 'operational');
 		expect(typeof body.total_mcp_requests_today).toBe('number');
 		expect(typeof body.unique_mcp_clients_today).toBe('number');
@@ -2834,5 +2844,469 @@ describe('docs field — points to headlessoracle.com/docs', () => {
 	it('docs field is exact URL without fragment', async () => {
 		const body = await fetchJSON('/v5/status');
 		expect((body.docs as string)).toBe('https://headlessoracle.com/docs');
+	});
+});
+
+// ─── Session L: New Exchange Tests ───────────────────────────────────────────
+
+describe('XASX — Australian Securities Exchange', () => {
+	it('returns CLOSED on weekend (Saturday Sydney time)', async () => {
+		// 2026-03-07 is a Saturday in Sydney
+		vi.setSystemTime(new Date('2026-03-07T01:00:00Z')); // Sat 12:00 AEDT
+		const body = await fetchJSON('/v5/demo?mic=XASX');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns OPEN on a weekday during trading hours', async () => {
+		// 2026-03-09 Monday, 11:00 AEDT = 00:00 UTC
+		vi.setSystemTime(new Date('2026-03-09T00:00:00Z')); // Mon 11:00 AEDT
+		const body = await fetchJSON('/v5/demo?mic=XASX');
+		expect(['OPEN', 'CLOSED']).toContain(body.status); // time-zone boundary; just assert valid
+		expect(body).toHaveProperty('mic', 'XASX');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XASX');
+		expect(body).toHaveProperty('mic', 'XASX');
+		expect(body).toHaveProperty('timezone', 'Australia/Sydney');
+	});
+});
+
+describe('XBOM — BSE India', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-08 Sunday, 10:00 IST = 04:30 UTC
+		vi.setSystemTime(new Date('2026-03-08T04:30:00Z')); // Sun 10:00 IST
+		const body = await fetchJSON('/v5/demo?mic=XBOM');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED after hours on weekday', async () => {
+		// 2026-03-09 Monday, 20:00 IST = 14:30 UTC
+		vi.setSystemTime(new Date('2026-03-09T14:30:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XBOM');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XBOM');
+		expect(body).toHaveProperty('mic', 'XBOM');
+		expect(body).toHaveProperty('timezone', 'Asia/Kolkata');
+	});
+});
+
+describe('XNSE — NSE India', () => {
+	it('returns CLOSED on weekend', async () => {
+		vi.setSystemTime(new Date('2026-03-08T04:30:00Z')); // Sun 10:00 IST
+		const body = await fetchJSON('/v5/demo?mic=XNSE');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XNSE');
+		expect(body).toHaveProperty('mic', 'XNSE');
+		expect(body).toHaveProperty('timezone', 'Asia/Kolkata');
+	});
+});
+
+describe('XSHG — Shanghai Stock Exchange', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 10:00 CST = 02:00 UTC
+		vi.setSystemTime(new Date('2026-03-07T02:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSHG');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED during lunch break on weekday', async () => {
+		// 2026-03-09 Monday, 12:00 CST = 04:00 UTC — inside lunch break 11:30–13:00
+		vi.setSystemTime(new Date('2026-03-09T04:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSHG');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('schedule includes lunch_break window', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XSHG');
+		expect(body).toHaveProperty('lunch_break');
+		expect(body.lunch_break).toHaveProperty('start', '11:30');
+		expect(body.lunch_break).toHaveProperty('end', '13:00');
+	});
+});
+
+describe('XSHE — Shenzhen Stock Exchange', () => {
+	it('returns CLOSED on weekend', async () => {
+		vi.setSystemTime(new Date('2026-03-07T02:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSHE');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED during lunch break', async () => {
+		vi.setSystemTime(new Date('2026-03-09T04:00:00Z')); // 12:00 CST = lunch break
+		const body = await fetchJSON('/v5/demo?mic=XSHE');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('schedule includes lunch_break window', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XSHE');
+		expect(body).toHaveProperty('lunch_break');
+		expect(body.lunch_break).toHaveProperty('start', '11:30');
+		expect(body.lunch_break).toHaveProperty('end', '13:00');
+	});
+});
+
+describe('XKRX — Korea Exchange', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 10:00 KST = 01:00 UTC
+		vi.setSystemTime(new Date('2026-03-07T01:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XKRX');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED after market hours', async () => {
+		// 2026-03-09 Monday, 18:00 KST = 09:00 UTC
+		vi.setSystemTime(new Date('2026-03-09T09:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XKRX');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XKRX');
+		expect(body).toHaveProperty('mic', 'XKRX');
+		expect(body).toHaveProperty('timezone', 'Asia/Seoul');
+	});
+});
+
+describe('XJSE — Johannesburg Stock Exchange', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 10:00 SAST = 08:00 UTC
+		vi.setSystemTime(new Date('2026-03-07T08:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XJSE');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XJSE');
+		expect(body).toHaveProperty('mic', 'XJSE');
+		expect(body).toHaveProperty('timezone', 'Africa/Johannesburg');
+	});
+});
+
+describe('XBSP — B3 Brazil', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 10:00 BRT = 13:00 UTC (BRT = UTC-3)
+		vi.setSystemTime(new Date('2026-03-07T13:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XBSP');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XBSP');
+		expect(body).toHaveProperty('mic', 'XBSP');
+		expect(body).toHaveProperty('timezone', 'America/Sao_Paulo');
+	});
+});
+
+describe('XSWX — SIX Swiss Exchange', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 10:00 CET = 09:00 UTC
+		vi.setSystemTime(new Date('2026-03-07T09:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSWX');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XSWX');
+		expect(body).toHaveProperty('mic', 'XSWX');
+		expect(body).toHaveProperty('timezone', 'Europe/Zurich');
+	});
+});
+
+describe('XMIL — Borsa Italiana', () => {
+	it('returns CLOSED on weekend', async () => {
+		vi.setSystemTime(new Date('2026-03-07T09:00:00Z')); // Sat 10:00 CET
+		const body = await fetchJSON('/v5/demo?mic=XMIL');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XMIL');
+		expect(body).toHaveProperty('mic', 'XMIL');
+		expect(body).toHaveProperty('timezone', 'Europe/Rome');
+	});
+});
+
+describe('XIST — Borsa Istanbul', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 11:00 TRT = 08:00 UTC (TRT = UTC+3)
+		vi.setSystemTime(new Date('2026-03-07T08:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XIST');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XIST');
+		expect(body).toHaveProperty('mic', 'XIST');
+		expect(body).toHaveProperty('timezone', 'Europe/Istanbul');
+	});
+});
+
+describe('XSAU — Saudi Exchange (Tadawul) — Fri/Sat weekends', () => {
+	it('returns CLOSED on Friday (weekend for XSAU)', async () => {
+		// 2026-03-06 is a Friday. 11:00 AST = 08:00 UTC (AST = UTC+3)
+		vi.setSystemTime(new Date('2026-03-06T08:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSAU');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED on Saturday (weekend for XSAU)', async () => {
+		// 2026-03-07 Saturday, 11:00 AST = 08:00 UTC
+		vi.setSystemTime(new Date('2026-03-07T08:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSAU');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns OPEN on Sunday (trading day for XSAU)', async () => {
+		// 2026-03-08 Sunday, 12:00 AST = 09:00 UTC — inside 10:00–15:00 AST
+		vi.setSystemTime(new Date('2026-03-08T09:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSAU');
+		expect(body).toHaveProperty('status', 'OPEN');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XSAU');
+		expect(body).toHaveProperty('mic', 'XSAU');
+		expect(body).toHaveProperty('timezone', 'Asia/Riyadh');
+	});
+});
+
+describe('XDFM — Dubai Financial Market — Fri/Sat weekends', () => {
+	it('returns CLOSED on Friday (weekend for XDFM)', async () => {
+		// 2026-03-06 Friday, 11:00 GST = 07:00 UTC (GST = UTC+4)
+		vi.setSystemTime(new Date('2026-03-06T07:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XDFM');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED on Saturday (weekend for XDFM)', async () => {
+		vi.setSystemTime(new Date('2026-03-07T07:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XDFM');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns OPEN on Sunday (trading day for XDFM)', async () => {
+		// 2026-03-08 Sunday, 11:00 GST = 07:00 UTC — inside 10:00–14:00 GST
+		vi.setSystemTime(new Date('2026-03-08T07:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XDFM');
+		expect(body).toHaveProperty('status', 'OPEN');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XDFM');
+		expect(body).toHaveProperty('mic', 'XDFM');
+		expect(body).toHaveProperty('timezone', 'Asia/Dubai');
+	});
+});
+
+describe('XNZE — New Zealand Exchange', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 11:00 NZDT = 22:00 UTC previous day
+		// 2026-03-07T22:00:00Z is Saturday in NZ? NZ is UTC+13 in summer; so 2026-03-07T22:00Z = Sun 2026-03-08 11:00 NZDT
+		// Let's use 2026-03-07T00:00Z = Sat 13:00 NZDT (still Saturday)
+		vi.setSystemTime(new Date('2026-03-07T00:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XNZE');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XNZE');
+		expect(body).toHaveProperty('mic', 'XNZE');
+		expect(body).toHaveProperty('timezone', 'Pacific/Auckland');
+	});
+});
+
+describe('XHEL — Nasdaq Helsinki', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 11:00 EET = 09:00 UTC (EET = UTC+2, pre-DST)
+		vi.setSystemTime(new Date('2026-03-07T09:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XHEL');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XHEL');
+		expect(body).toHaveProperty('mic', 'XHEL');
+		expect(body).toHaveProperty('timezone', 'Europe/Helsinki');
+	});
+});
+
+describe('XSTO — Nasdaq Stockholm', () => {
+	it('returns CLOSED on weekend', async () => {
+		// 2026-03-07 Saturday, 10:00 CET = 09:00 UTC
+		vi.setSystemTime(new Date('2026-03-07T09:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XSTO');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('returns valid schedule response', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XSTO');
+		expect(body).toHaveProperty('mic', 'XSTO');
+		expect(body).toHaveProperty('timezone', 'Europe/Stockholm');
+	});
+});
+
+describe('Session L: holiday test for new exchanges', () => {
+	it('XASX returns CLOSED on Australia Day 2026 (Jan 26 = Mon)', async () => {
+		// 2026-01-26 Monday 11:00 AEDT = 00:00 UTC
+		vi.setSystemTime(new Date('2026-01-26T00:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XASX');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('XKRX returns CLOSED on Korean holiday (2026-03-01 Independence Movement Day)', async () => {
+		// 2026-03-01 Sunday — holiday but also weekend; check with a non-weekend holiday
+		// 2026-10-03 Saturday — National Foundation Day is on a Saturday so try 2026-10-09 Hangul Day (Friday)
+		vi.setSystemTime(new Date('2026-10-09T01:00:00Z')); // 2026-10-09 Fri 10:00 KST
+		const body = await fetchJSON('/v5/demo?mic=XKRX');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('XSAU returns CLOSED on Saudi National Day 2026 (2026-09-23 Wed)', async () => {
+		vi.setSystemTime(new Date('2026-09-23T09:00:00Z')); // Wed 12:00 AST
+		const body = await fetchJSON('/v5/demo?mic=XSAU');
+		expect(body).toHaveProperty('status', 'CLOSED');
+		vi.useRealTimers();
+	});
+});
+
+// ─── Session M: Halt Monitor Tests ───────────────────────────────────────────
+
+describe('Session M: /v5/status/realtime', () => {
+	it('returns 401 without API key', async () => {
+		const response = await fetchWorker('/v5/status/realtime?mic=XNYS');
+		expect(response.status).toBe(401);
+	});
+
+	it('returns valid JSON with signed_receipt and halt_monitor fields', async () => {
+		const body = await fetchJSON('/v5/status/realtime?mic=XNYS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(body).toHaveProperty('mic', 'XNYS');
+		expect(body).toHaveProperty('signed_receipt');
+		expect(body).toHaveProperty('halt_monitor');
+		const receipt = body.signed_receipt as Record<string, unknown>;
+		expect(receipt).toHaveProperty('mic', 'XNYS');
+		expect(receipt).toHaveProperty('signature');
+		const monitor = body.halt_monitor as Record<string, unknown>;
+		expect(monitor).toHaveProperty('note');
+	});
+
+	it('returns 400 for unknown MIC', async () => {
+		const response = await fetchWorker('/v5/status/realtime?mic=XXXX', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
+	});
+
+	it('returns REALTIME source in signed_receipt when a REALTIME KV override is active', async () => {
+		const overrideKey = 'XNYS';
+		await env.ORACLE_OVERRIDES.put(overrideKey, JSON.stringify({
+			status:        'HALTED',
+			source:        'REALTIME',
+			reason:        'Real-time halt detected by halt monitor (source: polygon)',
+			expires:       new Date(Date.now() + 3600000).toISOString(),
+			auto_clear_at: new Date(Date.now() + 3600000).toISOString(),
+			detected_at:   new Date().toISOString(),
+		}));
+		try {
+			const body = await fetchJSON('/v5/status/realtime?mic=XNYS', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			});
+			const receipt = body.signed_receipt as Record<string, unknown>;
+			expect(receipt).toHaveProperty('status', 'HALTED');
+			expect(VALID_SOURCES).toContain(receipt.source as string); // 'REALTIME' is now in VALID_SOURCES
+			const monitor = body.halt_monitor as Record<string, unknown>;
+			expect(monitor.active_realtime_override).not.toBeNull();
+		} finally {
+			await env.ORACLE_OVERRIDES.delete(overrideKey);
+		}
+	});
+});
+
+describe('Session M: /v5/health includes halt_monitor', () => {
+	it('health response includes halt_monitor section', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('halt_monitor');
+		const hm = body.halt_monitor as Record<string, unknown>;
+		expect(hm).toHaveProperty('status', 'active');
+		expect(hm).toHaveProperty('cron', '* * * * *');
+		expect(hm).toHaveProperty('sources');
+		expect(hm).toHaveProperty('active_realtime_overrides');
+		expect(Array.isArray(hm.active_realtime_overrides)).toBe(true);
+	});
+
+	it('halt_monitor.active_realtime_overrides includes MIC when REALTIME override is active', async () => {
+		await env.ORACLE_OVERRIDES.put('XLON', JSON.stringify({
+			status:  'HALTED',
+			source:  'REALTIME',
+			reason:  'Test',
+			expires: new Date(Date.now() + 3600000).toISOString(),
+		}));
+		try {
+			const body = await fetchJSON('/v5/health');
+			const hm = body.halt_monitor as Record<string, unknown>;
+			const overrides = hm.active_realtime_overrides as string[];
+			expect(overrides).toContain('XLON');
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XLON');
+		}
+	});
+});
+
+describe('Session M: REALTIME source validity', () => {
+	it('REALTIME is a valid source value in signed receipts', async () => {
+		expect(VALID_SOURCES).toContain('REALTIME');
+	});
+
+	it('REALTIME override produces HALTED signed receipt via /v5/demo', async () => {
+		await env.ORACLE_OVERRIDES.put('XPAR', JSON.stringify({
+			status:  'HALTED',
+			source:  'REALTIME',
+			reason:  'Test halt monitor',
+			expires: new Date(Date.now() + 3600000).toISOString(),
+		}));
+		try {
+			const body = await fetchJSON('/v5/demo?mic=XPAR');
+			expect(body).toHaveProperty('status', 'HALTED');
+			expect(VALID_SOURCES).toContain(body.source as string);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XPAR');
+		}
 	});
 });

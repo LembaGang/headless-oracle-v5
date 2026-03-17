@@ -29,6 +29,8 @@ export interface Env {
 	RESEND_API_KEY?:             string;
 	// x402 micropayments — set via `wrangler secret put ORACLE_PAYMENT_ADDRESS`
 	ORACLE_PAYMENT_ADDRESS?:     string;  // Base mainnet wallet for USDC micropayments
+	// Real-time halt monitoring — optional Polygon.io API key for enhanced data
+	POLYGON_API_KEY?:            string;  // polygon.io API key — optional; public Alpaca feed used if absent
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -84,6 +86,7 @@ interface MarketConfig {
 	holidays: Record<string, string[]>; // { 'YYYY': ['YYYY-MM-DD', ...] }
 	halfDays?: HalfDay[];
 	lunchBreak?: LunchBreak;
+	weekends?: string[]; // e.g. ['Fri', 'Sat'] for Middle Eastern exchanges; default ['Sat', 'Sun']
 }
 
 // Schedule edge cases per year are computed from live config by edgeCaseCount(year) below.
@@ -386,6 +389,578 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 			],
 		},
 	},
+
+	// ── Australia ──────────────────────────────────────────────────────────────
+	// DST: Australia/Sydney observes AEDT (UTC+11) Oct–Apr, AEST (UTC+10) Apr–Oct.
+	XASX: {
+		name: 'Australian Securities Exchange',
+		timezone: 'Australia/Sydney',
+		openHour: 10, openMinute: 0,
+		closeHour: 16, closeMinute: 0,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-26', // Australia Day
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-04-25', // ANZAC Day
+				'2026-06-08', // Queen's Birthday (NSW — ASX follows NSW)
+				'2026-12-25', // Christmas Day
+				'2026-12-28', // Boxing Day observed (Dec 26 = Sat, Dec 27 = Sun → Mon Dec 28)
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-26', // Australia Day
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-04-26', // ANZAC Day observed (Apr 25 = Sun → Mon Apr 26)
+				'2027-06-14', // Queen's Birthday (NSW)
+				'2027-12-27', // Christmas Day observed (Dec 25 = Sat → Mon Dec 27)
+				'2027-12-28', // Boxing Day observed (Dec 26 = Sun → Tue Dec 28)
+			],
+		},
+	},
+
+	// ── India ──────────────────────────────────────────────────────────────────
+	// No DST. IST = UTC+5:30 year-round.
+	XBOM: {
+		name: 'BSE India (Bombay Stock Exchange)',
+		timezone: 'Asia/Kolkata',
+		openHour: 9, openMinute: 15,
+		closeHour: 15, closeMinute: 30,
+		holidays: {
+			'2026': [
+				'2026-01-26', // Republic Day
+				'2026-03-02', // Mahashivratri
+				'2026-03-25', // Holi
+				'2026-04-03', // Good Friday
+				'2026-04-14', // Dr. Ambedkar Jayanti
+				'2026-05-01', // Maharashtra Day
+				'2026-08-15', // Independence Day
+				'2026-10-02', // Gandhi Jayanti
+				'2026-10-21', // Diwali Laxmi Puja (approx)
+				'2026-11-04', // Diwali Balipratipada (approx)
+				'2026-11-19', // Gurunanak Jayanti (approx)
+				'2026-12-25', // Christmas Day
+			],
+			'2027': [
+				'2027-01-26', // Republic Day
+				'2027-02-19', // Mahashivratri (approx)
+				'2027-03-17', // Holi (approx)
+				'2027-04-02', // Good Friday
+				'2027-04-14', // Dr. Ambedkar Jayanti
+				'2027-05-03', // Maharashtra Day observed (May 1 = Sat)
+				'2027-08-15', // Independence Day
+				'2027-10-02', // Gandhi Jayanti
+				'2027-10-11', // Diwali (approx)
+				'2027-12-25', // Christmas Day (Sat — included for completeness)
+			],
+		},
+	},
+
+	XNSE: {
+		name: 'NSE India (National Stock Exchange)',
+		timezone: 'Asia/Kolkata',
+		openHour: 9, openMinute: 15,
+		closeHour: 15, closeMinute: 30,
+		holidays: {
+			'2026': [
+				'2026-01-26',
+				'2026-03-02',
+				'2026-03-25',
+				'2026-04-03',
+				'2026-04-14',
+				'2026-05-01',
+				'2026-08-15',
+				'2026-10-02',
+				'2026-10-21',
+				'2026-11-04',
+				'2026-11-19',
+				'2026-12-25',
+			],
+			'2027': [
+				'2027-01-26',
+				'2027-02-19',
+				'2027-03-17',
+				'2027-04-02',
+				'2027-04-14',
+				'2027-05-03',
+				'2027-08-15',
+				'2027-10-02',
+				'2027-10-11',
+				'2027-12-25',
+			],
+		},
+	},
+
+	// ── China ──────────────────────────────────────────────────────────────────
+	// No DST. CST = UTC+8 year-round.
+	// Chinese exchanges have a lunch break 11:30–13:00 local time.
+	// MAINTENANCE: Chinese holiday schedule is set annually by CSRC — verify before Dec 31.
+	XSHG: {
+		name: 'Shanghai Stock Exchange',
+		timezone: 'Asia/Shanghai',
+		openHour: 9, openMinute: 30,
+		closeHour: 15, closeMinute: 0,
+		lunchBreak: { startHour: 11, startMinute: 30, endHour: 13, endMinute: 0 },
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-23', // Chinese New Year
+				'2026-04-03', '2026-04-06', // Qingming + extended
+				'2026-05-01', '2026-05-04', '2026-05-05', // Labour Day
+				'2026-06-19', // Dragon Boat
+				'2026-09-25', // Mid-Autumn
+				'2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', // Golden Week
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08', '2027-02-09', // Chinese New Year (approx)
+				'2027-03-29', // Qingming (approx)
+				'2027-04-30', '2027-05-03', '2027-05-04', // Labour Day (approx)
+				'2027-05-31', // Dragon Boat (approx)
+				'2027-10-01', '2027-10-04', '2027-10-05', '2027-10-06', '2027-10-07', // Golden Week (approx)
+			],
+		},
+	},
+
+	XSHE: {
+		name: 'Shenzhen Stock Exchange',
+		timezone: 'Asia/Shanghai',
+		openHour: 9, openMinute: 30,
+		closeHour: 15, closeMinute: 0,
+		lunchBreak: { startHour: 11, startMinute: 30, endHour: 13, endMinute: 0 },
+		holidays: {
+			'2026': [
+				'2026-01-01',
+				'2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-23',
+				'2026-04-03', '2026-04-06',
+				'2026-05-01', '2026-05-04', '2026-05-05',
+				'2026-06-19',
+				'2026-09-25',
+				'2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08',
+			],
+			'2027': [
+				'2027-01-01',
+				'2027-02-05', '2027-02-06', '2027-02-07', '2027-02-08', '2027-02-09',
+				'2027-03-29',
+				'2027-04-30', '2027-05-03', '2027-05-04',
+				'2027-05-31',
+				'2027-10-01', '2027-10-04', '2027-10-05', '2027-10-06', '2027-10-07',
+			],
+		},
+	},
+
+	// ── South Korea ────────────────────────────────────────────────────────────
+	// No DST. KST = UTC+9 year-round.
+	XKRX: {
+		name: 'Korea Exchange',
+		timezone: 'Asia/Seoul',
+		openHour: 9, openMinute: 0,
+		closeHour: 15, closeMinute: 30,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-28', '2026-01-29', '2026-01-30', // Lunar New Year
+				'2026-03-01', // Independence Movement Day
+				'2026-05-01', // Labour Day
+				'2026-05-05', // Children's Day
+				'2026-05-15', // Buddha's Birthday
+				'2026-06-06', // Memorial Day
+				'2026-08-15', // Liberation Day
+				'2026-09-24', '2026-09-25', '2026-09-26', // Chuseok
+				'2026-10-03', // National Foundation Day
+				'2026-10-09', // Hangul Day
+				'2026-12-25', // Christmas
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-02-15', '2027-02-16', '2027-02-17', // Lunar New Year (approx)
+				'2027-03-01', // Independence Movement Day
+				'2027-05-03', // Labour Day observed (May 1 = Sat)
+				'2027-05-05', // Children's Day
+				'2027-05-24', // Buddha's Birthday (approx)
+				'2027-06-06', // Memorial Day
+				'2027-08-15', // Liberation Day
+				'2027-10-03', '2027-10-04', '2027-10-05', '2027-10-06', // Chuseok (approx)
+				'2027-10-09', // Hangul Day
+				'2027-12-25', // Christmas
+			],
+		},
+	},
+
+	// ── South Africa ───────────────────────────────────────────────────────────
+	// No DST. SAST = UTC+2 year-round.
+	XJSE: {
+		name: 'Johannesburg Stock Exchange',
+		timezone: 'Africa/Johannesburg',
+		openHour: 9, openMinute: 0,
+		closeHour: 17, closeMinute: 0,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-03-21', // Human Rights Day
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Family Day (Easter Monday)
+				'2026-04-27', // Freedom Day
+				'2026-05-01', // Workers Day
+				'2026-06-16', // Youth Day
+				'2026-08-10', // Women's Day observed (Aug 9 = Sun → Mon Aug 10)
+				'2026-09-24', // Heritage Day
+				'2026-12-16', // Day of Reconciliation
+				'2026-12-25', // Christmas Day
+				'2026-12-26', // Day of Goodwill
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-21', // Human Rights Day (Sun — weekend)
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Family Day (Easter Monday)
+				'2027-04-27', // Freedom Day
+				'2027-05-01', // Workers Day (Sat — weekend)
+				'2027-06-16', // Youth Day
+				'2027-08-09', // Women's Day
+				'2027-09-24', // Heritage Day
+				'2027-12-16', // Day of Reconciliation
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-26', // Day of Goodwill
+				'2027-12-27', // Christmas observed (Mon)
+			],
+		},
+	},
+
+	// ── Brazil ─────────────────────────────────────────────────────────────────
+	// DST: Brazil/São Paulo observes DST (Southern Hemisphere — summer Oct–Feb).
+	XBSP: {
+		name: 'B3 Brazil',
+		timezone: 'America/Sao_Paulo',
+		openHour: 10, openMinute: 0,
+		closeHour: 17, closeMinute: 55,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-02-16', '2026-02-17', // Carnival
+				'2026-04-03', // Good Friday
+				'2026-04-21', // Tiradentes
+				'2026-05-01', // Labour Day
+				'2026-06-04', // Corpus Christi
+				'2026-07-09', // Constitutionalist Revolution (São Paulo state)
+				'2026-09-07', // Independence Day
+				'2026-10-12', // Nossa Senhora Aparecida
+				'2026-11-02', // All Souls' Day
+				'2026-11-15', // Proclamation of the Republic
+				'2026-11-20', // Black Consciousness Day
+				'2026-12-24', // Christmas Eve
+				'2026-12-25', // Christmas Day
+				'2026-12-31', // New Year's Eve
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-01', '2027-03-02', // Carnival (approx)
+				'2027-03-26', // Good Friday
+				'2027-04-21', // Tiradentes
+				'2027-05-01', // Labour Day (Sat — weekend)
+				'2027-05-24', // Corpus Christi (approx)
+				'2027-07-09', // Constitutionalist Revolution
+				'2027-09-07', // Independence Day
+				'2027-10-12', // Nossa Senhora Aparecida
+				'2027-11-02', // All Souls' Day
+				'2027-11-15', // Proclamation of the Republic
+				'2027-11-20', // Black Consciousness Day (Sat — weekend)
+				'2027-12-24', // Christmas Eve
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-31', // New Year's Eve
+			],
+		},
+	},
+
+	// ── Switzerland ────────────────────────────────────────────────────────────
+	// DST: Europe/Zurich observes DST (same as EU — last Sun Mar to last Sun Oct).
+	XSWX: {
+		name: 'SIX Swiss Exchange',
+		timezone: 'Europe/Zurich',
+		openHour: 9, openMinute: 0,
+		closeHour: 17, closeMinute: 30,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-05-14', // Ascension Day
+				'2026-05-25', // Whit Monday
+				'2026-08-01', // Swiss National Day
+				'2026-12-24', // Christmas Eve
+				'2026-12-25', // Christmas Day
+				'2026-12-26', // Boxing Day
+				'2026-12-31', // New Year's Eve
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-05-06', // Ascension Day
+				'2027-05-17', // Whit Monday
+				'2027-08-01', // Swiss National Day
+				'2027-12-24', // Christmas Eve
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-26', // Boxing Day (Sun — weekend)
+				'2027-12-31', // New Year's Eve
+			],
+		},
+	},
+
+	// ── Italy ──────────────────────────────────────────────────────────────────
+	// DST: Europe/Rome observes DST (same transition as Paris/Zurich).
+	XMIL: {
+		name: 'Borsa Italiana',
+		timezone: 'Europe/Rome',
+		openHour: 9, openMinute: 0,
+		closeHour: 17, closeMinute: 35,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-04-25', // Liberation Day
+				'2026-05-01', // Labour Day
+				'2026-06-02', // Republic Day
+				'2026-08-15', // Assumption of Mary
+				'2026-11-01', // All Saints' Day
+				'2026-12-08', // Immaculate Conception
+				'2026-12-24', // Christmas Eve
+				'2026-12-25', // Christmas Day
+				'2026-12-26', // Boxing Day
+				'2026-12-31', // New Year's Eve
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-04-25', // Liberation Day
+				'2027-05-01', // Labour Day (Sat — weekend)
+				'2027-06-02', // Republic Day
+				'2027-08-15', // Assumption of Mary (Sun — weekend)
+				'2027-11-01', // All Saints' Day
+				'2027-12-08', // Immaculate Conception
+				'2027-12-24', // Christmas Eve
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-26', // Boxing Day (Sun — weekend)
+				'2027-12-31', // New Year's Eve
+			],
+		},
+	},
+
+	// ── Turkey ─────────────────────────────────────────────────────────────────
+	// No DST since 2016. TRT = UTC+3 year-round.
+	// Islamic holidays (Eid al-Fitr, Eid al-Adha) shift ~11 days earlier each year.
+	// MAINTENANCE: verify Islamic holiday dates annually via Islamic calendar.
+	XIST: {
+		name: 'Borsa Istanbul',
+		timezone: 'Europe/Istanbul',
+		openHour: 10, openMinute: 0,
+		closeHour: 18, closeMinute: 0,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-03-31', '2026-04-01', '2026-04-02', // Eid al-Fitr (approx Mar 30–Apr 1)
+				'2026-04-23', // National Sovereignty and Children's Day
+				'2026-05-01', // Labour Day
+				'2026-05-19', // Commemoration of Atatürk / Youth Day
+				'2026-06-06', '2026-06-07', '2026-06-08', '2026-06-09', // Eid al-Adha (approx)
+				'2026-07-15', // Democracy and National Unity Day
+				'2026-08-30', // Victory Day
+				'2026-10-28', '2026-10-29', // Republic Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-20', '2027-03-21', '2027-03-22', // Eid al-Fitr (approx)
+				'2027-04-23', // National Sovereignty and Children's Day
+				'2027-05-01', // Labour Day (Sat — weekend)
+				'2027-05-19', // Commemoration of Atatürk / Youth Day
+				'2027-05-26', '2027-05-27', '2027-05-28', '2027-05-29', // Eid al-Adha (approx)
+				'2027-07-15', // Democracy and National Unity Day
+				'2027-08-30', // Victory Day
+				'2027-10-28', '2027-10-29', // Republic Day
+			],
+		},
+	},
+
+	// ── Saudi Arabia ───────────────────────────────────────────────────────────
+	// No DST. AST = UTC+3 year-round.
+	// CRITICAL: weekends are Friday and Saturday — Sunday IS a trading day.
+	// Islamic holidays shift ~11 days earlier each year.
+	// MAINTENANCE: verify Islamic holiday dates annually.
+	XSAU: {
+		name: 'Saudi Exchange (Tadawul)',
+		timezone: 'Asia/Riyadh',
+		openHour: 10, openMinute: 0,
+		closeHour: 15, closeMinute: 0,
+		weekends: ['Fri', 'Sat'], // Sunday is a trading day
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day (observed)
+				'2026-02-22', // Saudi Founding Day
+				'2026-03-29', '2026-03-30', '2026-03-31', // Eid al-Fitr (approx)
+				'2026-06-05', '2026-06-06', '2026-06-07', '2026-06-08', // Eid al-Adha (approx)
+				'2026-09-23', // Saudi National Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day (observed)
+				'2027-02-22', // Saudi Founding Day
+				'2027-03-18', '2027-03-19', '2027-03-20', // Eid al-Fitr (approx)
+				'2027-05-25', '2027-05-26', '2027-05-27', '2027-05-28', // Eid al-Adha (approx)
+				'2027-09-23', // Saudi National Day
+			],
+		},
+	},
+
+	// ── United Arab Emirates ───────────────────────────────────────────────────
+	// No DST. GST = UTC+4 year-round.
+	// CRITICAL: weekends are Friday and Saturday — Sunday IS a trading day.
+	// Islamic holidays shift ~11 days earlier each year.
+	// MAINTENANCE: verify Islamic holiday dates annually.
+	XDFM: {
+		name: 'Dubai Financial Market',
+		timezone: 'Asia/Dubai',
+		openHour: 10, openMinute: 0,
+		closeHour: 14, closeMinute: 0,
+		weekends: ['Fri', 'Sat'], // Sunday is a trading day
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-03-29', '2026-03-30', '2026-03-31', // Eid al-Fitr (approx)
+				'2026-06-05', '2026-06-06', '2026-06-07', '2026-06-08', // Eid al-Adha (approx)
+				'2026-12-01', '2026-12-02', '2026-12-03', // UAE National Day (Dec 2-3) + bridge
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-03-18', '2027-03-19', '2027-03-20', // Eid al-Fitr (approx)
+				'2027-05-25', '2027-05-26', '2027-05-27', '2027-05-28', // Eid al-Adha (approx)
+				'2027-12-01', '2027-12-02', '2027-12-03', // UAE National Day
+			],
+		},
+	},
+
+	// ── New Zealand ────────────────────────────────────────────────────────────
+	// DST: Pacific/Auckland observes NZDT (UTC+13) Oct–Apr, NZST (UTC+12) Apr–Oct.
+	XNZE: {
+		name: 'New Zealand Exchange',
+		timezone: 'Pacific/Auckland',
+		openHour: 10, openMinute: 0,
+		closeHour: 16, closeMinute: 45,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-02-06', // Waitangi Day
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-04-25', // ANZAC Day
+				'2026-06-01', // Queen's Birthday (1st Mon Jun)
+				'2026-06-24', // Matariki (Maori New Year — approx, varies annually)
+				'2026-10-26', // Labour Day (4th Mon Oct)
+				'2026-12-25', // Christmas Day
+				'2026-12-28', // Boxing Day observed (Dec 26 = Sat, Dec 27 = Sun → Mon Dec 28)
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-02-08', // Waitangi Day observed (Feb 6 = Sat → Mon Feb 8)
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-04-26', // ANZAC Day observed (Apr 25 = Sun → Mon Apr 26)
+				'2027-06-07', // Queen's Birthday
+				'2027-06-25', // Matariki (approx — verify annually via NZ Govt)
+				'2027-10-25', // Labour Day
+				'2027-12-24', // Christmas Eve (observed as Christmas — Dec 25 = Sat)
+				'2027-12-27', // Boxing Day observed
+			],
+		},
+	},
+
+	// ── Finland ────────────────────────────────────────────────────────────────
+	// DST: Europe/Helsinki observes EEST (UTC+3) late Mar to late Oct, EET (UTC+2) otherwise.
+	XHEL: {
+		name: 'Nasdaq Helsinki',
+		timezone: 'Europe/Helsinki',
+		openHour: 10, openMinute: 0,
+		closeHour: 18, closeMinute: 30,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-06', // Epiphany
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-05-01', // May Day
+				'2026-05-14', // Ascension Day
+				'2026-05-15', // Ascension Friday (bridge day)
+				'2026-06-19', // Midsummer Eve (Fri nearest Jun 24)
+				'2026-06-20', // Midsummer Day
+				'2026-10-31', // All Saints (Sat nearest Nov 1)
+				'2026-12-06', // Finnish Independence Day
+				'2026-12-24', // Christmas Eve
+				'2026-12-25', // Christmas Day
+				'2026-12-26', // Boxing Day
+				'2026-12-31', // New Year's Eve
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-06', // Epiphany
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-05-01', // May Day (Sat — weekend)
+				'2027-05-06', // Ascension Day
+				'2027-05-17', // Whit Monday
+				'2027-06-25', // Midsummer Eve (approx)
+				'2027-10-30', // All Saints (approx)
+				'2027-12-06', // Finnish Independence Day
+				'2027-12-24', // Christmas Eve
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-26', // Boxing Day (Sun — weekend)
+				'2027-12-31', // New Year's Eve
+			],
+		},
+	},
+
+	// ── Sweden ─────────────────────────────────────────────────────────────────
+	// DST: Europe/Stockholm observes CEST (UTC+2) late Mar to late Oct, CET (UTC+1) otherwise.
+	XSTO: {
+		name: 'Nasdaq Stockholm',
+		timezone: 'Europe/Stockholm',
+		openHour: 9, openMinute: 0,
+		closeHour: 17, closeMinute: 30,
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-06', // Epiphany
+				'2026-04-03', // Good Friday
+				'2026-04-06', // Easter Monday
+				'2026-05-01', // Labour Day
+				'2026-05-14', // Ascension Day
+				'2026-05-15', // Ascension Friday (bridge)
+				'2026-06-06', // National Day of Sweden
+				'2026-06-19', // Midsummer Eve (Fri nearest Jun 24)
+				'2026-06-20', // Midsummer Day
+				'2026-12-24', // Christmas Eve
+				'2026-12-25', // Christmas Day
+				'2026-12-26', // Boxing Day
+				'2026-12-31', // New Year's Eve
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-06', // Epiphany
+				'2027-03-26', // Good Friday
+				'2027-03-29', // Easter Monday
+				'2027-05-01', // Labour Day (Sat — weekend)
+				'2027-05-06', // Ascension Day
+				'2027-05-14', // Ascension Friday (bridge — approx)
+				'2027-06-06', // National Day of Sweden
+				'2027-06-25', // Midsummer Eve (approx)
+				'2027-12-24', // Christmas Eve
+				'2027-12-25', // Christmas Day (Sat — weekend)
+				'2027-12-26', // Boxing Day (Sun — weekend)
+				'2027-12-31', // New Year's Eve
+			],
+		},
+	},
 };
 
 // ─── Edge Case Counter ────────────────────────────────────────────────────────
@@ -415,7 +990,10 @@ export function edgeCaseCount(year: number): {
 } {
 	const yearStr = String(year);
 
-	// Count every day of the year to get weekday/weekend totals
+	// Short weekday names matching Intl.DateTimeFormat 'short' weekday output
+	const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+	// Count every day of the year to get weekday/weekend totals for default (Sat/Sun) calendar
 	let weekdaysInYear = 0;
 	let weekendDaysInYear = 0;
 	const cursor = new Date(Date.UTC(year, 0, 1));
@@ -424,6 +1002,14 @@ export function edgeCaseCount(year: number): {
 		if (dow === 0 || dow === 6) weekendDaysInYear++;
 		else weekdaysInYear++;
 		cursor.setUTCDate(cursor.getUTCDate() + 1);
+	}
+
+	// Pre-compute per-weekday counts for non-standard weekend support
+	const dowCountInYear: Record<string, number> = { Sun: 0, Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0 };
+	const cursor2 = new Date(Date.UTC(year, 0, 1));
+	while (cursor2.getUTCFullYear() === year) {
+		dowCountInYear[DAY_NAMES[cursor2.getUTCDay()]]++;
+		cursor2.setUTCDate(cursor2.getUTCDate() + 1);
 	}
 
 	// Mid-winter and mid-summer samples for DST detection
@@ -450,16 +1036,25 @@ export function edgeCaseCount(year: number): {
 		}
 
 		if (config.lunchBreak) {
-			// Trading days = weekdays minus holidays that actually fall on a weekday
-			const weekdayHolidayCount = yearHols.filter((dateStr) => {
-				const dow = new Date(dateStr + 'T12:00:00Z').getUTCDay();
-				return dow !== 0 && dow !== 6;
+			// Trading days = non-weekend days minus holidays that fall on a trading day
+			const configWeekends = config.weekends ?? ['Sat', 'Sun'];
+			const tradingDaysInYear = Object.entries(dowCountInYear)
+				.filter(([day]) => !configWeekends.includes(day))
+				.reduce((sum, [, cnt]) => sum + cnt, 0);
+			const tradingDayHolidayCount = yearHols.filter((dateStr) => {
+				const dayName = DAY_NAMES[new Date(dateStr + 'T12:00:00Z').getUTCDay()];
+				return !configWeekends.includes(dayName);
 			}).length;
-			lunchBreakSessions += weekdaysInYear - weekdayHolidayCount;
+			lunchBreakSessions += tradingDaysInYear - tradingDayHolidayCount;
 		}
 	}
 
-	const weekendDays = weekendDaysInYear * Object.keys(MARKET_CONFIGS).length;
+	// Sum weekend days per exchange (each exchange has its own weekend configuration)
+	let weekendDays = 0;
+	for (const config of Object.values(MARKET_CONFIGS)) {
+		const configWeekends = config.weekends ?? ['Sat', 'Sun'];
+		weekendDays += configWeekends.reduce((sum, day) => sum + (dowCountInYear[day] ?? 0), 0);
+	}
 	const total = holidays + halfDays + dstTransitions + lunchBreakSessions + weekendDays;
 	return { holidays, halfDays, dstTransitions, lunchBreakSessions, weekendDays, total };
 }
@@ -503,7 +1098,7 @@ function getLocalTimeParts(timezone: string, now: Date): LocalTimeParts {
 // ─── Market Status Logic ──────────────────────────────────────────────────────
 
 type StatusValue = 'OPEN' | 'CLOSED' | 'HALTED' | 'UNKNOWN';
-type SourceValue = 'SCHEDULE' | 'OVERRIDE' | 'SYSTEM';
+type SourceValue = 'SCHEDULE' | 'OVERRIDE' | 'SYSTEM' | 'REALTIME';
 
 interface MarketStatusResult {
 	status: StatusValue;
@@ -531,8 +1126,9 @@ function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 
 	const { weekday, year, dateStr, hour, minute } = getLocalTimeParts(config.timezone, now);
 
-	// Weekend
-	if (weekday === 'Sat' || weekday === 'Sun') {
+	// Weekend — Middle Eastern exchanges use ['Fri', 'Sat']; default is ['Sat', 'Sun']
+	const weekends = config.weekends ?? ['Sat', 'Sun'];
+	if (weekends.includes(weekday)) {
 		return { status: 'CLOSED', source: 'SCHEDULE' };
 	}
 
@@ -624,7 +1220,8 @@ function getNextSession(mic: string, now: Date): NextSession | null {
 		const yearHolidays = config.holidays[year];
 		if (!yearHolidays) return null;
 
-		if (weekday !== 'Sat' && weekday !== 'Sun' && !yearHolidays.includes(dateStr)) {
+		const sessionWeekends = config.weekends ?? ['Sat', 'Sun'];
+		if (!sessionWeekends.includes(weekday) && !yearHolidays.includes(dateStr)) {
 			// Determine effective open/close for this day
 			let closeH = config.closeHour;
 			let closeM = config.closeMinute;
@@ -822,6 +1419,22 @@ const MICS_SUPPLEMENT: Record<string, { country: string; currency: string; sameA
 	XPAR: { country: 'FR', currency: 'EUR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
 	XHKG: { country: 'HK', currency: 'HKD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
 	XSES: { country: 'SG', currency: 'SGD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XASX: { country: 'AU', currency: 'AUD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XBOM: { country: 'IN', currency: 'INR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XNSE: { country: 'IN', currency: 'INR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XSHG: { country: 'CN', currency: 'CNY', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XSHE: { country: 'CN', currency: 'CNY', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XKRX: { country: 'KR', currency: 'KRW', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XJSE: { country: 'ZA', currency: 'ZAR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XBSP: { country: 'BR', currency: 'BRL', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XSWX: { country: 'CH', currency: 'CHF', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XMIL: { country: 'IT', currency: 'EUR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XIST: { country: 'TR', currency: 'TRY', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XSAU: { country: 'SA', currency: 'SAR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XDFM: { country: 'AE', currency: 'AED', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XNZE: { country: 'NZ', currency: 'NZD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XHEL: { country: 'FI', currency: 'EUR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XSTO: { country: 'SE', currency: 'SEK', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
 };
 
 // Derived: mic, name, timezone from MARKET_CONFIGS; supplementary fields from MICS_SUPPLEMENT.
@@ -1359,7 +1972,7 @@ summary
 
 \`\`\`python
 # Cell 6 — Multi-exchange batch check (optional)
-# Check all 7 supported markets at once before a multi-region analysis
+# Check all supported markets at once before a multi-region analysis (23 available — pick yours)
 
 mics = ["XNYS", "XNAS", "XLON", "XJPX", "XPAR", "XHKG", "XSES"]
 rows = []
@@ -1572,7 +2185,7 @@ const LLMS_TXT = `# Headless Oracle
 
 This is a defensive execution layer — not a price feed. It is a compliance-grade safety primitive that prevents automated systems from executing trades during market closures, circuit breaker halts, holiday closures, and unscheduled outages. Every API response is a Liability Receipt: cryptographically signed, timestamped, independently verifiable proof that your agent checked before it executed.
 
-## Supported Exchanges (7)
+## Supported Exchanges (23)
 
 XNYS — New York Stock Exchange
 XNAS — NASDAQ
@@ -1581,8 +2194,33 @@ XJPX — Japan Exchange Group (Tokyo) — has lunch break
 XPAR — Euronext Paris
 XHKG — Hong Kong Stock Exchange — has lunch break
 XSES — Singapore Exchange
+XASX — Australian Securities Exchange (Sydney)
+XBOM — BSE Ltd (Bombay Stock Exchange, Mumbai)
+XNSE — National Stock Exchange of India (Mumbai)
+XSHG — Shanghai Stock Exchange — has lunch break
+XSHE — Shenzhen Stock Exchange — has lunch break
+XKRX — Korea Exchange (Seoul)
+XJSE — Johannesburg Stock Exchange
+XBSP — B3 (São Paulo Stock Exchange)
+XSWX — SIX Swiss Exchange (Zurich)
+XMIL — Borsa Italiana (Milan)
+XIST — Borsa Istanbul
+XSAU — Saudi Exchange (Tadawul, Riyadh) — weekends: Fri–Sat; Sunday is a trading day
+XDFM — Dubai Financial Market — weekends: Fri–Sat; Sunday is a trading day
+XNZE — New Zealand Exchange (Auckland)
+XHEL — Nasdaq Helsinki
+XSTO — Nasdaq Stockholm
 
 All exchanges use ISO 10383 Market Identifier Codes (MIC).
+
+## Timezone Coverage
+
+Americas: XNYS/XNAS (America/New_York), XBSP (America/Sao_Paulo)
+Europe: XLON (Europe/London), XPAR (Europe/Paris), XSWX (Europe/Zurich), XMIL (Europe/Rome), XIST (Europe/Istanbul), XHEL (Europe/Helsinki), XSTO (Europe/Stockholm)
+Middle East: XSAU (Asia/Riyadh), XDFM (Asia/Dubai)
+Asia: XJPX (Asia/Tokyo), XHKG (Asia/Hong_Kong), XSES (Asia/Singapore), XSHG/XSHE (Asia/Shanghai), XBOM/XNSE (Asia/Kolkata), XKRX (Asia/Seoul)
+Africa: XJSE (Africa/Johannesburg)
+Pacific: XASX (Australia/Sydney), XNZE (Pacific/Auckland)
 
 ## Critical Safety Protocol for Autonomous Agents
 
@@ -1602,7 +2240,7 @@ Primary endpoint. Returns cryptographically signed market status for a single ex
 
 - Required parameter: \`mic\` (ISO 10383 MIC code)
 - Required header: \`X-Oracle-Key\` (your API key)
-- Response fields: \`receipt_id\` (UUID), \`issued_at\` (ISO 8601), \`expires_at\` (ISO 8601), \`mic\` (string), \`status\` (enum: OPEN | CLOSED | HALTED | UNKNOWN), \`source\` (enum: SCHEDULE | OVERRIDE | SYSTEM), \`receipt_mode\` (enum: demo | live), \`schema_version\` (string), \`public_key_id\` (string), \`signature\` (hex-encoded Ed25519)
+- Response fields: \`receipt_id\` (UUID), \`issued_at\` (ISO 8601), \`expires_at\` (ISO 8601), \`mic\` (string), \`status\` (enum: OPEN | CLOSED | HALTED | UNKNOWN), \`source\` (enum: SCHEDULE | OVERRIDE | SYSTEM | REALTIME), \`receipt_mode\` (enum: demo | live), \`schema_version\` (string), \`public_key_id\` (string), \`signature\` (hex-encoded Ed25519)
 - [Full API docs](https://headlessoracle.com/docs.html)
 
 ### GET /v5/schedule — Market Schedule Lookup (Unsigned)
@@ -1614,11 +2252,11 @@ Returns next open/close times for a given exchange. Use for planning execution w
 
 ### GET /v5/exchanges — Exchange Discovery
 
-Returns all 7 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
+Returns all 23 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
 
 ### GET /mics.json — Exchange Registry (ISO Metadata)
 
-All 7 supported exchanges with MIC codes, names, timezones, currencies, and ISO 20022 registry links. No auth required.
+All 23 supported exchanges with MIC codes, names, timezones, currencies, and ISO 20022 registry links. No auth required.
 
 - Fields per entry: \`mic\` (ISO 10383), \`name\`, \`country\` (ISO 3166-1 alpha-2), \`timezone\` (IANA), \`currency\` (ISO 4217), \`sameAs\` (ISO 20022 MIC registry URL)
 - Response is a JSON array, not an object wrapper — parse with \`JSON.parse(body)\` directly
@@ -1842,7 +2480,7 @@ Most timezone libraries return correct UTC offsets. They do not know when market
 
 - **UNKNOWN status handling**: When Headless Oracle cannot determine market state (signing failure, missing calendar data for the current year), it returns UNKNOWN rather than defaulting to OPEN. Consumers are contractually required to treat UNKNOWN as CLOSED. This fail-closed contract is enforced at the protocol level — not just documented.
 
-Across all 7 exchanges, approximately **1,300 schedule edge cases per year** fall into one of the above categories. A hardcoded timezone offset handles zero of them.
+Across all 23 exchanges, approximately **5,000+ schedule edge cases per year** fall into one of the above categories. A hardcoded timezone offset handles zero of them.
 
 ## Receipt Portability
 
@@ -1955,6 +2593,24 @@ Returns today's MCP request count and unique client count from telemetry.
 
 Full guide: https://headlessoracle.com/docs/x402-payments.md
 
+## Autonomous Halt Monitoring
+
+Headless Oracle runs an autonomous halt monitor every minute via Cloudflare Cron. It checks exchanges that are currently scheduled OPEN against real-time market data sources and writes REALTIME override signals to the circuit breaker KV when a discrepancy is detected.
+
+- **Cron**: \`* * * * *\` (every minute)
+- **Sources**: Polygon.io (primary, requires POLYGON_API_KEY secret) → Alpaca paper-api (fallback, US markets only)
+- **Behavior**: Fail-open — if both sources are unavailable, the schedule-based status is preserved. No false halts on API errors.
+- **Override TTL**: 2 hours — auto-clears when the exchange resumes trading
+- **Source field**: REALTIME overrides set \`source: 'REALTIME'\` in the signed receipt, distinguishable from manual OVERRIDE entries
+
+### GET /v5/status/realtime — Real-Time Status with Halt Monitor Metadata
+
+Authenticated endpoint that returns the standard signed receipt plus halt monitor state for a specific exchange.
+
+- Required header: X-Oracle-Key
+- Optional parameter: mic (default: XNYS)
+- Response: signed_receipt (full signed receipt), halt_monitor (active_realtime_override if any, note)
+
 ## Agent Discovery
 
 - [Skill File](https://headlessoracle.com/SKILL.md): Step-by-step integration guide optimised for AI agents. Covers MCP setup, HTTP patterns, code examples, safety rules, and common mistakes.
@@ -1988,15 +2644,15 @@ Headless Oracle returns cryptographically signed receipts that tell you whether 
 | A timezone library is sufficient | You need Headless Oracle |
 |----------------------------------|--------------------------|
 | Displaying local time to a user | Gating trade execution on market state |
-| Computing UTC offsets | Detecting exchange holiday closures (67 across 7 venues) |
+| Computing UTC offsets | Detecting exchange holiday closures (200+ across 23 venues) |
 | Formatting timestamps | Handling unscheduled circuit breaker halts |
 | Scheduling calendar events | Detecting early close days |
-| Building a world clock | Lunch break windows (XJPX 11:30–12:30 JST, XHKG 12:00–13:00 HKT) |
-| Converting between timezones | DST correctness across 7 separate exchange calendars |
+| Building a world clock | Lunch break windows (XJPX, XHKG, XSHG, XSHE) |
+| Converting between timezones | DST correctness across 23 separate exchange calendars |
 | Checking if an office is open | Cryptographic proof that you checked before executing |
 | | Fail-closed UNKNOWN when state cannot be determined |
 
-**Rule of thumb**: If your code makes financial execution decisions based on time, a timezone library is necessary but not sufficient. You need attestable market state, not computable clock time. Across all 7 exchanges, approximately 1,300 schedule edge cases per year require explicit handling beyond UTC offset arithmetic.
+**Rule of thumb**: If your code makes financial execution decisions based on time, a timezone library is necessary but not sufficient. You need attestable market state, not computable clock time. Across all 23 exchanges, approximately 5,000+ schedule edge cases per year require explicit handling beyond UTC offset arithmetic.
 
 ---
 
@@ -2054,7 +2710,7 @@ Then call tools/call with \`get_market_status\`, \`get_market_schedule\`, or \`l
 |------|-------------|-----------------|
 | \`get_market_status\` | Signed receipt (OPEN/CLOSED/HALTED/UNKNOWN) | \`mic\` (e.g. "XNYS") |
 | \`get_market_schedule\` | Next open/close times in UTC | \`mic\` |
-| \`list_exchanges\` | All 7 supported exchanges with names and timezones | none |
+| \`list_exchanges\` | All 23 supported exchanges with names and timezones | none |
 
 The MCP tools use the same 4-tier fail-closed logic as the REST API. UNKNOWN always means CLOSED.
 
@@ -2224,7 +2880,7 @@ const AGENT_JSON = {
 	schema_version: '1.0',
 	spec_version:   DEPLOY_DATE,
 	name:           'Headless Oracle',
-	description:    'Cryptographically signed market-state attestations for AI agents. Ed25519-signed receipts for 7 global exchanges. Fail-closed: UNKNOWN always means CLOSED.',
+	description:    'Cryptographically signed market-state attestations for AI agents. Ed25519-signed receipts for 23 global exchanges. Fail-closed: UNKNOWN always means CLOSED.',
 	url:            'https://headlessoracle.com',
 	capabilities: [
 		'market_status',
@@ -2283,7 +2939,7 @@ const AGENT_JSON = {
 			{ path: '/v5/batch',              method: 'GET',  auth: true,  description: 'Batch signed receipts for multiple MICs' },
 			{ path: '/v5/schedule',           method: 'GET',  auth: false, description: 'Next open/close times' },
 			{ path: '/v5/exchanges',          method: 'GET',  auth: false, description: 'All supported exchanges' },
-			{ path: '/mics.json',             method: 'GET',  auth: false, description: 'GET /mics.json — all 7 supported MICs with exchange metadata and ISO 20022 registry links' },
+			{ path: '/mics.json',             method: 'GET',  auth: false, description: 'GET /mics.json — all 23 supported MICs with exchange metadata and ISO 20022 registry links' },
 			{ path: '/v5/keys',               method: 'GET',  auth: false, description: 'Public key registry + canonical payload spec' },
 			{ path: '/v5/health',             method: 'GET',  auth: false, description: 'Signed liveness probe' },
 			{ path: '/.well-known/oracle-keys.json', method: 'GET', auth: false, description: 'RFC 8615 key discovery' },
@@ -2349,7 +3005,10 @@ const MCP_TOOLS = [
 			'MANDATORY: treat UNKNOWN or HALTED as CLOSED and halt execution. ' +
 			'Do not act on a receipt past its expires_at timestamp. ' +
 			'Supported exchanges: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), ' +
-			'Paris (XPAR), Hong Kong (XHKG), Singapore (XSES).',
+			'Paris (XPAR), Hong Kong (XHKG), Singapore (XSES), Sydney (XASX), Mumbai BSE (XBOM), ' +
+			'Mumbai NSE (XNSE), Shanghai (XSHG), Shenzhen (XSHE), Seoul (XKRX), Johannesburg (XJSE), ' +
+			'São Paulo (XBSP), Zurich (XSWX), Milan (XMIL), Istanbul (XIST), Riyadh (XSAU), ' +
+			'Dubai (XDFM), Auckland (XNZE), Helsinki (XHEL), Stockholm (XSTO).',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -2358,8 +3017,8 @@ const MCP_TOOLS = [
 					description:
 						'Exchange identifier (MIC code). Common values: XNYS=NYSE, XNAS=NASDAQ, ' +
 						'XLON=London, XJPX=Tokyo, XPAR=Paris, XHKG=Hong Kong, XSES=Singapore. ' +
-						'Use list_exchanges to see all options. Defaults to XNYS.',
-					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'],
+						'Use list_exchanges to see all 23 supported exchanges. Defaults to XNYS.',
+					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'],
 				},
 			},
 		},
@@ -2371,10 +3030,10 @@ const MCP_TOOLS = [
 			'Use when planning trade execution windows, scheduling market-dependent tasks, ' +
 			'or checking upcoming session times. ' +
 			'Returns UTC timestamps for next open/close and current schedule-based status. ' +
-			'Includes lunch break windows for Tokyo (XJPX) and Hong Kong (XHKG) where applicable. ' +
+			'Includes lunch break windows for Tokyo (XJPX), Hong Kong (XHKG), Shanghai (XSHG), and Shenzhen (XSHE) where applicable. ' +
 			'NOT cryptographically signed — does not reflect real-time halts or circuit breakers. ' +
 			'For verified real-time status, use get_market_status instead. ' +
-			'Supported: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), Paris (XPAR), Hong Kong (XHKG), Singapore (XSES).',
+			'Use list_exchanges to see all 23 supported exchanges.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -2384,7 +3043,7 @@ const MCP_TOOLS = [
 						'Exchange identifier (MIC code). Common values: XNYS=NYSE, XNAS=NASDAQ, ' +
 						'XLON=London, XJPX=Tokyo, XPAR=Paris, XHKG=Hong Kong, XSES=Singapore. ' +
 						'Defaults to XNYS.',
-					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'],
+					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'],
 				},
 			},
 		},
@@ -2395,7 +3054,7 @@ const MCP_TOOLS = [
 			'List all stock exchanges supported by Headless Oracle. ' +
 			'Use to discover which markets are available, find the correct identifier (MIC code) ' +
 			'for an exchange by name, or look up the timezone of a market. ' +
-			'Returns MIC codes, full exchange names, and IANA timezone identifiers for all 7 supported markets.',
+			'Returns MIC codes, full exchange names, and IANA timezone identifiers for all 23 supported markets.',
 		inputSchema: { type: 'object', properties: {} },
 	},
 ];
@@ -2425,7 +3084,7 @@ const OPENAPI_SPEC = {
 			},
 			Source: {
 				type: 'string',
-				enum: ['SCHEDULE', 'OVERRIDE', 'SYSTEM'],
+				enum: ['SCHEDULE', 'OVERRIDE', 'SYSTEM', 'REALTIME'],
 			},
 			SignedReceipt: {
 				type: 'object',
@@ -2578,7 +3237,7 @@ const OPENAPI_SPEC = {
 		'/mics.json': {
 			get: {
 				summary:     'Exchange registry — full ISO metadata',
-				description: 'Static JSON array of all 7 supported exchanges. Each entry carries: ' +
+				description: 'Static JSON array of all 23 supported exchanges. Each entry carries: ' +
 					'mic (ISO 10383), name, country (ISO 3166-1 alpha-2), timezone (IANA), ' +
 					'currency (ISO 4217), and sameAs (ISO 20022 MIC registry URL). ' +
 					'No authentication required. Response is a top-level array, not an object wrapper. ' +
@@ -2756,7 +3415,7 @@ const OPENAPI_SPEC = {
 							properties: {
 								total_mcp_requests_today: { type: 'integer', description: 'Sum of all MCP request_count values for today.' },
 								unique_mcp_clients_today: { type: 'integer', description: 'Distinct MCP client IPs seen today (hashed).' },
-								exchanges_covered:        { type: 'integer', example: 7 },
+								exchanges_covered:        { type: 'integer', example: 23 },
 								edge_cases_per_year:      { type: 'integer', example: 1319 },
 								uptime_status:            { type: 'string', enum: ['operational'] },
 							},
@@ -3141,6 +3800,161 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 	}
 }
 
+// ─── Autonomous Halt Monitor ─────────────────────────────────────────────────
+// Runs every minute via cron. Checks Polygon.io (primary) or Alpaca (fallback)
+// for real-time trade status. If an exchange is scheduled OPEN but real-time
+// says the market is halted, writes a REALTIME override to ORACLE_OVERRIDES KV
+// with a 2-hour TTL. Auto-clears when the exchange resumes.
+//
+// Design decisions:
+// - Only checks exchanges that SHOULD be open right now (avoids noise)
+// - Uses REALTIME source rather than OVERRIDE to distinguish from manual halts
+// - 2h TTL: long enough to survive transient API failures, short enough to
+//   auto-clear after market open the next session
+// - Fail-open: if both APIs fail, the schedule-based state is preserved (no
+//   false halts). A false halt is worse than a missed halt for most consumers.
+
+interface HaltMonitorResult {
+	mic:     string;
+	checked: boolean;   // false if market was CLOSED per schedule (skip)
+	halted:  boolean;   // true if real-time source says HALTED
+	source:  'polygon' | 'alpaca' | 'skipped' | 'error';
+	error?:  string;
+}
+
+async function runHaltMonitor(env: Env): Promise<void> {
+	const now = new Date();
+	const results: HaltMonitorResult[] = [];
+
+	for (const [mic, config] of Object.entries(MARKET_CONFIGS)) {
+		// Only check exchanges that are scheduled OPEN right now
+		let scheduleResult: MarketStatusResult;
+		try {
+			scheduleResult = getScheduleStatus(mic, config, now);
+		} catch {
+			results.push({ mic, checked: false, halted: false, source: 'error', error: 'schedule_error' });
+			continue;
+		}
+
+		if (scheduleResult.status !== 'OPEN') {
+			results.push({ mic, checked: false, halted: false, source: 'skipped' });
+			continue;
+		}
+
+		// Exchange is scheduled OPEN — check real-time status
+		let halted = false;
+		let source: HaltMonitorResult['source'] = 'error';
+		let errorMsg: string | undefined;
+
+		// Primary: Polygon.io market status
+		if (env.POLYGON_API_KEY) {
+			try {
+				const polygonResp = await fetch(
+					`https://api.polygon.io/v1/marketstatus/now?apiKey=${env.POLYGON_API_KEY}`,
+					{ signal: AbortSignal.timeout(5000) },
+				);
+				if (polygonResp.ok) {
+					const data = await polygonResp.json() as Record<string, unknown>;
+					// Polygon returns market (US) and currencies status; for non-US exchanges
+					// we map MICs to Polygon market names where available.
+					const micToPolygon: Record<string, string> = {
+						XNYS: 'nyse', XNAS: 'nasdaq', XASX: 'asx',
+					};
+					const polygonName = micToPolygon[mic];
+					if (polygonName) {
+						const exchanges = data.exchanges as Record<string, string> | undefined;
+						const marketStatus = exchanges?.[polygonName] ?? data.market;
+						halted = typeof marketStatus === 'string' && marketStatus !== 'open';
+						source = 'polygon';
+					} else {
+						// Polygon doesn't cover this MIC — fall through to Alpaca
+						source = 'error';
+						errorMsg = 'mic_not_in_polygon';
+					}
+				}
+			} catch (err) {
+				errorMsg = err instanceof Error ? err.message : 'polygon_fetch_failed';
+			}
+		}
+
+		// Fallback: Alpaca market clock (US markets only, paper API — public)
+		if (source === 'error' && (mic === 'XNYS' || mic === 'XNAS')) {
+			try {
+				const alpacaResp = await fetch(
+					'https://paper-api.alpaca.markets/v2/clock',
+					{
+						headers: { 'APCA-API-KEY-ID': 'PKJ...', 'APCA-API-SECRET-KEY': 'ignored' },
+						signal: AbortSignal.timeout(5000),
+					},
+				);
+				if (alpacaResp.ok) {
+					const clock = await alpacaResp.json() as { is_open?: boolean };
+					halted = clock.is_open === false;
+					source = 'alpaca';
+				}
+			} catch (err) {
+				errorMsg = err instanceof Error ? err.message : 'alpaca_fetch_failed';
+			}
+		}
+
+		if (source === 'error') {
+			// Both APIs failed — fail-open (do NOT write a HALTED override)
+			results.push({ mic, checked: true, halted: false, source: 'error', error: errorMsg });
+			continue;
+		}
+
+		results.push({ mic, checked: true, halted, source });
+
+		if (halted) {
+			// Write REALTIME override to ORACLE_OVERRIDES KV — 2h TTL
+			const expiresAt = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
+			const overrideVal = JSON.stringify({
+				status:         'HALTED',
+				source:         'REALTIME',
+				reason:         `Real-time halt detected by halt monitor (source: ${source})`,
+				expires:        expiresAt,
+				auto_clear_at:  expiresAt,
+				detected_at:    now.toISOString(),
+			});
+			await env.ORACLE_OVERRIDES.put(mic, overrideVal, { expirationTtl: 7200 });
+			console.log(JSON.stringify({
+				event:      'HALT_MONITOR_HALTED',
+				mic,
+				source,
+				expires_at: expiresAt,
+				timestamp:  now.toISOString(),
+			}));
+		} else {
+			// Exchange is OPEN per real-time — clear any existing REALTIME override
+			// (but do NOT clear manual OVERRIDE entries set by operators)
+			const existing = await env.ORACLE_OVERRIDES.get(mic);
+			if (existing) {
+				try {
+					const parsed = JSON.parse(existing) as { source?: string };
+					if (parsed.source === 'REALTIME') {
+						await env.ORACLE_OVERRIDES.delete(mic);
+						console.log(JSON.stringify({
+							event:     'HALT_MONITOR_CLEARED',
+							mic,
+							timestamp: now.toISOString(),
+						}));
+					}
+				} catch {
+					// Malformed KV value — leave it for operator review
+				}
+			}
+		}
+	}
+
+	console.log(JSON.stringify({
+		event:          'HALT_MONITOR_RUN',
+		timestamp:      now.toISOString(),
+		exchanges_checked: results.filter((r) => r.checked).length,
+		halts_detected: results.filter((r) => r.halted).length,
+		results:        results.map((r) => ({ mic: r.mic, checked: r.checked, halted: r.halted, source: r.source })),
+	}));
+}
+
 // ─── Worker ───────────────────────────────────────────────────────────────────
 
 export default {
@@ -3317,6 +4131,45 @@ export default {
 				});
 			}
 
+			// ── GET /v5/status/realtime — authenticated, returns halt_monitor metadata ──
+			// Returns the current halt monitor status: when it last ran, which sources were
+			// checked, and which exchanges have active REALTIME overrides right now.
+			// Requires X-Oracle-Key. Auth already verified above.
+			if (url.pathname === '/v5/status/realtime') {
+				const mic = (url.searchParams.get('mic') || 'XNYS').toUpperCase();
+				if (!MARKET_CONFIGS[mic]) {
+					return json({
+						error:     'UNKNOWN_MIC',
+						message:   `Unsupported exchange: ${mic}. See /v5/exchanges for supported markets.`,
+						supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
+					}, 400);
+				}
+
+				// Check if there is a REALTIME override active for this MIC
+				const overrideRaw = await env.ORACLE_OVERRIDES.get(mic);
+				let realtimeOverride: Record<string, unknown> | null = null;
+				if (overrideRaw) {
+					try {
+						const parsed = JSON.parse(overrideRaw) as Record<string, unknown>;
+						if (parsed.source === 'REALTIME') {
+							realtimeOverride = parsed;
+						}
+					} catch { /* malformed — ignore */ }
+				}
+
+				// Also return the signed receipt for this MIC
+				const { receipt, status: receiptStatus } = await buildSignedReceipt(mic, env, now, expiresAt, 'live');
+
+				return json({
+					mic,
+					signed_receipt:    receipt,
+					halt_monitor: {
+						active_realtime_override: realtimeOverride,
+						note: 'halt_monitor runs every minute via cron. REALTIME overrides are auto-cleared when exchange resumes.',
+					},
+				}, receiptStatus, { 'Cache-Control': 'no-store' });
+			}
+
 			// ── GET /v5/status (authenticated) & /v5/demo (public) ───────
 			if (url.pathname === '/v5/status' || url.pathname === '/v5/demo') {
 				const mic = (url.searchParams.get('mic') || 'XNYS').toUpperCase();
@@ -3472,6 +4325,23 @@ export default {
 					// informational fields — they annotate the signed health receipt but are not part
 					// of the signed payload. version/sma_spec_version/mcp_protocol_version added
 					// for MCP evaluation tools that check server capabilities.
+					// Count active REALTIME overrides from ORACLE_OVERRIDES KV
+					let activeRealtimeOverrides: string[] = [];
+					try {
+						const allMics = Object.keys(MARKET_CONFIGS);
+						const overrideChecks = await Promise.all(
+							allMics.map(async (m) => {
+								const raw = await env.ORACLE_OVERRIDES.get(m);
+								if (!raw) return null;
+								try {
+									const parsed = JSON.parse(raw) as { source?: string };
+									return parsed.source === 'REALTIME' ? m : null;
+								} catch { return null; }
+							}),
+						);
+						activeRealtimeOverrides = overrideChecks.filter((m): m is string => m !== null);
+					} catch { /* KV unavailable — report empty */ }
+
 					return json({
 						...healthPayload,
 						signature,
@@ -3488,6 +4358,13 @@ export default {
 							half_days: halfDayCoverageYears,
 						},
 						edge_case_count_current_year: edgeCaseCount(currentYear).total,
+						halt_monitor: {
+							status:                    'active',
+							cron:                      '* * * * *',
+							sources:                   ['polygon', 'alpaca'],
+							active_realtime_overrides: activeRealtimeOverrides,
+							note:                      'Checks scheduled-OPEN exchanges every minute. Writes REALTIME overrides on discrepancy. Fails open (no false halts on API errors).',
+						},
 					});
 				} catch (healthError: unknown) {
 					const msg = healthError instanceof Error ? healthError.message : 'Unknown error';
@@ -3593,7 +4470,7 @@ export default {
 					INVALID_API_KEY:       { message: 'The supplied API key was not recognised.', resolution: 'Check the key value. Get a free key at /v5/keys/request.', http_status: 403 },
 					PAYMENT_REQUIRED:      { message: 'Free tier daily limit reached.', resolution: 'Supply X-Payment header with a valid Base mainnet USDC tx, or upgrade at /pricing. See /docs/x402-payments.md.', http_status: 402 },
 					RATE_LIMITED:          { message: 'Free tier daily limit (500 req/day) exhausted.', resolution: 'Wait for the daily reset, purchase credits at /v5/credits/purchase, or upgrade at /pricing.', http_status: 429 },
-					INVALID_MIC:           { message: 'Unsupported exchange MIC code.', resolution: 'Use one of: XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES. See /v5/exchanges for the full list.', http_status: 400 },
+					INVALID_MIC:           { message: 'Unsupported exchange MIC code.', resolution: 'See /v5/exchanges for the full list of 23 supported exchanges.', http_status: 400 },
 					METHOD_NOT_ALLOWED:    { message: 'HTTP method not allowed for this endpoint.', resolution: 'Check the HTTP method. See /openapi.json for allowed methods per route.', http_status: 405 },
 					NOT_FOUND:             { message: 'Route not found.', resolution: 'Check the path. See /openapi.json for all available routes.', http_status: 404 },
 					INVALID_TX_HASH:       { message: 'X-Payment txHash is not a valid 32-byte hex string.', resolution: 'Provide a valid Ethereum transaction hash (0x + 64 hex chars).', http_status: 402 },
@@ -3940,7 +4817,7 @@ export default {
 				return json({
 					total_mcp_requests_today: totalMcpRequestsToday,
 					unique_mcp_clients_today: uniqueMcpClientsToday,
-					exchanges_covered:        7,
+					exchanges_covered:        SUPPORTED_EXCHANGES.length,
 					edge_cases_per_year:      edgeCaseCount(currentYear).total,
 					uptime_status:            'operational',
 				});
@@ -4168,10 +5045,16 @@ export default {
 	},
 
 	// ─── Cron handlers ────────────────────────────────────────────────────────
+	// * * * * *  — real-time halt monitor (every minute)
 	// 09:00 UTC — npm download tracking for @headlessoracle/verify
 	// 17:00 UTC — MCP anonymous client usage summary (high-engagement detection)
 	async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
-		if (event.cron === '0 9 * * *') {
+		if (event.cron === '* * * * *') {
+			// Real-time halt monitor — runs every minute.
+			// Checks exchanges scheduled OPEN against Polygon.io/Alpaca; writes REALTIME
+			// overrides to ORACLE_OVERRIDES KV when discrepancy detected. Fail-open.
+			await runHaltMonitor(env);
+		} else if (event.cron === '0 9 * * *') {
 			// Fetch @headlessoracle/verify download counts and log for monitoring.
 			try {
 				const [week, month] = await Promise.all([
