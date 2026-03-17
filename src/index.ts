@@ -1612,7 +1612,21 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 			free_key: 'https://headlessoracle.com/v5/keys/request',
 			prepaid:  'https://headlessoracle.com/v5/credits/purchase',
 		},
+		founder_note: "You're hitting our limits — that means you're building something real. Reply to hello@headlessoracle.com and I'll set you up with a proper production key. — Mike",
 	};
+}
+
+// Add soft rate-limit warning headers when free tier usage crosses 80% or 95%.
+function addRateLimitWarningHeaders(headers: Headers, percentUsed: number, upgradeUrl: string): void {
+	if (percentUsed >= 95) {
+		headers.set('X-RateLimit-Warning', 'true');
+		headers.set('X-RateLimit-Warning-Message', 'You have used 95% of your daily free tier limit. Next requests will require x402 payment or upgrade.');
+		headers.set('X-RateLimit-Upgrade-URL', upgradeUrl);
+	} else if (percentUsed >= 80) {
+		headers.set('X-RateLimit-Warning', 'true');
+		headers.set('X-RateLimit-Warning-Message', 'You have used 80% of your daily free tier limit. Upgrade at headlessoracle.com/pricing or use x402 payments to continue.');
+		headers.set('X-RateLimit-Upgrade-URL', upgradeUrl);
+	}
 }
 
 // Get the number of requests made today by a free tier key.
@@ -1653,6 +1667,91 @@ function consumeCredit(keyHash: string, credits: CreditRecord, env: Env, ctx: Ex
 		balance: Math.max(0, credits.balance - 1),
 	})).catch(() => {});
 	if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
+}
+
+// ─── ISO week utility ────────────────────────────────────────────────────────
+
+function getISOWeek(date: Date): string {
+	const d      = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+	const dayNum = d.getUTCDay() || 7;
+	d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+	const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+	const weekNo    = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+	return `${d.getUTCFullYear()}-${String(weekNo).padStart(2, '0')}`;
+}
+
+// ─── Weekly digest ────────────────────────────────────────────────────────────
+// Runs Monday 09:00 UTC. Summarises the past 7 days of MCP client activity from
+// ORACLE_TELEMETRY KV and writes a weekly_digest:{YYYY-WW} summary key (90-day TTL).
+
+async function runWeeklyDigest(env: Env): Promise<void> {
+	try {
+		const allKeys = await env.ORACLE_TELEMETRY.list({ prefix: 'mcp_clients:' });
+		if (allKeys.keys.length === 0) {
+			console.log(JSON.stringify({ event: 'WEEKLY_DIGEST', week: getISOWeek(new Date()), unique_clients: 0, total_requests: 0 }));
+			return;
+		}
+
+		// Parse key structure: mcp_clients:{date}:{clientHash}
+		// Only process past 7 days
+		const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+		const recentKeys   = allKeys.keys.filter((k) => {
+			const parts = k.name.split(':');
+			return parts.length === 3 && parts[1] >= sevenDaysAgo;
+		});
+
+		// Limit to 100 fetches to avoid overload
+		const sample  = recentKeys.slice(0, 100);
+		const records = await Promise.all(
+			sample.map((k) => env.ORACLE_TELEMETRY.get(k.name).catch(() => null)),
+		);
+
+		// Aggregate metrics
+		const clientDateMap = new Map<string, Set<string>>(); // clientHash → set of dates seen
+		let totalRequests    = 0;
+		const asnRequestMap  = new Map<string, number>();
+
+		for (let i = 0; i < sample.length; i++) {
+			const raw = records[i];
+			if (!raw) continue;
+			const parts      = sample[i].name.split(':');
+			const date        = parts[1];
+			const clientHash  = parts[2];
+			const parsed      = JSON.parse(raw) as { request_count?: number; asn_org?: string };
+			const reqCount    = parsed.request_count ?? 0;
+
+			totalRequests += reqCount;
+
+			if (!clientDateMap.has(clientHash)) clientDateMap.set(clientHash, new Set());
+			clientDateMap.get(clientHash)!.add(date);
+
+			if (parsed.asn_org) {
+				asnRequestMap.set(parsed.asn_org, (asnRequestMap.get(parsed.asn_org) ?? 0) + reqCount);
+			}
+		}
+
+		const uniqueClients    = clientDateMap.size;
+		const newClients       = [...clientDateMap.entries()].filter(([, dates]) => dates.size === 1).length;
+		const returningClients = [...clientDateMap.entries()].filter(([, dates]) => dates.size > 1).length;
+		const topClientAsn     = [...asnRequestMap.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+		const isoWeek = getISOWeek(new Date());
+		const digest  = {
+			week:               isoWeek,
+			unique_clients:     uniqueClients,
+			total_requests:     totalRequests,
+			new_clients:        newClients,
+			returning_clients:  returningClients,
+			top_client_asn:     topClientAsn,
+			sampled_at:         new Date().toISOString(),
+		};
+
+		await env.ORACLE_TELEMETRY.put(`weekly_digest:${isoWeek}`, JSON.stringify(digest), { expirationTtl: 90 * 86400 });
+		console.log(JSON.stringify({ event: 'WEEKLY_DIGEST', ...digest }));
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : 'unknown error';
+		console.error(`WEEKLY_DIGEST_ERROR: ${msg}`);
+	}
 }
 
 // ─── Static discovery files ───────────────────────────────────────────────────
@@ -2639,6 +2738,7 @@ Authenticated endpoint that returns the standard signed receipt plus halt monito
 - [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API contract (OpenAPI 3.1).
 - [MCP Endpoint](https://headlessoracle.com/mcp): Protocol version 2024-11-05. Tools: get_market_status, get_market_schedule, list_exchanges.
 - [APTS Compliance](https://headlessoracle.com/v5/compliance): Machine-readable Agent Pre-Trade Safety Standard compliance self-report.
+- [Traction](https://headlessoracle.com/v5/traction): Live metrics — exchanges covered, uptime, MCP usage today, stack positioning. No auth required.
 - [x402 Guide](https://headlessoracle.com/docs/x402-payments.md): Per-request micropayment protocol for agent-native API access.
 - [SMA Specification](https://github.com/LembaGang/sma-protocol): Signed Market Attestation Protocol v1.0 (GitHub — Apache 2.0).
 - [Error Docs](https://headlessoracle.com/v5/errors/PAYMENT_REQUIRED): Machine-readable error documentation for any error code.
@@ -2974,6 +3074,8 @@ const AGENT_JSON = {
 			{ path: '/.well-known/oracle-keys.json', method: 'GET', auth: false, description: 'RFC 8615 key discovery' },
 			{ path: '/v5/compliance',               method: 'GET', auth: false, description: 'APTS compliance self-report — 6 pre-trade safety checks' },
 			{ path: '/v5/metrics',                  method: 'GET', auth: false, description: 'MCP client telemetry — today\'s request and unique client counts' },
+			{ path: '/v5/traction',                 method: 'GET', auth: false, description: 'Live traction metrics — exchanges, uptime, MCP usage, stack positioning' },
+			{ path: '/v5/usage',                    method: 'GET', auth: true,  description: 'Per-key usage stats — requests today/month, limits, credits, upgrade info' },
 		],
 		auth: {
 			header:  'X-Oracle-Key',
@@ -3548,6 +3650,64 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/usage': {
+			get: {
+				summary:     'Per-key usage statistics',
+				description: 'Returns today/month request counts, free tier limits, credit balance, and upgrade info for the authenticated key. Requires X-Oracle-Key header. Paid keys return null limits and 0 usage counts.',
+				security: [{ ApiKeyAuth: [] }],
+				responses: {
+					'200': {
+						description: 'Usage statistics for the calling key',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								key_prefix:           { type: 'string' },
+								plan:                 { type: 'string' },
+								requests_today:       { type: 'integer' },
+								requests_this_month:  { type: 'integer' },
+								daily_limit:          { type: ['integer', 'null'] },
+								monthly_limit:        { type: ['integer', 'null'] },
+								percent_used_today:   { type: 'number' },
+								percent_used_month:   { type: 'number' },
+								rate_limit_resets_at: { type: 'string', format: 'date-time' },
+								upgrade_url:          { type: 'string', format: 'uri' },
+								x402_available:       { type: 'boolean' },
+								x402_amount:          { type: 'string' },
+								credit_balance:       { type: 'integer' },
+							},
+						} } },
+					},
+					'401': { description: 'Missing API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'403': { description: 'Invalid API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/traction': {
+			get: {
+				summary:     'Live traction metrics',
+				description: 'Public endpoint returning exchanges covered, uptime, today\'s MCP usage, and stack positioning. No authentication required. Suitable for investor and partner check-ins.',
+				responses: {
+					'200': {
+						description: 'Traction metrics',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								exchanges_covered:        { type: 'integer', example: 23 },
+								edge_cases_per_year:      { type: 'integer', example: 1319 },
+								uptime_since:             { type: 'string', format: 'date-time' },
+								days_live:                { type: 'integer' },
+								mcp_requests_today:       { type: 'integer' },
+								unique_mcp_clients_today: { type: 'integer' },
+								sma_spec_version:         { type: 'string', example: '1.0' },
+								verifiable_intent_rfc:    { type: 'string', example: 'submitted' },
+								x402_enabled:             { type: 'boolean' },
+								halt_monitor:             { type: 'string', example: 'active' },
+							},
+						} } },
+					},
+				},
+			},
+		},
 		'/.well-known/agent.json': {
 			get: {
 				summary:     'Structured agent metadata',
@@ -4056,6 +4216,10 @@ export default {
 		const now = new Date();
 		const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
 
+		// Tracks the free-tier percent-used for the current request; set during the x402 gate.
+		// Used to add soft-limit warning headers to authenticated responses.
+		let freeTierPercentUsed = 0;
+
 		const corsHeaders = {
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -4124,6 +4288,28 @@ export default {
 				if (auth.plan === 'free') {
 					const keyHash = await sha256Hex(apiKey);
 					const usage   = await getDailyUsage(keyHash, env);
+
+					// Track percent used for soft-limit warning headers on the response.
+					freeTierPercentUsed = Math.round((usage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
+
+					// Design partner detection: log once per key per day when usage > 200
+					if (usage > 200) {
+						const dpKey    = `design_partner:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
+						const dpExists = await env.ORACLE_TELEMETRY.get(dpKey).catch(() => null);
+						if (dpExists === null) {
+							const putDp = env.ORACLE_TELEMETRY.put(dpKey, '1', { expirationTtl: 25 * 3600 }).catch(() => {});
+							if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putDp);
+							console.log(JSON.stringify({
+								event:          'DESIGN_PARTNER_CANDIDATE',
+								key_hash:       keyHash,
+								requests_today: usage,
+								plan:           'free',
+								timestamp:      new Date().toISOString(),
+								note:           'High-volume free tier user — potential design partner',
+							}));
+						}
+					}
+
 					if (usage >= FREE_TIER_DAILY_LIMIT) {
 						const paymentHeader = request.headers.get('X-Payment');
 						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
@@ -4155,6 +4341,15 @@ export default {
 					}
 				}
 			}
+
+			// Helper: wrap a Response to add soft rate-limit warning headers for free tier.
+			// Only applies when freeTierPercentUsed >= 80. No-op for paid or public routes.
+			const withRateLimitWarning = (response: Response): Response => {
+				if (freeTierPercentUsed < 80) return response;
+				const newHeaders = new Headers(response.headers);
+				addRateLimitWarningHeaders(newHeaders, freeTierPercentUsed, 'https://headlessoracle.com/pricing');
+				return new Response(response.body, { status: response.status, headers: newHeaders });
+			};
 
 			// ── GET /v5/exchanges — public directory of supported markets ─
 			if (url.pathname === '/v5/exchanges') {
@@ -4268,7 +4463,7 @@ export default {
 				const mode = url.pathname === '/v5/demo' ? 'demo' : 'live';
 				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode);
 				// Receipts must not be cached — they expire in 60s and contain real-time status.
-				return json(receipt, status, { 'Cache-Control': 'no-store' });
+				return withRateLimitWarning(json(receipt, status, { 'Cache-Control': 'no-store' }));
 			}
 
 			// ── GET /v5/batch — authenticated batch receipt query ─────────────────────
@@ -4912,6 +5107,121 @@ export default {
 				});
 			}
 
+			// ── GET /v5/usage — per-key usage stats (requires auth) ──────
+			// Shows today/month request counts, free tier limits, and upgrade info.
+			// Paid keys return 0 usage counts and null limits (no metering).
+			if (url.pathname === '/v5/usage') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) {
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				}
+				const usageAuth = await checkApiKey(apiKey, env);
+				if (!usageAuth.allowed) {
+					return json({ error: usageAuth.error, message: usageAuth.message }, usageAuth.status);
+				}
+
+				const isFree   = usageAuth.plan === 'free';
+				const keyHash  = await sha256Hex(apiKey);
+				const keyPrefix = apiKey.length >= 14 ? apiKey.substring(0, 14) : apiKey;
+
+				let requestsToday        = 0;
+				let requestsThisMonth    = 0;
+				let creditBalance        = 0;
+
+				if (isFree) {
+					// Today's usage
+					requestsToday = await getDailyUsage(keyHash, env);
+
+					// This month's usage — list all daily keys for current month and sum
+					const today    = new Date();
+					const yearStr  = String(today.getUTCFullYear());
+					const monthStr = String(today.getUTCMonth() + 1).padStart(2, '0');
+					try {
+						const monthList = await env.ORACLE_TELEMETRY.list({ prefix: `free_usage:${keyHash}:${yearStr}-${monthStr}` });
+						if (monthList.keys.length > 0) {
+							const monthValues = await Promise.all(
+								monthList.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name).catch(() => null)),
+							);
+							for (const v of monthValues) {
+								if (v) requestsThisMonth += parseInt(v, 10) || 0;
+							}
+						}
+					} catch { /* KV error — leave at 0 */ }
+
+					// Credit balance
+					const credits = await getCreditBalance(keyHash, env);
+					creditBalance = credits.balance;
+				}
+
+				// rate_limit_resets_at: midnight UTC today (next day 00:00:00Z)
+				const resetDate = new Date();
+				resetDate.setUTCHours(24, 0, 0, 0);
+				const rateLimitResetsAt = resetDate.toISOString();
+
+				const dailyLimit   = isFree ? FREE_TIER_DAILY_LIMIT : null;
+				const monthlyLimit = isFree ? 15000 : null;
+				const pctToday     = isFree && dailyLimit ? Math.round((requestsToday / dailyLimit) * 1000) / 10 : 0;
+				const pctMonth     = isFree && monthlyLimit ? Math.round((requestsThisMonth / monthlyLimit) * 1000) / 10 : 0;
+
+				return json({
+					key_prefix:              keyPrefix,
+					plan:                    usageAuth.plan,
+					requests_today:          requestsToday,
+					requests_this_month:     requestsThisMonth,
+					daily_limit:             dailyLimit,
+					monthly_limit:           monthlyLimit,
+					percent_used_today:      pctToday,
+					percent_used_month:      pctMonth,
+					rate_limit_resets_at:    rateLimitResetsAt,
+					upgrade_url:             'https://headlessoracle.com/pricing',
+					x402_available:          !!env.ORACLE_PAYMENT_ADDRESS,
+					x402_amount:             '0.001 USDC',
+					credit_balance:          creditBalance,
+				});
+			}
+
+			// ── GET /v5/traction — public live metrics snapshot ──────────
+			// Shows exchanges covered, uptime, MCP usage, and stack positioning.
+			// No auth required. Suitable for investor / partner check-ins.
+			if (url.pathname === '/v5/traction') {
+				const today  = new Date().toISOString().slice(0, 10);
+				const prefix = `mcp_clients:${today}:`;
+				let mcpRequestsToday  = 0;
+				let mcpClientsToday   = 0;
+				try {
+					const list = await env.ORACLE_TELEMETRY.list({ prefix });
+					mcpClientsToday = list.keys.length;
+					if (list.keys.length > 0) {
+						const records = await Promise.all(
+							list.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name)),
+						);
+						for (const r of records) {
+							if (r) {
+								const parsed = JSON.parse(r) as { request_count?: number };
+								mcpRequestsToday += parsed.request_count ?? 0;
+							}
+						}
+					}
+				} catch { /* KV unavailable — return zeros */ }
+
+				const currentYear = now.getUTCFullYear();
+				const uptimeSince = '2026-03-10T08:00:00Z';
+				const daysLive    = Math.floor((Date.now() - new Date(uptimeSince).getTime()) / 86400000);
+
+				return json({
+					exchanges_covered:        SUPPORTED_EXCHANGES.length,
+					edge_cases_per_year:      edgeCaseCount(currentYear).total,
+					uptime_since:             uptimeSince,
+					days_live:                daysLive,
+					mcp_requests_today:       mcpRequestsToday,
+					unique_mcp_clients_today: mcpClientsToday,
+					sma_spec_version:         '1.0',
+					verifiable_intent_rfc:    'submitted',
+					x402_enabled:             !!env.ORACLE_PAYMENT_ADDRESS,
+					halt_monitor:             'active',
+				});
+			}
+
 			// ── POST /v5/keys/request — free tier key provisioning ────────
 			// No auth required. Validates email, generates ho_free_ key,
 			// stores in KV + Supabase, sends via Resend.
@@ -4986,14 +5296,32 @@ export default {
 							'Content-Type':  'application/json',
 						},
 						body: JSON.stringify({
-							from:    'Headless Oracle <keys@headlessoracle.com>',
+							from:    'Mike at Headless Oracle <mike@headlessoracle.com>',
 							to:      [normalizedEmail],
-							subject: 'Your free Headless Oracle API key',
-							html: `<p>Here is your free Headless Oracle API key (save this — it will not be shown again):</p>
-<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
+							subject: 'Your Headless Oracle API key',
+							html: `<p>Hey,</p>
+
+<p>Your Headless Oracle API key is below — keep this safe, it won’t be shown again:</p>
+
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px;font-family:monospace">${keyValue}</pre>
+
 <p>Use it as the <code>X-Oracle-Key</code> header when calling <code>https://headlessoracle.com/v5/status</code>.</p>
-<p>Free tier is rate-limited. Upgrade anytime at <a href="https://headlessoracle.com/pricing">headlessoracle.com/pricing</a>.</p>
-<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
+
+<p><strong>Good starting points:</strong></p>
+<ul>
+  <li><a href="https://headlessoracle.com/docs/integrations/datacamp-workspace">DataLab / Jupyter integration guide</a> — most comprehensive walkthrough</li>
+  <li><a href="https://headlessoracle.com/docs">Full documentation</a></li>
+  <li><a href="https://headlessoracle.com/v5/stack">Where Oracle fits in the autonomous finance stack</a></li>
+  <li><a href="https://github.com/agent-intent/verifiable-intent/pulls">External State Attestation RFC</a> — the protocol we submitted to Mastercard’s Verifiable Intent framework today</li>
+</ul>
+
+<p><strong>When you hit the free tier limit (500 req/day):</strong><br>
+You can pay per-request with 0.001 USDC on Base mainnet — no subscription needed. Details at <a href="https://headlessoracle.com/docs/x402-payments">headlessoracle.com/docs/x402-payments</a>.</p>
+
+<p>Reply to this email if you have any questions — happy to jump on a call if you’re building something interesting.</p>
+
+<p>Mike<br>
+<a href="mailto:mike@headlessoracle.com">mike@headlessoracle.com</a></p>`,
 						}),
 					});
 					if (!emailRes.ok) {
@@ -5199,33 +5527,33 @@ export default {
 				const msg = err instanceof Error ? err.message : 'unknown error';
 				console.error(`NPM_TRACKING_ERROR: ${msg}`);
 			}
-		} else if (event.cron === '0 9 28 3 *') {
-			// EU/UK DST spring-forward reminder — fires March 28 (one day before transition).
-			// UK and EU clocks spring forward on the last Sunday of March (March 29, 2026).
-			// XLON (London) and XPAR (Paris) are affected.
-			console.log(JSON.stringify({
-				event:             'DST_REMINDER',
-				type:              'spring_forward',
-				region:            'EU_UK',
-				transition_date:   'March 29',
-				affected_exchanges: ['XLON', 'XPAR'],
-				impact:            'UK clocks GMT→BST (UTC+0→UTC+1), EU clocks CET→CEST (UTC+1→UTC+2)',
-				action_required:   'Verify schedule-based logic is using IANA timezone names, not hardcoded UTC offsets. Headless Oracle handles this automatically.',
-				sampled_at:        new Date().toISOString(),
-			}));
-		} else if (event.cron === '0 9 25 10 *') {
-			// EU/UK DST fall-back reminder — fires October 25 (transition day).
-			// UK and EU clocks fall back on the last Sunday of October (October 25, 2026).
-			console.log(JSON.stringify({
-				event:             'DST_REMINDER',
-				type:              'fall_back',
-				region:            'EU_UK',
-				transition_date:   'October 25',
-				affected_exchanges: ['XLON', 'XPAR'],
-				impact:            'UK clocks BST→GMT (UTC+1→UTC+0), EU clocks CEST→CET (UTC+2→UTC+1)',
-				action_required:   'Verify schedule-based logic is using IANA timezone names, not hardcoded UTC offsets. Headless Oracle handles this automatically.',
-				sampled_at:        new Date().toISOString(),
-			}));
+			// EU/UK DST reminders — checked daily at 09:00 UTC to stay within the 5-cron limit.
+			// March 28: one day before EU/UK spring-forward (last Sunday of March).
+			// October 25: EU/UK fall-back day (last Sunday of October).
+			const todayMD = new Date().toISOString().slice(5, 10); // MM-DD
+			if (todayMD === '03-28') {
+				console.log(JSON.stringify({
+					event:              'DST_REMINDER',
+					type:               'spring_forward',
+					region:             'EU_UK',
+					transition_date:    'March 29',
+					affected_exchanges: ['XLON', 'XPAR'],
+					impact:             'UK clocks GMT\u2192BST (UTC+0\u2192UTC+1), EU clocks CET\u2192CEST (UTC+1\u2192UTC+2)',
+					action_required:    'Verify schedule-based logic is using IANA timezone names, not hardcoded UTC offsets. Headless Oracle handles this automatically.',
+					sampled_at:         new Date().toISOString(),
+				}));
+			} else if (todayMD === '10-25') {
+				console.log(JSON.stringify({
+					event:              'DST_REMINDER',
+					type:               'fall_back',
+					region:             'EU_UK',
+					transition_date:    'October 25',
+					affected_exchanges: ['XLON', 'XPAR'],
+					impact:             'UK clocks BST\u2192GMT (UTC+1\u2192UTC+0), EU clocks CEST\u2192CET (UTC+2\u2192UTC+1)',
+					action_required:    'Verify schedule-based logic is using IANA timezone names, not hardcoded UTC offsets. Headless Oracle handles this automatically.',
+					sampled_at:         new Date().toISOString(),
+				}));
+			}
 		} else if (event.cron === '0 17 * * *') {
 			// Scan today's MCP client aggregates in KV and log a summary.
 			// Identifies high-engagement anonymous clients (>10 requests/day) for conversion.
@@ -5275,6 +5603,10 @@ export default {
 				const msg = err instanceof Error ? err.message : 'unknown error';
 				console.error(`MCP_SUMMARY_ERROR: ${msg}`);
 			}
+		} else if (event.cron === '0 9 * * 1') {
+			// Weekly digest — runs Monday 09:00 UTC.
+			// Summarises past 7 days of MCP client activity and writes weekly_digest KV key.
+			await runWeeklyDigest(env);
 		}
 	},
 };

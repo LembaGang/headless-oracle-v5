@@ -1,4 +1,4 @@
-import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
+import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
 import { describe, it, expect, vi } from 'vitest';
 import worker, { edgeCaseCount } from '../src';
 
@@ -3308,5 +3308,226 @@ describe('Session M: REALTIME source validity', () => {
 		} finally {
 			await env.ORACLE_OVERRIDES.delete('XPAR');
 		}
+	});
+});
+
+// ─── Session Q: GET /v5/usage ─────────────────────────────────────────────────
+
+describe('Session Q: GET /v5/usage', () => {
+	it('returns 401 when no API key provided', async () => {
+		const response = await fetchWorker('/v5/usage');
+		expect(response.status).toBe(401);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
+	});
+
+	it('returns 403 when invalid API key provided', async () => {
+		const response = await fetchWorker('/v5/usage', {
+			headers: { 'X-Oracle-Key': 'invalid_key_that_does_not_exist' },
+		});
+		expect(response.status).toBe(403);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
+	});
+
+	it('returns 200 with correct shape for valid (master) key', async () => {
+		const body = await fetchJSON('/v5/usage', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(body).toHaveProperty('key_prefix');
+		expect(body).toHaveProperty('plan');
+		expect(body).toHaveProperty('requests_today');
+		expect(body).toHaveProperty('requests_this_month');
+		expect(body).toHaveProperty('rate_limit_resets_at');
+		expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/pricing');
+		expect(body).toHaveProperty('x402_available');
+		expect(body).toHaveProperty('x402_amount', '0.001 USDC');
+		expect(body).toHaveProperty('credit_balance');
+	});
+
+	it('paid key returns null limits and 0 usage counts', async () => {
+		const body = await fetchJSON('/v5/usage', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		// Master key is 'internal' plan — not a free plan, so limits are null
+		expect(body.daily_limit).toBeNull();
+		expect(body.monthly_limit).toBeNull();
+		expect(body.requests_today).toBe(0);
+		expect(body.requests_this_month).toBe(0);
+	});
+
+	it('free key returns daily_limit of 500 and non-null limits', async () => {
+		// Provision a free key in KV
+		const freeKey  = 'ho_free_test_usage_endpoint_key0001';
+		const keyHash  = await sha256Hex(freeKey);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			const body = await fetchJSON('/v5/usage', {
+				headers: { 'X-Oracle-Key': freeKey },
+			});
+			expect(body.plan).toBe('free');
+			expect(body.daily_limit).toBe(500);
+			expect(body.monthly_limit).toBe(15000);
+			expect(typeof body.percent_used_today).toBe('number');
+			expect(typeof body.percent_used_month).toBe('number');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+		}
+	});
+});
+
+// ─── Session Q: GET /v5/traction ─────────────────────────────────────────────
+
+describe('Session Q: GET /v5/traction', () => {
+	it('returns 200 with correct shape', async () => {
+		const body = await fetchJSON('/v5/traction');
+		expect(body).toHaveProperty('exchanges_covered', 23);
+		expect(body).toHaveProperty('sma_spec_version', '1.0');
+		expect(body).toHaveProperty('verifiable_intent_rfc', 'submitted');
+		expect(body).toHaveProperty('halt_monitor', 'active');
+		expect(body).toHaveProperty('uptime_since', '2026-03-10T08:00:00Z');
+		expect(body).toHaveProperty('days_live');
+		expect(typeof body.days_live).toBe('number');
+		expect(body.days_live as number).toBeGreaterThanOrEqual(0);
+		expect(body).toHaveProperty('mcp_requests_today');
+		expect(body).toHaveProperty('unique_mcp_clients_today');
+		expect(body).toHaveProperty('x402_enabled');
+		expect(typeof body.edge_cases_per_year).toBe('number');
+		expect(body.edge_cases_per_year as number).toBeGreaterThan(0);
+	});
+
+	it('returns 200 without auth', async () => {
+		const response = await fetchWorker('/v5/traction');
+		expect(response.status).toBe(200);
+	});
+});
+
+// ─── Session Q: Soft rate-limit warning headers ───────────────────────────────
+
+describe('Session Q: Soft rate-limit warning headers', () => {
+	it('no warning headers when usage is below 80%', async () => {
+		const key     = 'ho_free_test_ratelimit_warn_low_key0';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		// 400 requests out of 500 = 80% exactly — boundary, use 399 for "below"
+		await env.ORACLE_TELEMETRY.put(
+			`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`,
+			'399',
+			{ expirationTtl: 3600 },
+		);
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': key },
+			});
+			expect(response.headers.get('X-RateLimit-Warning')).toBeNull();
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`);
+		}
+	});
+
+	it('adds warning headers when usage is at 80%', async () => {
+		const key     = 'ho_free_test_ratelimit_warn_80_key00';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		// 400 requests out of 500 = 80%
+		await env.ORACLE_TELEMETRY.put(
+			`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`,
+			'400',
+			{ expirationTtl: 3600 },
+		);
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': key },
+			});
+			expect(response.headers.get('X-RateLimit-Warning')).toBe('true');
+			expect(response.headers.get('X-RateLimit-Upgrade-URL')).toContain('pricing');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`);
+		}
+	});
+
+	it('adds 95% warning message when usage is at 95%', async () => {
+		const key     = 'ho_free_test_ratelimit_warn_95_key00';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		// 475 requests out of 500 = 95%
+		await env.ORACLE_TELEMETRY.put(
+			`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`,
+			'475',
+			{ expirationTtl: 3600 },
+		);
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': key },
+			});
+			expect(response.headers.get('X-RateLimit-Warning')).toBe('true');
+			const msg = response.headers.get('X-RateLimit-Warning-Message');
+			expect(msg).toContain('95%');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`);
+		}
+	});
+});
+
+// ─── Session Q: 402 response includes founder_note ───────────────────────────
+
+describe('Session Q: 402 response includes founder_note', () => {
+	it('402 PAYMENT_REQUIRED response includes founder_note field', async () => {
+		const key     = 'ho_free_test_founder_note_key000001';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		// Exhaust daily limit
+		await env.ORACLE_TELEMETRY.put(
+			`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`,
+			'500',
+			{ expirationTtl: 3600 },
+		);
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': key },
+			});
+			expect(response.status).toBe(402);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('founder_note');
+			expect(typeof body.founder_note).toBe('string');
+			expect((body.founder_note as string).length).toBeGreaterThan(10);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`);
+		}
+	});
+});
+
+// ─── Session Q: Weekly digest cron ───────────────────────────────────────────
+
+describe('Session Q: Weekly digest cron', () => {
+	it('weekly digest cron runs without error and writes KV key', async () => {
+		// Seed some MCP client data
+		const today = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_TELEMETRY.put(`mcp_clients:${today}:aabbcc`, JSON.stringify({
+			request_count: 5, asn_org: 'Google LLC', country: 'US', city: 'Council Bluffs',
+		}));
+		await env.ORACLE_TELEMETRY.put(`mcp_clients:${today}:ddeeff`, JSON.stringify({
+			request_count: 3, asn_org: 'Microsoft', country: 'US', city: 'Redmond',
+		}));
+
+		// Trigger the cron
+		const scheduledController = createScheduledController({ scheduledTime: Date.now(), cron: '0 9 * * 1' });
+		const ctx = createExecutionContext();
+		await worker.scheduled(scheduledController, env, ctx);
+		await waitOnExecutionContext(ctx);
+
+		// The digest should be written to KV
+		// Just check no error was thrown; the key name depends on getISOWeek(new Date())
+		// Confirm KV write happened by listing weekly_digest keys
+		const list = await env.ORACLE_TELEMETRY.list({ prefix: 'weekly_digest:' });
+		expect(list.keys.length).toBeGreaterThanOrEqual(1);
+
+		// Cleanup
+		await env.ORACLE_TELEMETRY.delete(`mcp_clients:${today}:aabbcc`);
+		await env.ORACLE_TELEMETRY.delete(`mcp_clients:${today}:ddeeff`);
 	});
 });

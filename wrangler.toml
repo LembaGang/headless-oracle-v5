@@ -84,11 +84,14 @@ id = "6fcde4c94b6b40f1913a44f410a06c5d"
 #   /webhooks/paddle — Paddle retries on non-200; rate limiting would break retry logic
 
 # ─── Cron Triggers ────────────────────────────────────────────────────────────
-# scheduled() handler in src/index.ts fetches npm download stats for
-# @headlessoracle/verify and logs them. Runs daily at 09:00 UTC.
+# * * * * *   — real-time halt monitor (every minute)
+# 0 9 * * *   — npm downloads + EU DST date-check reminders (March 28, October 25)
+# 0 17 * * *  — MCP client daily summary (high-engagement detection)
+# 0 9 * * 1   — weekly digest (Monday 09:00 UTC, MCP client analytics)
+# Free plan limit: 5 cron triggers. DST reminders consolidated into 0 9 * * *.
 # View logs: Cloudflare Dashboard → Workers → headless-oracle-v5 → Logs
 [triggers]
-crons = ["* * * * *", "0 9 * * *", "0 17 * * *", "0 9 28 3 *", "0 9 25 10 *"]
+crons = ["* * * * *", "0 9 * * *", "0 17 * * *", "0 9 * * 1"]
 
 [observability]
 enabled = true

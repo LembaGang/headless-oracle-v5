@@ -2,12 +2,25 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch (HN March 10). Developer gravity loop active.
-**Test suite**: 345/345 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All + /v5/credits/purchase, /v5/credits/balance, /v5/status/realtime — /v5/demo, /v5/health, /v5/exchanges, /v5/schedule, /v5/keys, /v5/batch, /v5/metrics, /v5/compliance, /v5/credits/purchase, /v5/credits/balance, /v5/status/realtime, /robots.txt, /llms.txt, /SKILL.md, /.well-known/oracle-keys.json, /.well-known/agent.json, /openapi.json
+**Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
+**Test suite**: 357/357 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including new /v5/usage (auth) and /v5/traction (public)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 17 2026 — Accuracy Audit: all surfaces updated to 23 exchanges (345 tests):
+**Last significant work**: Mar 17 2026 (evening) — Sessions Q+R+S: conversion infrastructure (357 tests):
+  - GET /v5/usage (auth) — per-key usage stats, free tier limits, credit balance, upgrade info
+  - GET /v5/traction (public) — live metrics snapshot for investor/partner check-ins
+  - Soft rate-limit warning headers at 80%/95% free tier usage (X-RateLimit-Warning etc.)
+  - Design partner detection at >200 req/day (DESIGN_PARTNER_CANDIDATE log, KV dedup)
+  - Key request email rewritten with founder-personal tone + conversion links
+  - 402 response includes founder_note humanising the payment gate
+  - Weekly digest cron (0 9 * * 1) — MCP client analytics summary to KV
+  - DST reminder crons consolidated into daily 0 9 * * * (Cloudflare 5-cron limit respected)
+  - OpenAPI + AGENT_JSON + LLMS_TXT updated with new endpoints
+  - Outreach assets: docs/outreach/ (3 files), docs/investor-one-pager.md, docs/design-partner-pitch.md
+  - Deployed (Version 79a18a2f). Pushed to main.
+  - 357/357 tests passing.
+**Previous significant work**: Mar 17 2026 — Accuracy Audit: all surfaces updated to 23 exchanges (345 tests):
   - src/index.ts: MCP initialize instructions, OpenAPI health endpoint exchange_count, compliance settlement_window evidence
   - smithery.yaml: full rewrite to 23 exchanges, all 23 MICs in tool descriptions
   - OPERATOR_RUNBOOK.md: 7->23 count + expanded MIC list

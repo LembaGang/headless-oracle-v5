@@ -322,3 +322,46 @@ Full audit performed to update all "7 exchanges" references to "23 exchanges" ac
 
 **Supported MIC codes (all 23):**
 XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
+
+## Sprint Log — Sessions Q+R+S (March 17 2026 Evening)
+
+### New Endpoints
+- **GET /v5/usage** (auth required) — per-key usage stats: requests today/month, daily/monthly limits, percent used, rate_limit_resets_at, upgrade_url, x402_available, credit_balance. Free keys get real counts; paid keys get null limits and 0 counts.
+- **GET /v5/traction** (public) — live metrics snapshot: exchanges_covered, edge_cases_per_year, uptime_since, days_live, mcp_requests_today, unique_mcp_clients_today, sma_spec_version, verifiable_intent_rfc, x402_enabled, halt_monitor.
+
+### Conversion Infrastructure
+- **Soft rate-limit warning headers** — at 80% free tier usage: X-RateLimit-Warning + X-RateLimit-Warning-Message + X-RateLimit-Upgrade-URL headers added to /v5/status responses. At 95%: more urgent message.
+- **Design partner detection** — when free tier key exceeds 200 req/day, logs DESIGN_PARTNER_CANDIDATE event to Workers Logs once per key per day (KV dedup: `design_partner:{keyHash}:{date}`).
+- **Key request email updated** — from `keys@headlessoracle.com` → `mike@headlessoracle.com`. Subject updated. HTML rewritten with founder-personal tone, 4 starting point links, x402 instructions, direct reply CTA.
+- **402 response humanised** — `founder_note` field added to all 402 PAYMENT_REQUIRED responses: "You're hitting our limits — that means you're building something real. Reply to hello@headlessoracle.com..."
+
+### Weekly Digest Cron
+- Added `0 9 * * 1` (Monday 09:00 UTC) weekly digest cron. Summarises past 7 days of MCP client activity, writes `weekly_digest:{YYYY-WW}` to ORACLE_TELEMETRY KV (90-day TTL).
+- **Note**: Cloudflare free plan has 5-cron limit. Merged EU DST reminders (formerly `0 9 28 3 *` and `0 9 25 10 *`) into the `0 9 * * *` daily cron via date-check. Net crons: 4 (`* * * * *`, `0 9 * * *`, `0 17 * * *`, `0 9 * * 1`).
+
+### Outreach Assets
+- `docs/outreach/blackskyorg-followup.md` — Wednesday follow-up email for BlackSky.org
+- `docs/outreach/cryptosignal-followup.md` — GitHub comment reply to Johnson
+- `docs/outreach/google-cloud-operator-post.md` — X/Twitter post for Google Cloud cluster operator
+- `docs/investor-one-pager.md` — one-page investor summary
+- `docs/design-partner-pitch.md` — 10-slide deck outline for design partner conversations
+
+### URL Audit Results (Task S1)
+- `/docs/integrations/datacamp-workspace` — 200 ✓ (content served by Pages)
+- `/docs/integrations/bun` — 200 ✓ (content served by Pages)
+- `/docs/x402-payments` — 200 ✓ (content served by Pages)
+- `/v5/compliance` — 200 ✓ (JSON, correct content)
+- `/v5/stack` — 200 ✓ (JSON, correct content)
+- `/v5/traction` — 200 ✓ (live, just deployed)
+- `/v5/usage` — 401 ✓ (correct — auth required)
+- `/docs/rfc` — serves index.html (no dedicated route; the RFC is at /docs/rfc-external-state-attestation)
+
+### Verifiable Intent PR Check (Task S2)
+- **PR visible** at github.com/agent-intent/verifiable-intent/pulls — "RFC: Add External State Attestation constraint type for autonomous execution" is live in the PR list.
+
+### Tests
+- **357/357 tests passing**
+- New tests added: GET /v5/usage (401/403/200/shape), GET /v5/traction (shape/no-auth), soft warning headers (80%/95%/below-80%), 402 founder_note, weekly digest cron KV write.
+
+### Deploy
+- Worker Version: 79a18a2f-09ff-4953-841d-52775024c8e7
