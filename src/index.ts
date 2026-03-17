@@ -3492,6 +3492,62 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/stack': {
+			get: {
+				summary:     'Autonomous finance stack positioning',
+				description: 'Returns the three-layer autonomous finance stack showing where Headless Oracle fits: ' +
+					'Authorization (Verifiable Intent), Execution (BVNK), and Verification (Headless Oracle SMA). ' +
+					'No authentication required.',
+				responses: {
+					'200': {
+						description: 'Stack positioning document',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							required: ['stack', 'description', 'reference_implementation'],
+							properties: {
+								stack: {
+									type: 'object',
+									required: ['layer_1', 'layer_2', 'layer_3'],
+									properties: {
+										layer_1: {
+											type: 'object',
+											required: ['name', 'standard', 'url'],
+											properties: {
+												name:     { type: 'string', example: 'Authorization' },
+												standard: { type: 'string', example: 'Mastercard Verifiable Intent' },
+												url:      { type: 'string', format: 'uri', example: 'https://verifiableintent.dev' },
+											},
+										},
+										layer_2: {
+											type: 'object',
+											required: ['name', 'standard', 'url'],
+											properties: {
+												name:     { type: 'string', example: 'Execution' },
+												standard: { type: 'string', example: 'BVNK Layer1 / Mastercard' },
+												url:      { type: 'string', format: 'uri', example: 'https://bvnk.com' },
+											},
+										},
+										layer_3: {
+											type: 'object',
+											required: ['name', 'standard', 'url'],
+											properties: {
+												name:       { type: 'string', example: 'Verification' },
+												standard:   { type: 'string', example: 'Headless Oracle SMA Protocol v1.0' },
+												url:        { type: 'string', format: 'uri', example: 'https://headlessoracle.com' },
+												rfc:        { type: 'string', format: 'uri' },
+												compliance: { type: 'string', format: 'uri' },
+											},
+										},
+									},
+								},
+								description:              { type: 'string' },
+								reference_implementation: { type: 'string', format: 'uri', example: 'https://headlessoracle.com/v5/compliance' },
+							},
+						} } },
+					},
+				},
+			},
+		},
 		'/.well-known/agent.json': {
 			get: {
 				summary:     'Structured agent metadata',
