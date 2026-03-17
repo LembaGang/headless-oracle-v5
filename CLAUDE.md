@@ -62,6 +62,12 @@ When ORACLE_TELEMETRY daily unique clients approaches 100/day, add cursor pagina
 
 When daily unique MCP clients approaches 100, refactor /v5/metrics to read a pre-aggregated `metrics:{date}` key written by the 17:00 cron instead of fanning out list()+get() at request time. Current implementation reads all today's client keys on every request — acceptable at low volume, latency cliff at scale.
 
+When paid x402 requests approach 100/day: cache verified Base mainnet tx receipts server-side to eliminate repeated RPC round-trips. Current implementation makes 2 sequential RPC calls per paid request (eth_getTransactionReceipt + eth_getBlockByNumber). At scale this adds latency tail. Fix: maintain a server-side cache of verified txHashes with 300s TTL in ORACLE_TELEMETRY KV.
+
+When daily unique MCP clients approaches 100: add cursor pagination to the 17:00 cron KV list() call — current implementation silently truncates at 1,000 keys.
+
+When daily unique MCP clients approaches 100: refactor /v5/metrics to read a pre-aggregated metrics:{date} key written by the 17:00 cron instead of fanning out list()+get() per request.
+
 When telemetry integrity matters commercially (e.g. billing disputes, audit requirements): add X-Proxy-Token shared secret validation in the headlessoracle proxy Worker and verify it in headless-oracle-v5 handleMcp before trusting X-Original-* headers. Currently X-Original-* headers can be spoofed by any direct caller.
 
 ## Circuit Breaker Overrides (KV)
