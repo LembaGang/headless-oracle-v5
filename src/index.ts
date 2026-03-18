@@ -31,6 +31,8 @@ export interface Env {
 	ORACLE_PAYMENT_ADDRESS?:     string;  // Base mainnet wallet for USDC micropayments
 	// Real-time halt monitoring — optional Polygon.io API key for enhanced data
 	POLYGON_API_KEY?:            string;  // polygon.io API key — optional; public Alpaca feed used if absent
+	// Launch date for /v5/traction days_live counter — set via wrangler.toml [vars]
+	LAUNCH_DATE?:                string;  // ISO 8601 UTC timestamp of go-live; defaults to 2026-03-10T08:00:00Z
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -5206,8 +5208,9 @@ export default {
 				} catch { /* KV unavailable — return zeros */ }
 
 				const currentYear = now.getUTCFullYear();
-				const uptimeSince = '2026-03-10T08:00:00Z';
-				const launchMidnight = Date.UTC(2026, 2, 10);
+				const uptimeSince = env.LAUNCH_DATE ?? '2026-03-10T08:00:00Z';
+				const launchDate     = new Date(uptimeSince);
+				const launchMidnight = Date.UTC(launchDate.getUTCFullYear(), launchDate.getUTCMonth(), launchDate.getUTCDate());
 				const todayMidnight  = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
 				const daysLive       = Math.floor((todayMidnight - launchMidnight) / 86400000);
 

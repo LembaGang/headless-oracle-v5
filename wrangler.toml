@@ -27,6 +27,8 @@ routes = [
 [vars]
 PUBLIC_KEY_ID = "key_2026_v1"
 CURRENT_TERMS_VERSION = "v5.0-2026"
+# Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
+LAUNCH_DATE = "2026-03-10T08:00:00Z"
 
 # ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
 # Used for circuit breaker halts and emergency market status overrides.
