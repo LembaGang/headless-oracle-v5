@@ -40,7 +40,7 @@ The receipt is Ed25519-signed, includes `expires_at` (60s TTL), and encodes `OPE
 
 **Fix cost**: 0.001 USDC per oracle call. Incident cost: $47,000.
 
-We're using [Headless Oracle](https://headlessoracle.com) — free tier is 500 req/day. The MCP server works with Claude if you want to just check: `curl https://headlessoracle.com/v5/demo`.
+We're using [Headless Oracle](https://headlessoracle.com/v5/demo?mic=XNYS&utm_source=hn&utm_campaign=dst-postmortem) — free tier is 500 req/day. The MCP server works with Claude if you want to just check: `curl https://headlessoracle.com/v5/demo?mic=XNYS&utm_source=hn&utm_campaign=dst-postmortem`.
 
 ---
 

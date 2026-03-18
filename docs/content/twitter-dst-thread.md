@@ -84,7 +84,7 @@ Check whether they'll still be correct on March 29 (UK/EU DST) and November 1 (U
 
 Or delete the timezone logic entirely.
 
-Free tier: headlessoracle.com/v5/demo
+Free tier: headlessoracle.com/v5/demo?mic=XNYS&utm_source=twitter&utm_campaign=dst-postmortem
 
 ---
 

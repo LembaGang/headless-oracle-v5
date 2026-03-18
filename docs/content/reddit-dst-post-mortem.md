@@ -120,4 +120,4 @@ The oracle call costs 0.001 USDC. The incident cost $47,000.
 
 ---
 
-*We're using [Headless Oracle](https://headlessoracle.com) now — it's an Ed25519-signed market status API with a free tier. There are other solutions too. The specific tool matters less than the principle: verify, don't compute.*
+*We're using [Headless Oracle](https://headlessoracle.com/v5/demo?mic=XNYS&utm_source=reddit&utm_campaign=dst-postmortem) now — it's an Ed25519-signed market status API with a free tier. There are other solutions too. The specific tool matters less than the principle: verify, don't compute.*
