@@ -323,6 +323,29 @@ Full audit performed to update all "7 exchanges" references to "23 exchanges" ac
 **Supported MIC codes (all 23):**
 XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
 
+## Sprint Log — Sessions T+U+V (March 18 2026)
+
+### Content
+- **docs/content/dst-post-mortem-simulation.md** — Full technical post-mortem simulation: $47K loss, 47 minutes after NYSE close, DST transition root cause, before/after code diff (47 lines → 3 lines), dry peer-reviewed tone, "The oracle call costs 0.001 USDC. The incident cost $47,000."
+- **docs/content/reddit-dst-post-mortem.md** — First-person r/algotrading adaptation, 800–1000 words, same code diff, Reddit voice.
+- **docs/content/hn-dst-post-mortem.md** — Hacker News format with 5 anticipated comment/response pairs (monitoring, timezone libs, retry logic, Ed25519 latency, NTP alternative).
+- **docs/content/twitter-dst-thread.md** — 6-tweet thread: hook → timeline → root cause → diff → cost comparison → lesson + CTA.
+
+### Website (headless-oracle-web)
+- **traction.html** — Live traction page at headlessoracle.com/traction. Fetches /v5/traction on load, auto-refreshes every 60s with countdown. Shows: exchanges, edge cases/year, days live, MCP requests/clients today, SMA spec version, Verifiable Intent RFC status, x402 status, halt monitor status. Raw JSON panel. Canonical tag included.
+- **Canonical URL tags** — Added `<link rel="canonical">` to all 8 HTML pages (index, docs, pricing, status, verify, terms, privacy, refund). Prevents duplicate content issues as site grows.
+- **"Live traction →" footer link** — Added to index.html footer alongside existing footer links.
+
+### Conversion Audit (Session U)
+- /v5/traction: already in OpenAPI spec (line 3685) and llms.txt (line 2741) — confirmed.
+- DESIGN_PARTNER_CANDIDATE: fires in test suite logs at >=500 req/day — confirmed working.
+- URL verification: cannot fetch live URLs from local environment — manual verification recommended.
+
+### Deploy
+- Worker Version: 744beecf-0fde-4fb7-b216-378c0c2a48b8
+- Pages: eeeac649.headless-oracle-web.pages.dev
+- 357/357 tests passing. Both repos pushed.
+
 ## Sprint Log — Sessions Q+R+S (March 17 2026 Evening)
 
 ### New Endpoints

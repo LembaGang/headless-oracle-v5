@@ -7,7 +7,14 @@
 **Live endpoints**: All including new /v5/usage (auth) and /v5/traction (public)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 17 2026 (evening) — Sessions Q+R+S: conversion infrastructure (357 tests):
+**Last significant work**: Mar 18 2026 — Sessions T+U+V: DST post-mortem content, traction page, conversion audit (357 tests):
+  - docs/content/ created with 4 DST post-mortem files (full technical, Reddit, HN, Twitter thread)
+  - Session U audit: /v5/traction confirmed in OpenAPI spec and llms.txt; DESIGN_PARTNER_CANDIDATE fires in test logs
+  - traction.html live — fetches /v5/traction, auto-refreshes every 60s, linked from index.html footer
+  - Canonical URL tags added to all 8 HTML pages (index, docs, pricing, status, verify, terms, privacy, refund)
+  - Worker deployed (Version 744beecf). Pages deployed. Both repos pushed to main.
+  - 357/357 tests passing.
+**Previous significant work**: Mar 17 2026 (evening) — Sessions Q+R+S: conversion infrastructure (357 tests):
   - GET /v5/usage (auth) — per-key usage stats, free tier limits, credit balance, upgrade info
   - GET /v5/traction (public) — live metrics snapshot for investor/partner check-ins
   - Soft rate-limit warning headers at 80%/95% free tier usage (X-RateLimit-Warning etc.)
