@@ -5207,7 +5207,9 @@ export default {
 
 				const currentYear = now.getUTCFullYear();
 				const uptimeSince = '2026-03-10T08:00:00Z';
-				const daysLive    = Math.floor((Date.now() - new Date(uptimeSince).getTime()) / 86400000);
+				const launchMidnight = Date.UTC(2026, 2, 10);
+				const todayMidnight  = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+				const daysLive       = Math.floor((todayMidnight - launchMidnight) / 86400000);
 
 				return json({
 					exchanges_covered:        SUPPORTED_EXCHANGES.length,
