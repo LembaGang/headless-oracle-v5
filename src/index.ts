@@ -1307,7 +1307,10 @@ async function signPayload(payload: Record<string, string>, privKeyHex: string):
 //   4. KV miss        — lookup Supabase, warm KV, then check status
 //   5. Not found      — 403
 
-type AuthResult = { allowed: true; plan: string } | { allowed: false; status: 402 | 403; error: string; message: string };
+// keyHash is included when the key was authenticated via KV or Supabase (steps 3–4).
+// It is absent for MASTER_API_KEY and BETA_API_KEYS (which have no Supabase row).
+// Callers use it to update last_used_at without re-hashing.
+type AuthResult = { allowed: true; plan: string; keyHash?: string } | { allowed: false; status: 402 | 403; error: string; message: string };
 
 async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	// Step 1: master key — fastest possible path
@@ -1327,7 +1330,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 		const cached = await env.ORACLE_API_KEYS.get(keyHash);
 		if (cached) {
 			const { plan, status } = JSON.parse(cached) as { plan: string; status: string };
-			if (status === 'active') return { allowed: true, plan };
+			if (status === 'active') return { allowed: true, plan, keyHash };
 			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
@@ -1351,13 +1354,39 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 					{ expirationTtl: 300 },
 				);
 			}
-			if (data.status === 'active') return { allowed: true, plan: data.plan };
+			if (data.status === 'active') return { allowed: true, plan: data.plan, keyHash };
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
 	}
 
 	// Step 5: not found anywhere
 	return { allowed: false, status: 403, error: 'INVALID_API_KEY', message: 'Invalid API key' };
+}
+
+// ─── Key Usage Tracking ───────────────────────────────────────────────────────
+// Called after every successful authenticated request for keys tracked in Supabase.
+// Updates last_used_at. Non-blocking — always called via ctx.waitUntil().
+//
+// NOTE: request_count increment requires a DB migration and a Supabase RPC function
+// for atomic increment (PostgREST cannot do column += 1 without raw SQL).
+// Human task: ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS request_count integer NOT NULL DEFAULT 0;
+// Then add a Supabase function: CREATE OR REPLACE FUNCTION increment_key_usage(p_key_hash text)
+//   RETURNS void AS $$ UPDATE api_keys SET last_used_at = now(), request_count = request_count + 1
+//   WHERE key_hash = p_key_hash; $$ LANGUAGE sql;
+// And call via: supabase.rpc('increment_key_usage', { p_key_hash: keyHash })
+
+async function updateKeyUsage(keyHash: string, env: Env): Promise<void> {
+	if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return;
+	try {
+		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+		const { error } = await supabase
+			.from('api_keys')
+			.update({ last_used_at: new Date().toISOString() })
+			.eq('key_hash', keyHash);
+		if (error) console.error(`USAGE_TRACK_ERROR: ${error.message}`);
+	} catch (e) {
+		console.error(`USAGE_TRACK_EXCEPTION: ${e instanceof Error ? e.message : String(e)}`);
+	}
 }
 
 // ─── Paddle Webhook Signature Verification ────────────────────────────────────
@@ -4286,9 +4315,14 @@ export default {
 					const authHeaders = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 					return json({ error: auth.error, message: auth.message }, auth.status, authHeaders);
 				}
+				// Update last_used_at for keys tracked in Supabase (non-blocking, best-effort).
+				if (auth.keyHash && typeof ctx?.waitUntil === 'function') {
+					ctx.waitUntil(updateKeyUsage(auth.keyHash, env).catch(() => {}));
+				}
 				// ── Free tier daily limit + x402 micropayment gate ───────────
 				if (auth.plan === 'free') {
-					const keyHash = await sha256Hex(apiKey);
+					// Reuse keyHash from auth result — avoids a redundant sha256 on the hot path.
+					const keyHash = auth.keyHash ?? await sha256Hex(apiKey);
 					const usage   = await getDailyUsage(keyHash, env);
 
 					// Track percent used for soft-limit warning headers on the response.
@@ -4481,9 +4515,14 @@ export default {
 					const batchAuthHeaders = batchAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 					return json({ error: batchAuth.error, message: batchAuth.message }, batchAuth.status, batchAuthHeaders);
 				}
+				// Update last_used_at for keys tracked in Supabase (non-blocking, best-effort).
+				if (batchAuth.keyHash && typeof ctx?.waitUntil === 'function') {
+					ctx.waitUntil(updateKeyUsage(batchAuth.keyHash, env).catch(() => {}));
+				}
 				// Free tier limit check for batch
 				if (batchAuth.plan === 'free') {
-					const batchKeyHash = await sha256Hex(apiKey);
+					// Reuse keyHash from auth result — avoids a redundant sha256 on the hot path.
+					const batchKeyHash = batchAuth.keyHash ?? await sha256Hex(apiKey);
 					const batchUsage   = await getDailyUsage(batchKeyHash, env);
 					freeTierPercentUsed = Math.round((batchUsage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
 					if (batchUsage >= FREE_TIER_DAILY_LIMIT) {
@@ -5251,6 +5290,16 @@ export default {
 					}, 429);
 				}
 
+				// Fail-closed: Supabase is required to issue a key.
+				// We must be able to track every key we issue — a key we can't record
+				// would be unrevokable and invisible to billing and abuse detection.
+				// Note: use SUPABASE_SERVICE_ROLE_KEY (not SUPABASE_KEY) — the service
+				// role bypasses Row Level Security, which blocks inserts with the anon key.
+				if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+					console.error('KEY_REQUEST_ERROR: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not configured');
+					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Key issuance is temporarily unavailable — try again shortly or contact support@headlessoracle.com' }, 503);
+				}
+
 				const body = await request.json().catch(() => null) as { email?: unknown } | null;
 				const email = body?.email;
 				if (typeof email !== 'string' || !email.trim()) {
@@ -5263,13 +5312,34 @@ export default {
 				}
 				const normalizedEmail = email.trim().toLowerCase();
 
-				// Generate ho_free_ key — shown to the user exactly once via email
+				// Generate ho_free_ key — shown to the user exactly once via email.
+				// The plaintext key is NEVER stored — only the sha256 hash goes to KV and Supabase.
 				const rawKeyBytes = crypto.getRandomValues(new Uint8Array(32));
 				const keyValue    = 'ho_free_' + toHex(rawKeyBytes);
 				const keyHash     = await sha256Hex(keyValue);
 				const createdAt   = new Date().toISOString();
 
-				// Store in KV — persistent (no TTL), plan = "free"
+				// Step 1: Insert into Supabase first.
+				// If this fails we stop — no email is sent, no KV entry is written.
+				// A key we cannot track (no Supabase row) must never be issued.
+				// Use SUPABASE_SERVICE_ROLE_KEY — the anon SUPABASE_KEY is blocked by RLS.
+				const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+				const { error: insertError } = await supabase.from('api_keys').insert({
+					id:         crypto.randomUUID(),
+					key_hash:   keyHash,
+					key_prefix: keyValue.substring(0, 14), // 'ho_free_' + 6 chars
+					plan:       'free',
+					status:     'active',
+					email:      normalizedEmail,
+					created_at: createdAt,
+				});
+				if (insertError) {
+					console.error(`KEY_REQUEST_DB_ERROR: ${insertError.message} (code: ${insertError.code})`);
+					return json({ error: 'KEY_CREATION_FAILED', message: 'Unable to create key — please try again or contact support@headlessoracle.com' }, 500);
+				}
+
+				// Step 2: Warm KV cache — Supabase is the source of truth; KV is the hot-path cache.
+				// KV write failure is recoverable: checkApiKey falls through to Supabase on KV miss.
 				if (env.ORACLE_API_KEYS) {
 					await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({
 						plan:       'free',
@@ -5279,35 +5349,30 @@ export default {
 					}));
 				}
 
-				// Store in Supabase
-				if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-					await supabase.from('api_keys').insert({
-						id:         crypto.randomUUID(),
-						key_hash:   keyHash,
-						key_prefix: keyValue.substring(0, 14), // 'ho_free_' + 6 chars
-						plan:       'free',
-						status:     'active',
-						email:      normalizedEmail,
-						created_at: createdAt,
-					});
+				// Step 3: Send key via Resend (shown once — user cannot recover it).
+				// Key is already in Supabase/KV at this point.
+				// On Resend failure: return 200 with a warning field — the key is valid and
+				// the user can contact support to retrieve it from the db by email address.
+				if (!env.RESEND_API_KEY) {
+					// Resend not configured — key is stored but cannot be delivered.
+					console.error('KEY_REQUEST_ERROR: RESEND_API_KEY not configured — key stored but not delivered');
+					ctx.waitUntil(env.ORACLE_TELEMETRY.put(rlKey, String(rlCount + 1), { expirationTtl: 25 * 3600 }));
+					return json({ plan: 'free', warning: 'Key created and stored, but email delivery is not configured — contact support@headlessoracle.com for your key' });
 				}
 
-				// Send key via Resend (shown once — user cannot recover it)
-				if (env.RESEND_API_KEY) {
-					const emailRes = await fetch('https://api.resend.com/emails', {
-						method:  'POST',
-						headers: {
-							'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-							'Content-Type':  'application/json',
-						},
-						body: JSON.stringify({
-							from:    'Mike at Headless Oracle <mike@headlessoracle.com>',
-							to:      [normalizedEmail],
-							subject: 'Your Headless Oracle API key',
-							html: `<p>Hey,</p>
+				const emailRes = await fetch('https://api.resend.com/emails', {
+					method:  'POST',
+					headers: {
+						'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+						'Content-Type':  'application/json',
+					},
+					body: JSON.stringify({
+						from:    'Mike at Headless Oracle <mike@headlessoracle.com>',
+						to:      [normalizedEmail],
+						subject: 'Your Headless Oracle API key',
+						html: `<p>Hey,</p>
 
-<p>Your Headless Oracle API key is below — keep this safe, it won’t be shown again:</p>
+<p>Your Headless Oracle API key is below — keep this safe, it won't be shown again:</p>
 
 <pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px;font-family:monospace">${keyValue}</pre>
 
@@ -5318,25 +5383,31 @@ export default {
   <li><a href="https://headlessoracle.com/docs/integrations/datacamp-workspace">DataLab / Jupyter integration guide</a> — most comprehensive walkthrough</li>
   <li><a href="https://headlessoracle.com/docs">Full documentation</a></li>
   <li><a href="https://headlessoracle.com/v5/stack">Where Oracle fits in the autonomous finance stack</a></li>
-  <li><a href="https://github.com/agent-intent/verifiable-intent/pulls">External State Attestation RFC</a> — the protocol we submitted to Mastercard’s Verifiable Intent framework today</li>
+  <li><a href="https://github.com/agent-intent/verifiable-intent/pulls">External State Attestation RFC</a> — the protocol we submitted to Mastercard's Verifiable Intent framework today</li>
 </ul>
 
 <p><strong>When you hit the free tier limit (500 req/day):</strong><br>
 You can pay per-request with 0.001 USDC on Base mainnet — no subscription needed. Details at <a href="https://headlessoracle.com/docs/x402-payments">headlessoracle.com/docs/x402-payments</a>.</p>
 
-<p>Reply to this email if you have any questions — happy to jump on a call if you’re building something interesting.</p>
+<p>Reply to this email if you have any questions — happy to jump on a call if you're building something interesting.</p>
 
 <p>Mike<br>
 <a href="mailto:mike@headlessoracle.com">mike@headlessoracle.com</a></p>`,
-						}),
-					});
-					if (!emailRes.ok) {
-						console.error(`RESEND_ERROR: failed to send free key email to ${normalizedEmail}`);
-					}
-				}
+					}),
+				});
 
 				// Increment rate limit counter — 25-hour TTL (covers the full calendar day + drift).
 				ctx.waitUntil(env.ORACLE_TELEMETRY.put(rlKey, String(rlCount + 1), { expirationTtl: 25 * 3600 }));
+
+				if (!emailRes.ok) {
+					const resendErrorBody = await emailRes.text().catch(() => '(unreadable)');
+					console.error(`RESEND_ERROR: status=${emailRes.status} body=${resendErrorBody}`);
+					return json({
+						plan:        'free',
+						warning:     'Key created and stored, but email delivery failed — contact support@headlessoracle.com for your key',
+						resend_error: resendErrorBody,
+					});
+				}
 
 				return json({ plan: 'free', message: 'API key sent to your email' });
 			}

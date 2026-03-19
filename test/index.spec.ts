@@ -2486,6 +2486,122 @@ describe('POST /v5/keys/request — rate limiting', () => {
 	});
 });
 
+// ─── POST /v5/keys/request — fail-closed pipeline ─────────────────────────────
+
+describe('POST /v5/keys/request — fail-closed pipeline', () => {
+	it('Supabase insert error → 500 KEY_CREATION_FAILED, Resend not called', async () => {
+		let resendCalled = false;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				// Simulate a DB error (e.g. duplicate key or RLS block)
+				return new Response(
+					JSON.stringify({ message: 'duplicate key value violates unique constraint', code: '23505' }),
+					{ status: 409, headers: { 'Content-Type': 'application/json' } },
+				);
+			}
+			if (urlStr.includes('resend.com')) {
+				resendCalled = true;
+				return new Response(JSON.stringify({ id: 'should_not_reach' }), { status: 200 });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const response = await fetchWorker('/v5/keys/request', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ email: 'faildb@example.com' }),
+			});
+			expect(response.status).toBe(500);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'KEY_CREATION_FAILED');
+			// Resend must NOT be called when Supabase insert fails
+			expect(resendCalled).toBe(false);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('Resend failure after successful insert → 200 with warning + resend_error', async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('resend.com')) {
+				// Simulate Resend rejecting the send (e.g. unverified domain)
+				return new Response(
+					JSON.stringify({ name: 'validation_error', message: 'The sender domain is not verified.' }),
+					{ status: 422, headers: { 'Content-Type': 'application/json' } },
+				);
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const response = await fetchWorker('/v5/keys/request', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ email: 'resend_fail@example.com' }),
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('plan', 'free');
+			// Must have warning, not message
+			expect(body).toHaveProperty('warning');
+			expect(typeof body.warning).toBe('string');
+			expect(body).not.toHaveProperty('message');
+			// Must include the raw Resend error body so caller can diagnose
+			expect(body).toHaveProperty('resend_error');
+			expect(typeof body.resend_error).toBe('string');
+			expect(body.resend_error as string).toContain('verified');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('last_used_at: Supabase PATCH called after successful /v5/status auth', async () => {
+		// Set up a free-tier key in KV with a known hash so checkApiKey returns keyHash
+		const freeKeyValue = 'ho_free_lastusedtest0000000000000000000000000000000000000000';
+		const encoded      = new TextEncoder().encode(freeKeyValue);
+		const hashBuf      = await crypto.subtle.digest('SHA-256', encoded);
+		const freeKeyHash  = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+
+		await env.ORACLE_API_KEYS.put(freeKeyHash, JSON.stringify({ plan: 'free', status: 'active', email: 'lastused@example.com' }));
+
+		let capturedPatchBody: string | null = null;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				// Capture PATCH calls (last_used_at updates); allow all others through
+				const method = init?.method?.toUpperCase() ?? 'GET';
+				if (method === 'PATCH') {
+					capturedPatchBody = typeof init?.body === 'string' ? init.body : null;
+				}
+				return new Response(JSON.stringify([{}]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': freeKeyValue },
+			});
+			expect(response.status).toBe(200);
+			// Supabase PATCH must have been called with last_used_at
+			expect(capturedPatchBody).not.toBeNull();
+			const patchPayload = JSON.parse(capturedPatchBody ?? '{}') as Record<string, unknown>;
+			expect(patchPayload).toHaveProperty('last_used_at');
+			expect(typeof patchPayload.last_used_at).toBe('string');
+		} finally {
+			globalThis.fetch = originalFetch;
+			await env.ORACLE_API_KEYS.delete(freeKeyHash);
+		}
+	});
+});
+
 // ─── Session B/E: Production headers, compliance, health enrichment ─────────────────────
 
 describe('X-Oracle-Version response header', () => {
