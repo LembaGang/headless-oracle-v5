@@ -227,13 +227,21 @@ describe('GET /v5/demo', () => {
 // ─── GET /v5/status ───────────────────────────────────────────────────────────
 
 describe('GET /v5/status', () => {
-	it('returns 401 without API key', async () => {
+	it('returns 402 x402scan format without API key (ORACLE_PAYMENT_ADDRESS set in dev.vars)', async () => {
+		// When ORACLE_PAYMENT_ADDRESS is configured, keyless requests get x402scan-compatible 402.
+		// This makes /v5/status discoverable by x402scan as a pay-per-request endpoint.
 		const response = await fetchWorker('/v5/status?mic=XNYS');
-		expect(response.status).toBe(401);
+		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
-		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
-		expect(response.headers.get('X-Oracle-Key-Request')).toBe('https://headlessoracle.com/v5/keys/request');
+		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		expect(Array.isArray(body.accepts)).toBe(true);
+		const accepts = body.accepts as Array<Record<string, unknown>>;
+		expect(accepts[0]).toHaveProperty('scheme', 'exact');
+		expect(accepts[0]).toHaveProperty('network', 'eip155:8453');
+		expect(accepts[0]).toHaveProperty('maxAmountRequired', '1000');
+		expect(accepts[0]).toHaveProperty('payTo');
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 	});
 
 	it('returns 403 with an invalid API key', async () => {
@@ -245,13 +253,12 @@ describe('GET /v5/status', () => {
 		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
 	});
 
-	it('returns 401 with an empty API key header', async () => {
-		// Empty string — header present but blank. Worker sees empty string → falsy → 401.
+	it('returns 402 with an empty API key header (empty string is falsy → no-key path)', async () => {
 		const response = await fetchWorker('/v5/status?mic=XNYS', {
 			headers: { 'X-Oracle-Key': '' },
 		});
-		// Empty header value → treated as missing → 401
-		expect([401, 403]).toContain(response.status);
+		// Empty string → falsy → treated as missing key → x402scan 402 (or 403 if key checked differently)
+		expect([402, 403]).toContain(response.status);
 	});
 
 	it('returns 400 for unknown MIC with valid key', async () => {
@@ -1236,13 +1243,15 @@ describe('POST /mcp', () => {
 // ─── GET /v5/batch ────────────────────────────────────────────────────────────
 
 describe('GET /v5/batch', () => {
-	it('returns 401 without API key', async () => {
+	it('returns 402 x402scan format without API key (ORACLE_PAYMENT_ADDRESS set in dev.vars)', async () => {
+		// Batch endpoint also returns x402scan-compatible 402 for keyless requests.
 		const response = await fetchWorker('/v5/batch?mics=XNYS,XNAS');
-		expect(response.status).toBe(401);
+		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
-		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
-		expect(response.headers.get('X-Oracle-Key-Request')).toBe('https://headlessoracle.com/v5/keys/request');
+		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		expect(Array.isArray(body.accepts)).toBe(true);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 	});
 
 	it('returns 403 with an invalid API key', async () => {
@@ -1966,16 +1975,21 @@ describe('POST /v5/keys/request', () => {
 		}
 	});
 
-	it('401 on /v5/status without key includes X-Oracle-Upgrade header', async () => {
+	it('402 on /v5/status without key: x402scan-compatible body, CORS header set', async () => {
+		// Keyless /v5/status → x402scan 402 (not 401) when ORACLE_PAYMENT_ADDRESS configured
 		const response = await fetchWorker('/v5/status?mic=XNYS');
-		expect(response.status).toBe(401);
-		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+		expect(response.status).toBe(402);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('x402Version', 1);
 	});
 
-	it('401 on /v5/batch without key includes X-Oracle-Upgrade header', async () => {
+	it('402 on /v5/batch without key: x402scan-compatible body, CORS header set', async () => {
 		const response = await fetchWorker('/v5/batch?mics=XNYS');
-		expect(response.status).toBe(401);
-		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+		expect(response.status).toBe(402);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('x402Version', 1);
 	});
 
 	it('401 on /v5/account without key includes X-Oracle-Upgrade header', async () => {
@@ -2734,11 +2748,11 @@ describe('Cache-Control on signed receipts', () => {
 });
 
 describe('Error responses include docs field', () => {
-	it('401 API_KEY_REQUIRED includes docs field pointing to /docs', async () => {
+	it('402 x402scan format on keyless /v5/status (ORACLE_PAYMENT_ADDRESS configured in dev.vars)', async () => {
+		// Keyless /v5/status returns x402scan 402, not API_KEY_REQUIRED 401, when payment address is set.
 		const body = await fetchJSON('/v5/status');
-		expect(body).toHaveProperty('error', 'API_KEY_REQUIRED');
-		expect(typeof body.docs).toBe('string');
-		expect((body.docs as string)).toContain('headlessoracle.com/docs');
+		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		expect(body).toHaveProperty('x402Version', 1);
 	});
 
 	it('400 UNKNOWN_MIC includes docs field', async () => {
@@ -3415,9 +3429,10 @@ describe('Session L: holiday test for new exchanges', () => {
 // ─── Session M: Halt Monitor Tests ───────────────────────────────────────────
 
 describe('Session M: /v5/status/realtime', () => {
-	it('returns 401 without API key', async () => {
+	it('returns 402 without API key (x402-native: ORACLE_PAYMENT_ADDRESS in dev.vars)', async () => {
+		// /v5/status/realtime starts with /v5/status → same x402scan gate applies
 		const response = await fetchWorker('/v5/status/realtime?mic=XNYS');
-		expect(response.status).toBe(401);
+		expect(response.status).toBe(402);
 	});
 
 	it('returns valid JSON with signed_receipt and halt_monitor fields', async () => {

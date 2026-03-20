@@ -1660,6 +1660,33 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 	};
 }
 
+// Build an x402scan-compatible 402 payload.
+// Format matches the x402 standard (https://x402.org): x402Version, accepts[], error.
+// Used when a request arrives with no API key — makes the endpoint x402-native.
+function buildX402ScanPayload(paymentAddress: string, resourceUrl: string): Record<string, unknown> {
+	return {
+		x402Version: 1,
+		accepts: [
+			{
+				scheme:             'exact',
+				network:            'eip155:8453',
+				maxAmountRequired:  '1000',
+				resource:           resourceUrl,
+				description:        'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN — Ed25519 signed, 60s TTL.',
+				mimeType:           'application/json',
+				payTo:              paymentAddress,
+				maxTimeoutSeconds:  60,
+				asset:              X402_USDC_CONTRACT,
+				extra: {
+					name:    'Headless Oracle',
+					version: 'v5.0',
+				},
+			},
+		],
+		error: 'X-Payment-Required',
+	};
+}
+
 // Add soft rate-limit warning headers when free tier usage crosses 80% or 95%.
 function addRateLimitWarningHeaders(headers: Headers, percentUsed: number, upgradeUrl: string): void {
 	if (percentUsed >= 95) {
@@ -4180,86 +4207,109 @@ export default {
 		}
 
 		try {
-			// ── Auth gate — /v5/status requires X-Oracle-Key ─────────────
+			// ── Auth gate — /v5/status requires X-Oracle-Key or x402 payment ─────
 			if (url.pathname.startsWith('/v5/status')) {
 				const apiKey = request.headers.get('X-Oracle-Key');
-				if (!apiKey) {
-					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
-				}
-				const auth = await checkApiKey(apiKey, env);
-				if (!auth.allowed) {
-					const authHeaders = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
-					return json({ error: auth.error, message: auth.message }, auth.status, authHeaders);
-				}
-				// Update last_used_at for keys tracked in Supabase (non-blocking, best-effort).
-				if (auth.keyHash && typeof ctx?.waitUntil === 'function') {
-					ctx.waitUntil(updateKeyUsage(auth.keyHash, env).catch(() => {}));
-				}
-				// ── Free tier daily limit + x402 micropayment gate ───────────
-				if (auth.plan === 'free') {
-					// Reuse keyHash from auth result — avoids a redundant sha256 on the hot path.
-					const keyHash = auth.keyHash ?? await sha256Hex(apiKey);
-					const usage   = await getDailyUsage(keyHash, env);
-
-					// Track percent used for soft-limit warning headers on the response.
-					freeTierPercentUsed = Math.round((usage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
-
-					// Design partner detection: log once per key per day when usage > 200
-					if (usage > 200) {
-						const dpKey    = `design_partner:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
-						const dpExists = await env.ORACLE_TELEMETRY.get(dpKey).catch(() => null);
-						if (dpExists === null) {
-							const putDp = env.ORACLE_TELEMETRY.put(dpKey, '1', { expirationTtl: 25 * 3600 }).catch(() => {});
-							if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putDp);
-							console.log(JSON.stringify({
-								event:          'DESIGN_PARTNER_CANDIDATE',
-								key_hash:       keyHash,
-								requests_today: usage,
-								plan:           'free',
-								timestamp:      new Date().toISOString(),
-								note:           'High-volume free tier user — potential design partner',
-							}));
-						}
+				if (apiKey) {
+					// Key-based auth path (steps 1–3): MASTER → BETA → Supabase lookup
+					const auth = await checkApiKey(apiKey, env);
+					if (!auth.allowed) {
+						const authHeaders = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
+						return json({ error: auth.error, message: auth.message }, auth.status, authHeaders);
 					}
+					// Update last_used_at for keys tracked in Supabase (non-blocking, best-effort).
+					if (auth.keyHash && typeof ctx?.waitUntil === 'function') {
+						ctx.waitUntil(updateKeyUsage(auth.keyHash, env).catch(() => {}));
+					}
+					// ── Free tier daily limit + x402 micropayment gate ─────────────
+					if (auth.plan === 'free') {
+						// Reuse keyHash from auth result — avoids a redundant sha256 on the hot path.
+						const keyHash = auth.keyHash ?? await sha256Hex(apiKey);
+						const usage   = await getDailyUsage(keyHash, env);
 
-					if (usage >= FREE_TIER_DAILY_LIMIT) {
-						const paymentHeader = request.headers.get('X-Payment');
-						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
-							let payment: X402Payment;
-							try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
-								return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
+						// Track percent used for soft-limit warning headers on the response.
+						freeTierPercentUsed = Math.round((usage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
+
+						// Design partner detection: log once per key per day when usage > 200
+						if (usage > 200) {
+							const dpKey    = `design_partner:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
+							const dpExists = await env.ORACLE_TELEMETRY.get(dpKey).catch(() => null);
+							if (dpExists === null) {
+								const putDp = env.ORACLE_TELEMETRY.put(dpKey, '1', { expirationTtl: 25 * 3600 }).catch(() => {});
+								if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putDp);
+								console.log(JSON.stringify({
+									event:          'DESIGN_PARTNER_CANDIDATE',
+									key_hash:       keyHash,
+									requests_today: usage,
+									plan:           'free',
+									timestamp:      new Date().toISOString(),
+									note:           'High-volume free tier user — potential design partner',
+								}));
 							}
-							const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
-							if (!verify.valid) {
-								return json({
-									error:   'PAYMENT_VERIFICATION_FAILED',
-									message: `Payment verification failed: ${verify.detail ?? 'unknown'}`,
-									x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash).x402,
-								}, 402, X402_RESPONSE_HEADERS);
-							}
-							// Valid x402 payment — proceed without counting against daily usage
-						} else {
-							const credits = await getCreditBalance(keyHash, env);
-							if (credits.balance > 0) {
-								consumeCredit(keyHash, credits, env, ctx);
-							} else if (env.ORACLE_PAYMENT_ADDRESS) {
-								return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, X402_RESPONSE_HEADERS);
+						}
+
+						if (usage >= FREE_TIER_DAILY_LIMIT) {
+							const paymentHeader = request.headers.get('X-Payment');
+							if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
+								let payment: X402Payment;
+								try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
+									return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
+								}
+								const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+								if (!verify.valid) {
+									return json({
+										error:   'PAYMENT_VERIFICATION_FAILED',
+										message: `Payment verification failed: ${verify.detail ?? 'unknown'}`,
+										x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash).x402,
+									}, 402, X402_RESPONSE_HEADERS);
+								}
+								// Valid x402 payment — proceed without counting against daily usage
 							} else {
-								return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429);
+								const credits = await getCreditBalance(keyHash, env);
+								if (credits.balance > 0) {
+									consumeCredit(keyHash, credits, env, ctx);
+								} else if (env.ORACLE_PAYMENT_ADDRESS) {
+									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, X402_RESPONSE_HEADERS);
+								} else {
+									return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429);
+								}
 							}
+						} else {
+							incrementDailyUsage(keyHash, env, ctx, usage);
 						}
+					// ── Paid tier daily limits (builder: 50k/day, pro: 200k/day) ──
+					} else if (auth.plan === 'builder' || auth.plan === 'pro') {
+						const paidKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
+						const paidUsage   = await getDailyUsage(paidKeyHash, env);
+						const paidLimit   = getPlanDailyLimit(auth.plan)!;
+						if (paidUsage >= paidLimit) {
+							return json({ error: 'RATE_LIMITED', message: `${auth.plan} plan daily limit (${paidLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429);
+						}
+						incrementDailyUsage(paidKeyHash, env, ctx, paidUsage);
+					}
+				} else {
+					// No API key — x402 payment path (step 4) or 402 gate (step 5)
+					const paymentHeader = request.headers.get('X-Payment');
+					if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
+						// Keyless x402: verify on-chain payment, then serve receipt
+						let payment: X402Payment;
+						try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
+							return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
+						}
+						const verified = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+						if (!verified.valid) {
+							const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
+							return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+						}
+						// Valid keyless x402 payment — fall through to serve receipt (no rate limit applied)
+					} else if (env.ORACLE_PAYMENT_ADDRESS) {
+						// No key, no payment — return x402scan-compatible 402 so crawlers can register this endpoint
+						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
+						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
 					} else {
-						incrementDailyUsage(keyHash, env, ctx, usage);
+						// ORACLE_PAYMENT_ADDRESS not configured — fall back to 401 (dev/test environments)
+						return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 					}
-				// ── Paid tier daily limits (builder: 50k/day, pro: 200k/day) ──
-				} else if (auth.plan === 'builder' || auth.plan === 'pro') {
-					const paidKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
-					const paidUsage   = await getDailyUsage(paidKeyHash, env);
-					const paidLimit   = getPlanDailyLimit(auth.plan)!;
-					if (paidUsage >= paidLimit) {
-						return json({ error: 'RATE_LIMITED', message: `${auth.plan} plan daily limit (${paidLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429);
-					}
-					incrementDailyUsage(paidKeyHash, env, ctx, paidUsage);
 				}
 			}
 
@@ -4393,6 +4443,11 @@ export default {
 			if (url.pathname === '/v5/batch') {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (!apiKey) {
+					// No key — return x402scan-compatible 402 so the endpoint is registered as x402-native.
+					// Keyless batch execution requires a key (use /v5/status for single keyless x402 requests).
+					if (env.ORACLE_PAYMENT_ADDRESS) {
+						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/batch'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+					}
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 				}
 				const batchAuth = await checkApiKey(apiKey, env);
