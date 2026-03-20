@@ -1662,21 +1662,47 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 
 // Build an x402scan-compatible 402 payload.
 // Format matches the x402 standard (https://x402.org): x402Version, accepts[], error.
-// Used when a request arrives with no API key — makes the endpoint x402-native.
-function buildX402ScanPayload(paymentAddress: string, resourceUrl: string): Record<string, unknown> {
+// endpoint: 'status' for /v5/status (mic param), 'batch' for /v5/batch (mics param).
+function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpoint: 'status' | 'batch' = 'status'): Record<string, unknown> {
+	const isStatus = endpoint === 'status';
 	return {
 		x402Version: 1,
 		accepts: [
 			{
-				scheme:             'exact',
-				network:            'eip155:8453',
-				maxAmountRequired:  '1000',
-				resource:           resourceUrl,
-				description:        'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN — Ed25519 signed, 60s TTL.',
-				mimeType:           'application/json',
-				payTo:              paymentAddress,
-				maxTimeoutSeconds:  60,
-				asset:              X402_USDC_CONTRACT,
+				scheme:            'exact',
+				network:           'eip155:8453',
+				maxAmountRequired: isStatus ? '1000' : '5000',
+				resource:          resourceUrl,
+				description:       isStatus
+					? 'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN — Ed25519 signed, 60s TTL.'
+					: 'Signed market-state receipts for multiple exchanges in one request. Each receipt Ed25519 signed, 60s TTL.',
+				mimeType:          'application/json',
+				payTo:             paymentAddress,
+				maxTimeoutSeconds: 60,
+				asset:             X402_USDC_CONTRACT,
+				input: isStatus
+					? {
+						type:       'object',
+						properties: {
+							mic: {
+								type:        'string',
+								description: 'ISO 10383 Market Identifier Code (e.g. XNYS, XNAS, XLON)',
+								example:     'XNYS',
+							},
+						},
+						required: ['mic'],
+					}
+					: {
+						type:       'object',
+						properties: {
+							mics: {
+								type:        'string',
+								description: 'Comma-separated list of MIC codes (e.g. XNYS,XNAS,XLON)',
+								example:     'XNYS,XNAS,XLON',
+							},
+						},
+						required: ['mics'],
+					},
 				extra: {
 					name:    'Headless Oracle',
 					version: 'v5.0',
@@ -4446,7 +4472,7 @@ export default {
 					// No key — return x402scan-compatible 402 so the endpoint is registered as x402-native.
 					// Keyless batch execution requires a key (use /v5/status for single keyless x402 requests).
 					if (env.ORACLE_PAYMENT_ADDRESS) {
-						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/batch'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/batch', 'batch'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
 					}
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 				}
@@ -4798,6 +4824,50 @@ export default {
 					bearer_methods_supported:            ['header'],
 					resource_documentation:              'https://headlessoracle.com/docs',
 					resource_signing_alg_values_supported: ['EdDSA'],
+				});
+			}
+			if (url.pathname === '/.well-known/x402.json') {
+				// x402 payment resource discovery. x402scan fetches this to discover which
+				// endpoints require payment without probing each one individually.
+				// Only /v5/status and /v5/batch are pay-per-request. All others are free.
+				return json({
+					version:   1,
+					resources: [
+						{
+							path:        '/v5/status',
+							method:      'GET',
+							description: 'Signed market-state receipt for one exchange. Ed25519 signed, 60s TTL.',
+							input: {
+								type:       'object',
+								properties: { mic: { type: 'string', description: 'ISO 10383 MIC code', example: 'XNYS' } },
+								required:   ['mic'],
+							},
+							accepts: [{
+								scheme:            'exact',
+								network:           'eip155:8453',
+								maxAmountRequired: '1000',
+								asset:             X402_USDC_CONTRACT,
+								payTo:             env.ORACLE_PAYMENT_ADDRESS || '',
+							}],
+						},
+						{
+							path:        '/v5/batch',
+							method:      'GET',
+							description: 'Signed market-state receipts for multiple exchanges. Each receipt Ed25519 signed, 60s TTL.',
+							input: {
+								type:       'object',
+								properties: { mics: { type: 'string', description: 'Comma-separated MIC codes', example: 'XNYS,XNAS,XLON' } },
+								required:   ['mics'],
+							},
+							accepts: [{
+								scheme:            'exact',
+								network:           'eip155:8453',
+								maxAmountRequired: '5000',
+								asset:             X402_USDC_CONTRACT,
+								payTo:             env.ORACLE_PAYMENT_ADDRESS || '',
+							}],
+						},
+					],
 				});
 			}
 

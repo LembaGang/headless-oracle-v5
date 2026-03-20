@@ -227,9 +227,8 @@ describe('GET /v5/demo', () => {
 // ─── GET /v5/status ───────────────────────────────────────────────────────────
 
 describe('GET /v5/status', () => {
-	it('returns 402 x402scan format without API key (ORACLE_PAYMENT_ADDRESS set in dev.vars)', async () => {
-		// When ORACLE_PAYMENT_ADDRESS is configured, keyless requests get x402scan-compatible 402.
-		// This makes /v5/status discoverable by x402scan as a pay-per-request endpoint.
+	it('returns 402 x402scan format without API key — includes input schema', async () => {
+		// x402scan requires an "input" field describing parameters to avoid "Missing input schema" errors.
 		const response = await fetchWorker('/v5/status?mic=XNYS');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
@@ -241,6 +240,13 @@ describe('GET /v5/status', () => {
 		expect(accepts[0]).toHaveProperty('network', 'eip155:8453');
 		expect(accepts[0]).toHaveProperty('maxAmountRequired', '1000');
 		expect(accepts[0]).toHaveProperty('payTo');
+		expect(accepts[0]).toHaveProperty('input');
+		const input = accepts[0].input as Record<string, unknown>;
+		expect(input).toHaveProperty('type', 'object');
+		expect(input).toHaveProperty('required');
+		expect((input.required as string[])).toContain('mic');
+		const props = input.properties as Record<string, unknown>;
+		expect(props).toHaveProperty('mic');
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 	});
 
@@ -1243,14 +1249,18 @@ describe('POST /mcp', () => {
 // ─── GET /v5/batch ────────────────────────────────────────────────────────────
 
 describe('GET /v5/batch', () => {
-	it('returns 402 x402scan format without API key (ORACLE_PAYMENT_ADDRESS set in dev.vars)', async () => {
-		// Batch endpoint also returns x402scan-compatible 402 for keyless requests.
+	it('returns 402 x402scan format without API key — includes input schema for mics param', async () => {
 		const response = await fetchWorker('/v5/batch?mics=XNYS,XNAS');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('x402Version', 1);
 		expect(body).toHaveProperty('error', 'X-Payment-Required');
 		expect(Array.isArray(body.accepts)).toBe(true);
+		const accepts = body.accepts as Array<Record<string, unknown>>;
+		expect(accepts[0]).toHaveProperty('maxAmountRequired', '5000');
+		expect(accepts[0]).toHaveProperty('input');
+		const input = accepts[0].input as Record<string, unknown>;
+		expect((input.required as string[])).toContain('mics');
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 	});
 
@@ -1485,6 +1495,42 @@ describe('GET /.well-known/oracle-keys.json', () => {
 		expect(wkKey.key_id).toBe(v5Key.key_id);
 	});
 });
+// ─── GET /.well-known/x402.json ────────────────────────────────────────────────────────────────────
+
+describe('GET /.well-known/x402.json', () => {
+	it('returns 200 with x402 resource discovery document', async () => {
+		const body = await fetchJSON('/.well-known/x402.json');
+		expect(body).toHaveProperty('version', 1);
+		expect(Array.isArray(body.resources)).toBe(true);
+		const resources = body.resources as Array<Record<string, unknown>>;
+		expect(resources.length).toBe(2);
+	});
+
+	it('lists /v5/status with mic input schema and 1000 unit amount', async () => {
+		const body = await fetchJSON('/.well-known/x402.json');
+		const resources = body.resources as Array<Record<string, unknown>>;
+		const status = resources.find((r) => r.path === '/v5/status');
+		expect(status).toBeDefined();
+		expect(status!.method).toBe('GET');
+		const accepts = status!.accepts as Array<Record<string, unknown>>;
+		expect(accepts[0]).toHaveProperty('maxAmountRequired', '1000');
+		expect(accepts[0]).toHaveProperty('network', 'eip155:8453');
+		const input = status!.input as Record<string, unknown>;
+		expect((input.required as string[])).toContain('mic');
+	});
+
+	it('lists /v5/batch with mics input schema and 5000 unit amount', async () => {
+		const body = await fetchJSON('/.well-known/x402.json');
+		const resources = body.resources as Array<Record<string, unknown>>;
+		const batch = resources.find((r) => r.path === '/v5/batch');
+		expect(batch).toBeDefined();
+		const accepts = batch!.accepts as Array<Record<string, unknown>>;
+		expect(accepts[0]).toHaveProperty('maxAmountRequired', '5000');
+		const input = batch!.input as Record<string, unknown>;
+		expect((input.required as string[])).toContain('mics');
+	});
+});
+
 
 // ─── GET /robots.txt ─────────────────────────────────────────────────────────
 
