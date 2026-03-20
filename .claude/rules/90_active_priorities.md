@@ -8,7 +8,14 @@
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 20 2026 — llms.txt agent-first rewrite, AgentPay demo repo, KV billing desync fix (368 tests):
+**Last significant work**: Mar 20 2026 — x402scan registration fix: /v5/status and /v5/batch return 402 for keyless requests (368 tests):
+  - buildX402ScanPayload(): x402scan-compatible format (x402Version:1, accepts[], eip155:8453, payTo, maxAmountRequired, maxTimeoutSeconds)
+  - /v5/status auth gate restructured: key present → existing path; no key → x402 payment path or 402 gate
+  - /v5/batch: no key → 402 x402scan format (keyless batch execution not yet implemented)
+  - ORACLE_PAYMENT_ADDRESS set as production secret (0x26D4...AD3) — previously only in .dev.vars
+  - All 368 tests updated and passing. Version 0149e73a deployed. CURL confirms HTTP 402 live.
+  - HUMAN TASK: resubmit headlessoracle.com resources on x402scan
+**Previous significant work**: Mar 20 2026 — llms.txt agent-first rewrite, AgentPay demo repo, KV billing desync fix (368 tests):
   - LLMS_TXT constant rewritten: agent-first, action-oriented, 13 sections (MCP primary, REST contracts, fail-closed rules, 23 MICs, Ed25519 verification, x402 path, rate limits, OAuth discovery)
   - scripts/test-paddle-webhook.ts: end-to-end test script for subscription.activated with handler trace and rate limit trace
   - headless-oracle-agentpay repo created: README.md (ASCII architecture diagram), example-agent.ts, verify.ts, package.json, .env.example
