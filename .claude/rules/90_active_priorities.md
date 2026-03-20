@@ -3,11 +3,37 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 357/357 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including new /v5/usage (auth) and /v5/traction (public)
+**Test suite**: 368/368 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), api.headlessoracle.com/* (new subdomain alias)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
+**api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 18 2026 — Sessions T+U+V: DST post-mortem content, traction page, conversion audit (357 tests):
+**Last significant work**: Mar 20 2026 — llms.txt agent-first rewrite, AgentPay demo repo, KV billing desync fix (368 tests):
+  - LLMS_TXT constant rewritten: agent-first, action-oriented, 13 sections (MCP primary, REST contracts, fail-closed rules, 23 MICs, Ed25519 verification, x402 path, rate limits, OAuth discovery)
+  - scripts/test-paddle-webhook.ts: end-to-end test script for subscription.activated with handler trace and rate limit trace
+  - headless-oracle-agentpay repo created: README.md (ASCII architecture diagram), example-agent.ts, verify.ts, package.json, .env.example
+  - CRITICAL FIX: subscription.updated and subscription.past_due now sync KV immediately (previously only updated Supabase — suspended keys remained auth-active for up to 300s)
+  - 2 new tests: subscription.updated → KV status 'suspended', subscription.past_due → KV status 'suspended'
+  - HUMAN TASK: npm run deploy + git push
+**Previous significant work**: Mar 20 2026 — api subdomain + subscription.activated webhook + plan-based rate limits (366 tests):
+  - wrangler.toml: api.headlessoracle.com/* route alias added — deployed (b0651728)
+  - src/index.ts: subscription.activated handler added (idempotency by subscription_id; plan-upgrade if existing; price at items[0].price.id not items[0].price_id)
+  - src/index.ts: BUILDER_TIER_DAILY_LIMIT (50k/day), PRO_TIER_DAILY_LIMIT (200k/day), getPlanDailyLimit() helper
+  - src/index.ts: paid tier rate limits applied to /v5/status and /v5/batch (protocol/internal unlimited)
+  - Task 3 (404 investigation): /refund is a Pages route — refund.html exists in web repo, not a worker issue. Worker correctly does NOT intercept /refund (not in wrangler.toml routes).
+  - 6 new tests: subscription.activated new customer, subscription.activated idempotency, builder 429, pro 429, builder below limit 200, batch builder 429
+  - Commit: d6751e4. Deployed + pushed.
+**Previous significant work**: Mar 19 2026 — Key issuance pipeline fix (360 tests):
+  - /v5/keys/request: Supabase insert now fail-closed (returns 503 if not configured, 500 on error)
+  - KV write moved AFTER Supabase success — Supabase is source of truth, KV is the hot-path cache
+  - Resend failure: 200 with warning + full resend_error body instead of silent 200 "sent"
+  - checkApiKey: AuthResult now carries keyHash (avoids re-hashing on hot path)
+  - updateKeyUsage(): new helper updates last_used_at on every authenticated call via ctx.waitUntil
+  - 3 new tests: DB error → 500, Resend failure → 200 with warning, last_used_at PATCH verified
+  - Root cause of missing Supabase rows: insert result was never checked, errors silently swallowed
+  - Commit: 9b5725d. HUMAN TASK: `npm run deploy` then `git push`
+  - NOTE: request_count increment requires DB migration — see comment above updateKeyUsage in index.ts
+**Previous significant work**: Mar 18 2026 — Sessions T+U+V: DST post-mortem content, traction page, conversion audit (357 tests):
   - docs/content/ created with 4 DST post-mortem files (full technical, Reddit, HN, Twitter thread)
   - Session U audit: /v5/traction confirmed in OpenAPI spec and llms.txt; DESIGN_PARTNER_CANDIDATE fires in test logs
   - traction.html live — fetches /v5/traction, auto-refreshes every 60s, linked from index.html footer

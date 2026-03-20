@@ -2393,6 +2393,90 @@ describe('POST /webhooks/paddle', () => {
 		}
 	});
 
+	it('POST /webhooks/paddle subscription.updated (downgrade) -> syncs KV status to suspended', async () => {
+		const testKeyHash = 'cc11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344aabbcc';
+		await env.ORACLE_API_KEYS.put(testKeyHash, JSON.stringify({
+			plan: 'pro', status: 'active', paddle_subscription_id: 'sub_updated_kv_test',
+		}));
+
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.updated',
+			data: { id: 'sub_updated_kv_test', status: 'paused' }, // non-active → suspended
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && (!init?.method || init.method === 'GET')) {
+				return new Response(JSON.stringify({ key_hash: testKeyHash }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('supabase.co') && init?.method === 'PATCH') {
+				return new Response(JSON.stringify([{}]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const kvVal = await env.ORACLE_API_KEYS.get(testKeyHash);
+			expect(kvVal).not.toBeNull();
+			const parsed = JSON.parse(kvVal!) as Record<string, unknown>;
+			expect(parsed.status).toBe('suspended');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('POST /webhooks/paddle subscription.past_due -> syncs KV status to suspended', async () => {
+		const testKeyHash = 'dd44556677889900aabbccdd11223344aabbccdd11223344aabbccdd11223344';
+		await env.ORACLE_API_KEYS.put(testKeyHash, JSON.stringify({
+			plan: 'builder', status: 'active', paddle_subscription_id: 'sub_pastdue_kv_test',
+		}));
+
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.past_due',
+			data: { id: 'sub_pastdue_kv_test' },
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && (!init?.method || init.method === 'GET')) {
+				return new Response(JSON.stringify({ key_hash: testKeyHash }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('supabase.co') && init?.method === 'PATCH') {
+				return new Response(JSON.stringify([{}]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const kvVal = await env.ORACLE_API_KEYS.get(testKeyHash);
+			expect(kvVal).not.toBeNull();
+			const parsed = JSON.parse(kvVal!) as Record<string, unknown>;
+			expect(parsed.status).toBe('suspended');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 });
 
 // ─── edgeCaseCount() ─────────────────────────────────────────────────────────

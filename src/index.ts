@@ -2343,460 +2343,323 @@ Allow: /mics.json
 Disallow:
 `;
 
-const LLMS_TXT = `# Headless Oracle
+const LLMS_TXT = `# Headless Oracle — Machine-Readable Service Description
 
-> Market status API built for AI agents. Cryptographically signed attestations of whether global stock exchanges are OPEN, CLOSED, HALTED, or UNKNOWN — purpose-built for autonomous trading agents, DeFi bots, and AI-driven execution systems in the tokenized RWA economy.
+## What This Service Does
 
-This is a defensive execution layer — not a price feed. It is a compliance-grade safety primitive that prevents automated systems from executing trades during market closures, circuit breaker halts, holiday closures, and unscheduled outages. Every API response is a Liability Receipt: cryptographically signed, timestamped, independently verifiable proof that your agent checked before it executed.
+Headless Oracle provides cryptographically signed market-state receipts for 23 global stock exchanges. Each receipt states whether a market is OPEN, CLOSED, HALTED, or UNKNOWN — signed with Ed25519, timestamped, valid for 60 seconds.
 
-## Supported Exchanges (23)
+Use this service to gate autonomous trading decisions. Do not execute if status != OPEN.
 
-XNYS — New York Stock Exchange
-XNAS — NASDAQ
-XLON — London Stock Exchange
-XJPX — Japan Exchange Group (Tokyo) — has lunch break
-XPAR — Euronext Paris
-XHKG — Hong Kong Stock Exchange — has lunch break
-XSES — Singapore Exchange
-XASX — Australian Securities Exchange (Sydney)
-XBOM — BSE Ltd (Bombay Stock Exchange, Mumbai)
-XNSE — National Stock Exchange of India (Mumbai)
-XSHG — Shanghai Stock Exchange — has lunch break
-XSHE — Shenzhen Stock Exchange — has lunch break
-XKRX — Korea Exchange (Seoul)
-XJSE — Johannesburg Stock Exchange
-XBSP — B3 (São Paulo Stock Exchange)
-XSWX — SIX Swiss Exchange (Zurich)
-XMIL — Borsa Italiana (Milan)
-XIST — Borsa Istanbul
-XSAU — Saudi Exchange (Tadawul, Riyadh) — weekends: Fri–Sat; Sunday is a trading day
-XDFM — Dubai Financial Market — weekends: Fri–Sat; Sunday is a trading day
-XNZE — New Zealand Exchange (Auckland)
-XHEL — Nasdaq Helsinki
-XSTO — Nasdaq Stockholm
+---
 
-All exchanges use ISO 10383 Market Identifier Codes (MIC).
+## Primary Integration: MCP
 
-## Timezone Coverage
+Endpoint: https://headlessoracle.com/mcp
+Protocol: MCP 2024-11-05 (JSON-RPC 2.0, POST)
+Authentication: none required
 
-Americas: XNYS/XNAS (America/New_York), XBSP (America/Sao_Paulo)
-Europe: XLON (Europe/London), XPAR (Europe/Paris), XSWX (Europe/Zurich), XMIL (Europe/Rome), XIST (Europe/Istanbul), XHEL (Europe/Helsinki), XSTO (Europe/Stockholm)
-Middle East: XSAU (Asia/Riyadh), XDFM (Asia/Dubai)
-Asia: XJPX (Asia/Tokyo), XHKG (Asia/Hong_Kong), XSES (Asia/Singapore), XSHG/XSHE (Asia/Shanghai), XBOM/XNSE (Asia/Kolkata), XKRX (Asia/Seoul)
-Africa: XJSE (Africa/Johannesburg)
-Pacific: XASX (Australia/Sydney), XNZE (Pacific/Auckland)
+Tools:
+- get_market_status(mic: string) → signed receipt (OPEN/CLOSED/HALTED/UNKNOWN)
+- get_market_schedule(mic: string) → next open/close times in UTC
+- list_exchanges() → all 23 supported exchanges with MIC codes and timezones
 
-## Critical Safety Protocol for Autonomous Agents
+MCP initialize request:
+  {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"your-agent","version":"1.0"}}}
 
-- [Fail-Closed Mandate](https://headlessoracle.com/terms.html#fail-closed): MANDATORY — If the API returns status UNKNOWN, times out after 4 seconds, or returns any 5xx error, treat ALL markets as CLOSED and halt execution immediately. This is a binding contractual obligation under the Terms of Service. Ignoring an UNKNOWN signal constitutes breach of terms and shifts 100% of liability to the agent operator. Design your agent fail-closed or do not integrate.
+MCP tools/call request:
+  {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_market_status","arguments":{"mic":"XNYS"}}}
 
-- [Ed25519 Signature Verification](https://headlessoracle.com/docs.html#verification): Every API response includes an Ed25519 signature generated over the raw JSON-stringified payload (excluding the signature field). Agents MUST verify against the published public key BEFORE acting on any status data. Unverified payloads have zero attestation weight and no legal standing.
+---
 
-- Receipt Expiry: Every signed receipt includes an \`expires_at\` timestamp. Do not act on a receipt past its \`expires_at\`. Fetch a fresh status instead.
+## REST Integration
 
-- [Binding Terms of Service](https://headlessoracle.com/terms.html): Any API request — authenticated or unauthenticated, human or autonomous — constitutes acceptance of these terms.
+### Authenticated: GET /v5/status
 
-## API Endpoints
+Request:
+  GET https://headlessoracle.com/v5/status?mic={MIC_CODE}
+  X-Oracle-Key: {your-api-key}
 
-### GET /v5/status — Real-Time Market Status (Signed)
+Response (200 OK):
+  {
+    "mic": "XNYS",
+    "status": "OPEN",
+    "timestamp": "2026-03-20T14:30:00.000Z",
+    "issued_at": "2026-03-20T14:30:00.000Z",
+    "expires_at": "2026-03-20T14:31:00.000Z",
+    "issuer": "headlessoracle.com",
+    "key_id": "key_2026_v1",
+    "receipt_mode": "live",
+    "schema_version": "v5.0",
+    "source": "SCHEDULE",
+    "signature": "<hex Ed25519>"
+  }
 
-Primary endpoint. Returns cryptographically signed market status for a single exchange.
+Errors:
+  401 API_KEY_REQUIRED    — missing X-Oracle-Key header
+  403 INVALID_API_KEY     — key not recognised or revoked
+  402 PAYMENT_REQUIRED    — subscription suspended or payment failed
+  404 UNKNOWN_MIC         — MIC code not in supported set
+  429 RATE_LIMITED        — daily plan limit reached
 
-- Required parameter: \`mic\` (ISO 10383 MIC code)
-- Required header: \`X-Oracle-Key\` (your API key)
-- Response fields: \`receipt_id\` (UUID), \`issued_at\` (ISO 8601), \`expires_at\` (ISO 8601), \`mic\` (string), \`status\` (enum: OPEN | CLOSED | HALTED | UNKNOWN), \`source\` (enum: SCHEDULE | OVERRIDE | SYSTEM | REALTIME), \`receipt_mode\` (enum: demo | live), \`schema_version\` (string), \`public_key_id\` (string), \`signature\` (hex-encoded Ed25519)
-- [Full API docs](https://headlessoracle.com/docs.html)
+### Public: GET /v5/demo
 
-### GET /v5/schedule — Market Schedule Lookup (Unsigned)
+Request:
+  GET https://headlessoracle.com/v5/demo?mic={MIC_CODE}
 
-Returns next open/close times for a given exchange. Use for planning execution windows and scheduling tasks around market hours. Includes lunch break windows for XJPX and XHKG.
+Returns signed receipt with receipt_mode: "demo". No authentication required. Same schema as /v5/status. Use for integration testing without an API key.
 
-- NOT cryptographically signed — schedule-based only, does not reflect real-time halts
-- For verified real-time status, use /v5/status instead
+### Batch: GET /v5/batch
 
-### GET /v5/exchanges — Exchange Discovery
+Request:
+  GET https://headlessoracle.com/v5/batch?mics=XNYS,XNAS,XLON
+  X-Oracle-Key: {your-api-key}
 
-Returns all 23 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
+Response (200 OK):
+  {
+    "receipts": [
+      {"mic":"XNYS","status":"OPEN",...},
+      {"mic":"XNAS","status":"OPEN",...},
+      {"mic":"XLON","status":"CLOSED",...}
+    ],
+    "count": 3
+  }
 
-### GET /mics.json — Exchange Registry (ISO Metadata)
+### Schedule: GET /v5/schedule
 
-All 23 supported exchanges with MIC codes, names, timezones, currencies, and ISO 20022 registry links. No auth required.
+Request:
+  GET https://headlessoracle.com/v5/schedule?mic={MIC_CODE}
 
-- Fields per entry: \`mic\` (ISO 10383), \`name\`, \`country\` (ISO 3166-1 alpha-2), \`timezone\` (IANA), \`currency\` (ISO 4217), \`sameAs\` (ISO 20022 MIC registry URL)
-- Response is a JSON array, not an object wrapper — parse with \`JSON.parse(body)\` directly
-- Cache-Control: public, max-age=86400 — safe to cache for 24 hours
-- Use to build MIC-selection UI, validate MIC codes, or resolve exchange metadata without calling the live API
+Response (200 OK):
+  {
+    "mic": "XNYS",
+    "timezone": "America/New_York",
+    "next_open": "2026-03-23T13:30:00.000Z",
+    "next_close": "2026-03-23T20:00:00.000Z",
+    "lunch_break": null,
+    "data_coverage_years": ["2026","2027"]
+  }
 
-### GET /v5/demo — Try It Live
+lunch_break is non-null for: XJPX (11:30-12:30 local JST), XHKG (12:00-13:00 local HKT),
+XSHG and XSHE (11:30-13:00 local CST).
 
-Interactive demo endpoint. No API key required. Test the API and see a live signed response.
+---
+
+## Key Acquisition
+
+Request:
+  POST https://headlessoracle.com/v5/keys/request
+  Content-Type: application/json
+  {"email":"operator@example.com"}
 
-- [Try the demo](https://headlessoracle.com/v5/demo)
+Response (200 OK):
+  {"message":"API key sent to operator@example.com"}
+
+The API key is emailed once. It is not stored in plaintext. Format: ho_live_ prefix + 64 hex characters.
+
+Plans and limits:
+  builder  — 50,000 req/day
+  pro      — 200,000 req/day
+  protocol — unlimited
+
+Free demo access (no key): GET /v5/demo — 500 req/day before x402 gate activates.
 
-### GET /v5/batch — Batch Status Check (Signed)
+Pricing: https://headlessoracle.com/pricing
 
-Returns signed status receipts for multiple exchanges in one authenticated request.
+---
 
-- Required header: \`X-Oracle-Key\` (your API key)
-- Required parameter: \`mics\` (comma-separated MIC codes, e.g. \`XNYS,XNAS,XLON\`)
-- All MICs validated up front — invalid MIC returns 400 for the entire request
-- Each receipt is independently signed and verifiable in isolation
-- Tier 3 signing failure fails the whole batch (never partial results from a broken signing key)
+## Response Schema (complete field reference)
+
+Field          | Type   | Description
+---------------|--------|-----------------------------------------------------
+mic            | string | ISO 10383 Market Identifier Code
+status         | string | OPEN, CLOSED, HALTED, or UNKNOWN
+timestamp      | string | ISO 8601 UTC — when status was computed
+issued_at      | string | ISO 8601 UTC — when receipt was signed
+expires_at     | string | ISO 8601 UTC — valid until (issued_at + 60s)
+issuer         | string | Always "headlessoracle.com"
+key_id         | string | Public key identifier for signature verification
+receipt_mode   | string | "demo" (no auth) or "live" (authenticated)
+schema_version | string | Always "v5.0"
+source         | string | SCHEDULE, OVERRIDE, REALTIME, or SYSTEM
+signature      | string | Hex-encoded Ed25519 over canonical payload
+reason         | string | Present when source is OVERRIDE or REALTIME (halt reason)
+
+---
+
+## Status Values
+
+OPEN    — market is currently trading. Safe to execute.
+CLOSED  — market is closed (outside hours, holiday, weekend). Do not execute.
+HALTED  — market is open but trading suspended (circuit breaker). Do not execute.
+UNKNOWN — status cannot be determined. Treat as CLOSED. Do not execute.
+
+---
+
+## Fail-Closed Rules
+
+IF status != "OPEN"       → do not execute. No exceptions.
+IF API returns 5xx        → treat all markets as CLOSED, halt.
+IF request times out (>4s)→ treat all markets as CLOSED, halt.
+IF signature invalid      → do not act on the receipt.
+IF receipt past expires_at→ fetch fresh status, do not reuse cached receipt.
+UNKNOWN is not an error state — it is a definitive halt signal identical to CLOSED.
 
-### GET /v5/keys — Public Key Registry
+---
 
-Returns the current Ed25519 public key and the canonical payload specification for independent verification.
+## Ed25519 Signature Verification
 
-- No authentication required
-- Response: key_id, algorithm, format, public_key (hex), valid_from, valid_until (null if no rotation scheduled)
-- Also returns \`canonical_payload_spec\` documenting the exact field list and sort order for all receipt types
-- Matching well-known endpoint: GET /.well-known/oracle-keys.json (RFC 8615 standard discovery URI)
+Public key (hex), key_id: key_2026_v1
+  03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178
 
-### GET /v5/health — Liveness Probe (Signed)
+Public key endpoints:
+  GET https://headlessoracle.com/v5/keys
+  GET https://headlessoracle.com/.well-known/oracle-keys.json
 
-Returns a signed receipt confirming Oracle signing infrastructure is alive.
+Canonical payload algorithm:
+  1. Remove the "signature" field from the receipt object
+  2. Sort remaining keys alphabetically
+  3. JSON.stringify compact (no whitespace, no trailing newline)
+  4. UTF-8 encode to bytes
+  5. Verify Ed25519 signature (from receipt.signature hex) against those bytes
 
-- No authentication required
-- Response fields: receipt_id, issued_at, expires_at, status ("OK"), source ("SYSTEM"), public_key_id, signature
-- Use to distinguish Oracle-is-down from market-is-UNKNOWN
-- 200 + valid signature = Oracle alive; 500 CRITICAL_FAILURE = signing system offline
+JavaScript (Web Crypto — zero dependencies):
+  async function verifyReceipt(receipt) {
+    const { signature, ...fields } = receipt;
+    const sorted = Object.fromEntries(Object.entries(fields).sort());
+    const canonical = JSON.stringify(sorted);
+    const pubBytes = hexToBytes('03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178');
+    const key = await crypto.subtle.importKey('raw', pubBytes, {name:'Ed25519'}, false, ['verify']);
+    return crypto.subtle.verify('Ed25519', key, hexToBytes(signature), new TextEncoder().encode(canonical));
+  }
+
+Python (PyNaCl):
+  from nacl.signing import VerifyKey
+  import json
+  def verify_receipt(receipt):
+      fields = {k:v for k,v in receipt.items() if k != 'signature'}
+      canonical = json.dumps(dict(sorted(fields.items())), separators=(',',':'))
+      VerifyKey(bytes.fromhex('03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178')) \
+          .verify(canonical.encode(), bytes.fromhex(receipt['signature']))
 
-### GET /v5/account — Account Info
+npm SDK: @headlessoracle/verify — zero production dependencies, Web Crypto, 3-line API.
+  import { verify } from '@headlessoracle/verify';
+  const result = await verify(receipt);
+  if (!result.valid) throw new Error(result.reason);
 
-Returns plan and status for the authenticated API key.
+---
 
-- Required header: \`X-Oracle-Key\` (your API key)
-- Response: plan ("pro" or "internal"), status ("active", "suspended", "cancelled"), key_prefix
-- Returns 402 PAYMENT_REQUIRED if subscription is suspended or cancelled
+## Supported MIC Codes (23 exchanges)
 
-### POST /v5/checkout — Start a Subscription
+Americas:    XNYS (New York), XNAS (NASDAQ), XBSP (Sao Paulo)
+Europe:      XLON (London), XPAR (Paris), XSWX (Zurich), XMIL (Milan), XHEL (Helsinki), XSTO (Stockholm), XIST (Istanbul)
+Middle East: XSAU (Riyadh), XDFM (Dubai) — weekends Fri-Sat; Sunday is a trading day
+Africa:      XJSE (Johannesburg)
+Asia:        XJPX (Tokyo), XHKG (Hong Kong), XSHG (Shanghai), XSHE (Shenzhen), XKRX (Seoul), XBOM (Mumbai BSE), XNSE (Mumbai NSE), XSES (Singapore)
+Pacific:     XASX (Sydney), XNZE (Auckland)
 
-Creates a Paddle checkout session and returns a redirect URL.
+Invalid MIC → 404 UNKNOWN_MIC.
+Full directory: GET https://headlessoracle.com/v5/exchanges
 
-- No authentication required
-- No request body required
-- Response: \`{ "url": "https://..." }\` — redirect to this URL to complete payment
-- After successful payment, your API key is delivered by email (shown once)
-- Keys are prefixed \`ok_live_\` for easy identification in logs and config
+---
 
-### POST /v5/keys/request — Free Tier Key
+## Rate Limits by Plan
 
-Provision a free tier API key by email — no payment required.
+Plan      | Daily Limit   | On Exceed
+----------|---------------|------------------------------------------
+free      | 500 requests  | 402 + x402 payment object (Base USDC)
+builder   | 50,000        | 429 RATE_LIMITED
+pro       | 200,000       | 429 RATE_LIMITED
+protocol  | unlimited     | —
 
-- No authentication required
-- Request body: \`{ "email": "you@example.com" }\`
-- Response: \`200 OK\` — key delivered to email (shown once, prefixed \`ho_free_\`)
-- Free tier is rate-limited; upgrade at headlessoracle.com/pricing
-- Agent frameworks that receive a 401 with \`X-Oracle-Key-Request\` header can hit this endpoint to self-provision
+Resets at UTC midnight daily.
+Soft warning headers at 80% and 95% of free tier: X-RateLimit-Warning.
 
-## MCP Integration
+---
 
-Headless Oracle is available as an MCP (Model Context Protocol) server for direct integration with Claude, GPT, and other AI agent frameworks.
+## x402 Micropayment Path
 
-MCP tools available:
-- \`get_market_status\` — real-time signed status check
-- \`get_market_schedule\` — next open/close times with lunch breaks
-- \`list_exchanges\` — discover supported markets and MIC codes
+When the free tier limit is exceeded, HTTP 402 response body:
+  {
+    "error": "PAYMENT_REQUIRED",
+    "x402": {
+      "network": "base-mainnet",
+      "chainId": 8453,
+      "amount": "1000",
+      "currency": "USDC",
+      "paymentAddress": "0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3",
+      "usdcContractAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "maxAge": 300
+    }
+  }
 
-Setup: Add the Headless Oracle MCP server to your agent's tool configuration. See [MCP setup instructions](https://headlessoracle.com/docs.html#mcp).
+amount=1000 means 0.001 USDC (6 decimal places). Network: Base mainnet (chainId 8453).
 
-## Trust and Verification
+To retry: send USDC transfer on Base mainnet, then include:
+  X-Payment: {"txHash":"0x...","network":"base-mainnet","chainId":8453}
 
-- [Ed25519 Public Key](https://headlessoracle.com/ed25519-public-key.txt): Current signing public key for independent verification.
-  Active Key ID: key_2026_v1
+Constraints: transaction <= 300 seconds old; each txHash accepted once (replay protection).
 
-- [Public Key Registry (JSON)](https://headlessoracle.com/.well-known/oracle-keys.json): Machine-readable key endpoint.
+Full docs: https://headlessoracle.com/docs/x402-payments
 
-- [Receipt Verifier](https://headlessoracle.com/verify.html): Client-side browser tool for verifying any Liability Receipt. Paste JSON, verify Ed25519 signature instantly. Zero server-side processing.
+---
 
-- [Status Page](https://headlessoracle.com/v5/health): Real-time infrastructure health (signed liveness probe).
+## OAuth / Authentication Discovery
 
-## Use Cases
-
-- RWA Trading Bot Integration: Prevents execution outside traditional market hours for tokenized Treasury and equity products that reference TradFi prices. Blocks settlement failures, NAV miscalculations, and redemption errors.
-
-- DeFi Synthetic Equity Safety Gate: Gate minting, redemption, liquidation, and rebalancing behind cryptographically attested market status checks for synthetic equity and perpetual futures protocols.
-
-- Autonomous Agent Risk Stack: Market status is Gate Zero — the first check before price oracle query, gas estimation, position sizing, and execution routing.
+GET https://headlessoracle.com/.well-known/oauth-protected-resource
 
-## Code Examples
+Response:
+  {
+    "resource": "https://headlessoracle.com",
+    "authorization_servers": [],
+    "bearer_methods_supported": ["header"],
+    "resource_documentation": "https://headlessoracle.com/docs"
+  }
 
-### Python — Ed25519 Signature Verification (PyNaCl)
+Authentication header name: X-Oracle-Key (not Authorization: Bearer).
+This endpoint exists for RFC 8705 resource discovery used by MCP-compatible clients.
 
-\`\`\`python
-import json, requests
-from nacl.signing import VerifyKey
+---
 
-PUBLIC_KEY_HEX = "03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178"
+## Additional Endpoints
 
-def verify_receipt(receipt: dict) -> bool:
-    sig = receipt.pop("signature")
-    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-    try:
-        VerifyKey(bytes.fromhex(PUBLIC_KEY_HEX)).verify(
-            canonical.encode(), bytes.fromhex(sig)
-        )
-        return True
-    except Exception:
-        return False
+GET /v5/health         — signed liveness probe (no auth). Returns status: OK or 500 CRITICAL_FAILURE.
+GET /v5/keys           — public key registry, canonical payload spec, key lifecycle metadata.
+GET /v5/compliance     — APTS compliance status (6 checks), sma_spec_version, verify_sdk.
+GET /v5/traction       — live metrics snapshot: exchanges, MCP requests today, days live.
+GET /v5/usage          — per-key usage stats (auth required): requests today, limit, percent.
+GET /v5/errors/{code}  — machine-readable error recovery details for any 4xx error code.
+GET /openapi.json      — OpenAPI 3.1 specification (all routes, schemas, auth).
+GET /.well-known/oracle-keys.json — RFC 8615 key discovery.
+GET /llms.txt          — this document.
 
-receipt = requests.get("https://headlessoracle.com/v5/demo").json()
-assert verify_receipt(dict(receipt))
-\`\`\`
+---
 
-### JavaScript — Ed25519 Verification (Web Crypto API)
+## DST Transitions 2026
 
-\`\`\`javascript
-async function verifyReceipt(receipt) {
-  const { signature, ...payload } = receipt;
-  const sorted = {};
-  for (const key of Object.keys(payload).sort()) sorted[key] = payload[key];
-  const canonical = JSON.stringify(sorted);
-  const keyBytes  = hexToBytes("03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178");
-  const sigBytes  = hexToBytes(signature);
-  const msgBytes  = new TextEncoder().encode(canonical);
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw", keyBytes, { name: "Ed25519" }, false, ["verify"]
-  );
-  return crypto.subtle.verify({ name: "Ed25519" }, cryptoKey, sigBytes, msgBytes);
-}
-function hexToBytes(hex) {
-  return new Uint8Array(hex.match(/.{2}/g).map(b => parseInt(b, 16)));
-}
-\`\`\`
+Date        | Event                            | Affected MICs
+2026-03-08  | US spring forward (EST to EDT)   | XNYS, XNAS
+2026-03-29  | EU/UK spring forward             | XLON, XPAR, XSWX, XMIL, XHEL, XSTO
+2026-10-25  | EU/UK fall back                  | XLON, XPAR, XSWX, XMIL, XHEL, XSTO
+2026-11-01  | US fall back                     | XNYS, XNAS
 
-### Python — Fail-Closed Bot Integration Pattern
+All DST handling is automatic via IANA timezone names in Intl.DateTimeFormat. No hardcoded UTC offsets.
 
-\`\`\`python
-import requests, json
-from nacl.signing import VerifyKey
+---
 
-ORACLE_KEY = "03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178"
-API_KEY    = "your_api_key"
+## Standards
 
-def is_market_confirmed_open(mic: str = "XNYS") -> bool:
-    """
-    Returns True ONLY if Oracle confirms OPEN and Ed25519 signature is valid.
-    Returns False on any failure — timeout, UNKNOWN, invalid sig, exception.
-    Fail-closed by design.
-    """
-    try:
-        receipt = requests.get(
-            f"https://headlessoracle.com/v5/status",
-            params={"mic": mic},
-            headers={"X-Oracle-Key": API_KEY},
-            timeout=4,
-        ).json()
-        sig = receipt.pop("signature")
-        canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
-        VerifyKey(bytes.fromhex(ORACLE_KEY)).verify(
-            canonical.encode(), bytes.fromhex(sig)
-        )
-        return receipt.get("status") == "OPEN"
-    except Exception:
-        return False  # Fail-closed
+SMA Protocol: https://github.com/LembaGang/sma-protocol (Apache 2.0)
+Agent Pre-Trade Safety Standard (APTS): https://github.com/LembaGang/agent-pretrade-safety-standard (Apache 2.0)
+OpenAPI spec: https://headlessoracle.com/openapi.json
+Receipt specification: https://headlessoracle.com/docs
 
-# In your execution loop:
-if position_needs_action and is_market_confirmed_open("XNYS"):
-    execute_trade()
-else:
-    log("Execution deferred: market not confirmed OPEN")
-\`\`\`
+---
 
-### Python — Programmatic Key Fetching
-
-\`\`\`python
-def get_oracle_public_key(fallback: str) -> str:
-    """Always fall back to the hardcoded key if the fetch fails."""
-    try:
-        resp = requests.get("https://headlessoracle.com/v5/keys", timeout=4)
-        return resp.json()["keys"][0]["public_key"]
-    except Exception:
-        return fallback
-\`\`\`
-
-## Known Schedule Risk Events (DST 2026)
-
-Any bot using hardcoded UTC offsets will compute incorrect open/close times after these dates. Headless Oracle handles all transitions automatically — no action required on your end.
-
-| Date             | Event                                              | Affected Markets |
-|------------------|----------------------------------------------------|------------------|
-| March 8, 2026    | US clocks spring forward (EST → EDT, UTC-5 → UTC-4) | XNYS, XNAS     |
-| March 29, 2026   | UK/EU clocks spring forward (GMT/CET → BST/CEST)  | XLON, XPAR       |
-| October 25, 2026 | UK/EU clocks fall back (BST/CEST → GMT/CET)       | XLON, XPAR       |
-| November 1, 2026 | US clocks fall back (EDT → EST, UTC-4 → UTC-5)    | XNYS, XNAS       |
-
-## Edge Cases This API Handles
-
-Most timezone libraries return correct UTC offsets. They do not know when markets are actually closed. Headless Oracle handles the following edge cases automatically — no configuration required:
-
-- **DST transitions (3-week phantom window)**: US and UK/EU clocks shift on different dates, creating a 3-week window each spring and autumn where hardcoded UTC offsets produce wrong open/close times. Headless Oracle uses IANA timezone names exclusively — all transitions are handled automatically via \`Intl.DateTimeFormat\`.
-
-- **Exchange-specific holidays (67 across 7 venues)**: Each exchange observes a distinct calendar. Japanese national holidays differ from NYSE closures. Hong Kong observes Lunar New Year. Singapore observes Deepavali. All 67 holidays are encoded, year-keyed, and fail-closed if a year's data is missing.
-
-- **Early close days**: Several exchanges close early on certain days (Christmas Eve, day before US Thanksgiving, day before US Independence Day). These are not timezone issues — they require explicit schedule awareness that timezone libraries do not carry.
-
-- **Lunch breaks (XJPX, XHKG)**: Tokyo halts trading 11:30–12:30 JST; Hong Kong halts 12:00–13:00 HKT. A system that assumes continuous trading during market hours will act during a closed window on ~490 trading days per year.
-
-- **Circuit breaker halts**: Exchange-wide trading halts triggered by volatility events are unscheduled and cannot be computed from a calendar. Headless Oracle exposes these via KV overrides — a signed HALTED receipt with a human-readable reason, propagated without redeployment.
-
-- **Weekend boundary calculations**: The Tokyo Monday open occurs Sunday evening UTC. The London Friday close occurs Friday afternoon UTC. Systems without timezone-aware schedule logic compute these transitions incorrectly, especially across the international date line.
-
-- **UNKNOWN status handling**: When Headless Oracle cannot determine market state (signing failure, missing calendar data for the current year), it returns UNKNOWN rather than defaulting to OPEN. Consumers are contractually required to treat UNKNOWN as CLOSED. This fail-closed contract is enforced at the protocol level — not just documented.
-
-Across all 23 exchanges, approximately **5,000+ schedule edge cases per year** fall into one of the above categories. A hardcoded timezone offset handles zero of them.
-
-## Receipt Portability
-
-Signed receipts are self-contained and verifiable by any party that holds the public key. This enables a multi-agent trust pattern where receipt verification is decoupled from receipt issuance.
-
-Every receipt contains an \`issuer\` field identifying the oracle (value: \`"headlessoracle.com"\`). Agents encountering an unfamiliar receipt can resolve the issuer domain to discover the oracle's public key endpoint at \`{issuer}/v5/keys\` — no prior knowledge of Headless Oracle required.
-
-**Pattern: Agent A fetches, Agent B verifies**
-
-1. Agent A calls \`GET /v5/demo\` (or \`/v5/status\` with an API key) and receives a signed receipt.
-2. Agent A passes the receipt JSON to Agent B as part of its output or context.
-3. Agent B independently verifies the receipt using the public key at \`/.well-known/oracle-keys.json\` — without making a new API call.
-4. Agent B checks \`expires_at\` to ensure the receipt has not gone stale (60-second TTL).
-5. Agent B checks \`receipt_mode\`: \`'demo'\` receipts are unauthenticated (suitable for testing); \`'live'\` receipts require an API key (suitable for production decisions).
-
-**Verification steps (any language)**:
-
-\`\`\`
-1. Fetch public key: GET /.well-known/oracle-keys.json → keys[0].public_key (hex)
-2. Build canonical payload: collect all receipt fields except signature, sort keys alphabetically, JSON.stringify with no whitespace
-3. Verify Ed25519 signature: ed25519.verify(hex_decode(receipt.signature), utf8_encode(canonical), hex_decode(public_key))
-4. Check expiry: new Date(receipt.expires_at) > Date.now()
-5. Check receipt_mode: assert 'live' for production decisions
-6. Trust status: treat UNKNOWN or HALTED as CLOSED — never execute on ambiguous state
-\`\`\`
-
-**Why this matters at agent scale**: An orchestrator agent can check market state once and distribute the signed receipt to 10 sub-agents. Each sub-agent independently verifies without rate-limit pressure on the Oracle API. The cryptographic proof travels with the data.
-
-**Convenience**: Use the \`@headlessoracle/verify\` npm package for a 3-line verification wrapper (zero production dependencies, Web Crypto API, ESM + CJS):
-
-\`\`\`js
-import { verify } from '@headlessoracle/verify';
-const result = await verify(receipt);
-if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATURE | ...
-\`\`\`
 ## Legal
 
-- [Terms of Service](https://headlessoracle.com/terms.html): Headless Oracle operates under the Lowe v. SEC (1985) publisher exclusion. Provides probabilistic market context, not deterministic trading signals. No fiduciary, advisory, or broker-dealer relationship is formed. Total liability capped at fees paid in the 12 months preceding any claim.
-
-- [Privacy Policy](https://headlessoracle.com/privacy.html): Minimal data collection. Collected: API key identifier, request timestamp, MIC code. NOT collected: portfolio data, positions, balances, wallet addresses.
-
-## Compliance and Standards
-
-### GET /v5/compliance — APTS Self-Report
-
-Returns a machine-readable compliance report for the Agent Pre-Trade Safety Standard (APTS v1.0). Use to verify that Oracle meets your compliance requirements before integrating.
-
-- No authentication required
-- Response: \`checks\` array — 6 pre-trade safety checks, each with \`id\`, \`description\`, \`status\` ("pass" | "fail")
-- Also returns \`standard\`, \`standard_version\`, \`sma_spec_version\`, \`verify_sdk\`, \`standard_url\`
-
-Checks performed:
-1. \`signed_attestation\` — All market status responses are cryptographically signed (Ed25519)
-2. \`circuit_breaker_detection\` — Unscheduled halts propagated via KV override within operator SLA
-3. \`settlement_window_verification\` — Exchange schedule includes pre-open and post-close windows
-4. \`receipt_ttl_enforcement\` — All receipts include expires_at (60s TTL), signed in canonical payload
-5. \`signature_verification\` — Ed25519 signatures verifiable via @headlessoracle/verify SDK
-6. \`fail_closed_on_unknown\` — UNKNOWN status contractually requires halt — never treated as OPEN
-
-### Signed Market Attestation (SMA) Protocol v1.0
-
-Headless Oracle receipts conform to the SMA Protocol v1.0 — a vendor-neutral open standard for cryptographically attested market state.
-
-SMA receipt fields: \`mic\`, \`status\`, \`timestamp\`, \`expires_at\`, \`issuer\`, \`key_id\`, \`receipt_mode\`, \`signature\`
-
-Signing algorithm: Ed25519 over alphabetically-sorted compact JSON (excluding \`signature\` field).
-
-Any conforming oracle can issue SMA receipts. Any conforming verifier can verify them independently.
-
-## x402 Micropayments
-
-Headless Oracle supports the x402 protocol: agents can pay per request in USDC on Base mainnet without a subscription.
-
-- **Amount**: 0.001 USDC (1000 units at 6 decimals) per request
-- **Network**: Base mainnet (chainId 8453)
-- **When it applies**: Free tier keys (ho_free_*) after 500 req/day limit
-- **How it works**: On limit exhaustion the server returns HTTP 402 with a machine-readable x402 payload. The agent sends USDC and retries with X-Payment header.
-
-### POST /v5/credits/purchase — Prepaid Credits
-
-Buy credits in bulk to avoid per-request on-chain payments.
-
-- Required header: X-Oracle-Key
-- Required header: X-Payment (USDC tx on Base mainnet)
-- 100 credits = 90000 USDC units (0.09 USDC)
-- 1000 credits = 800000 USDC units (0.80 USDC)
-- Credits are consumed before x402 per-request payments kick in
-
-### GET /v5/credits/balance — Credit Balance
-
-Returns remaining prepaid credit balance for the authenticated key.
-
-- Required header: X-Oracle-Key
-- Response: balance, estimated_requests_remaining, last_purchased
-
-### GET /v5/errors/{code} — Error Documentation
-
-Machine-readable documentation for any error code returned by the API.
-
-- No authentication required
-- Response: code, message, resolution, http_status, docs_url
-- Example: GET /v5/errors/PAYMENT_REQUIRED
-
-### GET /v5/metrics — Usage Metrics
-
-Returns today's MCP request count and unique client count from telemetry.
-
-- No authentication required
-- Response: total_mcp_requests_today, unique_mcp_clients_today, date
-
-Full guide: https://headlessoracle.com/docs/x402-payments.md
-
-## Autonomous Halt Monitoring
-
-Headless Oracle runs an autonomous halt monitor every minute via Cloudflare Cron. It checks exchanges that are currently scheduled OPEN against real-time market data sources and writes REALTIME override signals to the circuit breaker KV when a discrepancy is detected.
-
-- **Cron**: \`* * * * *\` (every minute)
-- **Sources**: Polygon.io (primary, requires POLYGON_API_KEY secret) → Alpaca paper-api (fallback, US markets only)
-- **Behavior**: Fail-open — if both sources are unavailable, the schedule-based status is preserved. No false halts on API errors.
-- **Override TTL**: 2 hours — auto-clears when the exchange resumes trading
-- **Source field**: REALTIME overrides set \`source: 'REALTIME'\` in the signed receipt, distinguishable from manual OVERRIDE entries
-
-### GET /v5/status/realtime — Real-Time Status with Halt Monitor Metadata
-
-Authenticated endpoint that returns the standard signed receipt plus halt monitor state for a specific exchange.
-
-- Required header: X-Oracle-Key
-- Optional parameter: mic (default: XNYS)
-- Response: signed_receipt (full signed receipt), halt_monitor (active_realtime_override if any, note)
-
-## Agent Discovery
-
-- [Skill File](https://headlessoracle.com/SKILL.md): Step-by-step integration guide optimised for AI agents. Covers MCP setup, HTTP patterns, code examples, safety rules, and common mistakes.
-- [Agent Metadata](https://headlessoracle.com/.well-known/agent.json): Structured JSON describing capabilities, MCP tools, payment scheme, and discovery endpoints.
-- [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API contract (OpenAPI 3.1).
-- [MCP Endpoint](https://headlessoracle.com/mcp): Protocol version 2024-11-05. Tools: get_market_status, get_market_schedule, list_exchanges.
-- [APTS Compliance](https://headlessoracle.com/v5/compliance): Machine-readable Agent Pre-Trade Safety Standard compliance self-report.
-- [Traction](https://headlessoracle.com/v5/traction): Live metrics — exchanges covered, uptime, MCP usage today, stack positioning. No auth required.
-- [x402 Guide](https://headlessoracle.com/docs/x402-payments.md): Per-request micropayment protocol for agent-native API access.
-- [SMA Specification](https://github.com/LembaGang/sma-protocol): Signed Market Attestation Protocol v1.0 (GitHub — Apache 2.0).
-- [Error Docs](https://headlessoracle.com/v5/errors/PAYMENT_REQUIRED): Machine-readable error documentation for any error code.
-
-## Standards & RFCs
-
-- SMA Protocol v1.0: https://github.com/LembaGang/sma-protocol
-- External State Attestation RFC: submitted to https://github.com/agent-intent/verifiable-intent on 2026-03-17
-- Agent Pre-Trade Safety Standard: https://github.com/LembaGang/agent-pretrade-safety-standard
-- Verifiable Intent compatibility: headlessoracle.com implements the reference oracle for the proposed environment.market_state constraint type
-
-## Robots
-
-AI crawlers are welcome. This file is at /llms.txt. The robots.txt permits crawling of /llms.txt, /SKILL.md, and all public documentation.
+API use constitutes acceptance of Terms of Service: https://headlessoracle.com/terms.html
+Fail-closed obligation is contractual. Ignoring UNKNOWN status shifts liability to the operator.
 `;
 
 // SKILL.md — step-by-step integration guide optimised for AI agents.
@@ -5058,9 +4921,24 @@ export default {
 					const sub = event.data;
 					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+						const newStatus = sub['status'] === 'active' ? 'active' : 'suspended';
+						// Fetch key_hash before update — needed to sync KV immediately
+						const { data: updKeyRow } = await supabase
+							.from('api_keys').select('key_hash').eq('stripe_subscription_id', sub['id'] as string).single();
 						await supabase.from('api_keys')
-							.update({ status: sub['status'] === 'active' ? 'active' : 'suspended' })
+							.update({ status: newStatus })
 							.eq('stripe_subscription_id', sub['id'] as string);
+						// Sync KV so auth hot path reflects billing change immediately (not after 300s TTL)
+						if (updKeyRow?.key_hash && env.ORACLE_API_KEYS) {
+							const current = await env.ORACLE_API_KEYS.get(updKeyRow.key_hash as string);
+							if (current) {
+								const parsed = JSON.parse(current) as Record<string, unknown>;
+								await env.ORACLE_API_KEYS.put(
+									updKeyRow.key_hash as string,
+									JSON.stringify({ ...parsed, status: newStatus }),
+								);
+							}
+						}
 					}
 					return json({ received: true });
 				}
@@ -5069,9 +4947,23 @@ export default {
 					const sub = event.data;
 					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+						// Fetch key_hash before update — needed to sync KV immediately
+						const { data: pdKeyRow } = await supabase
+							.from('api_keys').select('key_hash').eq('stripe_subscription_id', sub['id'] as string).single();
 						await supabase.from('api_keys')
 							.update({ status: 'suspended' })
 							.eq('stripe_subscription_id', sub['id'] as string);
+						// Sync KV so suspended status takes effect in seconds, not 300s
+						if (pdKeyRow?.key_hash && env.ORACLE_API_KEYS) {
+							const current = await env.ORACLE_API_KEYS.get(pdKeyRow.key_hash as string);
+							if (current) {
+								const parsed = JSON.parse(current) as Record<string, unknown>;
+								await env.ORACLE_API_KEYS.put(
+									pdKeyRow.key_hash as string,
+									JSON.stringify({ ...parsed, status: 'suspended' }),
+								);
+							}
+						}
 					}
 					return json({ received: true });
 				}
@@ -5203,7 +5095,7 @@ export default {
 					return json({ received: true });
 				}
 
-// Unrecognised event — acknowledge without processing
+				// Unrecognised event — acknowledge without processing
 				return json({ received: true });
 			}
 
