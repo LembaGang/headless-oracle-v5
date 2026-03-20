@@ -1669,20 +1669,29 @@ describe('GET /.well-known/oauth-protected-resource', () => {
 		expect(response.headers.get('Content-Type')).toContain('application/json');
 	});
 
-	it('contains required RFC 9728 fields', async () => {
+	it('contains required RFC 8705 fields with correct values', async () => {
 		const body = await fetchJSON('/.well-known/oauth-protected-resource');
+		// Mandatory field
 		expect(body).toHaveProperty('resource', 'https://headlessoracle.com');
+		// Empty array signals no OAuth requirement to MCP clients
 		expect(body).toHaveProperty('authorization_servers');
-		expect(body).toHaveProperty('bearer_methods_supported');
-		expect(body).toHaveProperty('scopes_supported');
-	});
-
-	it('returns empty arrays — Oracle has no OAuth requirement', async () => {
-		const body = await fetchJSON('/.well-known/oauth-protected-resource');
 		expect(Array.isArray(body.authorization_servers)).toBe(true);
 		expect((body.authorization_servers as unknown[]).length).toBe(0);
-		expect(Array.isArray(body.bearer_methods_supported)).toBe(true);
-		expect(Array.isArray(body.scopes_supported)).toBe(true);
+		// header = X-Oracle-Key convention
+		expect(body).toHaveProperty('bearer_methods_supported');
+		expect(body.bearer_methods_supported).toEqual(['header']);
+		// Documentation link
+		expect(body).toHaveProperty('resource_documentation', 'https://headlessoracle.com/docs');
+		// Signing algorithm
+		expect(body).toHaveProperty('resource_signing_alg_values_supported');
+		expect(body.resource_signing_alg_values_supported).toContain('EdDSA');
+	});
+
+	it('does not include scopes_supported — absence signals OAuth is not applicable', async () => {
+		const body = await fetchJSON('/.well-known/oauth-protected-resource');
+		// scopes_supported: [] would incorrectly imply OAuth with no scopes.
+		// The field must be absent entirely.
+		expect(body).not.toHaveProperty('scopes_supported');
 	});
 });
 

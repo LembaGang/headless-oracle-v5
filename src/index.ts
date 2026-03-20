@@ -4836,11 +4836,19 @@ export default {
 				});
 			}
 			if (url.pathname === '/.well-known/oauth-protected-resource') {
+				// RFC 8705 — OAuth 2.0 Protected Resource Metadata.
+				// MCP clients fetch this to discover whether OAuth is required before
+				// attempting a protected request.
+				// authorization_servers: [] signals no OAuth is required — MCP endpoint is public.
+				// bearer_methods_supported: ["header"] matches X-Oracle-Key header convention.
+				// scopes_supported is intentionally omitted — an empty array implies OAuth with
+				// no scopes, which is incorrect; absence means OAuth is not applicable here.
 				return json({
-					resource:                 'https://headlessoracle.com',
-					authorization_servers:    [],
-					bearer_methods_supported: [],
-					scopes_supported:         [],
+					resource:                            'https://headlessoracle.com',
+					authorization_servers:               [],
+					bearer_methods_supported:            ['header'],
+					resource_documentation:              'https://headlessoracle.com/docs',
+					resource_signing_alg_values_supported: ['EdDSA'],
 				});
 			}
 
