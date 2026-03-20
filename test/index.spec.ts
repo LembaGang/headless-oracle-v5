@@ -3656,3 +3656,191 @@ describe('Session Q: Weekly digest cron', () => {
 		await env.ORACLE_TELEMETRY.delete(`mcp_clients:${today}:ddeeff`);
 	});
 });
+
+// ─── subscription.activated webhook handler ───────────────────────────────────
+
+describe('POST /webhooks/paddle subscription.activated', () => {
+	const WEBHOOK_SECRET = 'pdl_ntfset_test_placeholder_for_local_tests';
+
+	it('subscription.activated with new subscription → generates ho_live_ key', async () => {
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.activated',
+			data: {
+				id:          'sub_activated_new_001',
+				customer_id: 'ctm_activated_001',
+				status:      'active',
+				items:       [{ price: { id: 'test_builder_price_id' } }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		let capturedEmailHtml = '';
+		let capturedSupabaseInsertBody: Record<string, unknown> = {};
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'activated-user@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('api.resend.com')) {
+				capturedEmailHtml = JSON.parse((init?.body as string) ?? '{}').html ?? '';
+				return new Response(JSON.stringify({ id: 'email_ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'GET') {
+				// select to check existing — return no match
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'POST') {
+				capturedSupabaseInsertBody = JSON.parse((init?.body as string) ?? '{}');
+				return new Response(JSON.stringify({ data: [capturedSupabaseInsertBody], error: null }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input as RequestInfo, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('subscription.activated with existing subscription_id → idempotent (no duplicate key)', async () => {
+		const existingSubId = 'sub_activated_dup_001';
+		// Pre-seed Supabase row for this subscription via KV (simulate existing key)
+		const existingKeyHash = 'aa'.repeat(32);
+		await env.ORACLE_API_KEYS.put(existingKeyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.activated',
+			data: {
+				id:          existingSubId,
+				customer_id: 'ctm_dup_001',
+				status:      'active',
+				items:       [{ price: { id: 'test_builder_price_id' } }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		let insertCalled = false;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'GET') {
+				// Simulate existing row found
+				return new Response(JSON.stringify({ data: { id: 'existing-id', key_hash: existingKeyHash, plan: 'builder' }, error: null }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'POST') {
+				insertCalled = true;
+				return new Response(JSON.stringify({ data: [], error: null }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'dup@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input as RequestInfo, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			expect(insertCalled).toBe(false);
+		} finally {
+			globalThis.fetch = originalFetch;
+			await env.ORACLE_API_KEYS.delete(existingKeyHash);
+		}
+	});
+});
+
+// ─── Plan-based daily rate limits ────────────────────────────────────────────
+
+describe('Plan-based daily rate limits', () => {
+	it('builder plan at daily limit (50k) → 429 RATE_LIMITED on /v5/status', async () => {
+		const builderKey     = 'ho_live_builder_ratelimit_test_key_' + 'a'.repeat(32);
+		const builderKeyHash = await sha256Hex(builderKey);
+		const today          = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_API_KEYS.put(builderKeyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${builderKeyHash}:${today}`, '50000', { expirationTtl: 3600 });
+
+		try {
+			const response = await fetchWorker('/v5/status', {
+				headers: { 'X-Oracle-Key': builderKey },
+			});
+			expect(response.status).toBe(429);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'RATE_LIMITED');
+			expect(String(body.message)).toContain('builder');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(builderKeyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${builderKeyHash}:${today}`);
+		}
+	});
+
+	it('pro plan at daily limit (200k) → 429 RATE_LIMITED on /v5/status', async () => {
+		const proKey     = 'ho_live_pro_ratelimit_test_key_000' + 'b'.repeat(32);
+		const proKeyHash = await sha256Hex(proKey);
+		const today      = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_API_KEYS.put(proKeyHash, JSON.stringify({ plan: 'pro', status: 'active' }));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${proKeyHash}:${today}`, '200000', { expirationTtl: 3600 });
+
+		try {
+			const response = await fetchWorker('/v5/status', {
+				headers: { 'X-Oracle-Key': proKey },
+			});
+			expect(response.status).toBe(429);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'RATE_LIMITED');
+			expect(String(body.message)).toContain('pro');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(proKeyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${proKeyHash}:${today}`);
+		}
+	});
+
+	it('builder plan below limit → 200 on /v5/status', async () => {
+		const builderKey     = 'ho_live_builder_below_limit_key_' + 'c'.repeat(32);
+		const builderKeyHash = await sha256Hex(builderKey);
+		const today          = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_API_KEYS.put(builderKeyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${builderKeyHash}:${today}`, '100', { expirationTtl: 3600 });
+
+		try {
+			const response = await fetchWorker('/v5/status', {
+				headers: { 'X-Oracle-Key': builderKey },
+			});
+			expect(response.status).toBe(200);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(builderKeyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${builderKeyHash}:${today}`);
+		}
+	});
+
+	it('builder plan at daily limit on /v5/batch → 429 RATE_LIMITED', async () => {
+		const batchBuilderKey     = 'ho_live_batch_builder_limit_key' + 'd'.repeat(33);
+		const batchBuilderKeyHash = await sha256Hex(batchBuilderKey);
+		const today               = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_API_KEYS.put(batchBuilderKeyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${batchBuilderKeyHash}:${today}`, '50000', { expirationTtl: 3600 });
+
+		try {
+			const response = await fetchWorker('/v5/batch?mics=XNYS', {
+				headers: { 'X-Oracle-Key': batchBuilderKey },
+			});
+			expect(response.status).toBe(429);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'RATE_LIMITED');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(batchBuilderKeyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${batchBuilderKeyHash}:${today}`);
+		}
+	});
+});

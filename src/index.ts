@@ -1495,7 +1495,20 @@ const ERC20_TRANSFER_TOPIC  = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11
 // Base mainnet public JSON-RPC endpoint — no API key required.
 const BASE_RPC_URL          = 'https://mainnet.base.org';
 // Free tier: daily request cap before x402 micropayment is required.
-const FREE_TIER_DAILY_LIMIT = 500;
+const FREE_TIER_DAILY_LIMIT    = 500;
+const BUILDER_TIER_DAILY_LIMIT = 50_000;
+const PRO_TIER_DAILY_LIMIT     = 200_000;
+
+// Returns the daily request limit for a given plan. null = unlimited (protocol, internal).
+function getPlanDailyLimit(plan: string): number | null {
+	switch (plan) {
+		case 'free':    return FREE_TIER_DAILY_LIMIT;
+		case 'builder': return BUILDER_TIER_DAILY_LIMIT;
+		case 'pro':     return PRO_TIER_DAILY_LIMIT;
+		default:        return null; // protocol, internal — no limit
+	}
+}
+
 // Response headers signalling to HTTP clients that a payment is required.
 const X402_RESPONSE_HEADERS: Record<string, string> = {
 	'X-Payment-Required': 'true',
@@ -4375,6 +4388,15 @@ export default {
 					} else {
 						incrementDailyUsage(keyHash, env, ctx, usage);
 					}
+				// ── Paid tier daily limits (builder: 50k/day, pro: 200k/day) ──
+				} else if (auth.plan === 'builder' || auth.plan === 'pro') {
+					const paidKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
+					const paidUsage   = await getDailyUsage(paidKeyHash, env);
+					const paidLimit   = getPlanDailyLimit(auth.plan)!;
+					if (paidUsage >= paidLimit) {
+						return json({ error: 'RATE_LIMITED', message: `${auth.plan} plan daily limit (${paidLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429);
+					}
+					incrementDailyUsage(paidKeyHash, env, ctx, paidUsage);
 				}
 			}
 
@@ -4553,6 +4575,15 @@ export default {
 					} else {
 						incrementDailyUsage(batchKeyHash, env, ctx, batchUsage);
 					}
+				// ── Paid tier daily limits for batch (builder: 50k/day, pro: 200k/day) ──
+				} else if (batchAuth.plan === 'builder' || batchAuth.plan === 'pro') {
+					const paidBatchKeyHash = batchAuth.keyHash ?? await sha256Hex(apiKey);
+					const paidBatchUsage   = await getDailyUsage(paidBatchKeyHash, env);
+					const paidBatchLimit   = getPlanDailyLimit(batchAuth.plan)!;
+					if (paidBatchUsage >= paidBatchLimit) {
+						return json({ error: 'RATE_LIMITED', message: `${batchAuth.plan} plan daily limit (${paidBatchLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429);
+					}
+					incrementDailyUsage(paidBatchKeyHash, env, ctx, paidBatchUsage);
 				}
 
 				const micsParam = url.searchParams.get('mics');
@@ -5070,7 +5101,109 @@ export default {
 					return json({ received: true });
 				}
 
-				// Unrecognised event — acknowledge without processing
+				if (event.event_type === 'subscription.activated') {
+					const sub = event.data;
+					const subscriptionId = sub['id'] as string;
+					if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+						console.error('WEBHOOK_ERROR: Supabase not configured — key not stored');
+						return json({ received: true });
+					}
+					const supabaseActiv = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+
+					// Idempotency: if this subscription already has a key, update plan (upgrade flow)
+					const { data: existingActiv } = await supabaseActiv
+						.from('api_keys').select('id, key_hash, plan').eq('stripe_subscription_id', subscriptionId).single();
+
+					// Determine plan — items[0].price.id for subscription.activated (differs from transaction.completed)
+					const activItems = sub['items'] as Array<{ price?: { id?: string } }> | undefined;
+					const activPriceId = activItems?.[0]?.price?.id ?? null;
+					let activPlan = 'pro';
+					if (activPriceId) {
+						if (env.PADDLE_PRICE_ID_BUILDER && activPriceId === env.PADDLE_PRICE_ID_BUILDER)       activPlan = 'builder';
+						else if (env.PADDLE_PRICE_ID_PRO && activPriceId === env.PADDLE_PRICE_ID_PRO)           activPlan = 'pro';
+						else if (env.PADDLE_PRICE_ID_PROTOCOL && activPriceId === env.PADDLE_PRICE_ID_PROTOCOL) activPlan = 'protocol';
+					}
+
+					// Fetch customer email from Paddle API (not included in subscription event payload)
+					let activEmail: string | null = null;
+					if (env.PADDLE_API_KEY && sub['customer_id']) {
+						const custActivRes = await fetch(`https://api.paddle.com/customers/${sub['customer_id'] as string}`, {
+							headers: { 'Authorization': `Bearer ${env.PADDLE_API_KEY}` },
+						});
+						if (custActivRes.ok) {
+							const custActivBody = await custActivRes.json() as { data?: { email?: string } };
+							activEmail = custActivBody.data?.email ?? null;
+						} else {
+							console.error(`PADDLE_CUSTOMER_FETCH_ERROR: ${sub['customer_id'] as string}`);
+						}
+					}
+
+					if (existingActiv) {
+						// Subscription already has a key — update plan if it changed (upgrade path)
+						if (existingActiv.plan !== activPlan) {
+							await supabaseActiv.from('api_keys').update({ plan: activPlan, status: 'active' }).eq('stripe_subscription_id', subscriptionId);
+							if (env.ORACLE_API_KEYS && existingActiv.key_hash) {
+								const kvExisting = await env.ORACLE_API_KEYS.get(existingActiv.key_hash as string);
+								if (kvExisting) {
+									const kvExistingParsed = JSON.parse(kvExisting) as Record<string, unknown>;
+									await env.ORACLE_API_KEYS.put(existingActiv.key_hash as string, JSON.stringify({ ...kvExistingParsed, plan: activPlan, status: 'active' }));
+								}
+							}
+						}
+						return json({ received: true });
+					}
+
+					// New subscription — generate and store key
+					const activKeyBytes  = crypto.getRandomValues(new Uint8Array(32));
+					const activKeyValue  = 'ho_live_' + toHex(activKeyBytes);
+					const activKeyHash   = await sha256Hex(activKeyValue);
+					const activKeyPrefix = activKeyValue.substring(0, 14);
+
+					const { error: activDbError } = await supabaseActiv.from('api_keys').insert({
+						id:                     crypto.randomUUID(),
+						key_hash:               activKeyHash,
+						key_prefix:             activKeyPrefix,
+						plan:                   activPlan,
+						status:                 'active',
+						stripe_customer_id:     sub['customer_id'] as string | null,
+						stripe_subscription_id: subscriptionId,
+						email:                  activEmail,
+						created_at:             new Date().toISOString(),
+					});
+					if (activDbError) {
+						console.error(`WEBHOOK_DB_ERROR: ${activDbError.message}`);
+						return json({ error: 'DB_ERROR', message: 'Failed to store API key — contact support@headlessoracle.com' }, 500);
+					}
+
+					if (env.ORACLE_API_KEYS) {
+						await env.ORACLE_API_KEYS.put(activKeyHash, JSON.stringify({
+							plan:                   activPlan,
+							status:                 'active',
+							paddle_customer_id:     sub['customer_id'] as string | null,
+							paddle_subscription_id: subscriptionId,
+							email:                  activEmail,
+							created_at:             new Date().toISOString(),
+						}));
+					}
+
+					if (env.RESEND_API_KEY && activEmail) {
+						const activEmailRes = await fetch('https://api.resend.com/emails', {
+							method:  'POST',
+							headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								from:    'Headless Oracle <keys@headlessoracle.com>',
+								to:      [activEmail],
+								subject: 'Your Headless Oracle API key',
+								html: `<p>Thank you for subscribing to Headless Oracle.</p><p>Your API key (save this — it will not be shown again):</p><pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${activKeyValue}</pre><p>Plan: ${activPlan} • Use as <code>X-Oracle-Key</code> header against <code>https://headlessoracle.com/v5/status</code>.</p><p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
+							}),
+						});
+						if (!activEmailRes.ok) console.error(`RESEND_ERROR: failed to send key email to ${activEmail}`);
+					}
+
+					return json({ received: true });
+				}
+
+// Unrecognised event — acknowledge without processing
 				return json({ received: true });
 			}
 
