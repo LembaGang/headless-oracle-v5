@@ -2961,34 +2961,122 @@ const DEPLOY_DATE       = new Date().toISOString().slice(0, 10); // YYYY-MM-DD f
 // Agents encountering an unfamiliar receipt can resolve {issuer}/v5/keys to find the public key.
 const ORACLE_ISSUER = 'headlessoracle.com';
 
-// agent.json — structured agent metadata for programmatic discovery.
-// Follows the emerging agent.json convention (no formal spec yet — designed to be stable).
-// Intentionally minimal: capabilities, tools, endpoints, and trust anchors only.
+// agent.json — A2A Agent Card (google.github.io/A2A/spec/) + Oracle-specific extensions.
+// A2A-required fields appear first; Oracle extensions follow as non-standard additions.
+// Additive only — existing consumers see a strict superset of the previous structure.
+// spec_version removed: DEPLOY_DATE resolved to epoch (Date.now()=0 at Workers module init).
 const AGENT_JSON = {
-	schema_version: '1.0',
-	spec_version:   DEPLOY_DATE,
+	// ── A2A AgentCard required/recommended fields ─────────────────────────────
 	name:           'Headless Oracle',
-	description:    'Cryptographically signed market-state attestations for AI agents. Ed25519-signed receipts for 23 global exchanges. Fail-closed: UNKNOWN always means CLOSED.',
+	version:        'v5.0',
+	description:    'Autonomous agents execute trades and payments during market closures, circuit breaker halts, and DST transitions without knowing it — this oracle provides cryptographically signed market-state receipts so agents can gate execution on confirmed open markets.',
 	url:            'https://headlessoracle.com',
-	capabilities: [
-		'market_status',
-		'market_schedule',
-		'exchange_directory',
-		'batch_query',
-		'signed_receipts',
-		'portable_receipts',
-		'mcp_tools',
-		'compliance_check',
-		'sma_attestation',
-		'x402_micropayments',
+	provider: {
+		organization: 'LembaGang',
+		url:          'https://headlessoracle.com',
+	},
+	documentationUrl:    'https://headlessoracle.com/docs',
+	// A2A capabilities object — streaming/push/history are all false (pure request/response).
+	capabilities: {
+		streaming:              false,
+		pushNotifications:      false,
+		stateTransitionHistory: false,
+	},
+	authentication: {
+		schemes:     ['bearer', 'apiKey', 'x402'],
+		credentials: 'https://headlessoracle.com/v5/keys/request',
+	},
+	defaultInputModes:  ['application/json'],
+	defaultOutputModes: ['application/json'],
+	skills: [
+		{
+			id:          'get_market_status',
+			name:        'Get Market Status',
+			description: 'Returns a cryptographically signed receipt for one exchange: OPEN, CLOSED, HALTED, or UNKNOWN. Ed25519-signed, 60-second TTL. Treat UNKNOWN as CLOSED — halt all execution.',
+			tags:        ['finance', 'market-data', 'safety', 'signed-receipt', 'fail-closed'],
+			examples:    ['Is NYSE open right now?', 'Verify XLON is trading before executing this payment'],
+			inputModes:  ['application/json'],
+			outputModes: ['application/json'],
+		},
+		{
+			id:          'get_market_schedule',
+			name:        'Get Market Schedule',
+			description: 'Returns next open and close times in UTC for a given exchange, including lunch break windows and 2026–2027 holiday coverage.',
+			tags:        ['finance', 'schedule', 'market-hours'],
+			examples:    ['When does Tokyo Stock Exchange open next?', 'What are XJPX trading hours?'],
+			inputModes:  ['application/json'],
+			outputModes: ['application/json'],
+		},
+		{
+			id:          'list_exchanges',
+			name:        'List Exchanges',
+			description: 'Returns all 23 supported exchanges with MIC codes, names, and timezones. Use to discover supported markets before calling get_market_status.',
+			tags:        ['finance', 'exchange-directory'],
+			examples:    ['Which exchanges does this oracle cover?'],
+			inputModes:  ['application/json'],
+			outputModes: ['application/json'],
+		},
+		{
+			id:          'verify_receipt',
+			name:        'Verify Receipt Signature',
+			description: 'Verifies an Ed25519-signed receipt against the Headless Oracle public key. Allows downstream agents to independently confirm receipt authenticity without trusting the caller.',
+			tags:        ['finance', 'verification', 'cryptography', 'trust'],
+			examples:    ['Verify this market receipt before processing the payment'],
+			inputModes:  ['application/json'],
+			outputModes: ['application/json'],
+		},
 	],
+
+	// ── Oracle-specific extensions ────────────────────────────────────────────
+	// fail_closed promoted to top level — explicit signal for any consuming agent.
+	fail_closed:         true,
+	supported_exchanges: [
+		'XNYS', 'XNAS', 'XBSP', 'XLON', 'XPAR', 'XSWX', 'XMIL', 'XHEL', 'XSTO',
+		'XIST', 'XSAU', 'XDFM', 'XJSE', 'XSHG', 'XSHE', 'XHKG', 'XJPX', 'XKRX',
+		'XBOM', 'XNSE', 'XSES', 'XASX', 'XNZE',
+	],
+	input_schema: {
+		type:       'object',
+		properties: {
+			mic: {
+				type:        'string',
+				description: 'ISO 10383 Market Identifier Code',
+				examples:    ['XNYS', 'XLON', 'XJPX'],
+			},
+		},
+		required: ['mic'],
+	},
+	output_schema: {
+		type:       'object',
+		properties: {
+			mic:            { type: 'string' },
+			status:         { type: 'string', enum: ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'] },
+			timestamp:      { type: 'string', format: 'date-time' },
+			expires_at:     { type: 'string', format: 'date-time', description: 'Receipt invalid after this time. Re-fetch required.' },
+			issuer:         { type: 'string', example: 'headlessoracle.com' },
+			key_id:         { type: 'string', example: 'key_2026_v1' },
+			receipt_mode:   { type: 'string', enum: ['demo', 'live'] },
+			schema_version: { type: 'string', example: 'v5.0' },
+			signature:      { type: 'string', description: 'Hex-encoded Ed25519 signature over canonical payload (alphabetical key sort, compact JSON)' },
+		},
+		required: ['mic', 'status', 'timestamp', 'expires_at', 'issuer', 'key_id', 'receipt_mode', 'schema_version', 'signature'],
+	},
+	endpoints: {
+		mcp:        'https://headlessoracle.com/mcp',
+		rest:       'https://headlessoracle.com/v5/status',
+		oauth:      'https://headlessoracle.com/oauth/token',
+		introspect: 'https://headlessoracle.com/oauth/introspect',
+		openapi:    'https://headlessoracle.com/openapi.json',
+	},
+
+	// ── Retained Oracle-specific blocks (existing consumers see unchanged fields) ──
 	payment: {
-		schemes:              ['x402'],
-		network:              'base-mainnet',
-		chain_id:             8453,
-		currency:             'USDC',
-		amount_per_request:   '0.001',
-		payment_address_env:  'ORACLE_PAYMENT_ADDRESS',
+		schemes:               ['x402'],
+		network:               'base-mainnet',
+		chain_id:              8453,
+		currency:              'USDC',
+		amount_per_request:    '0.001',
+		payment_address_env:   'ORACLE_PAYMENT_ADDRESS',
 		free_tier_daily_limit: FREE_TIER_DAILY_LIMIT,
 	},
 	standards: {
@@ -3028,7 +3116,7 @@ const AGENT_JSON = {
 			{ path: '/v5/batch',              method: 'GET',  auth: true,  description: 'Batch signed receipts for multiple MICs' },
 			{ path: '/v5/schedule',           method: 'GET',  auth: false, description: 'Next open/close times' },
 			{ path: '/v5/exchanges',          method: 'GET',  auth: false, description: 'All supported exchanges' },
-			{ path: '/mics.json',             method: 'GET',  auth: false, description: 'GET /mics.json — all 23 supported MICs with exchange metadata and ISO 20022 registry links' },
+			{ path: '/mics.json',             method: 'GET',  auth: false, description: 'All 23 supported MICs with exchange metadata and ISO 20022 registry links' },
 			{ path: '/v5/keys',               method: 'GET',  auth: false, description: 'Public key registry + canonical payload spec' },
 			{ path: '/v5/health',             method: 'GET',  auth: false, description: 'Signed liveness probe' },
 			{ path: '/.well-known/oracle-keys.json', method: 'GET', auth: false, description: 'RFC 8615 key discovery' },
@@ -3038,9 +3126,9 @@ const AGENT_JSON = {
 			{ path: '/v5/usage',                    method: 'GET', auth: true,  description: 'Per-key usage stats — requests today/month, limits, credits, upgrade info' },
 		],
 		auth: {
-			header:  'X-Oracle-Key',
-			missing: 401,
-			invalid: 403,
+			header:           'X-Oracle-Key',
+			missing:          401,
+			invalid:          403,
 			payment_required: 402,
 		},
 	},

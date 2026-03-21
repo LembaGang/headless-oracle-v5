@@ -1660,28 +1660,45 @@ describe('GET /.well-known/agent.json', () => {
 		expect(response.headers.get('Content-Type')).toContain('application/json');
 	});
 
-	it('contains MCP endpoint, tool names, REST endpoints, and trust anchors', async () => {
+	it('contains A2A required fields and Oracle trust anchors', async () => {
 		const body = await fetchWorker('/.well-known/agent.json').then((r) => r.json()) as Record<string, unknown>;
+		// A2A identity
 		expect(body).toHaveProperty('name', 'Headless Oracle');
-		expect(body).toHaveProperty('mcp');
+		expect(body).toHaveProperty('version', 'v5.0');
+		expect(body).toHaveProperty('url', 'https://headlessoracle.com');
+		expect(body).toHaveProperty('documentationUrl', 'https://headlessoracle.com/docs');
+		// A2A provider
+		const provider = body.provider as Record<string, unknown>;
+		expect(provider.organization).toBe('LembaGang');
+		// A2A capabilities struct
+		const caps = body.capabilities as Record<string, unknown>;
+		expect(caps.streaming).toBe(false);
+		expect(caps.pushNotifications).toBe(false);
+		// A2A authentication
+		const auth = body.authentication as Record<string, unknown>;
+		expect((auth.schemes as string[])).toContain('bearer');
+		expect((auth.schemes as string[])).toContain('apiKey');
+		expect((auth.schemes as string[])).toContain('x402');
+		// A2A skills — 4 skills including verify_receipt
+		const skills = body.skills as Array<{ id: string }>;
+		expect(Array.isArray(skills)).toBe(true);
+		const skillIds = skills.map((s) => s.id);
+		expect(skillIds).toContain('get_market_status');
+		expect(skillIds).toContain('get_market_schedule');
+		expect(skillIds).toContain('list_exchanges');
+		expect(skillIds).toContain('verify_receipt');
+		// Oracle extensions
+		expect(body).toHaveProperty('fail_closed', true);
+		expect(Array.isArray(body.supported_exchanges)).toBe(true);
+		expect((body.supported_exchanges as string[]).length).toBe(23);
+		expect(body).toHaveProperty('input_schema');
+		expect(body).toHaveProperty('output_schema');
+		// Retained MCP block
 		const mcp = body.mcp as { endpoint: string; tools: Array<{ name: string }> };
 		expect(mcp.endpoint).toBe('https://headlessoracle.com/mcp');
-		expect(Array.isArray(mcp.tools)).toBe(true);
-		const toolNames = mcp.tools.map((t) => t.name);
-		expect(toolNames).toContain('get_market_status');
-		expect(toolNames).toContain('get_market_schedule');
-		expect(toolNames).toContain('list_exchanges');
+		// Retained safety block
 		const safety = body.safety as { fail_closed: boolean; unknown_means: string };
 		expect(safety.fail_closed).toBe(true);
-		expect(safety.unknown_means).toContain('CLOSED');
-	});
-
-	it('includes spec_version for staleness detection', async () => {
-		const body = await fetchWorker('/.well-known/agent.json').then((r) => r.json()) as Record<string, unknown>;
-		expect(body).toHaveProperty('spec_version');
-		// Must be a date string (YYYY-MM-DD) so agents can compare against a cached value
-		expect(typeof body.spec_version).toBe('string');
-		expect(body.spec_version as string).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 	});
 
 	it('robots.txt allows /SKILL.md', async () => {
@@ -3400,9 +3417,10 @@ describe('x402 — health includes payment_schemes', () => {
 });
 
 describe('x402 — agent.json discovery', () => {
-	it('GET /.well-known/agent.json includes x402_micropayments capability', async () => {
+	it('GET /.well-known/agent.json includes x402 in authentication schemes', async () => {
 		const body = await fetchJSON('/.well-known/agent.json');
-		expect((body.capabilities as string[])).toContain('x402_micropayments');
+		const auth = body.authentication as { schemes: string[] };
+		expect(auth.schemes).toContain('x402');
 	});
 
 	it('GET /.well-known/agent.json includes payment object with Base mainnet', async () => {
