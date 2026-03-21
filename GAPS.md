@@ -147,7 +147,7 @@ Sam Ragsdale.
 
 ## GAP-007 — OAuth soft-auth doesn't check token expiry
 **Priority**: LOW — correctness
-**Status**: Open
+**Status**: CLOSED — 2026-03-22
 
 `handleMcp` soft-auth accepts tokens that have logically expired but haven't yet been
 evicted from KV. KV TTL is the authoritative expiry but eventual consistency means a
@@ -172,7 +172,7 @@ if (parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at) {
 
 ## GAP-008 — `verify_receipt` skill declared but no MCP tool implementation
 **Priority**: MEDIUM — A2A routing correctness
-**Status**: Open
+**Status**: CLOSED — 2026-03-22
 
 The Agent Card (`/.well-known/agent.json`) declares a `verify_receipt` skill but
 `POST /mcp` has no corresponding tool method. A2A orchestrators routing by skill id

@@ -3,12 +3,20 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 382/382 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), api.headlessoracle.com/* (new subdomain alias), /.well-known/x402.json, /oauth/token, /.well-known/oauth-authorization-server
+**Test suite**: 387/387 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), api.headlessoracle.com/* (new subdomain alias), /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 21 2026 — OAuth 2.0 optional upgrade path for MCP (379 tests):
+**Last significant work**: Mar 21 2026 — A2A Agent Card + GAP-001–004 closed (387 tests):
+  - /.well-known/agent.json: full A2A Agent Card (name, version, description, capabilities struct, provider, 4 skills including verify_receipt, authentication, input/output schemas, fail_closed:true, all 23 MICs)
+  - GAP-001 CLOSED: MCP traffic metered against plan limits — shared daily counter with REST, JSON-RPC -32000 on limit hit
+  - GAP-002 CLOSED: /.well-known/x402.json returns resources:[] when ORACLE_PAYMENT_ADDRESS unset
+  - GAP-003 CLOSED: POST /oauth/introspect (RFC 7662) — active:true with exp, inactive for expired/missing tokens
+  - GAP-004 CLOSED: webhook race hardened via unique_violation code 23505 catch (both transaction.completed + subscription.activated)
+  - /.well-known/oauth-authorization-server: includes introspection_endpoint
+  - Deployed: Version 3c795be5. Pushed to main (8b4d733).
+**Previous significant work**: Mar 21 2026 — OAuth 2.0 optional upgrade path for MCP (382 tests):
   - POST /oauth/token: RFC 6749 client_credentials grant. client_id = existing Oracle API key. Issues opaque 32-byte token, stored in ORACLE_API_KEYS KV as oauth:{sha256(token)} with 3600s TTL.
   - GET /.well-known/oauth-authorization-server: RFC 8414 AS metadata. Describes token_endpoint, grant_types_supported, scopes_supported.
   - /.well-known/oauth-protected-resource updated: authorization_servers now includes headlessoracle.com/oauth + scopes_supported: [oracle:read].

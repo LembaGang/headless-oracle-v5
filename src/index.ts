@@ -3236,6 +3236,26 @@ const MCP_TOOLS = [
 			'Returns MIC codes, full exchange names, and IANA timezone identifiers for all 23 supported markets.',
 		inputSchema: { type: 'object', properties: {} },
 	},
+	{
+		name: 'verify_receipt',
+		description:
+			'Verify the Ed25519 signature on a Headless Oracle signed receipt. ' +
+			'Use when you receive a receipt from another agent or an upstream system and need to confirm ' +
+			'it was genuinely issued by Headless Oracle and has not been tampered with. ' +
+			'Returns { valid, expired, reason, mic, status, expires_at }. ' +
+			'A receipt can be valid (signature correct) but expired (past its TTL) — treat expired receipts as stale and re-fetch. ' +
+			'MANDATORY: treat any receipt with valid=false as untrusted. Do not act on data from an untrusted receipt.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				receipt: {
+					type:        'object',
+					description: 'The full signed receipt object exactly as returned by get_market_status or /v5/status. Must include a signature field.',
+				},
+			},
+			required: ['receipt'],
+		},
+	},
 ];
 
 // ─── OpenAPI 3.1 Specification ────────────────────────────────────────────────
@@ -4069,8 +4089,8 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			const tokenHash  = await sha256Hex(token);
 			const cached     = await env.ORACLE_API_KEYS.get(`oauth:${tokenHash}`);
 			if (cached) {
-				const parsed = JSON.parse(cached) as { keyHash: string; plan: string; status: string };
-				if (parsed.status === 'active') {
+				const parsed = JSON.parse(cached) as { keyHash: string; plan: string; status: string; expires_at?: number };
+				if (parsed.status === 'active' && !(parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at)) {
 					_mcpKeyHash = parsed.keyHash;
 					_mcpPlan    = parsed.plan;
 				}
@@ -4218,6 +4238,62 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 				});
 			}
 
+			if (name === 'verify_receipt') {
+				const receipt = args.receipt as Record<string, unknown> | undefined;
+
+				// Structural validation — must be an object with a signature field
+				if (!receipt || typeof receipt !== 'object' || typeof receipt.signature !== 'string' || !receipt.signature) {
+					return rpcResult({
+						content: [{ type: 'text', text: JSON.stringify({ valid: false, expired: false, reason: 'MALFORMED_RECEIPT', mic: null, status: null, expires_at: null }) }],
+					});
+				}
+
+				const pubKeyHex = env.ED25519_PUBLIC_KEY;
+				if (!pubKeyHex) {
+					return rpcResult({
+						content: [{ type: 'text', text: JSON.stringify({ valid: false, expired: false, reason: 'ORACLE_NOT_CONFIGURED', mic: null, status: null, expires_at: null }) }],
+					});
+				}
+
+				try {
+					// Reconstruct canonical payload: all fields except signature, sorted alphabetically
+					const { signature, ...rest } = receipt as Record<string, unknown>;
+					const payload: Record<string, string> = {};
+					for (const key of Object.keys(rest).sort()) {
+						payload[key] = String(rest[key]);
+					}
+					const canonical = JSON.stringify(payload);
+					const msgBytes  = new TextEncoder().encode(canonical);
+					const sigBytes  = fromHex(signature as string);
+					const pubKey    = fromHex(pubKeyHex);
+
+					const valid = await ed.verify(sigBytes, msgBytes, pubKey);
+
+					const expiresAt = typeof receipt.expires_at === 'string' ? receipt.expires_at : null;
+					const expired   = expiresAt ? new Date(expiresAt).getTime() < Date.now() : false;
+
+					let reason: string;
+					if (!valid)        reason = 'INVALID_SIGNATURE';
+					else if (expired)  reason = 'RECEIPT_EXPIRED — re-fetch required';
+					else               reason = 'SIGNATURE_VALID';
+
+					return rpcResult({
+						content: [{ type: 'text', text: JSON.stringify({
+							valid,
+							expired,
+							reason,
+							mic:        typeof receipt.mic    === 'string' ? receipt.mic    : null,
+							status:     typeof receipt.status === 'string' ? receipt.status : null,
+							expires_at: expiresAt,
+						}) }],
+					});
+				} catch {
+					return rpcResult({
+						content: [{ type: 'text', text: JSON.stringify({ valid: false, expired: false, reason: 'MALFORMED_RECEIPT', mic: null, status: null, expires_at: null }) }],
+					});
+				}
+			}
+
 			return rpcError(-32601, `Method not found: tools/call/${name}`);
 		}
 
@@ -4252,6 +4328,74 @@ interface HaltMonitorResult {
 	halted:  boolean;   // true if real-time source says HALTED
 	source:  'polygon' | 'alpaca' | 'skipped' | 'error';
 	error?:  string;
+}
+
+// ─── Webhook subscriptions ────────────────────────────────────────────────────
+// KV key patterns:
+//   webhooks:{keyHash}             → JSON array of Subscription (subscriber's own records)
+//   webhooks_by_mic:{mic}          → JSON array of WebhookDeliveryTarget (fan-out index)
+//   last_state:{mic}               → JSON { status, updated_at } (state-change detection)
+
+interface WebhookSubscription {
+	subscription_id: string;
+	url:             string;
+	mics:            string[];
+	secret:          string;
+	created_at:      string;
+}
+
+interface WebhookDeliveryTarget {
+	subscription_id: string;
+	key_hash:        string;
+	url:             string;
+	secret:          string;
+}
+
+const FREE_TIER_WEBHOOK_MIC_LIMIT = 10; // max total MIC subscriptions per free key
+
+async function getWebhookSubscriptions(keyHash: string, env: Env): Promise<WebhookSubscription[]> {
+	const raw = await env.ORACLE_API_KEYS.get(`webhooks:${keyHash}`);
+	if (!raw) return [];
+	try { return JSON.parse(raw) as WebhookSubscription[]; }
+	catch { return []; }
+}
+
+async function getWebhooksByMic(mic: string, env: Env): Promise<WebhookDeliveryTarget[]> {
+	const raw = await env.ORACLE_API_KEYS.get(`webhooks_by_mic:${mic}`);
+	if (!raw) return [];
+	try { return JSON.parse(raw) as WebhookDeliveryTarget[]; }
+	catch { return []; }
+}
+
+async function deliverWebhook(target: WebhookDeliveryTarget, payload: Record<string, unknown>): Promise<void> {
+	const body = JSON.stringify(payload);
+	const attempt = async () => fetch(target.url, {
+		method:  'POST',
+		headers: { 'Content-Type': 'application/json', 'User-Agent': 'HeadlessOracle-Webhook/1.0' },
+		body,
+		signal:  AbortSignal.timeout(10000),
+	});
+	try {
+		const resp = await attempt();
+		if (!resp.ok) {
+			// One retry after 1 second
+			await scheduler.wait(1000);
+			const retry = await attempt();
+			if (!retry.ok) {
+				console.log(JSON.stringify({ event: 'WEBHOOK_FAILED', subscription_id: target.subscription_id, url: target.url, status: retry.status }));
+				return;
+			}
+		}
+		console.log(JSON.stringify({ event: 'WEBHOOK_DELIVERED', subscription_id: target.subscription_id }));
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		try {
+			await scheduler.wait(1000);
+			const retry = await attempt();
+			if (retry.ok) { console.log(JSON.stringify({ event: 'WEBHOOK_DELIVERED_RETRY', subscription_id: target.subscription_id })); return; }
+		} catch { /* ignore retry error */ }
+		console.log(JSON.stringify({ event: 'WEBHOOK_FAILED', subscription_id: target.subscription_id, error: msg }));
+	}
 }
 
 async function runHaltMonitor(env: Env): Promise<void> {
@@ -4385,6 +4529,73 @@ async function runHaltMonitor(env: Env): Promise<void> {
 		halts_detected: results.filter((r) => r.halted).length,
 		results:        results.map((r) => ({ mic: r.mic, checked: r.checked, halted: r.halted, source: r.source })),
 	}));
+
+	// ── State-change detection and webhook fan-out ────────────────────────────
+	// For each exchange, compare current schedule-based status against last known state.
+	// If changed, fire webhooks to all registered subscribers for that MIC.
+	// Uses schedule-based status (not halt-monitor results) — more broadly applicable.
+	const webhookDeliveries: Promise<void>[] = [];
+
+	for (const [mic, config] of Object.entries(MARKET_CONFIGS)) {
+		let currentStatus: string;
+		try {
+			const result = getScheduleStatus(mic, config, now);
+			// If a KV override is active, reflect that in the status
+			const override = await env.ORACLE_OVERRIDES.get(mic);
+			if (override) {
+				try {
+					const ov = JSON.parse(override) as { status?: string; expires?: string };
+					if (ov.expires && new Date(ov.expires) > now) {
+						currentStatus = ov.status ?? result.status;
+					} else {
+						currentStatus = result.status;
+					}
+				} catch { currentStatus = result.status; }
+			} else {
+				currentStatus = result.status;
+			}
+		} catch { continue; }
+
+		const stateKey = `last_state:${mic}`;
+		const lastRaw  = await env.ORACLE_API_KEYS.get(stateKey);
+		const lastState = lastRaw ? (JSON.parse(lastRaw) as { status: string }).status : null;
+
+		// Write current state back (always — establishes baseline on first run)
+		await env.ORACLE_API_KEYS.put(stateKey, JSON.stringify({ status: currentStatus, updated_at: now.toISOString() }));
+
+		if (lastState === null || lastState === currentStatus) continue; // no change or first run
+
+		// State changed — fan out to subscribers
+		const targets = await getWebhooksByMic(mic, env);
+		if (targets.length === 0) continue;
+
+		const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
+		const { receipt } = await buildSignedReceipt(mic, env, now, expiresAt, 'live');
+
+		for (const target of targets) {
+			const payload = {
+				event:           'state_changed',
+				mic,
+				previous_status: lastState,
+				new_status:      currentStatus,
+				receipt,
+				secret:          target.secret,
+				timestamp:       now.toISOString(),
+			};
+			webhookDeliveries.push(deliverWebhook(target, payload));
+		}
+
+		console.log(JSON.stringify({
+			event:           'WEBHOOK_STATE_CHANGE',
+			mic,
+			previous_status: lastState,
+			new_status:      currentStatus,
+			subscriber_count: targets.length,
+			timestamp:       now.toISOString(),
+		}));
+	}
+
+	await Promise.allSettled(webhookDeliveries);
 }
 
 // ─── Worker ───────────────────────────────────────────────────────────────────
@@ -5042,13 +5253,23 @@ export default {
 				return json(AGENT_JSON);
 			}
 			if (url.pathname === '/.well-known/mcp/server-card.json') {
+				// No formal MCP server-card.json spec exists as of 2026-03. This implements
+				// a sensible superset following emerging conventions. If a spec is standardised,
+				// update to match while preserving all current fields for backward compatibility.
 				return json({
 					name:           'Headless Oracle',
-					description:    'Real-time market status verification for AI agents. Ed25519 signed receipts, fail-closed architecture.',
-					url:            'https://headlessoracle.com/mcp',
-					version:        '1.0.0',
-					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges'],
-					authentication: 'none',
+					version:        'v5.0',
+					description:    'Cryptographically signed market-state receipts for AI agents. ' +
+						'Ed25519 signatures, fail-closed architecture, 23 global exchanges. ' +
+						'Treat UNKNOWN or HALTED as CLOSED — halt all execution.',
+					mcp_endpoint:   'https://headlessoracle.com/mcp',
+					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt'],
+					authentication: ['bearer', 'apiKey', 'x402'],
+					homepage:       'https://headlessoracle.com',
+					docs:           'https://headlessoracle.com/docs',
+					key_request:    'https://headlessoracle.com/v5/keys/request',
+					openapi:        'https://headlessoracle.com/openapi.json',
+					protocol:       '2024-11-05',
 				});
 			}
 			if (url.pathname === '/.well-known/oauth-protected-resource') {
@@ -5978,6 +6199,98 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					estimated_requests_remaining: credits.balance,
 					last_purchased:               credits.last_purchased || null,
 				});
+			}
+
+			// ── POST /v5/webhooks/subscribe — register a webhook for state-change events ──
+			if (url.pathname === '/v5/webhooks/subscribe' && request.method === 'POST') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				const subAuth = await checkApiKey(apiKey, env);
+				if (!subAuth.allowed) return json({ error: subAuth.error, message: subAuth.message }, subAuth.status);
+
+				let body: { url?: unknown; mics?: unknown; secret?: unknown };
+				try { body = await request.json() as typeof body; }
+				catch { return json({ error: 'INVALID_REQUEST', message: 'Request body must be valid JSON' }, 400); }
+
+				if (typeof body.url !== 'string' || !body.url.startsWith('https://')) {
+					return json({ error: 'INVALID_URL', message: 'url must be an https:// endpoint' }, 400);
+				}
+				if (!Array.isArray(body.mics) || body.mics.length === 0) {
+					return json({ error: 'INVALID_MICS', message: 'mics must be a non-empty array of MIC codes' }, 400);
+				}
+				const mics = (body.mics as unknown[]).filter((m): m is string => typeof m === 'string' && m in MARKET_CONFIGS);
+				if (mics.length === 0) {
+					return json({ error: 'INVALID_MICS', message: 'No valid MIC codes. See /v5/exchanges for supported markets.' }, 400);
+				}
+				const secret = typeof body.secret === 'string' && body.secret ? body.secret : crypto.randomUUID();
+
+				const keyHash = subAuth.keyHash ?? await sha256Hex(apiKey);
+
+				// Rate-limit: free keys max 10 MIC subscriptions total
+				if (subAuth.plan === 'free') {
+					const existing = await getWebhookSubscriptions(keyHash, env);
+					const totalMics = existing.reduce((n, s) => n + s.mics.length, 0);
+					if (totalMics + mics.length > FREE_TIER_WEBHOOK_MIC_LIMIT) {
+						return json({ error: 'SUBSCRIPTION_LIMIT', message: `Free tier limit: ${FREE_TIER_WEBHOOK_MIC_LIMIT} total MIC subscriptions. Upgrade at headlessoracle.com/pricing.` }, 429);
+					}
+				}
+
+				const subscription: WebhookSubscription = {
+					subscription_id: crypto.randomUUID(),
+					url:             body.url,
+					mics,
+					secret,
+					created_at:      new Date().toISOString(),
+				};
+
+				// Write to subscriber's record
+				const existing = await getWebhookSubscriptions(keyHash, env);
+				existing.push(subscription);
+				await env.ORACLE_API_KEYS.put(`webhooks:${keyHash}`, JSON.stringify(existing));
+
+				// Add to per-MIC fan-out index
+				const target: WebhookDeliveryTarget = { subscription_id: subscription.subscription_id, key_hash: keyHash, url: body.url, secret };
+				for (const mic of mics) {
+					const micTargets = await getWebhooksByMic(mic, env);
+					micTargets.push(target);
+					await env.ORACLE_API_KEYS.put(`webhooks_by_mic:${mic}`, JSON.stringify(micTargets));
+				}
+
+				return json({ subscription_id: subscription.subscription_id, mics, status: 'active', secret });
+			}
+
+			// ── DELETE /v5/webhooks/unsubscribe — remove a subscription ──────────
+			if (url.pathname === '/v5/webhooks/unsubscribe' && request.method === 'DELETE') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				const unsubAuth = await checkApiKey(apiKey, env);
+				if (!unsubAuth.allowed) return json({ error: unsubAuth.error, message: unsubAuth.message }, unsubAuth.status);
+
+				let body: { subscription_id?: unknown };
+				try { body = await request.json() as typeof body; }
+				catch { return json({ error: 'INVALID_REQUEST', message: 'Request body must be valid JSON' }, 400); }
+
+				if (typeof body.subscription_id !== 'string') {
+					return json({ error: 'INVALID_REQUEST', message: 'subscription_id required' }, 400);
+				}
+
+				const keyHash = unsubAuth.keyHash ?? await sha256Hex(apiKey);
+				const existing = await getWebhookSubscriptions(keyHash, env);
+				const sub = existing.find((s) => s.subscription_id === body.subscription_id);
+				if (!sub) return json({ error: 'SUBSCRIPTION_NOT_FOUND', message: 'No subscription with that id found for this key' }, 404);
+
+				// Remove from subscriber record
+				const updated = existing.filter((s) => s.subscription_id !== body.subscription_id);
+				await env.ORACLE_API_KEYS.put(`webhooks:${keyHash}`, JSON.stringify(updated));
+
+				// Remove from per-MIC fan-out index
+				for (const mic of sub.mics) {
+					const micTargets = await getWebhooksByMic(mic, env);
+					const filtered   = micTargets.filter((t) => t.subscription_id !== body.subscription_id);
+					await env.ORACLE_API_KEYS.put(`webhooks_by_mic:${mic}`, JSON.stringify(filtered));
+				}
+
+				return json({ subscription_id: body.subscription_id, status: 'deleted' });
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────
