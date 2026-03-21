@@ -170,6 +170,29 @@ if (parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at) {
 
 ---
 
+## GAP-008 — `verify_receipt` skill declared but no MCP tool implementation
+**Priority**: MEDIUM — A2A routing correctness
+**Status**: Open
+
+The Agent Card (`/.well-known/agent.json`) declares a `verify_receipt` skill but
+`POST /mcp` has no corresponding tool method. A2A orchestrators routing by skill id
+will get a `-32601 Method Not Found` response.
+
+**Fix**: Implement `verify_receipt` as an MCP tool that accepts a receipt JSON object
+and returns `{ valid: boolean, reason: string }`.
+
+**Implementation notes**:
+- Add `verify_receipt` to the `tools/list` response in `handleMcp`
+- Tool input: `{ receipt: object }` — the full signed receipt payload
+- Verification: reconstruct canonical payload (alphabetical key sort, compact JSON),
+  verify Ed25519 signature against the public key from env, check `expires_at`
+- Return `{ valid: true, reason: "signature_valid" }` or `{ valid: false, reason: "<MISSING_FIELDS|EXPIRED|INVALID_SIGNATURE>" }`
+- Use `@noble/ed25519` (already a dependency) for verification — same lib as signing
+- Add 3 tests: valid receipt → true, expired receipt → false, tampered receipt → false
+- Effort: ~1 hour. Blocked on nothing.
+
+---
+
 ## Closed Gaps (reference)
 
 | Gap | Resolution | Date |
