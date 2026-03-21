@@ -5159,6 +5159,12 @@ export default {
 						created_at:            new Date().toISOString(),
 					});
 					if (dbError) {
+						// code 23505 = unique_violation — a concurrent webhook already inserted this
+						// subscription_id. Race condition won by peer; treat as idempotent success.
+						if ((dbError as unknown as Record<string, string>).code === '23505') {
+							console.log(`WEBHOOK_RACE_WON_BY_PEER: subscription ${txn['subscription_id'] as string} — treating as idempotent success`);
+							return json({ received: true });
+						}
 						console.error(`WEBHOOK_DB_ERROR: ${dbError.message}`);
 						return json({ error: 'DB_ERROR', message: 'Failed to store API key — contact support@headlessoracle.com' }, 500);
 					}
@@ -5353,6 +5359,12 @@ export default {
 						created_at:             new Date().toISOString(),
 					});
 					if (activDbError) {
+						// code 23505 = unique_violation — concurrent transaction.completed already
+						// inserted this subscription_id. Race won by peer; idempotent success.
+						if ((activDbError as unknown as Record<string, string>).code === '23505') {
+							console.log(`WEBHOOK_RACE_WON_BY_PEER: subscription ${subscriptionId} — treating as idempotent success`);
+							return json({ received: true });
+						}
 						console.error(`WEBHOOK_DB_ERROR: ${activDbError.message}`);
 						return json({ error: 'DB_ERROR', message: 'Failed to store API key — contact support@headlessoracle.com' }, 500);
 					}

@@ -30,7 +30,7 @@ for paid) the same way `/v5/status` and `/v5/batch` do today.
 
 ## GAP-002 — `/.well-known/x402.json` returns empty `payTo` when `ORACLE_PAYMENT_ADDRESS` unset
 **Priority**: MEDIUM — correctness
-**Status**: Open
+**Status**: CLOSED — 2026-03-21
 
 When `env.ORACLE_PAYMENT_ADDRESS` is not set (e.g. staging environments, local dev
 without the secret), `/.well-known/x402.json` returns `payTo: ""` for both resources.
@@ -52,7 +52,7 @@ payment address is absent.
 
 ## GAP-003 — No OAuth token introspection endpoint (RFC 7662)
 **Priority**: MEDIUM — ecosystem completeness
-**Status**: Open
+**Status**: CLOSED — 2026-03-21
 
 `POST /oauth/introspect` does not exist. Third-party tools and agents that receive an
 Oracle OAuth token cannot verify its validity or metadata (plan, expiry) without
@@ -79,7 +79,7 @@ and `{ active: false }` for invalid/expired ones.
 
 ## GAP-004 — `subscription.activated` + `transaction.completed` race condition
 **Priority**: MEDIUM — billing correctness
-**Status**: Mitigated but not eliminated
+**Status**: CLOSED — 2026-03-21
 
 Both `transaction.completed` and `subscription.activated` can fire for the same
 subscription within milliseconds of each other. The unique constraint on

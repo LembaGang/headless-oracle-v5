@@ -2474,6 +2474,45 @@ describe('POST /webhooks/paddle', () => {
 		}
 	});
 
+	it('transaction.completed INSERT race (23505) → 200 received:true, not 500', async () => {
+		// SELECT sees no row, but concurrent INSERT already won — our INSERT gets 23505.
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: { id: 'txn_race_23505', customer_id: 'ctm_race_txn', subscription_id: 'sub_race_txn_001' },
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && (init?.method === 'GET' || !init?.method)) {
+				// SELECT: no existing row
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'No rows' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
+				// INSERT: unique constraint violation — peer already inserted
+				return new Response(JSON.stringify({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'race-txn@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+			expect(body).not.toHaveProperty('error');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 	it('POST /webhooks/paddle with valid signature + subscription.updated → 200', async () => {
 		const rawBody = JSON.stringify({
 			event_type: 'subscription.updated',
@@ -4118,6 +4157,53 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 			expect(response.status).toBe(200);
 			const body = await response.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('received', true);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('subscription.activated INSERT race (23505) → 200 received:true, not 500', async () => {
+		// Simulates the race: SELECT sees no row, concurrent INSERT already won,
+		// our INSERT fails with unique_violation code 23505.
+		// Handler must treat this as idempotent success, not an error.
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.activated',
+			data: {
+				id:          'sub_race_test_23505',
+				customer_id: 'ctm_race_001',
+				status:      'active',
+				items:       [{ price: { id: 'test_pro_price_id' } }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'GET') {
+				// SELECT sees no existing row — SELECT phase of TOCTOU
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'No rows' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'POST') {
+				// INSERT fails with unique_violation — concurrent webhook won the race
+				return new Response(JSON.stringify({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'race@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input as RequestInfo, init);
+		};
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+			// Must NOT return DB_ERROR — 23505 is not an application error
+			expect(body).not.toHaveProperty('error');
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
