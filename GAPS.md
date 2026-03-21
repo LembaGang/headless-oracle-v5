@@ -101,7 +101,7 @@ race at the database layer without application-layer locking.
 
 ## GAP-005 — www.headlessoracle.com HTTP redirect verification
 **Priority**: LOW — ops hygiene
-**Status**: Unconfirmed
+**Status**: CLOSED — 2026-03-21 (confirmed externally: http://www.headlessoracle.com returns 301)
 
 HTTP (non-HTTPS) requests to `www.headlessoracle.com` appear in logs. It is unconfirmed
 whether these are correctly redirected to `https://headlessoracle.com` or are hitting
