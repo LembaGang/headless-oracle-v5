@@ -1728,11 +1728,11 @@ describe('GET /.well-known/oauth-protected-resource', () => {
 		const body = await fetchJSON('/.well-known/oauth-protected-resource');
 		// Mandatory field
 		expect(body).toHaveProperty('resource', 'https://headlessoracle.com');
-		// Empty array signals no OAuth requirement to MCP clients
+		// Points to the OAuth AS — OAuth is an optional upgrade path, not a requirement
 		expect(body).toHaveProperty('authorization_servers');
 		expect(Array.isArray(body.authorization_servers)).toBe(true);
-		expect((body.authorization_servers as unknown[]).length).toBe(0);
-		// header = X-Oracle-Key convention
+		expect(body.authorization_servers).toContain('https://headlessoracle.com/oauth');
+		// header = Bearer token via Authorization: header
 		expect(body).toHaveProperty('bearer_methods_supported');
 		expect(body.bearer_methods_supported).toEqual(['header']);
 		// Documentation link
@@ -1740,13 +1740,146 @@ describe('GET /.well-known/oauth-protected-resource', () => {
 		// Signing algorithm
 		expect(body).toHaveProperty('resource_signing_alg_values_supported');
 		expect(body.resource_signing_alg_values_supported).toContain('EdDSA');
+		// Scopes — oracle:read is the only scope
+		expect(body).toHaveProperty('scopes_supported');
+		expect(body.scopes_supported).toContain('oracle:read');
+	});
+});
+
+// ─── OAuth 2.0 — /.well-known/oauth-authorization-server ─────────────────────
+
+describe('GET /.well-known/oauth-authorization-server', () => {
+	it('returns 200 with correct RFC 8414 shape', async () => {
+		const res  = await fetchWorker('/.well-known/oauth-authorization-server');
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(200);
+		expect(body).toHaveProperty('issuer', 'https://headlessoracle.com/oauth');
+		expect(body).toHaveProperty('token_endpoint', 'https://headlessoracle.com/oauth/token');
+		expect(body).toHaveProperty('grant_types_supported');
+		expect(body.grant_types_supported).toContain('client_credentials');
+		expect(body).toHaveProperty('scopes_supported');
+		expect(body.scopes_supported).toContain('oracle:read');
+	});
+});
+
+// ─── OAuth 2.0 — POST /oauth/token ───────────────────────────────────────────
+
+describe('POST /oauth/token', () => {
+	it('issues access_token for valid client_id', async () => {
+		const res = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'grant_type=client_credentials&client_id=test_master_key_local_only&client_secret=test_master_key_local_only',
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(200);
+		expect(body).toHaveProperty('access_token');
+		expect(typeof body.access_token).toBe('string');
+		expect((body.access_token as string).length).toBe(64); // 32 bytes → 64 hex chars
+		expect(body).toHaveProperty('token_type', 'bearer');
+		expect(body).toHaveProperty('expires_in', 3600);
+		expect(body).toHaveProperty('scope', 'oracle:read');
 	});
 
-	it('does not include scopes_supported — absence signals OAuth is not applicable', async () => {
-		const body = await fetchJSON('/.well-known/oauth-protected-resource');
-		// scopes_supported: [] would incorrectly imply OAuth with no scopes.
-		// The field must be absent entirely.
-		expect(body).not.toHaveProperty('scopes_supported');
+	it('returns 401 invalid_client for unknown client_id', async () => {
+		const res = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'grant_type=client_credentials&client_id=definitely_not_a_valid_key',
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(401);
+		expect(body).toHaveProperty('error', 'invalid_client');
+	});
+
+	it('returns 400 invalid_request when client_id is missing', async () => {
+		const res = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'grant_type=client_credentials',
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(400);
+		expect(body).toHaveProperty('error', 'invalid_request');
+	});
+
+	it('returns 400 unsupported_grant_type for non-client_credentials', async () => {
+		const res = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'grant_type=authorization_code&client_id=test_master_key_local_only',
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(400);
+		expect(body).toHaveProperty('error', 'unsupported_grant_type');
+	});
+
+	it('stores token in ORACLE_API_KEYS KV with oauth: prefix', async () => {
+		const res = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'grant_type=client_credentials&client_id=test_master_key_local_only',
+		});
+		const body  = await res.json() as Record<string, unknown>;
+		const token = body.access_token as string;
+
+		// Compute expected KV key
+		const encoded   = new TextEncoder().encode(token);
+		const hashBuf   = await crypto.subtle.digest('SHA-256', encoded);
+		const tokenHash = Array.from(new Uint8Array(hashBuf), (b) => b.toString(16).padStart(2, '0')).join('');
+
+		const stored = await env.ORACLE_API_KEYS.get(`oauth:${tokenHash}`);
+		expect(stored).not.toBeNull();
+		const parsed = JSON.parse(stored!) as Record<string, unknown>;
+		expect(parsed).toHaveProperty('plan');
+		expect(parsed).toHaveProperty('status', 'active');
+	});
+});
+
+// ─── OAuth 2.0 — MCP soft auth (Bearer token) ────────────────────────────────
+
+describe('POST /mcp — OAuth soft auth', () => {
+	it('existing unauthenticated /mcp access is unaffected (no Authorization header)', async () => {
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('result');
+	});
+
+	it('valid Bearer token is accepted and request succeeds', async () => {
+		// Issue a token first
+		const tokenRes = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'grant_type=client_credentials&client_id=test_master_key_local_only',
+		});
+		const { access_token } = await tokenRes.json() as { access_token: string };
+
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${access_token}` },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } }),
+		});
+		// Must succeed — same response shape as unauthenticated
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('result');
+	});
+
+	it('invalid Bearer token falls through as anonymous — does not return 401', async () => {
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer this_is_not_a_valid_token_at_all' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } }),
+		});
+		// Must not block — fall through to serve the request anonymously
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('result');
 	});
 });
 

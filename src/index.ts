@@ -3803,6 +3803,62 @@ const MCP_RESPONSE_HEADERS = {
 	'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+// ─── OAuth 2.0 Token Endpoint ────────────────────────────────────────────────
+// RFC 6749 §4.4 Client Credentials Grant.
+// client_id = existing Oracle API key; client_secret = same value (no separate secret).
+// Issues a short-lived opaque access token stored in ORACLE_API_KEYS KV ('oauth:' prefix).
+// Completely isolated — does not share code paths with any existing route.
+async function handleOAuthToken(request: Request, env: Env): Promise<Response> {
+	const oauthHeaders = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
+	const oauthError = (status: number, error: string, description: string) =>
+		new Response(JSON.stringify({ error, error_description: description }), { status, headers: oauthHeaders });
+
+	if (request.method !== 'POST') return oauthError(405, 'invalid_request', 'POST required');
+
+	let params: URLSearchParams;
+	try {
+		const body = await request.text();
+		params = new URLSearchParams(body);
+	} catch {
+		return oauthError(400, 'invalid_request', 'Could not parse request body');
+	}
+
+	const grantType = params.get('grant_type');
+	if (grantType !== 'client_credentials')
+		return oauthError(400, 'unsupported_grant_type', 'Only client_credentials is supported');
+
+	const clientId = params.get('client_id');
+	if (!clientId)
+		return oauthError(400, 'invalid_request', 'client_id is required');
+
+	const auth = await checkApiKey(clientId, env);
+	if (!auth.allowed)
+		return new Response(JSON.stringify({ error: 'invalid_client', error_description: 'Invalid API key' }), {
+			status: 401,
+			headers: { ...oauthHeaders, 'WWW-Authenticate': 'Bearer' },
+		});
+
+	// Generate opaque token: 32 random bytes → hex string.
+	const tokenBytes  = crypto.getRandomValues(new Uint8Array(32));
+	const accessToken = toHex(tokenBytes);
+	const tokenHash   = await sha256Hex(accessToken);
+	// keyHash is present for Supabase-backed keys; compute deterministically for MASTER/BETA.
+	const keyHash     = auth.keyHash ?? await sha256Hex(clientId);
+
+	await env.ORACLE_API_KEYS.put(
+		`oauth:${tokenHash}`,
+		JSON.stringify({ keyHash, plan: auth.plan, status: 'active' }),
+		{ expirationTtl: 3600 },
+	);
+
+	return new Response(JSON.stringify({
+		access_token: accessToken,
+		token_type:   'bearer',
+		expires_in:   3600,
+		scope:        'oracle:read',
+	}), { status: 200, headers: oauthHeaders });
+}
+
 async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	// ── Client Intelligence ────────────────────────────────────────────────────
 	// Privacy-safe: IPs are hashed (SHA-256), never stored raw.
@@ -3869,6 +3925,28 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 	} catch (err) {
 		console.error('TELEMETRY_GET_FAILED', String(err));
 	}
+
+	// ── Soft OAuth auth — completely additive, never blocks unauthenticated access ──
+	// If a valid Bearer token is present, mcpKeyHash/mcpPlan are populated for
+	// rate-limit accounting. Any failure (missing token, KV miss, parse error,
+	// expired token) falls through silently — request proceeds as anonymous.
+	let _mcpKeyHash: string | null = null; // eslint-disable-line @typescript-eslint/no-unused-vars
+	let _mcpPlan:    string | null = null; // eslint-disable-line @typescript-eslint/no-unused-vars
+	try {
+		const authHeader = request.headers.get('Authorization');
+		if (authHeader?.startsWith('Bearer ') && env.ORACLE_API_KEYS) {
+			const token      = authHeader.slice(7);
+			const tokenHash  = await sha256Hex(token);
+			const cached     = await env.ORACLE_API_KEYS.get(`oauth:${tokenHash}`);
+			if (cached) {
+				const parsed = JSON.parse(cached) as { keyHash: string; plan: string; status: string };
+				if (parsed.status === 'active') {
+					_mcpKeyHash = parsed.keyHash;
+					_mcpPlan    = parsed.plan;
+				}
+			}
+		}
+	} catch { /* fall through as anonymous — soft auth must never break MCP access */ }
 
 	let body: JsonRpcRequest;
 	try {
@@ -4209,6 +4287,14 @@ export default {
 				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...extraHeaders },
 			});
 		};
+
+		// ── POST /oauth/token — OAuth 2.0 Client Credentials token endpoint ──
+		// Isolated from all existing routes. Dispatched before the main try/catch.
+		// Errors use RFC 6749 format (not the Oracle json() helper) so they are
+		// not decorated with 'docs' fields or X-Oracle-Version headers.
+		if (url.pathname === '/oauth/token') {
+			return handleOAuthToken(request, env);
+		}
 
 		// ── GET /mcp — server info; POST /mcp — MCP Streamable HTTP ──
 		// GET returns machine-readable server metadata for MCP evaluation tools.
@@ -4812,18 +4898,27 @@ export default {
 			}
 			if (url.pathname === '/.well-known/oauth-protected-resource') {
 				// RFC 8705 — OAuth 2.0 Protected Resource Metadata.
-				// MCP clients fetch this to discover whether OAuth is required before
-				// attempting a protected request.
-				// authorization_servers: [] signals no OAuth is required — MCP endpoint is public.
-				// bearer_methods_supported: ["header"] matches X-Oracle-Key header convention.
-				// scopes_supported is intentionally omitted — an empty array implies OAuth with
-				// no scopes, which is incorrect; absence means OAuth is not applicable here.
+				// MCP clients fetch this to discover the authorization server for optional OAuth.
+				// OAuth is additive — /mcp continues to work without a Bearer token.
+				// bearer_methods_supported: ["header"] — token delivered via Authorization: Bearer.
 				return json({
 					resource:                            'https://headlessoracle.com',
-					authorization_servers:               [],
+					authorization_servers:               ['https://headlessoracle.com/oauth'],
 					bearer_methods_supported:            ['header'],
 					resource_documentation:              'https://headlessoracle.com/docs',
 					resource_signing_alg_values_supported: ['EdDSA'],
+					scopes_supported:                    ['oracle:read'],
+				});
+			}
+			if (url.pathname === '/.well-known/oauth-authorization-server') {
+				// RFC 8414 — OAuth 2.0 Authorization Server Metadata.
+				// Describes the token endpoint and supported grant types.
+				return json({
+					issuer:                              'https://headlessoracle.com/oauth',
+					token_endpoint:                      'https://headlessoracle.com/oauth/token',
+					grant_types_supported:               ['client_credentials'],
+					token_endpoint_auth_methods_supported: ['client_secret_post'],
+					scopes_supported:                    ['oracle:read'],
 				});
 			}
 			if (url.pathname === '/.well-known/x402.json') {

@@ -3,17 +3,29 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 368/368 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), api.headlessoracle.com/* (new subdomain alias)
+**Test suite**: 379/379 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), api.headlessoracle.com/* (new subdomain alias), /.well-known/x402.json, /oauth/token, /.well-known/oauth-authorization-server
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 20 2026 — x402scan registration fix: /v5/status and /v5/batch return 402 for keyless requests (368 tests):
+**Last significant work**: Mar 21 2026 — OAuth 2.0 optional upgrade path for MCP (379 tests):
+  - POST /oauth/token: RFC 6749 client_credentials grant. client_id = existing Oracle API key. Issues opaque 32-byte token, stored in ORACLE_API_KEYS KV as oauth:{sha256(token)} with 3600s TTL.
+  - GET /.well-known/oauth-authorization-server: RFC 8414 AS metadata. Describes token_endpoint, grant_types_supported, scopes_supported.
+  - /.well-known/oauth-protected-resource updated: authorization_servers now includes headlessoracle.com/oauth + scopes_supported: [oracle:read].
+  - POST /mcp: soft auth — Bearer token extracted, validated via KV lookup. ANY failure (missing, invalid, expired) falls through as anonymous. Existing unauthenticated MCP access 100% preserved.
+  - wrangler.toml: headlessoracle.com/oauth/token route added.
+  - 8 new tests: AS metadata shape, token issuance, invalid_client, invalid_request, unsupported_grant_type, KV storage, MCP with valid token, MCP with invalid token falls through anonymously.
+  - github.com/LembaGang/headless-oracle-agentpay created and pushed (5 files).
+  - 379/379 tests passing.
+**Previous significant work**: Mar 20 2026 — x402scan full fix: input schema + /.well-known/x402.json discovery document (371 tests):
   - buildX402ScanPayload(): x402scan-compatible format (x402Version:1, accepts[], eip155:8453, payTo, maxAmountRequired, maxTimeoutSeconds)
+  - input field added: /v5/status requires mic (string), /v5/batch requires mics (string) — fixes "Missing input schema" error
+  - /.well-known/x402.json: discovery document listing /v5/status + /v5/batch as paid resources — fixes "No valid x402 response" on 22 free endpoints
   - /v5/status auth gate restructured: key present → existing path; no key → x402 payment path or 402 gate
   - /v5/batch: no key → 402 x402scan format (keyless batch execution not yet implemented)
-  - ORACLE_PAYMENT_ADDRESS set as production secret (0x26D4...AD3) — previously only in .dev.vars
-  - All 368 tests updated and passing. Version 0149e73a deployed. CURL confirms HTTP 402 live.
+  - ORACLE_PAYMENT_ADDRESS set as production secret (0x26D4...AD3)
+  - CURL confirmed: /v5/status → HTTP 402 live; /.well-known/x402.json → discovery doc live
+  - 371/371 tests passing. Commits: 7d52f76, 8533a96, cc2d50c. All pushed to main.
   - HUMAN TASK: resubmit headlessoracle.com resources on x402scan
 **Previous significant work**: Mar 20 2026 — llms.txt agent-first rewrite, AgentPay demo repo, KV billing desync fix (368 tests):
   - LLMS_TXT constant rewritten: agent-first, action-oriented, 13 sections (MCP primary, REST contracts, fail-closed rules, 23 MICs, Ed25519 verification, x402 path, rate limits, OAuth discovery)
