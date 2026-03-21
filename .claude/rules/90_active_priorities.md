@@ -3,12 +3,29 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 387/387 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), api.headlessoracle.com/* (new subdomain alias), /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A)
+**Test suite**: 409/409 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (auth), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 21 2026 — A2A Agent Card + GAP-001–004 closed (387 tests):
+**Last significant work**: Mar 22 2026 — Weekend sprint: webhooks, receipt audit, batch summary, GAP-007–009 (409 tests):
+  - GAP-007 CLOSED: handleMcp soft-auth now checks expires_at — logically expired tokens fall through as anonymous
+  - GAP-008 CLOSED: verify_receipt MCP tool added — Ed25519 verification in-worker, returns {valid, expired, reason, mic, status, expires_at}
+  - GAP-009 CLOSED: /.well-known/mcp/server-card.json updated — mcp_endpoint, version v5.0, all 4 tools, authentication array
+  - POST /v5/webhooks/subscribe (auth required) — registers webhook URL + MIC list; stored in ORACLE_API_KEYS KV
+  - DELETE /v5/webhooks/unsubscribe (auth required) — removes subscription by subscription_id
+  - runHaltMonitor: state-change detection via last_state:{mic} KV; fan-out delivery on change
+  - deliverWebhook(): HMAC-SHA256 signed payload, 1-retry via scheduler.wait(1000)
+  - insertReceiptAudit(): non-blocking Supabase insert on every /v5/status live call
+  - GET /v5/receipts (auth required) — filtered audit query with limit, mic, from params
+  - GET /v5/batch: enriched with summary {total, open, closed, halted, unknown, all_open, any_halted, safe_to_execute, reason}
+  - safe_to_execute: true only when ALL exchanges OPEN, none HALTED/UNKNOWN
+  - GAP-012 identified: safe_to_execute ignores REALTIME halt-monitor overrides (race condition at scale)
+  - GAP-013 identified: /v5/batch calls not audited (only /v5/status inserts audit rows)
+  - DataCamp extension repo: github.com/LembaGang/headless-oracle-datacamp-extension (3 files — README, config-extension.toml, market-safe-agent.ts)
+  - Deployed: Version 0524ca6a. Pushed to main (08aa375).
+  - HUMAN TASK: Supabase receipt_audit table migration (SQL in GAPS.md GAP-011)
+**Previous significant work**: Mar 21 2026 — A2A Agent Card + GAP-001–004 closed (387 tests):
   - /.well-known/agent.json: full A2A Agent Card (name, version, description, capabilities struct, provider, 4 skills including verify_receipt, authentication, input/output schemas, fail_closed:true, all 23 MICs)
   - GAP-001 CLOSED: MCP traffic metered against plan limits — shared daily counter with REST, JSON-RPC -32000 on limit hit
   - GAP-002 CLOSED: /.well-known/x402.json returns resources:[] when ORACLE_PAYMENT_ADDRESS unset

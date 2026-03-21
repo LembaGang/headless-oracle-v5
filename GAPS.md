@@ -193,6 +193,110 @@ and returns `{ valid: boolean, reason: string }`.
 
 ---
 
+## GAP-009 — `/.well-known/mcp/server-card.json` stale / incomplete
+**Priority**: LOW — discoverability
+**Status**: CLOSED — 2026-03-22
+
+The server-card returned `url` (should be `mcp_endpoint`), `version: '1.0.0'` (should
+match worker version), and `authentication: 'none'` (wrong — bearer, apiKey, x402 all
+accepted). Also missing `verify_receipt` from the `tools` list after GAP-008 was closed.
+
+**Fix**: Updated handler to return canonical fields: `mcp_endpoint`, `version: 'v5.0'`,
+`tools: ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt']`,
+`authentication: ['bearer', 'apiKey', 'x402']`, plus `homepage`, `docs`, `key_request`,
+`openapi`, `protocol` fields.
+
+---
+
+## GAP-010 — No market-state webhook push (agents must poll)
+**Priority**: MEDIUM — agent efficiency
+**Status**: CLOSED — 2026-03-22
+
+Agents consuming Oracle receipts must poll `/v5/status` repeatedly to detect state
+changes. At scale this is wasteful and creates rate-limit pressure. No push mechanism
+exists to notify subscribers when a market transitions OPEN→CLOSED, CLOSED→OPEN, or
+enters HALT.
+
+**Fix**: Implemented `POST /v5/webhooks/subscribe` and `DELETE /v5/webhooks/unsubscribe`.
+State-change detection runs inside `runHaltMonitor()` cron (every minute). On change,
+fan-out delivers a signed receipt payload to all registered URLs for that MIC via
+`deliverWebhook()` with 1-retry.
+
+**KV design**:
+- `webhooks:{keyHash}` — subscription list for a key (JSON array of `WebhookSubscription`)
+- `webhooks_by_mic:{mic}` — delivery index per MIC (JSON array of `WebhookDeliveryTarget`)
+- `last_state:{mic}` — previous state string for change detection (in `ORACLE_API_KEYS` KV)
+
+**Known limitation**: Two concurrent cron invocations could both detect the same transition
+and double-deliver. Accepted at current scale. Hardening path: Cloudflare Durable Objects
+for atomic state compare-and-swap. Subscribers should treat webhooks as advisory and
+re-verify via `/v5/status`.
+
+---
+
+## GAP-011 — No receipt audit trail
+**Priority**: MEDIUM — billing / compliance
+**Status**: CLOSED — 2026-03-22
+
+No server-side record of which key fetched which receipt at what time. Design partners
+and enterprise customers will ask for usage audit logs. Currently only KV counters exist
+(totals), not individual request records.
+
+**Fix**: `insertReceiptAudit()` helper inserts `{ key_hash, mic, status, source, issued_at,
+schema_version }` into a `receipt_audit` Supabase table via non-blocking `ctx.waitUntil()`
+on every `/v5/status` live call. `GET /v5/receipts` (auth required) exposes filtered query
+with `limit`, `mic`, and `from` params.
+
+**Human task**: Run Supabase migration:
+```sql
+CREATE TABLE receipt_audit (
+  id             uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  key_hash       text NOT NULL,
+  mic            text NOT NULL,
+  status         text NOT NULL,
+  source         text NOT NULL,
+  issued_at      timestamptz NOT NULL DEFAULT now(),
+  schema_version text NOT NULL DEFAULT 'v5.0'
+);
+CREATE INDEX ON receipt_audit(key_hash, issued_at DESC);
+```
+
+---
+
+## GAP-012 — `/v5/batch` `safe_to_execute` ignores REALTIME overrides
+**Priority**: LOW — correctness at scale
+**Status**: OPEN
+
+`safe_to_execute` in the `/v5/batch` summary is computed from static schedule-based
+status at the time the batch runs. The halt monitor writes REALTIME overrides to
+`ORACLE_API_KEYS` KV asynchronously. A batch call issued milliseconds after a halt
+monitor write may read stale status and return `safe_to_execute: true` even though
+a REALTIME override is active.
+
+**Fix**: Before computing the summary, re-read `ORACLE_OVERRIDES` for each MIC after
+`buildSignedReceipt` returns (or rely on the already-built receipts' `source` field —
+`source === 'REALTIME'` means a halt-monitor override is active). If any receipt has
+`source: 'REALTIME'` and `status !== 'OPEN'`, force `safe_to_execute: false`.
+
+**Note**: This is a correctness gap for multi-agent workflows that rely on
+`safe_to_execute` as a single-call execution gate. At current volume it is a
+theoretical race. Fix before advertising `safe_to_execute` as a compliance primitive.
+
+---
+
+## GAP-013 — `/v5/batch` calls not included in receipt audit log
+**Priority**: LOW — audit completeness
+**Status**: OPEN
+
+`insertReceiptAudit()` is called only from the `/v5/status` handler. Batch calls
+that produce N receipts generate zero audit rows. A key making all its queries via
+`/v5/batch` will have an empty audit log.
+
+**Fix**: Call `insertReceiptAudit()` for each receipt inside the `results.map()` loop
+in the `/v5/batch` handler, wrapped in `ctx.waitUntil(Promise.all([...audits]))`.
+
+---
+
 ## Closed Gaps (reference)
 
 | Gap | Resolution | Date |
@@ -204,3 +308,13 @@ and returns `{ valid: boolean, reason: string }`.
 | x402scan "No valid x402 response" on free endpoints | /.well-known/x402.json discovery document | Mar 20 |
 | /mcp OAuth discoverability dead-end | OAuth AS implemented; /.well-known/* endpoints live | Mar 21 |
 | Unauthenticated MCP blocks OAuth clients | Soft auth: invalid token falls through as anonymous | Mar 21 |
+| GAP-001: MCP metering | handleMcp applies getPlanDailyLimit(); -32000 on limit hit | Mar 21 |
+| GAP-002: x402.json empty payTo | Returns resources:[] when ORACLE_PAYMENT_ADDRESS unset | Mar 21 |
+| GAP-003: No OAuth introspect | POST /oauth/introspect (RFC 7662) live | Mar 21 |
+| GAP-004: webhook race condition | unique_violation 23505 catch replaces TOCTOU select-then-insert | Mar 21 |
+| GAP-005: www HTTP redirect | Confirmed 301 externally; no code change needed | Mar 21 |
+| GAP-007: Soft-auth no expiry check | expires_at guard added to handleMcp Bearer validation | Mar 22 |
+| GAP-008: verify_receipt not in MCP | verify_receipt tool added; Ed25519 verification in-worker | Mar 22 |
+| GAP-009: server-card.json stale | mcp_endpoint, version, tools, authentication all corrected | Mar 22 |
+| GAP-010: No webhook push | POST/DELETE /v5/webhooks/*, cron state-change fan-out delivery | Mar 22 |
+| GAP-011: No receipt audit trail | insertReceiptAudit() + GET /v5/receipts (auth required) | Mar 22 |
