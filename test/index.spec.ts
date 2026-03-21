@@ -1515,6 +1515,9 @@ describe('GET /.well-known/x402.json', () => {
 		const accepts = status!.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('maxAmountRequired', '1000');
 		expect(accepts[0]).toHaveProperty('network', 'eip155:8453');
+		// payTo must be a non-empty address when ORACLE_PAYMENT_ADDRESS is configured
+		expect(typeof accepts[0].payTo).toBe('string');
+		expect((accepts[0].payTo as string).length).toBeGreaterThan(0);
 		const input = status!.input as Record<string, unknown>;
 		expect((input.required as string[])).toContain('mic');
 	});

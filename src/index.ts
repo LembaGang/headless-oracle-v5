@@ -4944,45 +4944,46 @@ export default {
 				// x402 payment resource discovery. x402scan fetches this to discover which
 				// endpoints require payment without probing each one individually.
 				// Only /v5/status and /v5/batch are pay-per-request. All others are free.
-				return json({
-					version:   1,
-					resources: [
-						{
-							path:        '/v5/status',
-							method:      'GET',
-							description: 'Signed market-state receipt for one exchange. Ed25519 signed, 60s TTL.',
-							input: {
-								type:       'object',
-								properties: { mic: { type: 'string', description: 'ISO 10383 MIC code', example: 'XNYS' } },
-								required:   ['mic'],
-							},
-							accepts: [{
-								scheme:            'exact',
-								network:           'eip155:8453',
-								maxAmountRequired: '1000',
-								asset:             X402_USDC_CONTRACT,
-								payTo:             env.ORACLE_PAYMENT_ADDRESS || '',
-							}],
+				// When ORACLE_PAYMENT_ADDRESS is unset, return empty resources rather than
+				// resources with payTo:"" — consistent with how the 402 gate falls back to 401.
+				const payTo = env.ORACLE_PAYMENT_ADDRESS;
+				const paidResources = payTo ? [
+					{
+						path:        '/v5/status',
+						method:      'GET',
+						description: 'Signed market-state receipt for one exchange. Ed25519 signed, 60s TTL.',
+						input: {
+							type:       'object',
+							properties: { mic: { type: 'string', description: 'ISO 10383 MIC code', example: 'XNYS' } },
+							required:   ['mic'],
 						},
-						{
-							path:        '/v5/batch',
-							method:      'GET',
-							description: 'Signed market-state receipts for multiple exchanges. Each receipt Ed25519 signed, 60s TTL.',
-							input: {
-								type:       'object',
-								properties: { mics: { type: 'string', description: 'Comma-separated MIC codes', example: 'XNYS,XNAS,XLON' } },
-								required:   ['mics'],
-							},
-							accepts: [{
-								scheme:            'exact',
-								network:           'eip155:8453',
-								maxAmountRequired: '5000',
-								asset:             X402_USDC_CONTRACT,
-								payTo:             env.ORACLE_PAYMENT_ADDRESS || '',
-							}],
+						accepts: [{
+							scheme:            'exact',
+							network:           'eip155:8453',
+							maxAmountRequired: '1000',
+							asset:             X402_USDC_CONTRACT,
+							payTo,
+						}],
+					},
+					{
+						path:        '/v5/batch',
+						method:      'GET',
+						description: 'Signed market-state receipts for multiple exchanges. Each receipt Ed25519 signed, 60s TTL.',
+						input: {
+							type:       'object',
+							properties: { mics: { type: 'string', description: 'Comma-separated MIC codes', example: 'XNYS,XNAS,XLON' } },
+							required:   ['mics'],
 						},
-					],
-				});
+						accepts: [{
+							scheme:            'exact',
+							network:           'eip155:8453',
+							maxAmountRequired: '5000',
+							asset:             X402_USDC_CONTRACT,
+							payTo,
+						}],
+					},
+				] : [];
+				return json({ version: 1, resources: paidResources });
 			}
 
 			// ── POST /v5/checkout — create Paddle checkout transaction ───
