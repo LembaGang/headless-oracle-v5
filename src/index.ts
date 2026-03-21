@@ -3961,6 +3961,25 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 	const { id, method, params } = body;
 
+	// ── MCP rate limiting — OAuth-authenticated requests only ─────────────────
+	// Unauthenticated MCP (_mcpKeyHash === null) is structurally unreachable here.
+	// Shares the same KV counter as the REST auth gate so REST + MCP calls count
+	// together against a single daily limit per key.
+	if (_mcpKeyHash !== null && _mcpPlan !== null) {
+		const mcpPlanLimit = getPlanDailyLimit(_mcpPlan);
+		if (mcpPlanLimit !== null) {
+			const mcpDailyUsage = await getDailyUsage(_mcpKeyHash, env);
+			if (mcpDailyUsage >= mcpPlanLimit) {
+				return new Response(JSON.stringify({
+					jsonrpc: '2.0',
+					id,
+					error: { code: -32000, message: `RATE_LIMITED: ${_mcpPlan} plan daily limit (${mcpPlanLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` },
+				}), { status: 200, headers: MCP_RESPONSE_HEADERS });
+			}
+			incrementDailyUsage(_mcpKeyHash, env, ctx, mcpDailyUsage);
+		}
+	}
+
 	const rpcResult = (result: unknown) =>
 		new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
 			status: 200, headers: MCP_RESPONSE_HEADERS,

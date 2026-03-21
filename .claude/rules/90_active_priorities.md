@@ -3,7 +3,7 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 379/379 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Test suite**: 382/382 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
 **Live endpoints**: All including /v5/usage (auth), /v5/traction (public), api.headlessoracle.com/* (new subdomain alias), /.well-known/x402.json, /oauth/token, /.well-known/oauth-authorization-server
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
@@ -16,7 +16,10 @@
   - wrangler.toml: headlessoracle.com/oauth/token route added.
   - 8 new tests: AS metadata shape, token issuance, invalid_client, invalid_request, unsupported_grant_type, KV storage, MCP with valid token, MCP with invalid token falls through anonymously.
   - github.com/LembaGang/headless-oracle-agentpay created and pushed (5 files).
-  - 379/379 tests passing.
+  - GAP-001 (MCP metering) resolved: handleMcp applies getPlanDailyLimit() after soft auth; returns JSON-RPC -32000 RATE_LIMITED on limit hit; shares free_usage: KV counter with REST gate.
+  - 3 new tests: free-tier at limit → -32000, free-tier below limit → success, unauthenticated ignores counter.
+  - GAPS.md created at repo root with 6 prioritised gaps.
+  - 382/382 tests passing.
 **Previous significant work**: Mar 20 2026 — x402scan full fix: input schema + /.well-known/x402.json discovery document (371 tests):
   - buildX402ScanPayload(): x402scan-compatible format (x402Version:1, accepts[], eip155:8453, payTo, maxAmountRequired, maxTimeoutSeconds)
   - input field added: /v5/status requires mic (string), /v5/batch requires mics (string) — fixes "Missing input schema" error

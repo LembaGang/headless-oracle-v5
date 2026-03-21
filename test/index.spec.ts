@@ -1883,6 +1883,78 @@ describe('POST /mcp — OAuth soft auth', () => {
 	});
 });
 
+// ─── OAuth 2.0 — MCP rate limiting ───────────────────────────────────────────
+
+describe('POST /mcp — OAuth rate limiting', () => {
+	// Helper: put an OAuth token record directly into KV (bypasses /oauth/token route)
+	async function putOAuthToken(token: string, keyHash: string, plan: string): Promise<void> {
+		const encoded   = new TextEncoder().encode(token);
+		const hashBuf   = await crypto.subtle.digest('SHA-256', encoded);
+		const tokenHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+		await env.ORACLE_API_KEYS.put(`oauth:${tokenHash}`, JSON.stringify({ keyHash, plan, status: 'active' }), { expirationTtl: 3600 });
+	}
+
+	const mcpInit = JSON.stringify({
+		jsonrpc: '2.0', id: 1, method: 'initialize',
+		params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
+	});
+
+	it('free-tier OAuth token at daily limit → JSON-RPC -32000 RATE_LIMITED', async () => {
+		const token   = 'mcp_ratelimit_test_free_token_' + 'a'.repeat(34);
+		const keyHash = 'mcp_ratelimit_free_keyhash_' + 'a'.repeat(37);
+		const today   = new Date().toISOString().slice(0, 10);
+		await putOAuthToken(token, keyHash, 'free');
+		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '500', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+				body:    mcpInit,
+			});
+			expect(res.status).toBe(200); // MCP always HTTP 200
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error');
+			const err = body.error as Record<string, unknown>;
+			expect(err).toHaveProperty('code', -32000);
+			expect(String(err.message)).toContain('RATE_LIMITED');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${today}`);
+		}
+	});
+
+	it('free-tier OAuth token below limit → request succeeds', async () => {
+		const token   = 'mcp_ratelimit_test_free_under_' + 'b'.repeat(34);
+		const keyHash = 'mcp_ratelimit_free_under_hash_' + 'b'.repeat(34);
+		const today   = new Date().toISOString().slice(0, 10);
+		await putOAuthToken(token, keyHash, 'free');
+		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '1', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+				body:    mcpInit,
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('result'); // succeeds — not rate-limited
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${today}`);
+		}
+	});
+
+	it('unauthenticated MCP ignores usage counter — always succeeds', async () => {
+		// Even if a counter key existed for some hash, unauthenticated MCP skips metering
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    mcpInit,
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('result');
+	});
+});
+
 // ─── Billing: Auth hot path — paid keys via KV ───────────────────────────────
 
 // Shared helper: compute sha256(string) in the test Workers runtime

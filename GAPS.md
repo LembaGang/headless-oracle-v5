@@ -7,7 +7,7 @@ Updated: 2026-03-21
 
 ## GAP-001 — MCP traffic not metered against plan limits
 **Priority**: HIGH — revenue leak
-**Status**: Open
+**Status**: CLOSED — 2026-03-21
 
 `_mcpKeyHash` is computed in `handleMcp` when a valid OAuth Bearer token is
 present, but `getPlanDailyLimit()` is never applied to MCP calls. An authenticated
