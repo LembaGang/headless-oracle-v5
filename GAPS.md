@@ -145,6 +145,31 @@ Sam Ragsdale.
 
 ---
 
+## GAP-007 — OAuth soft-auth doesn't check token expiry
+**Priority**: LOW — correctness
+**Status**: Open
+
+`handleMcp` soft-auth accepts tokens that have logically expired but haven't yet been
+evicted from KV. KV TTL is the authoritative expiry but eventual consistency means a
+small window exists where `expires_at` has passed but the key is still retrievable.
+The introspection endpoint (`handleOAuthIntrospect`) already handles this correctly.
+
+**Fix** (one line in `handleMcp` Bearer validation block):
+```typescript
+if (parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at) {
+  // fall through as anonymous — token logically expired
+}
+```
+
+**Implementation notes**:
+- Add after `if (parsed.status === 'active')` check in the soft-auth try block
+- No KV changes, no new routes, no wrangler.toml changes
+- Add one test: pre-seed a token record with `expires_at` in the past, verify MCP
+  call with that token proceeds as anonymous (returns 200 with `result`, not blocked)
+- Effort: ~5 minutes
+
+---
+
 ## Closed Gaps (reference)
 
 | Gap | Resolution | Date |
