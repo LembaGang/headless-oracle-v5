@@ -1836,6 +1836,65 @@ describe('POST /oauth/token', () => {
 		const parsed = JSON.parse(stored!) as Record<string, unknown>;
 		expect(parsed).toHaveProperty('plan');
 		expect(parsed).toHaveProperty('status', 'active');
+		// expires_at required for introspection — must be a Unix timestamp ~1 hour out
+		expect(parsed).toHaveProperty('expires_at');
+		const exp = parsed.expires_at as number;
+		expect(exp).toBeGreaterThan(Math.floor(Date.now() / 1000));
+		expect(exp).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 3601);
+	});
+});
+
+// ─── OAuth 2.0 — POST /oauth/introspect ──────────────────────────────────────
+
+describe('POST /oauth/introspect', () => {
+	it('returns { active: true, scope, exp } for a valid token', async () => {
+		// Issue a real token first
+		const tokenRes = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'grant_type=client_credentials&client_id=test_master_key_local_only',
+		});
+		const { access_token } = await tokenRes.json() as { access_token: string };
+
+		const res  = await fetchWorker('/oauth/introspect', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    `token=${access_token}`,
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(200);
+		expect(body).toHaveProperty('active', true);
+		expect(body).toHaveProperty('scope', 'oracle:read');
+		expect(body).toHaveProperty('exp');
+		expect(typeof body.exp).toBe('number');
+		expect(body.exp as number).toBeGreaterThan(Math.floor(Date.now() / 1000));
+	});
+
+	it('returns { active: false } for an unknown token', async () => {
+		const res  = await fetchWorker('/oauth/introspect', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    'token=this_token_does_not_exist_in_kv_at_all',
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(200); // RFC 7662 §2.2 — always 200
+		expect(body).toHaveProperty('active', false);
+	});
+
+	it('returns { active: false } when token param is missing — not 4xx', async () => {
+		const res  = await fetchWorker('/oauth/introspect', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    '',
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(200);
+		expect(body).toHaveProperty('active', false);
+	});
+
+	it('/.well-known/oauth-authorization-server includes introspection_endpoint', async () => {
+		const body = await fetchJSON('/.well-known/oauth-authorization-server');
+		expect(body).toHaveProperty('introspection_endpoint', 'https://headlessoracle.com/oauth/introspect');
 	});
 });
 

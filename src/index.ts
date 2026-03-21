@@ -3845,9 +3845,14 @@ async function handleOAuthToken(request: Request, env: Env): Promise<Response> {
 	// keyHash is present for Supabase-backed keys; compute deterministically for MASTER/BETA.
 	const keyHash     = auth.keyHash ?? await sha256Hex(clientId);
 
+	// expires_at stored in the record so introspection can return exp without a
+	// second KV call. KV TTL (3600s) is the authoritative expiry; expires_at is
+	// a convenience copy for RFC 7662 introspection responses.
+	const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+
 	await env.ORACLE_API_KEYS.put(
 		`oauth:${tokenHash}`,
-		JSON.stringify({ keyHash, plan: auth.plan, status: 'active' }),
+		JSON.stringify({ keyHash, plan: auth.plan, status: 'active', expires_at: expiresAt }),
 		{ expirationTtl: 3600 },
 	);
 
@@ -3857,6 +3862,43 @@ async function handleOAuthToken(request: Request, env: Env): Promise<Response> {
 		expires_in:   3600,
 		scope:        'oracle:read',
 	}), { status: 200, headers: oauthHeaders });
+}
+
+// ─── OAuth 2.0 Token Introspection ────────────────────────────────────────────
+// RFC 7662 §2 — POST /oauth/introspect.
+// Returns { active: true, scope, exp } for valid tokens, { active: false } for
+// all others. Never returns 4xx — RFC 7662 §2.2 requires 200 for all valid requests.
+async function handleOAuthIntrospect(request: Request, env: Env): Promise<Response> {
+	const introspectHeaders = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
+	const inactive = () => new Response(JSON.stringify({ active: false }), { status: 200, headers: introspectHeaders });
+
+	if (request.method !== 'POST') return inactive();
+
+	let token: string | null = null;
+	try {
+		const body = await request.text();
+		token = new URLSearchParams(body).get('token');
+	} catch { return inactive(); }
+
+	if (!token || !env.ORACLE_API_KEYS) return inactive();
+
+	try {
+		const tokenHash = await sha256Hex(token);
+		const cached    = await env.ORACLE_API_KEYS.get(`oauth:${tokenHash}`);
+		if (!cached) return inactive();
+
+		const parsed = JSON.parse(cached) as { keyHash: string; plan: string; status: string; expires_at?: number };
+		// Treat logically expired tokens as inactive (guards against KV eventual consistency lag).
+		if (parsed.status !== 'active') return inactive();
+		if (parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at) return inactive();
+
+		return new Response(JSON.stringify({
+			active:    true,
+			scope:     'oracle:read',
+			exp:       parsed.expires_at ?? null,
+			token_type: 'bearer',
+		}), { status: 200, headers: introspectHeaders });
+	} catch { return inactive(); }
 }
 
 async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -4313,6 +4355,12 @@ export default {
 		// not decorated with 'docs' fields or X-Oracle-Version headers.
 		if (url.pathname === '/oauth/token') {
 			return handleOAuthToken(request, env);
+		}
+
+		// ── POST /oauth/introspect — RFC 7662 token introspection ──
+		// Returns { active: true/false }. Always HTTP 200 per RFC 7662 §2.2.
+		if (url.pathname === '/oauth/introspect') {
+			return handleOAuthIntrospect(request, env);
 		}
 
 		// ── GET /mcp — server info; POST /mcp — MCP Streamable HTTP ──
@@ -4935,8 +4983,10 @@ export default {
 				return json({
 					issuer:                              'https://headlessoracle.com/oauth',
 					token_endpoint:                      'https://headlessoracle.com/oauth/token',
+					introspection_endpoint:              'https://headlessoracle.com/oauth/introspect',
 					grant_types_supported:               ['client_credentials'],
 					token_endpoint_auth_methods_supported: ['client_secret_post'],
+					introspection_endpoint_auth_methods_supported: ['none'],
 					scopes_supported:                    ['oracle:read'],
 				});
 			}
