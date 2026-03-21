@@ -1389,6 +1389,28 @@ async function updateKeyUsage(keyHash: string, env: Env): Promise<void> {
 	}
 }
 
+async function insertReceiptAudit(
+	keyHash: string,
+	receipt: Record<string, unknown>,
+	env: Env,
+): Promise<void> {
+	if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return;
+	try {
+		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+		const { error } = await supabase.from('receipt_audit').insert({
+			key_hash:       keyHash,
+			mic:            String(receipt.mic ?? ''),
+			status:         String(receipt.status ?? ''),
+			source:         String(receipt.source ?? ''),
+			issued_at:      String(receipt.issued_at ?? new Date().toISOString()),
+			schema_version: String(receipt.schema_version ?? 'v5.0'),
+		});
+		if (error) console.error(`RECEIPT_AUDIT_ERROR: ${error.message}`);
+	} catch (e) {
+		console.error(`RECEIPT_AUDIT_EXCEPTION: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
 // ─── Paddle Webhook Signature Verification ────────────────────────────────────
 // Paddle signs webhooks with HMAC-SHA256 using the webhook secret.
 // Header format: "ts=<timestamp>;h1=<hex_signature>"
@@ -4406,7 +4428,7 @@ async function runHaltMonitor(env: Env): Promise<void> {
 		// Only check exchanges that are scheduled OPEN right now
 		let scheduleResult: MarketStatusResult;
 		try {
-			scheduleResult = getScheduleStatus(mic, config, now);
+			scheduleResult = getScheduleStatus(mic, now);
 		} catch {
 			results.push({ mic, checked: false, halted: false, source: 'error', error: 'schedule_error' });
 			continue;
@@ -4539,7 +4561,7 @@ async function runHaltMonitor(env: Env): Promise<void> {
 	for (const [mic, config] of Object.entries(MARKET_CONFIGS)) {
 		let currentStatus: string;
 		try {
-			const result = getScheduleStatus(mic, config, now);
+			const result = getScheduleStatus(mic, now);
 			// If a KV override is active, reflect that in the status
 			const override = await env.ORACLE_OVERRIDES.get(mic);
 			if (override) {
@@ -4911,6 +4933,14 @@ export default {
 				}
 				const mode = url.pathname === '/v5/demo' ? 'demo' : 'live';
 				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode);
+				// Audit: log receipt to Supabase for authenticated /v5/status calls (non-blocking)
+				if (mode === 'live' && typeof ctx?.waitUntil === 'function') {
+					const auditApiKey = request.headers.get('X-Oracle-Key') ?? '';
+					if (auditApiKey) {
+						const auditKeyHash = await sha256Hex(auditApiKey);
+						ctx.waitUntil(insertReceiptAudit(auditKeyHash, receipt as Record<string, unknown>, env).catch(() => {}));
+					}
+				}
 				// Receipts must not be cached — they expire in 60s and contain real-time status.
 				return withRateLimitWarning(json(receipt, status, { 'Cache-Control': 'no-store' }));
 			}
@@ -5028,11 +5058,39 @@ export default {
 					}, 500);
 				}
 
-				return withRateLimitWarning(json({
-					batch_id:   crypto.randomUUID(),
-					queried_at: now.toISOString(),
-					receipts:   results.map((r) => r.receipt),
-				}));
+				// Build portfolio-level summary: counts by status + safe_to_execute gate
+					const receiptStatuses = results.map((r) => (r.receipt as Record<string, unknown>).status as string);
+					const countOpen    = receiptStatuses.filter((s) => s === 'OPEN').length;
+					const countClosed  = receiptStatuses.filter((s) => s === 'CLOSED').length;
+					const countHalted  = receiptStatuses.filter((s) => s === 'HALTED').length;
+					const countUnknown = receiptStatuses.filter((s) => s === 'UNKNOWN').length;
+					const anyHalted    = countHalted > 0;
+					const anyUnknown   = countUnknown > 0;
+					const safeToExecute = countOpen === results.length && !anyHalted && !anyUnknown;
+
+					let summaryReason: string | null = null;
+					if (!safeToExecute) {
+						if (anyHalted)       summaryReason = `${countHalted} exchange${countHalted > 1 ? 's' : ''} HALTED — fail-closed`;
+						else if (anyUnknown) summaryReason = `${countUnknown} exchange${countUnknown > 1 ? 's' : ''} UNKNOWN — fail-closed`;
+						else                 summaryReason = `${results.length - countOpen} exchange${results.length - countOpen > 1 ? 's' : ''} not OPEN`;
+					}
+
+					return withRateLimitWarning(json({
+						summary: {
+							total:          results.length,
+							open:           countOpen,
+							closed:         countClosed,
+							halted:         countHalted,
+							unknown:        countUnknown,
+							all_open:       countOpen === results.length,
+							any_halted:     anyHalted,
+							safe_to_execute: safeToExecute,
+							reason:         summaryReason,
+						},
+						batch_id:   crypto.randomUUID(),
+						queried_at: now.toISOString(),
+						receipts:   results.map((r) => r.receipt),
+					}));
 			}
 
 			// ── GET /v5/health — signed liveness probe (public, no auth) ──
@@ -6294,6 +6352,45 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────
+			// ── GET /v5/receipts — receipt audit log (requires auth) ─────────────
+			if (url.pathname === '/v5/receipts') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				const receiptsAuth = await checkApiKey(apiKey, env);
+				if (!receiptsAuth.allowed) return json({ error: receiptsAuth.error, message: receiptsAuth.message }, receiptsAuth.status);
+
+				if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+					return json({ receipts: [], note: 'Audit log not available in this environment' });
+				}
+
+				const keyHash   = receiptsAuth.keyHash ?? await sha256Hex(apiKey);
+				const limitRaw  = parseInt(url.searchParams.get('limit') ?? '100', 10);
+				const limit     = Math.min(isNaN(limitRaw) || limitRaw < 1 ? 100 : limitRaw, 100);
+				const micParam  = url.searchParams.get('mic')?.toUpperCase() ?? null;
+				const fromParam = url.searchParams.get('from') ?? null;
+
+				if (micParam && !MARKET_CONFIGS[micParam]) {
+					return json({ error: 'INVALID_MIC', message: `Unknown exchange: ${micParam}. See /v5/exchanges.` }, 400);
+				}
+
+				try {
+					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					let query = supabase
+						.from('receipt_audit')
+						.select('id, mic, status, source, issued_at, schema_version')
+						.eq('key_hash', keyHash)
+						.order('issued_at', { ascending: false })
+						.limit(limit);
+					if (micParam)  query = query.eq('mic', micParam);
+					if (fromParam) query = query.gte('issued_at', fromParam);
+					const { data, error } = await query;
+					if (error) return json({ error: 'QUERY_ERROR', message: error.message }, 500);
+					return json({ receipts: data ?? [], count: (data ?? []).length, limit });
+				} catch (e) {
+					return json({ error: 'QUERY_ERROR', message: e instanceof Error ? e.message : 'Unknown error' }, 500);
+				}
+			}
+
 			return json({ error: 'NOT_FOUND', message: 'Route not found' }, 404);
 
 		} catch (err: unknown) {

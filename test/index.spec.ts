@@ -3628,6 +3628,42 @@ describe('DELETE /v5/webhooks/unsubscribe', () => {
 	});
 });
 
+// ─── GET /v5/receipts — receipt audit log ────────────────────────────────────
+
+describe('GET /v5/receipts', () => {
+	it('missing X-Oracle-Key → 401', async () => {
+		const res = await fetchWorker('/v5/receipts');
+		expect(res.status).toBe(401);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('API_KEY_REQUIRED');
+	});
+
+	it('invalid X-Oracle-Key → 403', async () => {
+		const res = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': 'bad_key' } });
+		expect(res.status).toBe(403);
+	});
+
+	it('valid key → authenticated (2xx or 5xx from Supabase, never 401/403)', async () => {
+		// Test env has Supabase creds but no real DB — may return 200 (no Supabase) or 500 (query error)
+		// The important assertion: auth passed (not 401 or 403)
+		const res = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(res.status).not.toBe(401);
+		expect(res.status).not.toBe(403);
+		// If 200, must have receipts array
+		if (res.status === 200) {
+			const body = await res.json() as Record<string, unknown>;
+			expect(Array.isArray(body.receipts)).toBe(true);
+		}
+	});
+
+	it('invalid mic filter → 400 INVALID_MIC', async () => {
+		const res = await fetchWorker('/v5/receipts?mic=NOTAMIC', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_MIC');
+	});
+});
+
 describe('docs field — points to headlessoracle.com/docs', () => {
 	it('docs field is exact URL without fragment', async () => {
 		const body = await fetchJSON('/v5/status');
@@ -4553,5 +4589,66 @@ describe('Plan-based daily rate limits', () => {
 			await env.ORACLE_API_KEYS.delete(batchBuilderKeyHash);
 			await env.ORACLE_TELEMETRY.delete(`free_usage:${batchBuilderKeyHash}:${today}`);
 		}
+	});
+});
+
+// ─── GET /v5/batch — portfolio summary ──────────────────────────────────────────────
+
+describe('GET /v5/batch — portfolio summary', () => {
+	it('all-open batch → safe_to_execute: true, all_open: true', async () => {
+		// NYSE + NASDAQ open on weekday 14:00 UTC (10:00 ET)
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const res = await fetchWorker('/v5/batch?mics=XNYS,XNAS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const summary = body.summary as Record<string, unknown>;
+		expect(summary).toBeDefined();
+		expect(summary.safe_to_execute).toBe(true);
+		expect(summary.all_open).toBe(true);
+		expect(summary.any_halted).toBe(false);
+		expect(summary.reason).toBeNull();
+		expect(summary.total).toBe(2);
+		expect(summary.open).toBe(2);
+	});
+
+	it('halted exchange → safe_to_execute: false, any_halted: true, reason contains HALTED', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({ status: 'HALTED', reason: 'test halt', expires: '2030-01-01T00:00:00Z' }));
+		try {
+			const res = await fetchWorker('/v5/batch?mics=XNYS,XNAS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+			const body = await res.json() as Record<string, unknown>;
+			const summary = body.summary as Record<string, unknown>;
+			expect(summary.safe_to_execute).toBe(false);
+			expect(summary.any_halted).toBe(true);
+			expect(summary.halted).toBe(1);
+			expect(String(summary.reason)).toContain('HALTED');
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+		}
+	});
+
+	it('UNKNOWN exchange → safe_to_execute: false, unknown > 0, reason contains UNKNOWN', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		await env.ORACLE_OVERRIDES.put('XNAS', JSON.stringify({ status: 'UNKNOWN', reason: 'test unknown', expires: '2030-01-01T00:00:00Z' }));
+		try {
+			const res = await fetchWorker('/v5/batch?mics=XNYS,XNAS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+			const body = await res.json() as Record<string, unknown>;
+			const summary = body.summary as Record<string, unknown>;
+			expect(summary.safe_to_execute).toBe(false);
+			expect(summary.unknown).toBeGreaterThan(0);
+			expect(String(summary.reason)).toContain('UNKNOWN');
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNAS');
+		}
+	});
+
+	it('batch response still includes receipts array alongside summary', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const res = await fetchWorker('/v5/batch?mics=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const body = await res.json() as Record<string, unknown>;
+		expect(Array.isArray(body.receipts)).toBe(true);
+		expect(body).toHaveProperty('summary');
+		expect(body).toHaveProperty('batch_id');
+		expect(body).toHaveProperty('queried_at');
 	});
 });
