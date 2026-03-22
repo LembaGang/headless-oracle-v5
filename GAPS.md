@@ -265,7 +265,7 @@ CREATE INDEX ON receipt_audit(key_hash, issued_at DESC);
 
 ## GAP-012 — `/v5/batch` `safe_to_execute` ignores REALTIME overrides
 **Priority**: LOW — correctness at scale
-**Status**: OPEN
+**Status**: CLOSED — 2026-03-22
 
 `safe_to_execute` in the `/v5/batch` summary is computed from static schedule-based
 status at the time the batch runs. The halt monitor writes REALTIME overrides to
@@ -286,7 +286,7 @@ theoretical race. Fix before advertising `safe_to_execute` as a compliance primi
 
 ## GAP-013 — `/v5/batch` calls not included in receipt audit log
 **Priority**: LOW — audit completeness
-**Status**: OPEN
+**Status**: CLOSED — 2026-03-22
 
 `insertReceiptAudit()` is called only from the `/v5/status` handler. Batch calls
 that produce N receipts generate zero audit rows. A key making all its queries via
@@ -318,3 +318,5 @@ in the `/v5/batch` handler, wrapped in `ctx.waitUntil(Promise.all([...audits]))`
 | GAP-009: server-card.json stale | mcp_endpoint, version, tools, authentication all corrected | Mar 22 |
 | GAP-010: No webhook push | POST/DELETE /v5/webhooks/*, cron state-change fan-out delivery | Mar 22 |
 | GAP-011: No receipt audit trail | insertReceiptAudit() + GET /v5/receipts (auth required) | Mar 22 |
+| GAP-012: safe_to_execute ignores REALTIME overrides | Override re-check after buildSignedReceipt; effectiveStatuses used for summary | Mar 22 |
+| GAP-013: batch calls not audited | insertReceiptAudit() called for each batch receipt via ctx.waitUntil | Mar 22 |

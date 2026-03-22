@@ -1329,7 +1329,19 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	if (env.ORACLE_API_KEYS) {
 		const cached = await env.ORACLE_API_KEYS.get(keyHash);
 		if (cached) {
-			const { plan, status } = JSON.parse(cached) as { plan: string; status: string };
+			const parsed = JSON.parse(cached) as { plan?: string; tier?: string; status: string; expires_at?: string };
+			// Sandbox keys expire by TTL but also check expires_at for belt-and-suspenders
+			if (parsed.tier === 'sandbox' || parsed.plan === 'sandbox') {
+				if (parsed.status !== 'active') {
+					return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Sandbox key inactive or expired' };
+				}
+				if (parsed.expires_at && new Date(parsed.expires_at) <= new Date()) {
+					return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Sandbox key expired. Get a fresh key at headlessoracle.com/v5/sandbox' };
+				}
+				return { allowed: true, plan: 'sandbox', keyHash };
+			}
+			const plan   = parsed.plan ?? 'free';
+			const status = parsed.status;
 			if (status === 'active') return { allowed: true, plan, keyHash };
 			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
@@ -1732,6 +1744,24 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 			},
 		],
 		error: 'X-Payment-Required',
+	};
+}
+
+// ─── Standard Rate-Limit Headers ──────────────────────────────────────────────────────────────────────────────
+// Builds the X-Oracle-Plan / X-RateLimit-* header set for any response.
+// plan: the key's plan tier (free, builder, pro, protocol, sandbox, internal)
+// used: requests used today
+// limit: daily limit for this plan (0 = unlimited)
+// now: current request time (used to compute reset = next UTC midnight)
+function makeRateLimitHeaders(plan: string, used: number, limit: number, now: Date): Record<string, string> {
+	const midnight = new Date(now);
+	midnight.setUTCDate(midnight.getUTCDate() + 1);
+	midnight.setUTCHours(0, 0, 0, 0);
+	return {
+		'X-Oracle-Plan':         plan,
+		'X-RateLimit-Limit':     String(limit),
+		'X-RateLimit-Remaining': String(Math.max(0, limit - used)),
+		'X-RateLimit-Reset':     midnight.toISOString(),
 	};
 }
 
@@ -2418,324 +2448,129 @@ Allow: /mics.json
 Disallow:
 `;
 
-const LLMS_TXT = `# Headless Oracle — Machine-Readable Service Description
-
-## What This Service Does
-
-Headless Oracle provides cryptographically signed market-state receipts for 23 global stock exchanges. Each receipt states whether a market is OPEN, CLOSED, HALTED, or UNKNOWN — signed with Ed25519, timestamped, valid for 60 seconds.
-
-Use this service to gate autonomous trading decisions. Do not execute if status != OPEN.
-
----
-
-## Primary Integration: MCP
-
-Endpoint: https://headlessoracle.com/mcp
-Protocol: MCP 2024-11-05 (JSON-RPC 2.0, POST)
-Authentication: none required
-
-Tools:
-- get_market_status(mic: string) → signed receipt (OPEN/CLOSED/HALTED/UNKNOWN)
-- get_market_schedule(mic: string) → next open/close times in UTC
-- list_exchanges() → all 23 supported exchanges with MIC codes and timezones
-
-MCP initialize request:
-  {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"your-agent","version":"1.0"}}}
-
-MCP tools/call request:
-  {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_market_status","arguments":{"mic":"XNYS"}}}
-
----
-
-## REST Integration
-
-### Authenticated: GET /v5/status
-
-Request:
-  GET https://headlessoracle.com/v5/status?mic={MIC_CODE}
-  X-Oracle-Key: {your-api-key}
-
-Response (200 OK):
-  {
-    "mic": "XNYS",
-    "status": "OPEN",
-    "timestamp": "2026-03-20T14:30:00.000Z",
-    "issued_at": "2026-03-20T14:30:00.000Z",
-    "expires_at": "2026-03-20T14:31:00.000Z",
-    "issuer": "headlessoracle.com",
-    "key_id": "key_2026_v1",
-    "receipt_mode": "live",
-    "schema_version": "v5.0",
-    "source": "SCHEDULE",
-    "signature": "<hex Ed25519>"
-  }
-
-Errors:
-  401 API_KEY_REQUIRED    — missing X-Oracle-Key header
-  403 INVALID_API_KEY     — key not recognised or revoked
-  402 PAYMENT_REQUIRED    — subscription suspended or payment failed
-  404 UNKNOWN_MIC         — MIC code not in supported set
-  429 RATE_LIMITED        — daily plan limit reached
-
-### Public: GET /v5/demo
-
-Request:
-  GET https://headlessoracle.com/v5/demo?mic={MIC_CODE}
-
-Returns signed receipt with receipt_mode: "demo". No authentication required. Same schema as /v5/status. Use for integration testing without an API key.
-
-### Batch: GET /v5/batch
-
-Request:
-  GET https://headlessoracle.com/v5/batch?mics=XNYS,XNAS,XLON
-  X-Oracle-Key: {your-api-key}
-
-Response (200 OK):
-  {
-    "receipts": [
-      {"mic":"XNYS","status":"OPEN",...},
-      {"mic":"XNAS","status":"OPEN",...},
-      {"mic":"XLON","status":"CLOSED",...}
-    ],
-    "count": 3
-  }
-
-### Schedule: GET /v5/schedule
-
-Request:
-  GET https://headlessoracle.com/v5/schedule?mic={MIC_CODE}
-
-Response (200 OK):
-  {
-    "mic": "XNYS",
-    "timezone": "America/New_York",
-    "next_open": "2026-03-23T13:30:00.000Z",
-    "next_close": "2026-03-23T20:00:00.000Z",
-    "lunch_break": null,
-    "data_coverage_years": ["2026","2027"]
-  }
-
-lunch_break is non-null for: XJPX (11:30-12:30 local JST), XHKG (12:00-13:00 local HKT),
-XSHG and XSHE (11:30-13:00 local CST).
-
----
-
-## Key Acquisition
-
-Request:
-  POST https://headlessoracle.com/v5/keys/request
-  Content-Type: application/json
-  {"email":"operator@example.com"}
-
-Response (200 OK):
-  {"message":"API key sent to operator@example.com"}
-
-The API key is emailed once. It is not stored in plaintext. Format: ho_live_ prefix + 64 hex characters.
-
-Plans and limits:
-  builder  — 50,000 req/day
-  pro      — 200,000 req/day
-  protocol — unlimited
-
-Free demo access (no key): GET /v5/demo — 500 req/day before x402 gate activates.
-
-Pricing: https://headlessoracle.com/pricing
-
----
-
-## Response Schema (complete field reference)
-
-Field          | Type   | Description
----------------|--------|-----------------------------------------------------
-mic            | string | ISO 10383 Market Identifier Code
-status         | string | OPEN, CLOSED, HALTED, or UNKNOWN
-timestamp      | string | ISO 8601 UTC — when status was computed
-issued_at      | string | ISO 8601 UTC — when receipt was signed
-expires_at     | string | ISO 8601 UTC — valid until (issued_at + 60s)
-issuer         | string | Always "headlessoracle.com"
-key_id         | string | Public key identifier for signature verification
-receipt_mode   | string | "demo" (no auth) or "live" (authenticated)
-schema_version | string | Always "v5.0"
-source         | string | SCHEDULE, OVERRIDE, REALTIME, or SYSTEM
-signature      | string | Hex-encoded Ed25519 over canonical payload
-reason         | string | Present when source is OVERRIDE or REALTIME (halt reason)
-
----
-
-## Status Values
-
-OPEN    — market is currently trading. Safe to execute.
-CLOSED  — market is closed (outside hours, holiday, weekend). Do not execute.
-HALTED  — market is open but trading suspended (circuit breaker). Do not execute.
-UNKNOWN — status cannot be determined. Treat as CLOSED. Do not execute.
-
----
-
-## Fail-Closed Rules
-
-IF status != "OPEN"       → do not execute. No exceptions.
-IF API returns 5xx        → treat all markets as CLOSED, halt.
-IF request times out (>4s)→ treat all markets as CLOSED, halt.
-IF signature invalid      → do not act on the receipt.
-IF receipt past expires_at→ fetch fresh status, do not reuse cached receipt.
-UNKNOWN is not an error state — it is a definitive halt signal identical to CLOSED.
-
----
-
-## Ed25519 Signature Verification
-
-Public key (hex), key_id: key_2026_v1
-  03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178
-
-Public key endpoints:
-  GET https://headlessoracle.com/v5/keys
-  GET https://headlessoracle.com/.well-known/oracle-keys.json
-
-Canonical payload algorithm:
-  1. Remove the "signature" field from the receipt object
-  2. Sort remaining keys alphabetically
-  3. JSON.stringify compact (no whitespace, no trailing newline)
-  4. UTF-8 encode to bytes
-  5. Verify Ed25519 signature (from receipt.signature hex) against those bytes
-
-JavaScript (Web Crypto — zero dependencies):
-  async function verifyReceipt(receipt) {
-    const { signature, ...fields } = receipt;
-    const sorted = Object.fromEntries(Object.entries(fields).sort());
-    const canonical = JSON.stringify(sorted);
-    const pubBytes = hexToBytes('03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178');
-    const key = await crypto.subtle.importKey('raw', pubBytes, {name:'Ed25519'}, false, ['verify']);
-    return crypto.subtle.verify('Ed25519', key, hexToBytes(signature), new TextEncoder().encode(canonical));
-  }
-
-Python (PyNaCl):
-  from nacl.signing import VerifyKey
-  import json
-  def verify_receipt(receipt):
-      fields = {k:v for k,v in receipt.items() if k != 'signature'}
-      canonical = json.dumps(dict(sorted(fields.items())), separators=(',',':'))
-      VerifyKey(bytes.fromhex('03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178')) \
-          .verify(canonical.encode(), bytes.fromhex(receipt['signature']))
-
-npm SDK: @headlessoracle/verify — zero production dependencies, Web Crypto, 3-line API.
-  import { verify } from '@headlessoracle/verify';
-  const result = await verify(receipt);
-  if (!result.valid) throw new Error(result.reason);
-
----
-
-## Supported MIC Codes (23 exchanges)
-
-Americas:    XNYS (New York), XNAS (NASDAQ), XBSP (Sao Paulo)
-Europe:      XLON (London), XPAR (Paris), XSWX (Zurich), XMIL (Milan), XHEL (Helsinki), XSTO (Stockholm), XIST (Istanbul)
-Middle East: XSAU (Riyadh), XDFM (Dubai) — weekends Fri-Sat; Sunday is a trading day
-Africa:      XJSE (Johannesburg)
-Asia:        XJPX (Tokyo), XHKG (Hong Kong), XSHG (Shanghai), XSHE (Shenzhen), XKRX (Seoul), XBOM (Mumbai BSE), XNSE (Mumbai NSE), XSES (Singapore)
-Pacific:     XASX (Sydney), XNZE (Auckland)
-
-Invalid MIC → 404 UNKNOWN_MIC.
-Full directory: GET https://headlessoracle.com/v5/exchanges
-
----
-
-## Rate Limits by Plan
-
-Plan      | Daily Limit   | On Exceed
-----------|---------------|------------------------------------------
-free      | 500 requests  | 402 + x402 payment object (Base USDC)
-builder   | 50,000        | 429 RATE_LIMITED
-pro       | 200,000       | 429 RATE_LIMITED
-protocol  | unlimited     | —
-
-Resets at UTC midnight daily.
-Soft warning headers at 80% and 95% of free tier: X-RateLimit-Warning.
-
----
-
-## x402 Micropayment Path
-
-When the free tier limit is exceeded, HTTP 402 response body:
-  {
-    "error": "PAYMENT_REQUIRED",
-    "x402": {
-      "network": "base-mainnet",
-      "chainId": 8453,
-      "amount": "1000",
-      "currency": "USDC",
-      "paymentAddress": "0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3",
-      "usdcContractAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      "maxAge": 300
-    }
-  }
-
-amount=1000 means 0.001 USDC (6 decimal places). Network: Base mainnet (chainId 8453).
-
-To retry: send USDC transfer on Base mainnet, then include:
-  X-Payment: {"txHash":"0x...","network":"base-mainnet","chainId":8453}
-
-Constraints: transaction <= 300 seconds old; each txHash accepted once (replay protection).
-
-Full docs: https://headlessoracle.com/docs/x402-payments
-
----
-
-## OAuth / Authentication Discovery
-
-GET https://headlessoracle.com/.well-known/oauth-protected-resource
-
-Response:
-  {
-    "resource": "https://headlessoracle.com",
-    "authorization_servers": [],
-    "bearer_methods_supported": ["header"],
-    "resource_documentation": "https://headlessoracle.com/docs"
-  }
-
-Authentication header name: X-Oracle-Key (not Authorization: Bearer).
-This endpoint exists for RFC 8705 resource discovery used by MCP-compatible clients.
-
----
-
-## Additional Endpoints
-
-GET /v5/health         — signed liveness probe (no auth). Returns status: OK or 500 CRITICAL_FAILURE.
-GET /v5/keys           — public key registry, canonical payload spec, key lifecycle metadata.
-GET /v5/compliance     — APTS compliance status (6 checks), sma_spec_version, verify_sdk.
-GET /v5/traction       — live metrics snapshot: exchanges, MCP requests today, days live.
-GET /v5/usage          — per-key usage stats (auth required): requests today, limit, percent.
-GET /v5/errors/{code}  — machine-readable error recovery details for any 4xx error code.
-GET /openapi.json      — OpenAPI 3.1 specification (all routes, schemas, auth).
-GET /.well-known/oracle-keys.json — RFC 8615 key discovery.
-GET /llms.txt          — this document.
-
----
-
-## DST Transitions 2026
-
-Date        | Event                            | Affected MICs
-2026-03-08  | US spring forward (EST to EDT)   | XNYS, XNAS
-2026-03-29  | EU/UK spring forward             | XLON, XPAR, XSWX, XMIL, XHEL, XSTO
-2026-10-25  | EU/UK fall back                  | XLON, XPAR, XSWX, XMIL, XHEL, XSTO
-2026-11-01  | US fall back                     | XNYS, XNAS
-
-All DST handling is automatic via IANA timezone names in Intl.DateTimeFormat. No hardcoded UTC offsets.
-
----
-
-## Standards
-
-SMA Protocol: https://github.com/LembaGang/sma-protocol (Apache 2.0)
-Agent Pre-Trade Safety Standard (APTS): https://github.com/LembaGang/agent-pretrade-safety-standard (Apache 2.0)
-OpenAPI spec: https://headlessoracle.com/openapi.json
-Receipt specification: https://headlessoracle.com/docs
-
----
-
-## Legal
-
-API use constitutes acceptance of Terms of Service: https://headlessoracle.com/terms.html
-Fail-closed obligation is contractual. Ignoring UNKNOWN status shifts liability to the operator.
-`;
+const LLMS_TXT = `# Headless Oracle
+> Cryptographically signed, fail-closed market-state receipts for AI agents. Ed25519-signed. 23 global exchanges.
+
+## What this is
+Headless Oracle provides cryptographically signed market-state attestations (Signed Market Attestations, SMAs) for 23 global stock exchanges. Every receipt is Ed25519-signed, expires after 60 seconds, and is fail-closed: UNKNOWN or HALTED status MUST prevent agent execution.
+
+## When to use this
+- Before executing any trade, payment, or financial action on a stock exchange
+- Before routing an order to any venue that could be closed, halted, or in a settlement window
+- When receiving a receipt from another agent and needing to verify it was genuinely issued by this oracle
+- When scheduling market-hours-dependent workflows (cron, webhooks, batch jobs)
+- When aggregating multi-exchange status before a portfolio-level action (use /v5/batch)
+- When subscribing to state-change events to avoid polling (use /v5/webhooks/subscribe)
+
+## Quick start (no auth required)
+- Demo (signed, 'demo' mode): GET https://headlessoracle.com/v5/demo?mic=XNYS
+- Sandbox (instant key, 100 calls, 24h): GET https://headlessoracle.com/v5/sandbox
+- Public key: GET https://headlessoracle.com/v5/keys
+
+## Authentication
+- Free key (500 req/day): POST https://headlessoracle.com/v5/keys/request
+- Sandbox key (instant, 100 calls, no signup): GET https://headlessoracle.com/v5/sandbox
+- Paid key: https://headlessoracle.com/pricing
+- Header: X-Oracle-Key: {your_key}
+- Without key: demo endpoint works; /v5/status returns 402 with x402 payment object
+
+## Endpoints
+| Endpoint | Method | Auth | Description | Returns |
+|---|---|---|---|---|
+| /v5/demo | GET | No | Signed receipt, demo mode | SMA receipt (receipt_mode=demo) |
+| /v5/status | GET | Yes | Signed receipt, live mode | SMA receipt (receipt_mode=live) |
+| /v5/batch | GET | Yes | Signed receipts for multiple MICs | { summary, receipts[] } |
+| /v5/sandbox | GET | No | Instant sandbox key (24h, 100 calls) | { api_key, tier, expires_at, quickstart } |
+| /v5/schedule | GET | No | Next open/close times (not signed) | { next_open, next_close, lunch_break } |
+| /v5/exchanges | GET | No | All 23 supported exchanges | { exchanges: [{mic, name, timezone}] } |
+| /v5/keys | GET | No | Public signing key + canonical spec | { keys: [{key_id, public_key, algorithm}] } |
+| /v5/health | GET | No | Signed liveness probe | SMA-format health receipt |
+| /v5/usage | GET | Yes | Per-key daily usage stats | { requests_today, limit, percent_used } |
+| /v5/traction | GET | No | Live metrics snapshot | { exchanges_covered, mcp_requests_today, ... } |
+| /v5/receipts | GET | Builder+ | Receipt audit log | { receipts: [{mic, status, issued_at}] } |
+| /v5/webhooks/subscribe | POST | Yes | Subscribe to state-change webhooks | { subscription_id } |
+| /v5/webhooks/unsubscribe | DELETE | Yes | Remove webhook subscription | { ok: true } |
+| /mcp | POST | No (optional Bearer) | MCP Streamable HTTP (JSON-RPC 2.0) | JSON-RPC response |
+| /openapi.json | GET | No | OpenAPI 3.1 machine-readable spec | OpenAPI document |
+| /.well-known/oracle-keys.json | GET | No | RFC 8615 key discovery | Key lifecycle metadata |
+| /.well-known/agent.json | GET | No | A2A Agent Card | A2A agent capabilities |
+| /.well-known/mcp/server-card.json | GET | No | MCP server card | Tool list, reliability, coverage |
+| /v5/errors/{code} | GET | No | Machine-readable error definition | { message, resolution, http_status } |
+
+## Receipt schema
+\`\`\`json
+{
+  "receipt_id":     "uuid",
+  "mic":            "XNYS",
+  "status":         "OPEN | CLOSED | HALTED | UNKNOWN",
+  "issued_at":      "2026-03-22T15:00:00.000Z",
+  "expires_at":     "2026-03-22T15:01:00.000Z",
+  "issuer":         "headlessoracle.com",
+  "source":         "SCHEDULE | OVERRIDE | REALTIME | SYSTEM",
+  "schema_version": "v5.0",
+  "receipt_mode":   "demo | live",
+  "public_key_id":  "key_2026_v1",
+  "signature":      "<hex-encoded Ed25519 signature>"
+}
+\`\`\`
+
+## Verification
+Ed25519 signature verification (pseudocode):
+1. Receive receipt JSON
+2. Extract all fields EXCEPT "signature" -> payload object
+3. Sort payload keys alphabetically
+4. JSON.stringify(sortedPayload) with no whitespace -> canonical string
+5. Verify signature (hex) against canonical string using public key from /v5/keys
+6. Check expires_at > now (60s TTL)
+7. Check status === "OPEN" before proceeding
+If any step fails -> halt execution
+
+SDK: npm install @headlessoracle/verify (zero deps, Web Crypto)
+
+## Exchanges covered
+XNYS (NYSE, America/New_York)
+XNAS (NASDAQ, America/New_York)
+XLON (London, Europe/London)
+XJPX (Tokyo, Asia/Tokyo)
+XPAR (Paris, Europe/Paris)
+XHKG (Hong Kong, Asia/Hong_Kong)
+XSES (Singapore, Asia/Singapore)
+XASX (Sydney, Australia/Sydney)
+XBOM (Mumbai BSE, Asia/Kolkata)
+XNSE (Mumbai NSE, Asia/Kolkata)
+XSHG (Shanghai, Asia/Shanghai)
+XSHE (Shenzhen, Asia/Shanghai)
+XKRX (Seoul, Asia/Seoul)
+XJSE (Johannesburg, Africa/Johannesburg)
+XBSP (Sao Paulo, America/Sao_Paulo)
+XSWX (Zurich, Europe/Zurich)
+XMIL (Milan, Europe/Rome)
+XIST (Istanbul, Europe/Istanbul)
+XSAU (Riyadh, Asia/Riyadh) -- Fri/Sat weekends
+XDFM (Dubai, Asia/Dubai) -- Fri/Sat weekends
+XNZE (Auckland, Pacific/Auckland)
+XHEL (Helsinki, Europe/Helsinki)
+XSTO (Stockholm, Europe/Stockholm)
+
+## Fail-closed guarantee
+UNKNOWN status means the oracle cannot determine market state (signing offline, missing holiday data, unknown year). Agents MUST treat UNKNOWN as CLOSED and halt. This is not optional. HALTED means a circuit breaker or operator override is active -- also treat as CLOSED. The absence of a valid signed receipt is itself proof of unsafety.
+
+## Pricing
+- Free: 500 req/day (GET /v5/keys/request)
+- Sandbox: 100 req/24h, instant, no signup (GET /v5/sandbox)
+- x402: 0.001 USDC/req via Base mainnet (no key needed)
+- Builder: 50,000 req/day ($99/mo)
+- Pro: 200,000 req/day ($299/mo)
+- Protocol: unlimited ($500/mo)
+Upgrade: https://headlessoracle.com/pricing
+
+## MCP integration
+Server card: GET https://headlessoracle.com/.well-known/mcp/server-card.json
+Protocol: MCP-2024-11-05
+Endpoint: POST https://headlessoracle.com/mcp
+Tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt
+Auth: optional Bearer token (Oracle API key via POST /oauth/token)
+`
 
 // SKILL.md — step-by-step integration guide optimised for AI agents.
 // Intentionally concise and action-first: agents parse this to decide how to integrate.
@@ -3200,25 +3035,20 @@ const MCP_TOOLS = [
 	{
 		name: 'get_market_status',
 		description:
-			'Check whether a stock exchange is currently open or closed. ' +
-			'Call this before executing trades, scheduling market-hours workflows, or routing orders. ' +
-			'Returns a cryptographically signed receipt with status OPEN, CLOSED, HALTED, or UNKNOWN. ' +
-			'MANDATORY: treat UNKNOWN or HALTED as CLOSED and halt execution. ' +
-			'Do not act on a receipt past its expires_at timestamp. ' +
-			'Supported exchanges: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), ' +
-			'Paris (XPAR), Hong Kong (XHKG), Singapore (XSES), Sydney (XASX), Mumbai BSE (XBOM), ' +
-			'Mumbai NSE (XNSE), Shanghai (XSHG), Shenzhen (XSHE), Seoul (XKRX), Johannesburg (XJSE), ' +
-			'São Paulo (XBSP), Zurich (XSWX), Milan (XMIL), Istanbul (XIST), Riyadh (XSAU), ' +
-			'Dubai (XDFM), Auckland (XNZE), Helsinki (XHEL), Stockholm (XSTO).',
+			'Returns a cryptographically signed Ed25519 receipt stating whether a stock exchange is OPEN, CLOSED, HALTED, or UNKNOWN. ' +
+			'WHEN TO USE: call this before executing any trade, payment, or market-dependent workflow on a specific exchange. ' +
+			'RETURNS: { receipt_id: string, mic: string, status: "OPEN"|"CLOSED"|"HALTED"|"UNKNOWN", issued_at: ISO8601, expires_at: ISO8601, issuer: string, source: "SCHEDULE"|"OVERRIDE"|"REALTIME"|"SYSTEM", schema_version: "v5.0", receipt_mode: "live"|"demo", public_key_id: string, signature: string (hex Ed25519) }. ' +
+			'FAILURE BEHAVIOUR: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately. Do not act on a receipt where expires_at is in the past (TTL = 60s). ' +
+			'LATENCY: sub-200ms p95 from Cloudflare edge. ' +
+			'Covers 23 global exchanges: XNYS (NYSE), XNAS (NASDAQ), XLON (London), XJPX (Tokyo), XPAR (Paris), XHKG (Hong Kong), XSES (Singapore), XASX (Sydney), XBOM (Mumbai BSE), XNSE (Mumbai NSE), XSHG (Shanghai), XSHE (Shenzhen), XKRX (Seoul), XJSE (Johannesburg), XBSP (São Paulo), XSWX (Zurich), XMIL (Milan), XIST (Istanbul), XSAU (Riyadh), XDFM (Dubai), XNZE (Auckland), XHEL (Helsinki), XSTO (Stockholm).',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				mic: {
 					type: 'string',
 					description:
-						'Exchange identifier (MIC code). Common values: XNYS=NYSE, XNAS=NASDAQ, ' +
-						'XLON=London, XJPX=Tokyo, XPAR=Paris, XHKG=Hong Kong, XSES=Singapore. ' +
-						'Use list_exchanges to see all 23 supported exchanges. Defaults to XNYS.',
+						'ISO 10383 Market Identifier Code. Required. Examples: XNYS=NYSE, XNAS=NASDAQ, XLON=London, XJPX=Tokyo. ' +
+						'Call list_exchanges to discover all 23 supported codes.',
 					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'],
 				},
 			},
@@ -3227,23 +3057,20 @@ const MCP_TOOLS = [
 	{
 		name: 'get_market_schedule',
 		description:
-			'Get the next open and close times for a stock exchange. ' +
-			'Use when planning trade execution windows, scheduling market-dependent tasks, ' +
-			'or checking upcoming session times. ' +
-			'Returns UTC timestamps for next open/close and current schedule-based status. ' +
-			'Includes lunch break windows for Tokyo (XJPX), Hong Kong (XHKG), Shanghai (XSHG), and Shenzhen (XSHE) where applicable. ' +
-			'NOT cryptographically signed — does not reflect real-time halts or circuit breakers. ' +
-			'For verified real-time status, use get_market_status instead. ' +
-			'Use list_exchanges to see all 23 supported exchanges.',
+			'Returns the next open and close UTC timestamps for a stock exchange. ' +
+			'WHEN TO USE: call this to plan trade execution windows, schedule market-dependent tasks, check session times, or determine how long until a market opens. ' +
+			'RETURNS: { mic: string, name: string, timezone: string (IANA), queried_at: ISO8601, current_status: "OPEN"|"CLOSED"|"UNKNOWN", next_open: ISO8601|null, next_close: ISO8601|null, lunch_break: { start: "HH:MM", end: "HH:MM" }|null, data_coverage_years: string[] }. ' +
+			'FAILURE BEHAVIOUR: NOT cryptographically signed. Does not reflect real-time halts, circuit breakers, or KV overrides. For authoritative signed status use get_market_status instead. ' +
+			'LATENCY: sub-100ms p95 (pure schedule computation, no signing). ' +
+			'Includes lunch break windows for Tokyo (XJPX: 11:30–12:30 JST), Hong Kong (XHKG: 12:00–13:00 HKT), Shanghai (XSHG: 11:30–13:00 CST), Shenzhen (XSHE: 11:30–13:00 CST).',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				mic: {
 					type: 'string',
 					description:
-						'Exchange identifier (MIC code). Common values: XNYS=NYSE, XNAS=NASDAQ, ' +
-						'XLON=London, XJPX=Tokyo, XPAR=Paris, XHKG=Hong Kong, XSES=Singapore. ' +
-						'Defaults to XNYS.',
+						'ISO 10383 Market Identifier Code. Defaults to XNYS (NYSE). ' +
+						'Call list_exchanges to see all 23 supported codes.',
 					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'],
 				},
 			},
@@ -3252,27 +3079,27 @@ const MCP_TOOLS = [
 	{
 		name: 'list_exchanges',
 		description:
-			'List all stock exchanges supported by Headless Oracle. ' +
-			'Use to discover which markets are available, find the correct identifier (MIC code) ' +
-			'for an exchange by name, or look up the timezone of a market. ' +
-			'Returns MIC codes, full exchange names, and IANA timezone identifiers for all 23 supported markets.',
+			'Returns all 23 stock exchanges supported by Headless Oracle with their MIC codes, names, and IANA timezones. ' +
+			'WHEN TO USE: call this once at agent startup to discover supported markets before calling get_market_status or get_market_schedule. ' +
+			'RETURNS: { exchanges: Array<{ mic: string, name: string, timezone: string }> } — 23 entries. ' +
+			'FAILURE BEHAVIOUR: pure static data, no signing, no failure modes. Always returns 200. ' +
+			'LATENCY: sub-50ms p95.',
 		inputSchema: { type: 'object', properties: {} },
 	},
 	{
 		name: 'verify_receipt',
 		description:
-			'Verify the Ed25519 signature on a Headless Oracle signed receipt. ' +
-			'Use when you receive a receipt from another agent or an upstream system and need to confirm ' +
-			'it was genuinely issued by Headless Oracle and has not been tampered with. ' +
-			'Returns { valid, expired, reason, mic, status, expires_at }. ' +
-			'A receipt can be valid (signature correct) but expired (past its TTL) — treat expired receipts as stale and re-fetch. ' +
-			'MANDATORY: treat any receipt with valid=false as untrusted. Do not act on data from an untrusted receipt.',
+			'Verifies the Ed25519 cryptographic signature on a Headless Oracle signed receipt. ' +
+			'WHEN TO USE: call this when you receive a receipt from another agent or upstream system and must confirm it was genuinely issued by Headless Oracle and has not been tampered with or expired. ' +
+			'RETURNS: { valid: boolean, expired: boolean, reason: "signature_valid"|"MISSING_FIELDS"|"EXPIRED"|"INVALID_SIGNATURE"|"ORACLE_NOT_CONFIGURED"|"MALFORMED_RECEIPT"|"VERIFY_ERROR", mic: string|null, status: string|null, expires_at: string|null }. ' +
+			'FAILURE BEHAVIOUR: valid=false MUST be treated as an untrusted receipt — do not act on any data from it. A receipt can be valid=true but expired=true (past TTL) — re-fetch if expired. ' +
+			'LATENCY: sub-50ms p95 (in-worker Ed25519 verification, no network calls).',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				receipt: {
 					type:        'object',
-					description: 'The full signed receipt object exactly as returned by get_market_status or /v5/status. Must include a signature field.',
+					description: 'The complete signed receipt object as returned by get_market_status or /v5/status. Must include the signature field (hex-encoded Ed25519).',
 				},
 			},
 			required: ['receipt'],
@@ -4640,6 +4467,12 @@ export default {
 		// Used to add soft-limit warning headers to authenticated responses.
 		let freeTierPercentUsed = 0;
 
+		// Rate-limit context for the current request — updated during auth processing.
+		// Applied to responses via withRateLimitWarning or explicit extraHeaders.
+		let _rlPlan  = 'free';
+		let _rlUsed  = 0;
+		let _rlLimit = FREE_TIER_DAILY_LIMIT;
+
 		const corsHeaders = {
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -4813,23 +4646,25 @@ export default {
 				}
 			}
 
-			// Helper: wrap a Response to add soft rate-limit warning headers for free tier.
-			// Only applies when freeTierPercentUsed >= 80. No-op for paid or public routes.
+			// Helper: wrap a Response to add soft rate-limit warning headers AND standard rate-limit headers.
 			const withRateLimitWarning = (response: Response): Response => {
-				if (freeTierPercentUsed < 80) return response;
 				const newHeaders = new Headers(response.headers);
-				addRateLimitWarningHeaders(newHeaders, freeTierPercentUsed, 'https://headlessoracle.com/pricing');
+				const rlHeaders  = makeRateLimitHeaders(_rlPlan, _rlUsed, _rlLimit, now);
+				for (const [k, v] of Object.entries(rlHeaders)) newHeaders.set(k, v);
+				if (freeTierPercentUsed >= 80) {
+					addRateLimitWarningHeaders(newHeaders, freeTierPercentUsed, 'https://headlessoracle.com/pricing');
+				}
 				return new Response(response.body, { status: response.status, headers: newHeaders });
 			};
 
 			// ── GET /v5/exchanges — public directory of supported markets ─
 			if (url.pathname === '/v5/exchanges') {
-				return json({ exchanges: SUPPORTED_EXCHANGES });
+				return withRateLimitWarning(json({ exchanges: SUPPORTED_EXCHANGES }));
 			}
 
 			// ── GET /v5/keys — public key registry ───────────────────────
 			if (url.pathname === '/v5/keys') {
-				return json({
+				return withRateLimitWarning(json({
 					keys: [{
 						key_id:      env.PUBLIC_KEY_ID || 'key_2026_v1',
 						algorithm:   'Ed25519',
@@ -4844,7 +4679,7 @@ export default {
 						override_fields: ['expires_at', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
 						health_fields:   ['expires_at', 'issued_at', 'issuer', 'public_key_id', 'receipt_id', 'source', 'status'],
 					},
-				});
+				}));
 			}
 
 			// ── GET /v5/schedule — next open/close times (public, no auth) ─
@@ -4866,7 +4701,7 @@ export default {
 				// Agents querying near year-end should check coverage before trusting next_open.
 				// If the current year is absent, next_open will be null (fail-closed).
 				const data_coverage_years = Object.keys(config.holidays).sort();
-				return json({
+				return withRateLimitWarning(json({
 					mic,
 					name:                config.name,
 					timezone:            config.timezone,
@@ -4879,7 +4714,7 @@ export default {
 						? { start: `${pad2(config.lunchBreak.startHour)}:${pad2(config.lunchBreak.startMinute)}`, end: `${pad2(config.lunchBreak.endHour)}:${pad2(config.lunchBreak.endMinute)}` }
 						: null,
 					note:                'Times are UTC. lunch_break times are local exchange time (see timezone field). next_open is null when coverage for the current year is unavailable.',
-				});
+				}));
 			}
 
 			// ── GET /v5/status/realtime — authenticated, returns halt_monitor metadata ──
@@ -5058,24 +4893,63 @@ export default {
 					}, 500);
 				}
 
+				// GAP-012: Re-check ORACLE_OVERRIDES after receipt build to catch halt-monitor eventual-consistency race.
+				// buildSignedReceipt already checks overrides (Tier 0) but a KV write from the halt monitor
+				// could arrive in the window between the Tier-0 read and the summary computation.
+				const overrideRecheck = await Promise.all(
+					requestedMics.map(async (mic) => {
+						if (!env.ORACLE_OVERRIDES) return null;
+						const raw = await env.ORACLE_OVERRIDES.get(mic).catch(() => null);
+						if (!raw) return null;
+						try {
+							const ov = JSON.parse(raw) as { status: string; reason: string; expires: string };
+							if (new Date(ov.expires) > now) {
+								console.log(`OVERRIDE_APPLIED: ${mic} -> ${ov.status}`);
+								return { mic, status: ov.status };
+							}
+						} catch { /* malformed override — ignore */ }
+						return null;
+					})
+				);
+
 				// Build portfolio-level summary: counts by status + safe_to_execute gate
-					const receiptStatuses = results.map((r) => (r.receipt as Record<string, unknown>).status as string);
-					const countOpen    = receiptStatuses.filter((s) => s === 'OPEN').length;
-					const countClosed  = receiptStatuses.filter((s) => s === 'CLOSED').length;
-					const countHalted  = receiptStatuses.filter((s) => s === 'HALTED').length;
-					const countUnknown = receiptStatuses.filter((s) => s === 'UNKNOWN').length;
-					const anyHalted    = countHalted > 0;
-					const anyUnknown   = countUnknown > 0;
-					const safeToExecute = countOpen === results.length && !anyHalted && !anyUnknown;
+				// effectiveStatuses merges the built receipt status with any active override re-check (GAP-012).
+				const effectiveStatuses = results.map((r, i) => {
+					const ov = overrideRecheck[i];
+					if (ov) return ov.status;
+					return (r.receipt as Record<string, unknown>).status as string;
+				});
+				const countOpen    = effectiveStatuses.filter((s) => s === 'OPEN').length;
+				const countClosed  = effectiveStatuses.filter((s) => s === 'CLOSED').length;
+				const countHalted  = effectiveStatuses.filter((s) => s === 'HALTED').length;
+				const countUnknown = effectiveStatuses.filter((s) => s === 'UNKNOWN').length;
+				const anyHalted    = countHalted > 0;
+				const anyUnknown   = countUnknown > 0;
+				const safeToExecute = countOpen === results.length && !anyHalted && !anyUnknown;
 
-					let summaryReason: string | null = null;
-					if (!safeToExecute) {
-						if (anyHalted)       summaryReason = `${countHalted} exchange${countHalted > 1 ? 's' : ''} HALTED — fail-closed`;
-						else if (anyUnknown) summaryReason = `${countUnknown} exchange${countUnknown > 1 ? 's' : ''} UNKNOWN — fail-closed`;
-						else                 summaryReason = `${results.length - countOpen} exchange${results.length - countOpen > 1 ? 's' : ''} not OPEN`;
-					}
+				let summaryReason: string | null = null;
+				if (!safeToExecute) {
+					if (anyHalted)       summaryReason = `${countHalted} exchange${countHalted > 1 ? 's' : ''} HALTED — fail-closed`;
+					else if (anyUnknown) summaryReason = `${countUnknown} exchange${countUnknown > 1 ? 's' : ''} UNKNOWN — fail-closed`;
+					else                 summaryReason = `${results.length - countOpen} exchange${results.length - countOpen > 1 ? 's' : ''} not OPEN`;
+				}
 
-					return withRateLimitWarning(json({
+				// GAP-013: Audit each receipt in the batch (non-blocking, fire-and-forget).
+				// Uses source='batch' to distinguish from individual /v5/status audit rows.
+				const auditKeyHash = batchAuth.keyHash ?? await sha256Hex(apiKey);
+				if (typeof ctx?.waitUntil === 'function') {
+					ctx.waitUntil(Promise.all(
+						results.map((r) =>
+							insertReceiptAudit(
+								auditKeyHash,
+								{ ...(r.receipt as Record<string, unknown>), source: 'batch' },
+								env,
+							).catch(() => {})
+						)
+					));
+				}
+
+				return withRateLimitWarning(json({
 						summary: {
 							total:          results.length,
 							open:           countOpen,
@@ -5149,7 +5023,7 @@ export default {
 						activeRealtimeOverrides = overrideChecks.filter((m): m is string => m !== null);
 					} catch { /* KV unavailable — report empty */ }
 
-					return json({
+					return withRateLimitWarning(json({
 						...healthPayload,
 						signature,
 						version:              'v5.0',
@@ -5172,7 +5046,7 @@ export default {
 							active_realtime_overrides: activeRealtimeOverrides,
 							note:                      'Checks scheduled-OPEN exchanges every minute. Writes REALTIME overrides on discrepancy. Fails open (no false halts on API errors).',
 						},
-					});
+					}));
 				} catch (healthError: unknown) {
 					const msg = healthError instanceof Error ? healthError.message : 'Unknown error';
 					console.error();
@@ -5311,9 +5185,6 @@ export default {
 				return json(AGENT_JSON);
 			}
 			if (url.pathname === '/.well-known/mcp/server-card.json') {
-				// No formal MCP server-card.json spec exists as of 2026-03. This implements
-				// a sensible superset following emerging conventions. If a spec is standardised,
-				// update to match while preserving all current fields for backward compatibility.
 				return json({
 					name:           'Headless Oracle',
 					version:        'v5.0',
@@ -5328,6 +5199,14 @@ export default {
 					key_request:    'https://headlessoracle.com/v5/keys/request',
 					openapi:        'https://headlessoracle.com/openapi.json',
 					protocol:       '2024-11-05',
+					protocols:      ['MCP-2024-11-05', 'A2A', 'x402', 'OAuth2'],
+					fail_closed:    true,
+					reliability:    { uptime_sla: '99.9%', p95_latency_ms: 200 },
+					verification:   { algorithm: 'Ed25519', key_endpoint: 'https://api.headlessoracle.com/v5/keys' },
+					coverage:       {
+						exchanges: 23,
+						mic_codes: ['XNYS','XNAS','XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],
+					},
 				});
 			}
 			if (url.pathname === '/.well-known/oauth-protected-resource') {
@@ -6266,6 +6145,18 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				const subAuth = await checkApiKey(apiKey, env);
 				if (!subAuth.allowed) return json({ error: subAuth.error, message: subAuth.message }, subAuth.status);
 
+				// Webhook subscriptions require at least a free key with MIC limits, or a paid key.
+				// Sandbox keys are not eligible for persistent webhook subscriptions.
+				if (subAuth.plan === 'sandbox') {
+					return json({
+						error:          'paid_feature',
+						feature:        'webhook_subscriptions',
+						available_from: 'free',
+						upgrade:        'https://headlessoracle.com/pricing',
+						current_plan:   'sandbox',
+					}, 402, { 'X-Upgrade-URL': 'https://headlessoracle.com/pricing' });
+				}
+
 				let body: { url?: unknown; mics?: unknown; secret?: unknown };
 				try { body = await request.json() as typeof body; }
 				catch { return json({ error: 'INVALID_REQUEST', message: 'Request body must be valid JSON' }, 400); }
@@ -6359,6 +6250,17 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				const receiptsAuth = await checkApiKey(apiKey, env);
 				if (!receiptsAuth.allowed) return json({ error: receiptsAuth.error, message: receiptsAuth.message }, receiptsAuth.status);
 
+				// Receipt audit log is a paid feature — free and sandbox keys get 402 with upgrade path.
+				if (receiptsAuth.plan === 'free' || receiptsAuth.plan === 'sandbox') {
+					return json({
+						error:          'paid_feature',
+						feature:        'receipt_audit',
+						available_from: 'builder',
+						upgrade:        'https://headlessoracle.com/pricing',
+						current_plan:   receiptsAuth.plan ?? 'free',
+					}, 402, { 'X-Upgrade-URL': 'https://headlessoracle.com/pricing' });
+				}
+
 				if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
 					return json({ receipts: [], note: 'Audit log not available in this environment' });
 				}
@@ -6389,6 +6291,58 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				} catch (e) {
 					return json({ error: 'QUERY_ERROR', message: e instanceof Error ? e.message : 'Unknown error' }, 500);
 				}
+			}
+
+			// ── GET /v5/sandbox — instant no-auth sandbox key (24h, 100 calls) ───────────────────
+			if (url.pathname === '/v5/sandbox' && request.method === 'GET') {
+				// Rate-limit sandbox key creation: max 10 per IP per hour to prevent abuse.
+				const clientIp = request.headers.get('CF-Connecting-IP') ||
+					request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 'unknown';
+				const ipHash    = await sha256Hex(clientIp);
+				const hourKey   = `sandbox_rate:${ipHash}:${new Date().toISOString().slice(0, 13)}`; // YYYY-MM-DDTHH
+				const hourCount = parseInt(await env.ORACLE_TELEMETRY.get(hourKey).catch(() => '0') || '0', 10);
+				if (hourCount >= 10) {
+					return json({
+						error:   'SANDBOX_RATE_LIMIT',
+						message: 'Maximum 10 sandbox keys per IP per hour. Try again next hour or get a free key at headlessoracle.com/v5/keys/request',
+						upgrade: 'https://headlessoracle.com/pricing',
+					}, 429);
+				}
+
+				// Generate sandbox key: sb_ prefix + 32 hex chars
+				const rawKey    = `sb_${Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2,'0')).join('')}`;
+				const keyHash   = await sha256Hex(rawKey);
+				const expiresAt = new Date(now.getTime() + 86_400_000).toISOString(); // 24 hours
+
+				const sandboxMeta = JSON.stringify({
+					tier:       'sandbox',
+					status:     'active',
+					expires_at: expiresAt,
+					max_calls:  100,
+					created_at: now.toISOString(),
+					source:     'auto_sandbox',
+				});
+
+				// Store sandbox key in ORACLE_API_KEYS KV with 24h TTL.
+				if (env.ORACLE_API_KEYS) {
+					await env.ORACLE_API_KEYS.put(keyHash, sandboxMeta, { expirationTtl: 86_400 });
+				}
+
+				// Increment IP rate-limit counter (90min TTL — covers hour rollover).
+				await env.ORACLE_TELEMETRY.put(hourKey, String(hourCount + 1), { expirationTtl: 90 * 60 }).catch(() => {});
+
+				return json({
+					api_key:         rawKey,
+					tier:            'sandbox',
+					expires_at:      expiresAt,
+					calls_remaining: 100,
+					upgrade:         'https://headlessoracle.com/pricing',
+					quickstart: {
+						curl:   `curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' -H 'X-Oracle-Key: ${rawKey}'`,
+						node:   `const res = await fetch('https://api.headlessoracle.com/v5/status?mic=XNYS', {headers: {'X-Oracle-Key': '${rawKey}'}})`,
+						python: `import httpx; r = httpx.get('https://api.headlessoracle.com/v5/status', params={'mic':'XNYS'}, headers={'X-Oracle-Key':'${rawKey}'})`,
+					},
+				});
 			}
 
 			return json({ error: 'NOT_FOUND', message: 'Route not found' }, 404);

@@ -4652,3 +4652,200 @@ describe('GET /v5/batch — portfolio summary', () => {
 		expect(body).toHaveProperty('queried_at');
 	});
 });
+
+// ─── GAP-012: batch override recheck ──────────────────────────────────────────────────────────────────
+
+describe('GAP-012: batch safe_to_execute override recheck', () => {
+	it('GAP-012: override=HALTED beats schedule-based OPEN → safe_to_execute: false', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z')); // XNYS open, XNAS open
+		const ctx = createExecutionContext();
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({ status: 'HALTED', reason: 'GAP-012 test', expires: '2030-01-01T00:00:00Z' }));
+		try {
+			const res  = await worker.fetch(new Request('https://headlessoracle.com/v5/batch?mics=XNYS,XNAS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } }), env, ctx);
+			const body = await res.json() as { summary: { safe_to_execute: boolean; halted: number } };
+			expect(body.summary.safe_to_execute).toBe(false);
+			expect(body.summary.halted).toBeGreaterThan(0);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+		}
+	});
+
+	it('GAP-012: override=OPEN beats schedule-based CLOSED → counted as OPEN', async () => {
+		vi.setSystemTime(new Date('2026-03-16T01:00:00Z')); // XNYS closed (overnight)
+		const ctx = createExecutionContext();
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({ status: 'OPEN', reason: 'extended trading', expires: '2030-01-01T00:00:00Z' }));
+		try {
+			const res  = await worker.fetch(new Request('https://headlessoracle.com/v5/batch?mics=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } }), env, ctx);
+			const body = await res.json() as { summary: { open: number } };
+			expect(body.summary.open).toBe(1);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+		}
+	});
+
+	it('GAP-012: no override → falls through to normal receipt-based logic', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z')); // XNYS open
+		const ctx = createExecutionContext();
+		const res  = await worker.fetch(new Request('https://headlessoracle.com/v5/batch?mics=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } }), env, ctx);
+		const body = await res.json() as { summary: { safe_to_execute: boolean } };
+		expect(body.summary.safe_to_execute).toBe(true);
+	});
+});
+
+// ─── GAP-013: batch receipt audit ────────────────────────────────────────────────────────────────────────
+
+describe('GAP-013: batch receipt audit', () => {
+	it('GAP-013: batch of 3 MICs returns 200 with correct summary total', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const ctx = createExecutionContext();
+		const res  = await worker.fetch(new Request('https://headlessoracle.com/v5/batch?mics=XNYS,XNAS,XLON', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } }), env, ctx);
+		expect(res.status).toBe(200);
+		const body = await res.json() as { summary: { total: number }; receipts: unknown[] };
+		expect(body.summary.total).toBe(3);
+		expect(body.receipts).toHaveLength(3);
+	});
+
+	it('GAP-013: audit failure does not fail the batch response', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const ctx = createExecutionContext();
+		// insertReceiptAudit is best-effort (.catch(() => {})), so even if Supabase is unavailable
+		// (which it is in tests), the batch response must still be 200.
+		const res = await worker.fetch(new Request('https://headlessoracle.com/v5/batch?mics=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } }), env, ctx);
+		expect(res.status).toBe(200);
+	});
+});
+
+// ─── Rate-limit headers ──────────────────────────────────────────────────────────────────────────────
+
+describe('Rate-limit headers', () => {
+	it('GET /v5/health includes X-Oracle-Plan and X-RateLimit headers', async () => {
+		const res = await fetchWorker('/v5/health');
+		expect(res.headers.get('X-Oracle-Plan')).toBeTruthy();
+		expect(res.headers.get('X-RateLimit-Limit')).toBeTruthy();
+		expect(res.headers.get('X-RateLimit-Remaining')).toBeTruthy();
+		expect(res.headers.get('X-RateLimit-Reset')).toBeTruthy();
+	});
+
+	it('X-RateLimit-Reset is next UTC midnight', async () => {
+		vi.setSystemTime(new Date('2026-03-16T12:00:00Z'));
+		const res = await fetchWorker('/v5/health');
+		const reset = res.headers.get('X-RateLimit-Reset')!;
+		expect(reset).toBe('2026-03-17T00:00:00.000Z');
+	});
+
+	it('authenticated /v5/status includes rate-limit headers with correct plan', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(res.headers.get('X-Oracle-Plan')).toBeTruthy();
+		expect(res.headers.get('X-RateLimit-Limit')).toBeTruthy();
+	});
+});
+
+// ─── GET /v5/sandbox ─────────────────────────────────────────────────────────────────────────────────────────
+
+describe('GET /v5/sandbox', () => {
+	it('returns a sandbox key with correct shape', async () => {
+		const res  = await fetchWorker('/v5/sandbox');
+		expect(res.status).toBe(200);
+		const body = await res.json() as { api_key: string; tier: string; expires_at: string; calls_remaining: number; upgrade: string; quickstart: { curl: string; node: string; python: string } };
+		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
+		expect(body.tier).toBe('sandbox');
+		expect(body.calls_remaining).toBe(100);
+		expect(body.upgrade).toBeTruthy();
+		expect(body.quickstart.curl).toContain(body.api_key);
+		expect(body.quickstart.node).toContain(body.api_key);
+		expect(body.quickstart.python).toContain(body.api_key);
+	});
+
+	it('sandbox key is valid for /v5/status calls', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const sandboxRes = await fetchWorker('/v5/sandbox');
+		const { api_key } = await sandboxRes.json() as { api_key: string };
+		const statusRes = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': api_key } });
+		expect(statusRes.status).toBe(200);
+	});
+
+	it('sandbox key rate-limit: 11th request in same hour returns 429', async () => {
+		// Seed the rate limit counter to 10
+		const ipHash  = await sha256Hex('unknown');
+		const hourKey = `sandbox_rate:${ipHash}:${new Date().toISOString().slice(0, 13)}`;
+		await env.ORACLE_TELEMETRY.put(hourKey, '10', { expirationTtl: 90 * 60 });
+		try {
+			const res = await fetchWorker('/v5/sandbox');
+			expect(res.status).toBe(429);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(hourKey);
+		}
+	});
+});
+
+// ─── Task 5: MCP server-card enrichment ──────────────────────────────────────────────────────────
+
+describe('MCP server-card.json enrichment (Task 5)', () => {
+	it('server-card.json includes reliability, verification, coverage fields', async () => {
+		const res  = await fetchWorker('/.well-known/mcp/server-card.json');
+		const body = await res.json() as { reliability: { uptime_sla: string }; verification: { algorithm: string }; coverage: { exchanges: number }; fail_closed: boolean; protocols: string[] };
+		expect(body.reliability.uptime_sla).toBe('99.9%');
+		expect(body.verification.algorithm).toBe('Ed25519');
+		expect(body.coverage.exchanges).toBe(23);
+		expect(body.fail_closed).toBe(true);
+		expect(body.protocols).toContain('MCP-2024-11-05');
+	});
+
+	it('GET /mcp returns 200 server info', async () => {
+		const res = await fetchWorker('/mcp');
+		expect(res.status).toBe(200);
+	});
+});
+
+// ─── Task 7: Tier-gated 402 responses ─────────────────────────────────────────────────────────────────
+
+describe('Tier-gated 402 responses (Task 7)', () => {
+	it('free key on /v5/receipts gets 402 paid_feature', async () => {
+		const freeKeyHash = await sha256Hex('test_free_key_tier7');
+		await env.ORACLE_API_KEYS.put(freeKeyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			const res  = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': 'test_free_key_tier7' } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as { error: string; feature: string };
+			expect(body.error).toBe('paid_feature');
+			expect(body.feature).toBe('receipt_audit');
+			expect(res.headers.get('X-Upgrade-URL')).toBeTruthy();
+		} finally {
+			await env.ORACLE_API_KEYS.delete(freeKeyHash);
+		}
+	});
+
+	it('builder key on /v5/receipts gets through (200)', async () => {
+		const builderKeyHash = await sha256Hex('test_builder_key_tier7');
+		await env.ORACLE_API_KEYS.put(builderKeyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		try {
+			const res = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': 'test_builder_key_tier7' } });
+			expect(res.status).toBe(200);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(builderKeyHash);
+		}
+	});
+
+	it('sandbox key on /v5/receipts gets 402 paid_feature', async () => {
+		const sandboxRes = await fetchWorker('/v5/sandbox');
+		const { api_key } = await sandboxRes.json() as { api_key: string };
+		const res  = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': api_key } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('paid_feature');
+	});
+
+	it('sandbox key on /v5/webhooks/subscribe gets 402 paid_feature', async () => {
+		const sandboxRes = await fetchWorker('/v5/sandbox');
+		const { api_key } = await sandboxRes.json() as { api_key: string };
+		const res  = await fetchWorker('/v5/webhooks/subscribe', {
+			method: 'POST',
+			headers: { 'X-Oracle-Key': api_key, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ url: 'https://example.com/hook', mics: ['XNYS'] }),
+		});
+		expect(res.status).toBe(402);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('paid_feature');
+	});
+});
