@@ -3,12 +3,24 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 426/426 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Test suite**: 436/436 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
 **Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 22 2026 — Sprint: GAP-012/013 closure, sandbox endpoint, rate-limit headers, MCP enrichment, llms.txt rewrite, tier-gated 402s (426 tests):
+**Last significant work**: Mar 22 2026 (session 2) — Discoverability + telemetry sprint (10 findings, 436 tests):
+  - FINDING-10: test for MCP initialize capabilities.tools object + protocolVersion (was already in code)
+  - FINDING-12: test for webhook subscribe flow (deliverWebhook Content-Type already in code)
+  - FINDING-09: HALT_MONITOR_TIMEOUT structured log on AbortError in halt monitor fetch + test
+  - FINDING-01/B: /v5/sandbox added to OpenAPI spec + get_sandbox_key skill in AGENT_JSON
+  - FINDING-02/C: json() helper now emits X-Oracle-Plan/X-RateLimit-* headers on every response
+  - FINDING-03/D: computeRetryAfterSeconds() + Retry-After on all 7 rate-limit 429 paths; sandbox uses hourly boundary
+  - FINDING-04/14: sitemap.xml + Sitemap directive in robots.txt (web repo, not yet deployed)
+  - FINDING-13/E: incrementKvCounter() helper; batch_combo/auth_calls/unauth_calls/sandbox_cap_hit telemetry; SANDBOX_DAILY_LIMIT=100 enforced on /v5/status + /v5/batch; /v5/traction exposes batch_combos_today, auth_ratio_today, sandbox_caps_today
+  - FINDING-05/G: LLMS_TXT Quick start rewritten to sandbox-first with api.headlessoracle.com URLs
+  - Deployed: Version ca63420d. Pushed to main (490c69c).
+  - HUMAN TASK: cd C:\Users\User\headless-oracle-web && git push origin main (to publish sitemap.xml)
+**Previous significant work**: Mar 22 2026 — Sprint: GAP-012/013 closure, sandbox endpoint, rate-limit headers, MCP enrichment, llms.txt rewrite, tier-gated 402s (426 tests):
   - GAP-012 CLOSED: batch safe_to_execute re-checks ORACLE_OVERRIDES after buildSignedReceipt to catch halt-monitor race
   - GAP-013 CLOSED: /v5/batch now calls insertReceiptAudit() for each receipt (non-blocking, source='batch')
   - GET /v5/sandbox: instant no-auth sandbox key (sb_ prefix, 24h TTL, 100 calls, IP rate-limit 10/hr)
