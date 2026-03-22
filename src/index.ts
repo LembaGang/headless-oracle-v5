@@ -1530,6 +1530,7 @@ const ERC20_TRANSFER_TOPIC  = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11
 const BASE_RPC_URL          = 'https://mainnet.base.org';
 // Free tier: daily request cap before x402 micropayment is required.
 const FREE_TIER_DAILY_LIMIT    = 500;
+const SANDBOX_DAILY_LIMIT      = 100;   // Sandbox keys: 100 calls per 24h key lifetime
 const BUILDER_TIER_DAILY_LIMIT = 50_000;
 const PRO_TIER_DAILY_LIMIT     = 200_000;
 
@@ -1765,6 +1766,15 @@ function makeRateLimitHeaders(plan: string, used: number, limit: number, now: Da
 	};
 }
 
+// Compute seconds until next UTC midnight — used for Retry-After on 429 responses.
+// Minimum 1 to avoid a 0-second retry-after that some clients treat as "retry immediately".
+function computeRetryAfterSeconds(now: Date): number {
+	const midnight = new Date(now);
+	midnight.setUTCDate(midnight.getUTCDate() + 1);
+	midnight.setUTCHours(0, 0, 0, 0);
+	return Math.max(1, Math.floor((midnight.getTime() - now.getTime()) / 1000));
+}
+
 // Add soft rate-limit warning headers when free tier usage crosses 80% or 95%.
 function addRateLimitWarningHeaders(headers: Headers, percentUsed: number, upgradeUrl: string): void {
 	if (percentUsed >= 95) {
@@ -1790,6 +1800,18 @@ function incrementDailyUsage(keyHash: string, env: Env, ctx: ExecutionContext, c
 	const key  = `free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
 	const putP = env.ORACLE_TELEMETRY.put(key, String(current + 1), { expirationTtl: 25 * 3600 }).catch(() => {});
 	if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
+}
+
+// Increment a named KV counter non-blockingly (acquisition telemetry).
+// key: full KV key string; ttlSeconds: expiration (default 25h to survive midnight with margin).
+function incrementKvCounter(key: string, env: Env, ctx: ExecutionContext, ttlSeconds = 25 * 3600): void {
+	if (typeof ctx?.waitUntil !== 'function') return;
+	ctx.waitUntil(
+		env.ORACLE_TELEMETRY.get(key).then((val) => {
+			const next = (parseInt(val ?? '0', 10) || 0) + 1;
+			return env.ORACLE_TELEMETRY.put(key, String(next), { expirationTtl: ttlSeconds });
+		}).catch(() => {}),
+	);
 }
 
 // Read credit balance for a key.
@@ -2462,10 +2484,19 @@ Headless Oracle provides cryptographically signed market-state attestations (Sig
 - When aggregating multi-exchange status before a portfolio-level action (use /v5/batch)
 - When subscribing to state-change events to avoid polling (use /v5/webhooks/subscribe)
 
-## Quick start (no auth required)
-- Demo (signed, 'demo' mode): GET https://headlessoracle.com/v5/demo?mic=XNYS
-- Sandbox (instant key, 100 calls, 24h): GET https://headlessoracle.com/v5/sandbox
-- Public key: GET https://headlessoracle.com/v5/keys
+## Quick start (no signup required)
+# Get an instant sandbox key (24h, 100 calls):
+GET https://api.headlessoracle.com/v5/sandbox
+
+# Use it immediately:
+GET https://api.headlessoracle.com/v5/status?mic=XNYS
+Header: X-Oracle-Key: {your_sandbox_key}
+
+# Verify the public key:
+GET https://api.headlessoracle.com/v5/keys
+
+# Demo (signed receipt, no key needed):
+GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 
 ## Authentication
 - Free key (500 req/day): POST https://headlessoracle.com/v5/keys/request
@@ -2881,6 +2912,24 @@ const AGENT_JSON = {
 			examples:    ['Verify this market receipt before processing the payment'],
 			inputModes:  ['application/json'],
 			outputModes: ['application/json'],
+		},
+		{
+			id:          'get_sandbox_key',
+			name:        'Get Sandbox Key',
+			description: 'Get an instant 24-hour API key with 100 calls. No signup. Start calling /v5/status immediately.',
+			endpoint:    '/v5/sandbox',
+			method:      'GET',
+			auth:        false,
+			input:       {},
+			output:      {
+				type:       'object',
+				properties: {
+					api_key:         { type: 'string', description: 'Sandbox API key (sb_ prefix)' },
+					tier:            { type: 'string', enum: ['sandbox'] },
+					expires_at:      { type: 'string', format: 'date-time' },
+					calls_remaining: { type: 'integer' },
+				},
+			},
 		},
 	],
 
@@ -3625,6 +3674,51 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/sandbox': {
+			get: {
+				tags:        ['Authentication'],
+				summary:     'Instant 24-hour sandbox API key — no signup required',
+				description: 'Generates a temporary API key valid for 24 hours and 100 calls. No authentication required. ' +
+					'Use for integration testing, demos, and evaluating Headless Oracle before committing to a free tier key. ' +
+					'Sandbox keys are rejected by /v5/receipts and /v5/webhooks/subscribe (paid features). ' +
+					'Rate limited to 10 keys per IP per hour.',
+				parameters: [],
+				responses: {
+					'200': {
+						description: 'Sandbox key issued',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								api_key:         { type: 'string', example: 'sb_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4' },
+								tier:            { type: 'string', enum: ['sandbox'] },
+								expires_at:      { type: 'string', format: 'date-time' },
+								calls_remaining: { type: 'integer', example: 100 },
+								upgrade:         { type: 'string', example: 'https://headlessoracle.com/pricing' },
+								quickstart: {
+									type: 'object',
+									properties: {
+										curl:   { type: 'string' },
+										node:   { type: 'string' },
+										python: { type: 'string' },
+									},
+								},
+							},
+						} } },
+					},
+					'429': {
+						description: 'IP rate limit exceeded — max 10 sandbox keys per hour',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								error:   { type: 'string', example: 'SANDBOX_RATE_LIMIT' },
+								message: { type: 'string' },
+								upgrade: { type: 'string' },
+							},
+						} } },
+					},
+				},
+			},
+		},
 		'/.well-known/agent.json': {
 			get: {
 				summary:     'Structured agent metadata',
@@ -4298,6 +4392,9 @@ async function runHaltMonitor(env: Env): Promise<void> {
 					}
 				}
 			} catch (err) {
+				if (err instanceof Error && err.name === 'AbortError') {
+					console.log(JSON.stringify({ event: 'HALT_MONITOR_TIMEOUT', exchange: mic, source: 'polygon', timeout_ms: 5000 }));
+				}
 				errorMsg = err instanceof Error ? err.message : 'polygon_fetch_failed';
 			}
 		}
@@ -4318,6 +4415,9 @@ async function runHaltMonitor(env: Env): Promise<void> {
 					source = 'alpaca';
 				}
 			} catch (err) {
+				if (err instanceof Error && err.name === 'AbortError') {
+					console.log(JSON.stringify({ event: 'HALT_MONITOR_TIMEOUT', exchange: mic, source: 'alpaca', timeout_ms: 5000 }));
+				}
 				errorMsg = err instanceof Error ? err.message : 'alpaca_fetch_failed';
 			}
 		}
@@ -4491,15 +4591,25 @@ export default {
 				typeof body === 'object' && body !== null && 'error' in body &&
 				typeof (body as Record<string, unknown>).error === 'string'
 			) {
-				const errorCode = (body as Record<string, unknown>).error as string;
 				responseBody = {
 					...(body as Record<string, unknown>),
 					docs: `https://headlessoracle.com/docs`,
 				};
 			}
+			// Default rate-limit headers — overridden by withRateLimitWarning for authenticated paths.
+			// _rlPlan/_rlUsed/_rlLimit default to 'free'/0/FREE_TIER_DAILY_LIMIT for unauthenticated requests.
+			const rlMidnight = new Date(now);
+			rlMidnight.setUTCDate(rlMidnight.getUTCDate() + 1);
+			rlMidnight.setUTCHours(0, 0, 0, 0);
+			const defaultRlHeaders: Record<string, string> = {
+				'X-Oracle-Plan':         _rlPlan,
+				'X-RateLimit-Limit':     String(_rlLimit),
+				'X-RateLimit-Remaining': String(Math.max(0, _rlLimit - _rlUsed)),
+				'X-RateLimit-Reset':     rlMidnight.toISOString(),
+			};
 			return new Response(JSON.stringify(responseBody), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...extraHeaders },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...extraHeaders },
 			});
 		};
 
@@ -4604,19 +4714,29 @@ export default {
 								} else if (env.ORACLE_PAYMENT_ADDRESS) {
 									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, X402_RESPONSE_HEADERS);
 								} else {
-									return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429);
+									return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 								}
 							}
 						} else {
 							incrementDailyUsage(keyHash, env, ctx, usage);
 						}
+					// ── Sandbox daily limit (100 calls per 24h key lifetime) ──
+					} else if (auth.plan === 'sandbox') {
+						const sbKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
+						const sbUsage   = await getDailyUsage(sbKeyHash, env);
+						if (sbUsage >= SANDBOX_DAILY_LIMIT) {
+							// Track sandbox cap hits for acquisition telemetry (FINDING-13)
+							incrementKvCounter(`sandbox_cap_hit:${now.toISOString().slice(0, 10)}`, env, ctx);
+							return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Sandbox key limit (100 calls) reached. Get a new sandbox key at /v5/sandbox or upgrade at headlessoracle.com/pricing', upgrade: 'https://headlessoracle.com/pricing' }, 402);
+						}
+						incrementDailyUsage(sbKeyHash, env, ctx, sbUsage);
 					// ── Paid tier daily limits (builder: 50k/day, pro: 200k/day) ──
 					} else if (auth.plan === 'builder' || auth.plan === 'pro') {
 						const paidKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
 						const paidUsage   = await getDailyUsage(paidKeyHash, env);
 						const paidLimit   = getPlanDailyLimit(auth.plan)!;
 						if (paidUsage >= paidLimit) {
-							return json({ error: 'RATE_LIMITED', message: `${auth.plan} plan daily limit (${paidLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429);
+							return json({ error: 'RATE_LIMITED', message: `${auth.plan} plan daily limit (${paidLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 						}
 						incrementDailyUsage(paidKeyHash, env, ctx, paidUsage);
 					}
@@ -4767,6 +4887,12 @@ export default {
 					}, 400);
 				}
 				const mode = url.pathname === '/v5/demo' ? 'demo' : 'live';
+				// Acquisition telemetry: track authenticated vs unauthenticated call ratio (FINDING-13)
+				if (mode === 'live') {
+					incrementKvCounter(`auth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
+				} else {
+					incrementKvCounter(`unauth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
+				}
 				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode);
 				// Audit: log receipt to Supabase for authenticated /v5/status calls (non-blocking)
 				if (mode === 'live' && typeof ctx?.waitUntil === 'function') {
@@ -4830,19 +4956,28 @@ export default {
 							} else if (env.ORACLE_PAYMENT_ADDRESS) {
 								return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, batchKeyHash), 402, X402_RESPONSE_HEADERS);
 							} else {
-								return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429);
+								return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/pricing' }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 							}
 						}
 					} else {
 						incrementDailyUsage(batchKeyHash, env, ctx, batchUsage);
 					}
+				// ── Sandbox daily limit for batch ──
+				} else if (batchAuth.plan === 'sandbox') {
+					const sbBatchKeyHash = batchAuth.keyHash ?? await sha256Hex(apiKey);
+					const sbBatchUsage   = await getDailyUsage(sbBatchKeyHash, env);
+					if (sbBatchUsage >= SANDBOX_DAILY_LIMIT) {
+						incrementKvCounter(`sandbox_cap_hit:${now.toISOString().slice(0, 10)}`, env, ctx);
+						return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Sandbox key limit (100 calls) reached. Get a new sandbox key at /v5/sandbox or upgrade at headlessoracle.com/pricing', upgrade: 'https://headlessoracle.com/pricing' }, 402);
+					}
+					incrementDailyUsage(sbBatchKeyHash, env, ctx, sbBatchUsage);
 				// ── Paid tier daily limits for batch (builder: 50k/day, pro: 200k/day) ──
 				} else if (batchAuth.plan === 'builder' || batchAuth.plan === 'pro') {
 					const paidBatchKeyHash = batchAuth.keyHash ?? await sha256Hex(apiKey);
 					const paidBatchUsage   = await getDailyUsage(paidBatchKeyHash, env);
 					const paidBatchLimit   = getPlanDailyLimit(batchAuth.plan)!;
 					if (paidBatchUsage >= paidBatchLimit) {
-						return json({ error: 'RATE_LIMITED', message: `${batchAuth.plan} plan daily limit (${paidBatchLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429);
+						return json({ error: 'RATE_LIMITED', message: `${batchAuth.plan} plan daily limit (${paidBatchLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/pricing` }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 					}
 					incrementDailyUsage(paidBatchKeyHash, env, ctx, paidBatchUsage);
 				}
@@ -4859,6 +4994,10 @@ export default {
 				const requestedMics = [...new Set(
 					micsParam.split(',').map((m) => m.trim().toUpperCase()).filter(Boolean),
 				)];
+
+				// Acquisition telemetry: track unique MIC combinations requested (FINDING-13)
+				const sortedComboKey = `batch_combo:${[...requestedMics].sort().join('+')}:${now.toISOString().slice(0, 10)}`;
+				incrementKvCounter(sortedComboKey, env, ctx, 25 * 3600);
 
 				if (requestedMics.length === 0) {
 					return json({
@@ -5827,6 +5966,21 @@ export default {
 					}
 				} catch { /* KV unavailable — return zeros */ }
 
+				// Acquisition telemetry counters (best-effort — zeros on KV miss)
+				const [batchComboKeysRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw] = await Promise.all([
+					env.ORACLE_TELEMETRY.list({ prefix: `batch_combo:` }).then(r => r.keys.filter(k => k.name.endsWith(`:${today}`))).catch(() => [] as Array<{ name: string }>),
+					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`sandbox_cap_hit:${today}`).catch(() => null),
+				]);
+				const batchCombosToday = batchComboKeysRaw.length;
+				const authCalls        = parseInt(authCallsRaw   ?? '0', 10) || 0;
+				const unauthCalls      = parseInt(unauthCallsRaw ?? '0', 10) || 0;
+				const authRatioToday   = authCalls + unauthCalls > 0
+					? Math.round((authCalls / (authCalls + unauthCalls)) * 100) / 100
+					: null;
+				const sandboxCapsToday = parseInt(sandboxCapsRaw ?? '0', 10) || 0;
+
 				const currentYear = now.getUTCFullYear();
 				const uptimeSince = env.LAUNCH_DATE ?? '2026-03-10T08:00:00Z';
 				const launchDate     = new Date(uptimeSince);
@@ -5845,6 +5999,9 @@ export default {
 					verifiable_intent_rfc:    'submitted',
 					x402_enabled:             !!env.ORACLE_PAYMENT_ADDRESS,
 					halt_monitor:             'active',
+					batch_combos_today:       batchCombosToday,
+					auth_ratio_today:         authRatioToday,
+					sandbox_caps_today:       sandboxCapsToday,
 				});
 			}
 
@@ -5868,7 +6025,7 @@ export default {
 					return json({
 						error:   'RATE_LIMITED',
 						message: 'Max 3 free keys per day. Upgrade at headlessoracle.com/pricing',
-					}, 429);
+					}, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 				}
 
 				// Fail-closed: Supabase is required to issue a key.
@@ -6180,7 +6337,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					const existing = await getWebhookSubscriptions(keyHash, env);
 					const totalMics = existing.reduce((n, s) => n + s.mics.length, 0);
 					if (totalMics + mics.length > FREE_TIER_WEBHOOK_MIC_LIMIT) {
-						return json({ error: 'SUBSCRIPTION_LIMIT', message: `Free tier limit: ${FREE_TIER_WEBHOOK_MIC_LIMIT} total MIC subscriptions. Upgrade at headlessoracle.com/pricing.` }, 429);
+						return json({ error: 'SUBSCRIPTION_LIMIT', message: `Free tier limit: ${FREE_TIER_WEBHOOK_MIC_LIMIT} total MIC subscriptions. Upgrade at headlessoracle.com/pricing.` }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 					}
 				}
 
@@ -6302,11 +6459,16 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				const hourKey   = `sandbox_rate:${ipHash}:${new Date().toISOString().slice(0, 13)}`; // YYYY-MM-DDTHH
 				const hourCount = parseInt(await env.ORACLE_TELEMETRY.get(hourKey).catch(() => '0') || '0', 10);
 				if (hourCount >= 10) {
+					// Sandbox rate limit resets on the hour — Retry-After is seconds to next hour boundary.
+					const nextHour = new Date(now);
+					nextHour.setUTCMinutes(0, 0, 0);
+					nextHour.setUTCHours(nextHour.getUTCHours() + 1);
+					const sandboxRetryAfter = Math.max(1, Math.floor((nextHour.getTime() - now.getTime()) / 1000));
 					return json({
 						error:   'SANDBOX_RATE_LIMIT',
 						message: 'Maximum 10 sandbox keys per IP per hour. Try again next hour or get a free key at headlessoracle.com/v5/keys/request',
 						upgrade: 'https://headlessoracle.com/pricing',
-					}, 429);
+					}, 429, { 'Retry-After': String(sandboxRetryAfter) });
 				}
 
 				// Generate sandbox key: sb_ prefix + 32 hex chars
@@ -6330,6 +6492,9 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 
 				// Increment IP rate-limit counter (90min TTL — covers hour rollover).
 				await env.ORACLE_TELEMETRY.put(hourKey, String(hourCount + 1), { expirationTtl: 90 * 60 }).catch(() => {});
+
+				// Acquisition telemetry: sandbox key creations count as unauthenticated (FINDING-13)
+				incrementKvCounter(`unauth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 
 				return json({
 					api_key:         rawKey,
