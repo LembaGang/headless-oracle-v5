@@ -2070,6 +2070,56 @@ describe('POST /mcp — OAuth rate limiting', () => {
 	});
 });
 
+// ─── MCP auth_calls telemetry ────────────────────────────────────────────────
+
+describe('POST /mcp — auth_calls / unauth_calls telemetry', () => {
+	async function putOAuthTokenForTelemetry(token: string, keyHash: string, plan: string): Promise<void> {
+		const encoded   = new TextEncoder().encode(token);
+		const hashBuf   = await crypto.subtle.digest('SHA-256', encoded);
+		const tokenHash = Array.from(new Uint8Array(hashBuf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+		await env.ORACLE_API_KEYS.put(`oauth:${tokenHash}`, JSON.stringify({ keyHash, plan, status: 'active' }), { expirationTtl: 3600 });
+	}
+
+	const mcpInit = JSON.stringify({
+		jsonrpc: '2.0', id: 1, method: 'initialize',
+		params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
+	});
+
+	it('authenticated MCP request increments auth_calls counter', async () => {
+		const token   = 'mcp_telemetry_auth_token_' + 'x'.repeat(39);
+		const keyHash = 'mcp_telemetry_auth_keyhash_' + 'x'.repeat(37);
+		const today   = new Date().toISOString().slice(0, 10);
+		await putOAuthTokenForTelemetry(token, keyHash, 'pro');
+		// Seed the usage counter so rate limit doesn't fire (plan=pro has high limit)
+		const before = parseInt((await env.ORACLE_TELEMETRY.get(`auth_calls:${today}`)) ?? '0', 10);
+		try {
+			const res = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+				body:    mcpInit,
+			});
+			expect(res.status).toBe(200);
+			const after = parseInt((await env.ORACLE_TELEMETRY.get(`auth_calls:${today}`)) ?? '0', 10);
+			expect(after).toBeGreaterThan(before);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(`oauth:${(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))).toString()}`);
+		}
+	});
+
+	it('unauthenticated MCP request increments unauth_calls counter', async () => {
+		const today  = new Date().toISOString().slice(0, 10);
+		const before = parseInt((await env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`)) ?? '0', 10);
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    mcpInit,
+		});
+		expect(res.status).toBe(200);
+		const after = parseInt((await env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`)) ?? '0', 10);
+		expect(after).toBeGreaterThan(before);
+	});
+});
+
 // ─── MCP tool: verify_receipt ────────────────────────────────────────────────
 
 describe('POST /mcp — verify_receipt tool', () => {

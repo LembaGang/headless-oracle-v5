@@ -4060,6 +4060,14 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 	// Unauthenticated MCP (_mcpKeyHash === null) is structurally unreachable here.
 	// Shares the same KV counter as the REST auth gate so REST + MCP calls count
 	// together against a single daily limit per key.
+	// ── Acquisition telemetry: authenticated vs unauthenticated MCP ratio ────
+	const mcpDateKey = new Date().toISOString().slice(0, 10);
+	if (_mcpKeyHash !== null) {
+		incrementKvCounter(`auth_calls:${mcpDateKey}`, env, ctx);
+	} else {
+		incrementKvCounter(`unauth_calls:${mcpDateKey}`, env, ctx);
+	}
+
 	if (_mcpKeyHash !== null && _mcpPlan !== null) {
 		const mcpPlanLimit = getPlanDailyLimit(_mcpPlan);
 		if (mcpPlanLimit !== null) {
