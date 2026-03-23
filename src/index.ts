@@ -4632,6 +4632,17 @@ export default {
 		// POST is the actual MCP endpoint (outside main try/catch — isolated error handling).
 		if (url.pathname === '/mcp') {
 			if (request.method === 'GET') {
+				// SSE clients send GET /mcp with Accept: text/event-stream.
+				// We don't implement SSE transport — return 405 so the client
+				// stops reconnecting (SSE auto-reconnect only fires on 2xx/network close).
+				if (request.headers.get('Accept')?.includes('text/event-stream')) {
+					return json({
+						error:     'SSE_NOT_SUPPORTED',
+						message:   'SSE transport is not supported. Use HTTP transport: POST /mcp with Content-Type: application/json',
+						transport: 'http',
+						endpoint:  'https://headlessoracle.com/mcp',
+					}, 405);
+				}
 				return json({
 					name:           MCP_SERVER_NAME,
 					version:        MCP_SERVER_VERSION,
