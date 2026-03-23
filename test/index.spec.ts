@@ -5227,3 +5227,63 @@ describe('/v5/handoff session handoff endpoint (Task 4)', () => {
 		expect(text).toContain('## Product State');
 	});
 });
+
+// ─── halt_detection signed field ─────────────────────────────────────────────
+
+describe('halt_detection field in signed receipts', () => {
+	it('XNYS receipt has halt_detection: "active" (Polygon + Alpaca coverage)', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(body).toHaveProperty('halt_detection', 'active');
+	});
+
+	it('XNAS receipt has halt_detection: "active" (Polygon + Alpaca coverage)', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XNAS');
+		expect(body).toHaveProperty('halt_detection', 'active');
+	});
+
+	it('XLON receipt has halt_detection: "schedule_only" (no real-time halt API)', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XLON');
+		expect(body).toHaveProperty('halt_detection', 'schedule_only');
+	});
+
+	it('XASX receipt has halt_detection: "schedule_only" (Polygon does not cover ASX)', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XASX');
+		expect(body).toHaveProperty('halt_detection', 'schedule_only');
+	});
+
+	it('halt_detection is signed — present alongside 128-char signature', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(body).toHaveProperty('halt_detection');
+		expect(body).toHaveProperty('signature');
+		expect((body.signature as string).length).toBe(128);
+		expect(['active', 'schedule_only']).toContain(body.halt_detection as string);
+	});
+
+	it('OVERRIDE receipt also carries halt_detection', async () => {
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status:  'HALTED',
+			reason:  'Test halt detection field on OVERRIDE',
+			expires: new Date(Date.now() + 3600000).toISOString(),
+		}));
+		try {
+			const body = await fetchJSON('/v5/demo?mic=XNYS');
+			expect(body).toHaveProperty('source', 'OVERRIDE');
+			expect(body).toHaveProperty('halt_detection', 'active'); // XNYS is active
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+		}
+	});
+
+	it('/v5/health halt_monitor includes coverage breakdown', async () => {
+		const body = await fetchJSON('/v5/health');
+		const hm = body.halt_monitor as Record<string, unknown>;
+		expect(hm).toHaveProperty('coverage');
+		const coverage = hm.coverage as Record<string, unknown>;
+		expect(Array.isArray(coverage.active)).toBe(true);
+		expect((coverage.active as string[])).toContain('XNYS');
+		expect((coverage.active as string[])).toContain('XNAS');
+		expect(Array.isArray(coverage.schedule_only)).toBe(true);
+		expect((coverage.schedule_only as string[])).toContain('XLON');
+		expect((coverage.schedule_only as string[])).toContain('XASX');
+	});
+});

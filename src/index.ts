@@ -1102,6 +1102,24 @@ function getLocalTimeParts(timezone: string, now: Date): LocalTimeParts {
 type StatusValue = 'OPEN' | 'CLOSED' | 'HALTED' | 'UNKNOWN';
 type SourceValue = 'SCHEDULE' | 'OVERRIDE' | 'SYSTEM' | 'REALTIME';
 
+// ─── Halt Detection Coverage ──────────────────────────────────────────────────
+// Real-time intraday halt detection requires an external API that publishes
+// live market status. As of 2026-03, only XNYS and XNAS are covered:
+//   - Primary:  Polygon.io /v1/marketstatus/now (exchanges.nyse / exchanges.nasdaq)
+//   - Fallback: Alpaca paper-api /v2/clock (US markets only)
+//
+// No free/public API covers the other 21 exchanges for intraday halt detection.
+// Those exchanges use schedule_only: calendar hours + holidays are correct, but
+// an unscheduled intraday halt (circuit breaker) would not be detected.
+//
+// This set is the source of truth. Every signed receipt carries a halt_detection
+// field derived from it so agents know what level of safety they are getting.
+const HALT_DETECTION_ACTIVE = new Set(['XNYS', 'XNAS']);
+
+function getHaltDetection(mic: string): 'active' | 'schedule_only' {
+	return HALT_DETECTION_ACTIVE.has(mic) ? 'active' : 'schedule_only';
+}
+
 interface MarketStatusResult {
 	status: StatusValue;
 	source: SourceValue;
@@ -2716,17 +2734,22 @@ X-Oracle-Key: your_api_key
 **Response shape (signed receipt):**
 \`\`\`json
 {
-  "receipt_id": "uuid",
-  "issued_at":  "2026-02-26T09:00:00Z",
-  "expires_at": "2026-02-26T09:01:00Z",
-  "mic":        "XNYS",
-  "status":     "OPEN",
-  "source":     "SCHEDULE",
+  "receipt_id":     "uuid",
+  "issued_at":      "2026-02-26T09:00:00Z",
+  "expires_at":     "2026-02-26T09:01:00Z",
+  "mic":            "XNYS",
+  "status":         "OPEN",
+  "source":         "SCHEDULE",
+  "halt_detection": "active",
   "schema_version": "v5.0",
   "public_key_id":  "03dc2799...",
   "signature":      "hex..."
 }
 \`\`\`
+
+**halt_detection field:**
+- \`"active"\` — real-time intraday halt detection via Polygon.io + Alpaca. XNYS and XNAS only. Unscheduled circuit breaker halts will be detected within ~1 minute.
+- \`"schedule_only"\` — calendar hours and holidays are authoritative, but intraday circuit breaker halts are NOT detected. All 21 non-US exchanges. Agents relying on halt detection for execution safety should note this limitation.
 
 ---
 
@@ -3187,20 +3210,21 @@ const OPENAPI_SPEC = {
 			},
 			SignedReceipt: {
 				type: 'object',
-				required: ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic', 'status', 'source', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
+				required: ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic', 'status', 'source', 'halt_detection', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
 				properties: {
-					receipt_id:    { type: 'string', format: 'uuid' },
-					issued_at:     { type: 'string', format: 'date-time' },
-					expires_at:    { type: 'string', format: 'date-time', description: 'Do not act on this receipt after this time.' },
-					issuer:        { type: 'string', example: 'headlessoracle.com', description: 'Domain of the oracle that issued this receipt. Resolve {issuer}/v5/keys to retrieve the public key.' },
-					mic:           { type: 'string', example: 'XNYS' },
-					status:        { '$ref': '#/components/schemas/Status' },
-					source:        { '$ref': '#/components/schemas/Source' },
-					reason:        { type: 'string', description: 'Present when source is OVERRIDE.' },
-					receipt_mode:  { type: 'string', enum: ['demo', 'live'], description: "'demo' for unauthenticated /v5/demo; 'live' for /v5/status, /v5/batch, and MCP tool receipts." },
+					receipt_id:     { type: 'string', format: 'uuid' },
+					issued_at:      { type: 'string', format: 'date-time' },
+					expires_at:     { type: 'string', format: 'date-time', description: 'Do not act on this receipt after this time.' },
+					issuer:         { type: 'string', example: 'headlessoracle.com', description: 'Domain of the oracle that issued this receipt. Resolve {issuer}/v5/keys to retrieve the public key.' },
+					mic:            { type: 'string', example: 'XNYS' },
+					status:         { '$ref': '#/components/schemas/Status' },
+					source:         { '$ref': '#/components/schemas/Source' },
+					reason:         { type: 'string', description: 'Present when source is OVERRIDE.' },
+					halt_detection: { type: 'string', enum: ['active', 'schedule_only'], description: '"active" = real-time intraday halt detection via external API (XNYS, XNAS only). "schedule_only" = calendar hours + holidays only; unscheduled intraday circuit breaker halts are not detected. Agents must adjust confidence accordingly.' },
+					receipt_mode:   { type: 'string', enum: ['demo', 'live'], description: "'demo' for unauthenticated /v5/demo; 'live' for /v5/status, /v5/batch, and MCP tool receipts." },
 					schema_version: { type: 'string', example: 'v5.0', description: 'Receipt schema version. Consumers should verify this matches the version they were built against.' },
-					public_key_id: { type: 'string', example: 'key_2026_v1' },
-					signature:     { type: 'string', description: 'Ed25519 signature of canonical payload as 128-char hex string.' },
+					public_key_id:  { type: 'string', example: 'key_2026_v1' },
+					signature:      { type: 'string', description: 'Ed25519 signature of canonical payload as 128-char hex string.' },
 				},
 			},
 			Error: {
@@ -3779,6 +3803,7 @@ async function buildSignedReceipt(
 						status:         override.status,
 						source:         'OVERRIDE',
 						reason:         override.reason,
+						halt_detection: getHaltDetection(mic),
 						receipt_mode:   mode,
 						schema_version: 'v5.0',
 						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -3799,6 +3824,7 @@ async function buildSignedReceipt(
 			mic,
 			status,
 			source,
+			halt_detection: getHaltDetection(mic),
 			receipt_mode:   mode,
 			schema_version: 'v5.0',
 			public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -3820,6 +3846,7 @@ async function buildSignedReceipt(
 				mic,
 				status:         'UNKNOWN',
 				source:         'SYSTEM',
+				halt_detection: getHaltDetection(mic),
 				receipt_mode:   mode,
 				schema_version: 'v5.0',
 				public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -4281,7 +4308,7 @@ interface HaltMonitorResult {
 	mic:     string;
 	checked: boolean;   // false if market was CLOSED per schedule (skip)
 	halted:  boolean;   // true if real-time source says HALTED
-	source:  'polygon' | 'alpaca' | 'skipped' | 'error';
+	source:  'polygon' | 'alpaca' | 'skipped' | 'schedule_only' | 'error';
 	error?:  string;
 }
 
@@ -4372,12 +4399,29 @@ async function runHaltMonitor(env: Env): Promise<void> {
 			continue;
 		}
 
-		// Exchange is scheduled OPEN — check real-time status
+		// Exchange is scheduled OPEN — check real-time status.
+		// Only XNYS and XNAS have real-time halt detection via external APIs.
+		// All other exchanges are schedule_only — no intraday halt detection available.
 		let halted = false;
 		let source: HaltMonitorResult['source'] = 'error';
 		let errorMsg: string | undefined;
 
-		// Primary: Polygon.io market status
+		// Polygon.io covers XNYS (nyse) and XNAS (nasdaq) only.
+		// No other exchange MICs are available via /v1/marketstatus/now.
+		const micToPolygon: Record<string, string> = {
+			XNYS: 'nyse', XNAS: 'nasdaq',
+		};
+		const polygonName = micToPolygon[mic];
+
+		if (!polygonName) {
+			// No real-time halt detection API covers this exchange.
+			// Schedule-based status (hours + calendar) is the only signal available.
+			// Fail-open: do NOT write a HALTED override — no false halts.
+			results.push({ mic, checked: true, halted: false, source: 'schedule_only' });
+			continue;
+		}
+
+		// Primary: Polygon.io market status (covers XNYS and XNAS)
 		if (env.POLYGON_API_KEY) {
 			try {
 				const polygonResp = await fetch(
@@ -4386,22 +4430,10 @@ async function runHaltMonitor(env: Env): Promise<void> {
 				);
 				if (polygonResp.ok) {
 					const data = await polygonResp.json() as Record<string, unknown>;
-					// Polygon returns market (US) and currencies status; for non-US exchanges
-					// we map MICs to Polygon market names where available.
-					const micToPolygon: Record<string, string> = {
-						XNYS: 'nyse', XNAS: 'nasdaq', XASX: 'asx',
-					};
-					const polygonName = micToPolygon[mic];
-					if (polygonName) {
-						const exchanges = data.exchanges as Record<string, string> | undefined;
-						const marketStatus = exchanges?.[polygonName] ?? data.market;
-						halted = typeof marketStatus === 'string' && marketStatus !== 'open';
-						source = 'polygon';
-					} else {
-						// Polygon doesn't cover this MIC — fall through to Alpaca
-						source = 'error';
-						errorMsg = 'mic_not_in_polygon';
-					}
+					const exchanges = data.exchanges as Record<string, string> | undefined;
+					const marketStatus = exchanges?.[polygonName] ?? data.market;
+					halted = typeof marketStatus === 'string' && marketStatus !== 'open';
+					source = 'polygon';
 				}
 			} catch (err) {
 				if (err instanceof Error && err.name === 'AbortError') {
@@ -4411,8 +4443,8 @@ async function runHaltMonitor(env: Env): Promise<void> {
 			}
 		}
 
-		// Fallback: Alpaca market clock (US markets only, paper API — public)
-		if (source === 'error' && (mic === 'XNYS' || mic === 'XNAS')) {
+		// Fallback: Alpaca market clock (US markets only — runs when Polygon unavailable or fails)
+		if (source === 'error') {
 			try {
 				const alpacaResp = await fetch(
 					'https://paper-api.alpaca.markets/v2/clock',
@@ -4435,7 +4467,7 @@ async function runHaltMonitor(env: Env): Promise<void> {
 		}
 
 		if (source === 'error') {
-			// Both APIs failed — fail-open (do NOT write a HALTED override)
+			// Both Polygon and Alpaca failed — fail-open (do NOT write a HALTED override)
 			results.push({ mic, checked: true, halted: false, source: 'error', error: errorMsg });
 			continue;
 		}
@@ -4488,7 +4520,7 @@ async function runHaltMonitor(env: Env): Promise<void> {
 		timestamp:      now.toISOString(),
 		exchanges_checked: results.filter((r) => r.checked).length,
 		halts_detected: results.filter((r) => r.halted).length,
-		results:        results.map((r) => ({ mic: r.mic, checked: r.checked, halted: r.halted, source: r.source })),
+		results:        results.map((r) => ({ mic: r.mic, checked: r.checked, halted: r.halted, source: r.source, error: r.error })),
 	}));
 
 	// ── State-change detection and webhook fan-out ────────────────────────────
@@ -4831,8 +4863,8 @@ export default {
 					}],
 					canonical_payload_spec: {
 						description:     'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
-						receipt_fields:  ['expires_at', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
-						override_fields: ['expires_at', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						receipt_fields:  ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						override_fields: ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
 						health_fields:   ['expires_at', 'issued_at', 'issuer', 'public_key_id', 'receipt_id', 'source', 'status'],
 					},
 				}));
@@ -5218,8 +5250,12 @@ export default {
 							status:                    'active',
 							cron:                      '* * * * *',
 							sources:                   ['polygon', 'alpaca'],
+							coverage: {
+								active:        ['XNYS', 'XNAS'],
+								schedule_only: ['XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],
+							},
 							active_realtime_overrides: activeRealtimeOverrides,
-							note:                      'Checks scheduled-OPEN exchanges every minute. Writes REALTIME overrides on discrepancy. Fails open (no false halts on API errors).',
+							note:                      'Real-time halt detection covers XNYS and XNAS only (Polygon.io + Alpaca). All other exchanges are schedule_only: calendar hours + holidays are authoritative but intraday circuit breaker halts are not detected. Fails open — no false halts on API errors.',
 						},
 					}));
 				} catch (healthError: unknown) {
@@ -5382,6 +5418,11 @@ export default {
 					coverage:       {
 						exchanges: 23,
 						mic_codes: ['XNYS','XNAS','XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],
+						halt_detection: {
+							active:        ['XNYS', 'XNAS'],
+							schedule_only: ['XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],
+							note: 'Real-time intraday halt detection (Polygon.io + Alpaca fallback) covers XNYS and XNAS only. All other exchanges use schedule-based status: calendar hours and holidays are correct, but unscheduled intraday circuit breaker halts are not detected. Every signed receipt carries a halt_detection field ("active" | "schedule_only") so agents know which applies.',
+						},
 					},
 				});
 			}
