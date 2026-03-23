@@ -4066,6 +4066,8 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		incrementKvCounter(`auth_calls:${mcpDateKey}`, env, ctx);
 	} else {
 		incrementKvCounter(`unauth_calls:${mcpDateKey}`, env, ctx);
+		// Track zero-auth MCP separately so it doesn't dilute auth_ratio
+		incrementKvCounter(`zero_auth_mcp_requests:${mcpDateKey}`, env, ctx);
 	}
 
 	if (_mcpKeyHash !== null && _mcpPlan !== null) {
@@ -6003,25 +6005,27 @@ export default {
 							sandbox_keys_issued_today: number;
 							sandbox_caps_today: number;
 							batch_combos_today: number;
+							zero_auth_mcp_requests_today: number;
 						};
 						return json({
-							exchanges_covered:          SUPPORTED_EXCHANGES.length,
-							edge_cases_per_year:        edgeCaseCount(currentYear).total,
-							uptime_since:               uptimeSince,
-							days_live:                  daysLive,
-							mcp_requests_today:         cached.total_requests_today,
-							unique_mcp_clients_today:   cached.unique_clients_today,
-							sma_spec_version:           '1.0',
-							verifiable_intent_rfc:      'submitted',
-							x402_enabled:               !!env.ORACLE_PAYMENT_ADDRESS,
-							halt_monitor:               'active',
-							batch_combos_today:         cached.batch_combos_today,
-							auth_ratio_today:           cached.auth_ratio,
-							sandbox_caps_today:         cached.sandbox_caps_today,
-							unauth_calls_today:         cached.unauth_calls_today,
-							auth_calls_today:           cached.auth_calls_today,
-							sandbox_keys_issued_today:  cached.sandbox_keys_issued_today,
-							cache_status:               'cached',
+							exchanges_covered:             SUPPORTED_EXCHANGES.length,
+							edge_cases_per_year:           edgeCaseCount(currentYear).total,
+							uptime_since:                  uptimeSince,
+							days_live:                     daysLive,
+							mcp_requests_today:            cached.total_requests_today,
+							unique_mcp_clients_today:      cached.unique_clients_today,
+							sma_spec_version:              '1.0',
+							verifiable_intent_rfc:         'submitted',
+							x402_enabled:                  !!env.ORACLE_PAYMENT_ADDRESS,
+							halt_monitor:                  'active',
+							batch_combos_today:            cached.batch_combos_today,
+							auth_ratio_today:              cached.auth_ratio,
+							sandbox_caps_today:            cached.sandbox_caps_today,
+							unauth_calls_today:            cached.unauth_calls_today,
+							auth_calls_today:              cached.auth_calls_today,
+							sandbox_keys_issued_today:     cached.sandbox_keys_issued_today,
+							zero_auth_mcp_requests_today:  cached.zero_auth_mcp_requests_today ?? 0,
+							cache_status:                  'cached',
 						});
 					} catch { /* cache parse error — fall through to live */ }
 				}
@@ -6047,38 +6051,41 @@ export default {
 				} catch { /* KV unavailable — return zeros */ }
 
 				// Acquisition telemetry counters (best-effort — zeros on KV miss)
-				const [batchComboKeysRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw] = await Promise.all([
+				const [batchComboKeysRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw, zeroAuthMcpRaw] = await Promise.all([
 					env.ORACLE_TELEMETRY.list({ prefix: `batch_combo:` }).then(r => r.keys.filter(k => k.name.endsWith(`:${today}`))).catch(() => [] as Array<{ name: string }>),
 					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`sandbox_cap_hit:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`zero_auth_mcp_requests:${today}`).catch(() => null),
 				]);
-				const batchCombosToday = batchComboKeysRaw.length;
-				const authCalls        = parseInt(authCallsRaw   ?? '0', 10) || 0;
-				const unauthCalls      = parseInt(unauthCallsRaw ?? '0', 10) || 0;
-				const authRatioToday   = authCalls + unauthCalls > 0
+				const batchCombosToday    = batchComboKeysRaw.length;
+				const authCalls           = parseInt(authCallsRaw    ?? '0', 10) || 0;
+				const unauthCalls         = parseInt(unauthCallsRaw  ?? '0', 10) || 0;
+				const authRatioToday      = authCalls + unauthCalls > 0
 					? Math.round((authCalls / (authCalls + unauthCalls)) * 100) / 100
 					: null;
-				const sandboxCapsToday = parseInt(sandboxCapsRaw ?? '0', 10) || 0;
+				const sandboxCapsToday    = parseInt(sandboxCapsRaw   ?? '0', 10) || 0;
+				const zeroAuthMcpToday    = parseInt(zeroAuthMcpRaw   ?? '0', 10) || 0;
 
 				return json({
-					exchanges_covered:          SUPPORTED_EXCHANGES.length,
-					edge_cases_per_year:        edgeCaseCount(currentYear).total,
-					uptime_since:               uptimeSince,
-					days_live:                  daysLive,
-					mcp_requests_today:         mcpRequestsToday,
-					unique_mcp_clients_today:   mcpClientsToday,
-					sma_spec_version:           '1.0',
-					verifiable_intent_rfc:      'submitted',
-					x402_enabled:               !!env.ORACLE_PAYMENT_ADDRESS,
-					halt_monitor:               'active',
-					batch_combos_today:         batchCombosToday,
-					auth_ratio_today:           authRatioToday,
-					sandbox_caps_today:         sandboxCapsToday,
-					unauth_calls_today:         unauthCalls,
-					auth_calls_today:           authCalls,
-					sandbox_keys_issued_today:  0,
-					cache_status:               'live',
+					exchanges_covered:             SUPPORTED_EXCHANGES.length,
+					edge_cases_per_year:           edgeCaseCount(currentYear).total,
+					uptime_since:                  uptimeSince,
+					days_live:                     daysLive,
+					mcp_requests_today:            mcpRequestsToday,
+					unique_mcp_clients_today:      mcpClientsToday,
+					sma_spec_version:              '1.0',
+					verifiable_intent_rfc:         'submitted',
+					x402_enabled:                  !!env.ORACLE_PAYMENT_ADDRESS,
+					halt_monitor:                  'active',
+					batch_combos_today:            batchCombosToday,
+					auth_ratio_today:              authRatioToday,
+					sandbox_caps_today:            sandboxCapsToday,
+					unauth_calls_today:            unauthCalls,
+					auth_calls_today:              authCalls,
+					sandbox_keys_issued_today:     0,
+					zero_auth_mcp_requests_today:  zeroAuthMcpToday,
+					cache_status:                  'live',
 				});
 			}
 
@@ -6679,18 +6686,20 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					}
 				} catch { /* KV unavailable */ }
 
-				const [hAuthRaw, hUnauthRaw, hSandboxCapsRaw, hSandboxKeysRaw] = await Promise.all([
+				const [hAuthRaw, hUnauthRaw, hSandboxCapsRaw, hSandboxKeysRaw, hZeroAuthMcpRaw] = await Promise.all([
 					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`sandbox_cap_hit:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.list({ prefix: 'sandbox_followup:' }).then(l => l.keys.filter(k => {
 						return true; // count all (creation date checked below)
 					})).catch(() => [] as Array<{ name: string }>),
+					env.ORACLE_TELEMETRY.get(`zero_auth_mcp_requests:${today}`).catch(() => null),
 				]);
-				const hAuthCalls    = parseInt(hAuthRaw   ?? '0', 10) || 0;
-				const hUnauthCalls  = parseInt(hUnauthRaw ?? '0', 10) || 0;
-				const hSandboxCaps  = parseInt(hSandboxCapsRaw ?? '0', 10) || 0;
-				const hAuthRatioStr = hAuthCalls + hUnauthCalls > 0
+				const hAuthCalls      = parseInt(hAuthRaw        ?? '0', 10) || 0;
+				const hUnauthCalls    = parseInt(hUnauthRaw      ?? '0', 10) || 0;
+				const hSandboxCaps    = parseInt(hSandboxCapsRaw ?? '0', 10) || 0;
+				const hZeroAuthMcp    = parseInt(hZeroAuthMcpRaw ?? '0', 10) || 0;
+				const hAuthRatioStr   = hAuthCalls + hUnauthCalls > 0
 					? `${Math.round((hAuthCalls / (hAuthCalls + hUnauthCalls)) * 100)}%`
 					: 'n/a';
 
@@ -6720,7 +6729,8 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					`## Telemetry Today (${today})`,
 					`- Unique MCP clients: ${hMcpClients}`,
 					`- Total MCP requests: ${hMcpRequests}`,
-					`- Unauthenticated calls: ${hUnauthCalls}`,
+					`- Unauthenticated calls (all): ${hUnauthCalls}`,
+					`- Zero-auth MCP requests: ${hZeroAuthMcp}`,
 					`- Auth ratio: ${hAuthRatioStr}`,
 					`- Sandbox keys issued: ${hSandboxKeysRaw.length}`,
 					`- Sandbox keys at limit: ${hSandboxCaps}`,
@@ -6855,17 +6865,19 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					tractionMcpClients = list.keys.length;
 				}
 
-				const [batchComboKvsRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw] = await Promise.all([
+				const [batchComboKvsRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw, zeroAuthMcpCronRaw] = await Promise.all([
 					env.ORACLE_TELEMETRY.list({ prefix: 'batch_combo:' }).then(r => r.keys.filter(k => k.name.endsWith(`:${today}`))).catch(() => [] as Array<{ name: string }>),
 					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`sandbox_cap_hit:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`zero_auth_mcp_requests:${today}`).catch(() => null),
 				]);
-				const batchCombosDay   = batchComboKvsRaw.length;
-				const authCallsDay     = parseInt(authCallsRaw   ?? '0', 10) || 0;
-				const unauthCallsDay   = parseInt(unauthCallsRaw ?? '0', 10) || 0;
-				const sandboxCapsDay   = parseInt(sandboxCapsRaw ?? '0', 10) || 0;
-				const authRatioDay     = authCallsDay + unauthCallsDay > 0
+				const batchCombosDay        = batchComboKvsRaw.length;
+				const authCallsDay          = parseInt(authCallsRaw        ?? '0', 10) || 0;
+				const unauthCallsDay        = parseInt(unauthCallsRaw      ?? '0', 10) || 0;
+				const sandboxCapsDay        = parseInt(sandboxCapsRaw      ?? '0', 10) || 0;
+				const zeroAuthMcpCronDay    = parseInt(zeroAuthMcpCronRaw  ?? '0', 10) || 0;
+				const authRatioDay          = authCallsDay + unauthCallsDay > 0
 					? Math.round((authCallsDay / (authCallsDay + unauthCallsDay)) * 100) / 100
 					: null;
 
@@ -6885,16 +6897,17 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 
 				const tractionCache = {
-					date:                  today,
-					computed_at:           new Date().toISOString(),
-					unique_clients_today:  tractionMcpClients,
-					total_requests_today:  tractionMcpRequests,
-					unauth_calls_today:    unauthCallsDay,
-					auth_calls_today:      authCallsDay,
-					auth_ratio:            authRatioDay,
-					sandbox_keys_issued_today: sandboxKeysToday,
-					sandbox_caps_today:    sandboxCapsDay,
-					batch_combos_today:    batchCombosDay,
+					date:                         today,
+					computed_at:                  new Date().toISOString(),
+					unique_clients_today:         tractionMcpClients,
+					total_requests_today:         tractionMcpRequests,
+					unauth_calls_today:           unauthCallsDay,
+					auth_calls_today:             authCallsDay,
+					auth_ratio:                   authRatioDay,
+					sandbox_keys_issued_today:    sandboxKeysToday,
+					sandbox_caps_today:           sandboxCapsDay,
+					batch_combos_today:           batchCombosDay,
+					zero_auth_mcp_requests_today: zeroAuthMcpCronDay,
 				};
 				await env.ORACLE_TELEMETRY.put(`traction_cache:${today}`, JSON.stringify(tractionCache), { expirationTtl: 86_400 * 2 });
 				console.log(JSON.stringify({ event: 'TRACTION_CACHE_WRITTEN', ...tractionCache }));

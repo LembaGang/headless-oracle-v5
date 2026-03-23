@@ -2118,6 +2118,19 @@ describe('POST /mcp — auth_calls / unauth_calls telemetry', () => {
 		const after = parseInt((await env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`)) ?? '0', 10);
 		expect(after).toBeGreaterThan(before);
 	});
+
+	it('unauthenticated MCP request increments zero_auth_mcp_requests counter', async () => {
+		const today  = new Date().toISOString().slice(0, 10);
+		const before = parseInt((await env.ORACLE_TELEMETRY.get(`zero_auth_mcp_requests:${today}`)) ?? '0', 10);
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    mcpInit,
+		});
+		expect(res.status).toBe(200);
+		const after = parseInt((await env.ORACLE_TELEMETRY.get(`zero_auth_mcp_requests:${today}`)) ?? '0', 10);
+		expect(after).toBeGreaterThan(before);
+	});
 });
 
 // ─── MCP tool: verify_receipt ────────────────────────────────────────────────
@@ -5158,12 +5171,14 @@ describe('Traction pre-compute cron (Task 3)', () => {
 			sandbox_keys_issued_today: number;
 			sandbox_caps_today: number;
 			batch_combos_today: number;
+			zero_auth_mcp_requests_today: number;
 		};
 		expect(typeof body.unauth_calls_today).toBe('number');
 		expect(typeof body.auth_calls_today).toBe('number');
 		expect(typeof body.sandbox_keys_issued_today).toBe('number');
 		expect(typeof body.sandbox_caps_today).toBe('number');
 		expect(typeof body.batch_combos_today).toBe('number');
+		expect(typeof body.zero_auth_mcp_requests_today).toBe('number');
 	});
 
 	it('17:00 cron writes traction_cache KV key', async () => {
