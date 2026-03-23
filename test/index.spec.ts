@@ -5005,3 +5005,160 @@ describe('Halt monitor timeout handling (FINDING-09)', () => {
 		await waitOnExecutionContext(ctx);
 	});
 });
+
+// ─── Task 1: Sandbox email capture ──────────────────────────────────────────────────────────────────
+
+describe('Sandbox email capture (Task 1)', () => {
+	it('sandbox with valid email stores email in KV record', async () => {
+		const res  = await fetchWorker('/v5/sandbox?email=test@example.com');
+		expect(res.status).toBe(200);
+		const body = await res.json() as { api_key: string; email_captured: boolean; follow_up: string };
+		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
+		expect(body.email_captured).toBe(true);
+		expect(body.follow_up).toBeTruthy();
+		// Verify email stored in KV
+		const keyHash   = await sha256Hex(body.api_key);
+		const kvRaw     = await env.ORACLE_API_KEYS.get(keyHash);
+		expect(kvRaw).toBeTruthy();
+		const kvRecord  = JSON.parse(kvRaw!) as { email?: string };
+		expect(kvRecord.email).toBe('test@example.com');
+		// Clean up
+		await env.ORACLE_API_KEYS.delete(keyHash);
+		await env.ORACLE_TELEMETRY.delete(`sandbox_followup:${keyHash}`);
+	});
+
+	it('sandbox with invalid email returns 422', async () => {
+		const res = await fetchWorker('/v5/sandbox?email=notanemail');
+		expect(res.status).toBe(422);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('INVALID_EMAIL');
+	});
+
+	it('sandbox without email returns 200 with no email_captured field (no regression)', async () => {
+		const res  = await fetchWorker('/v5/sandbox');
+		expect(res.status).toBe(200);
+		const body = await res.json() as { api_key: string; email_captured?: boolean };
+		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
+		expect(body.email_captured).toBeUndefined();
+	});
+
+	it('sandbox with email stores follow-up record in ORACLE_TELEMETRY', async () => {
+		const res  = await fetchWorker('/v5/sandbox?email=followup@example.com');
+		expect(res.status).toBe(200);
+		const body = await res.json() as { api_key: string };
+		const keyHash = await sha256Hex(body.api_key);
+		const fuRaw   = await env.ORACLE_TELEMETRY.get(`sandbox_followup:${keyHash}`);
+		expect(fuRaw).toBeTruthy();
+		const fuRecord = JSON.parse(fuRaw!) as { email: string; followed_up: boolean; key_expires_at: string };
+		expect(fuRecord.email).toBe('followup@example.com');
+		expect(fuRecord.followed_up).toBe(false);
+		expect(fuRecord.key_expires_at).toBeTruthy();
+		// Clean up
+		await env.ORACLE_API_KEYS.delete(keyHash);
+		await env.ORACLE_TELEMETRY.delete(`sandbox_followup:${keyHash}`);
+	});
+});
+
+// ─── Task 2: SSE transport ──────────────────────────────────────────────────────────────────────────
+
+describe('SSE transport for MCP (Task 2)', () => {
+	it('GET /mcp with Accept: text/event-stream returns 200', async () => {
+		const res = await fetchWorker('/mcp', { headers: { Accept: 'text/event-stream' } });
+		expect(res.status).toBe(200);
+	});
+
+	it('SSE response has Content-Type: text/event-stream', async () => {
+		const res = await fetchWorker('/mcp', { headers: { Accept: 'text/event-stream' } });
+		expect(res.headers.get('Content-Type')).toContain('text/event-stream');
+	});
+
+	it('SSE response body contains endpoint event', async () => {
+		const res  = await fetchWorker('/mcp', { headers: { Accept: 'text/event-stream' } });
+		const body = await res.text();
+		expect(body).toContain('event: endpoint');
+		expect(body).toContain('data:');
+	});
+
+	it('SSE endpoint event URI points to POST /mcp', async () => {
+		const res  = await fetchWorker('/mcp', { headers: { Accept: 'text/event-stream' } });
+		const body = await res.text();
+		// Extract the data line
+		const dataLine = body.split('\n').find(l => l.startsWith('data:'));
+		expect(dataLine).toBeTruthy();
+		const data = JSON.parse(dataLine!.replace(/^data:\s*/, '')) as { uri: string };
+		expect(data.uri).toContain('/mcp');
+	});
+});
+
+// ─── Task 3: Traction pre-compute ──────────────────────────────────────────────────────────────────
+
+describe('Traction pre-compute cron (Task 3)', () => {
+	it('/v5/traction includes cache_status field', async () => {
+		const res  = await fetchWorker('/v5/traction');
+		expect(res.status).toBe(200);
+		const body = await res.json() as { cache_status: string };
+		expect(['live', 'cached']).toContain(body.cache_status);
+	});
+
+	it('/v5/traction includes new acquisition counters', async () => {
+		const res  = await fetchWorker('/v5/traction');
+		const body = await res.json() as {
+			unauth_calls_today: number;
+			auth_calls_today: number;
+			sandbox_keys_issued_today: number;
+			sandbox_caps_today: number;
+			batch_combos_today: number;
+		};
+		expect(typeof body.unauth_calls_today).toBe('number');
+		expect(typeof body.auth_calls_today).toBe('number');
+		expect(typeof body.sandbox_keys_issued_today).toBe('number');
+		expect(typeof body.sandbox_caps_today).toBe('number');
+		expect(typeof body.batch_combos_today).toBe('number');
+	});
+
+	it('17:00 cron writes traction_cache KV key', async () => {
+		const scheduledController = createScheduledController({ scheduledTime: Date.now(), cron: '0 17 * * *' });
+		const ctx = createExecutionContext();
+		await worker.scheduled(scheduledController, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const today    = new Date().toISOString().slice(0, 10);
+		const cacheRaw = await env.ORACLE_TELEMETRY.get(`traction_cache:${today}`);
+		expect(cacheRaw).toBeTruthy();
+		const cache    = JSON.parse(cacheRaw!) as { date: string; computed_at: string };
+		expect(cache.date).toBe(today);
+		expect(cache.computed_at).toBeTruthy();
+		// Clean up
+		await env.ORACLE_TELEMETRY.delete(`traction_cache:${today}`);
+	});
+});
+
+// ─── Task 4: /v5/handoff ──────────────────────────────────────────────────────────────────────────
+
+describe('/v5/handoff session handoff endpoint (Task 4)', () => {
+	it('returns 401 without auth', async () => {
+		const res = await fetchWorker('/v5/handoff');
+		expect(res.status).toBe(401);
+	});
+
+	it('returns 200 with valid key and Markdown content-type', async () => {
+		const res = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('Markdown document includes date header', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const res   = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const text  = await res.text();
+		expect(text).toContain('Session Handoff');
+		expect(text).toContain(today);
+	});
+
+	it('Markdown document includes telemetry section headers', async () => {
+		const res  = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const text = await res.text();
+		expect(text).toContain('## Telemetry Today');
+		expect(text).toContain('## Open Gaps');
+		expect(text).toContain('## Product State');
+	});
+});

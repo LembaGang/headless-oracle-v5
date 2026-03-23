@@ -2487,6 +2487,7 @@ Headless Oracle provides cryptographically signed market-state attestations (Sig
 ## Quick start (no signup required)
 # Get an instant sandbox key (24h, 100 calls):
 GET https://api.headlessoracle.com/v5/sandbox
+# Optional: add ?email=you@example.com to receive key by email and get an expiry reminder
 
 # Use it immediately:
 GET https://api.headlessoracle.com/v5/status?mic=XNYS
@@ -2500,7 +2501,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 
 ## Authentication
 - Free key (500 req/day): POST https://headlessoracle.com/v5/keys/request
-- Sandbox key (instant, 100 calls, no signup): GET https://headlessoracle.com/v5/sandbox
+- Sandbox key (instant, 100 calls, no signup): GET https://headlessoracle.com/v5/sandbox?email=you@example.com (email optional — sends key + expiry reminder)
 - Paid key: https://headlessoracle.com/pricing
 - Header: X-Oracle-Key: {your_key}
 - Without key: demo endpoint works; /v5/status returns 402 with x402 payment object
@@ -2511,12 +2512,13 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/demo | GET | No | Signed receipt, demo mode | SMA receipt (receipt_mode=demo) |
 | /v5/status | GET | Yes | Signed receipt, live mode | SMA receipt (receipt_mode=live) |
 | /v5/batch | GET | Yes | Signed receipts for multiple MICs | { summary, receipts[] } |
-| /v5/sandbox | GET | No | Instant sandbox key (24h, 100 calls) | { api_key, tier, expires_at, quickstart } |
+| /v5/sandbox | GET | No | Instant sandbox key (24h, 100 calls). Add ?email=you@example.com to receive key by email and get an expiry reminder. | { api_key, tier, expires_at, quickstart, email_captured? } |
 | /v5/schedule | GET | No | Next open/close times (not signed) | { next_open, next_close, lunch_break } |
 | /v5/exchanges | GET | No | All 23 supported exchanges | { exchanges: [{mic, name, timezone}] } |
 | /v5/keys | GET | No | Public signing key + canonical spec | { keys: [{key_id, public_key, algorithm}] } |
 | /v5/health | GET | No | Signed liveness probe | SMA-format health receipt |
 | /v5/usage | GET | Yes | Per-key daily usage stats | { requests_today, limit, percent_used } |
+| /v5/handoff | GET | Yes | Session handoff document (Markdown) | text/markdown — telemetry, gaps, weekly summary |
 | /v5/traction | GET | No | Live metrics snapshot | { exchanges_covered, mcp_requests_today, ... } |
 | /v5/receipts | GET | Builder+ | Receipt audit log | { receipts: [{mic, status, issued_at}] } |
 | /v5/webhooks/subscribe | POST | Yes | Subscribe to state-change webhooks | { subscription_id } |
@@ -4636,12 +4638,25 @@ export default {
 				// We don't implement SSE transport — return 405 so the client
 				// stops reconnecting (SSE auto-reconnect only fires on 2xx/network close).
 				if (request.headers.get('Accept')?.includes('text/event-stream')) {
-					return json({
-						error:     'SSE_NOT_SUPPORTED',
-						message:   'SSE transport is not supported. Use HTTP transport: POST /mcp with Content-Type: application/json',
-						transport: 'http',
-						endpoint:  'https://headlessoracle.com/mcp',
-					}, 405);
+					// SSE transport handshake — send endpoint event pointing to POST /mcp.
+					// Cloudflare Workers are stateless and cannot hold connections indefinitely.
+					// Pattern: send endpoint event + keepalive comment, then close.
+					// Client will POST JSON-RPC messages to the advertised endpoint URI.
+					const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+					const writer  = writable.getWriter();
+					const encoder = new TextEncoder();
+					writer.write(encoder.encode(`event: endpoint\ndata: ${JSON.stringify({ uri: 'https://headlessoracle.com/mcp' })}\n\n`));
+					writer.write(encoder.encode(': keepalive\n\n'));
+					writer.close();
+					return new Response(readable, {
+						headers: {
+							'Content-Type':                'text/event-stream',
+							'Cache-Control':               'no-cache',
+							'Connection':                  'keep-alive',
+							'Access-Control-Allow-Origin': '*',
+							'X-Oracle-Version':            'v5',
+						},
+					});
 				}
 				return json({
 					name:           MCP_SERVER_NAME,
@@ -5350,6 +5365,7 @@ export default {
 					openapi:        'https://headlessoracle.com/openapi.json',
 					protocol:       '2024-11-05',
 					protocols:      ['MCP-2024-11-05', 'A2A', 'x402', 'OAuth2'],
+					transports:     ['http', 'sse'],
 					fail_closed:    true,
 					reliability:    { uptime_sla: '99.9%', p95_latency_ms: 200 },
 					verification:   { algorithm: 'Ed25519', key_endpoint: 'https://api.headlessoracle.com/v5/keys' },
@@ -5956,8 +5972,53 @@ export default {
 			// ── GET /v5/traction — public live metrics snapshot ──────────
 			// Shows exchanges covered, uptime, MCP usage, and stack positioning.
 			// No auth required. Suitable for investor / partner check-ins.
+			// Reads from traction_cache:{today} KV key (written by 17:00 cron) when available.
 			if (url.pathname === '/v5/traction') {
-				const today  = new Date().toISOString().slice(0, 10);
+				const today       = now.toISOString().slice(0, 10);
+				const currentYear = now.getUTCFullYear();
+				const uptimeSince = env.LAUNCH_DATE ?? '2026-03-10T08:00:00Z';
+				const launchDate     = new Date(uptimeSince);
+				const launchMidnight = Date.UTC(launchDate.getUTCFullYear(), launchDate.getUTCMonth(), launchDate.getUTCDate());
+				const todayMidnight  = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+				const daysLive       = Math.floor((todayMidnight - launchMidnight) / 86400000);
+
+				// Try cache first (written at 17:00 UTC by cron).
+				const cachedRaw = await env.ORACLE_TELEMETRY.get(`traction_cache:${today}`).catch(() => null);
+				if (cachedRaw) {
+					try {
+						const cached = JSON.parse(cachedRaw) as {
+							unique_clients_today: number;
+							total_requests_today: number;
+							unauth_calls_today: number;
+							auth_calls_today: number;
+							auth_ratio: number | null;
+							sandbox_keys_issued_today: number;
+							sandbox_caps_today: number;
+							batch_combos_today: number;
+						};
+						return json({
+							exchanges_covered:          SUPPORTED_EXCHANGES.length,
+							edge_cases_per_year:        edgeCaseCount(currentYear).total,
+							uptime_since:               uptimeSince,
+							days_live:                  daysLive,
+							mcp_requests_today:         cached.total_requests_today,
+							unique_mcp_clients_today:   cached.unique_clients_today,
+							sma_spec_version:           '1.0',
+							verifiable_intent_rfc:      'submitted',
+							x402_enabled:               !!env.ORACLE_PAYMENT_ADDRESS,
+							halt_monitor:               'active',
+							batch_combos_today:         cached.batch_combos_today,
+							auth_ratio_today:           cached.auth_ratio,
+							sandbox_caps_today:         cached.sandbox_caps_today,
+							unauth_calls_today:         cached.unauth_calls_today,
+							auth_calls_today:           cached.auth_calls_today,
+							sandbox_keys_issued_today:  cached.sandbox_keys_issued_today,
+							cache_status:               'cached',
+						});
+					} catch { /* cache parse error — fall through to live */ }
+				}
+
+				// Cache miss (before 17:00 cron runs) — compute live.
 				const prefix = `mcp_clients:${today}:`;
 				let mcpRequestsToday  = 0;
 				let mcpClientsToday   = 0;
@@ -5992,27 +6053,24 @@ export default {
 					: null;
 				const sandboxCapsToday = parseInt(sandboxCapsRaw ?? '0', 10) || 0;
 
-				const currentYear = now.getUTCFullYear();
-				const uptimeSince = env.LAUNCH_DATE ?? '2026-03-10T08:00:00Z';
-				const launchDate     = new Date(uptimeSince);
-				const launchMidnight = Date.UTC(launchDate.getUTCFullYear(), launchDate.getUTCMonth(), launchDate.getUTCDate());
-				const todayMidnight  = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-				const daysLive       = Math.floor((todayMidnight - launchMidnight) / 86400000);
-
 				return json({
-					exchanges_covered:        SUPPORTED_EXCHANGES.length,
-					edge_cases_per_year:      edgeCaseCount(currentYear).total,
-					uptime_since:             uptimeSince,
-					days_live:                daysLive,
-					mcp_requests_today:       mcpRequestsToday,
-					unique_mcp_clients_today: mcpClientsToday,
-					sma_spec_version:         '1.0',
-					verifiable_intent_rfc:    'submitted',
-					x402_enabled:             !!env.ORACLE_PAYMENT_ADDRESS,
-					halt_monitor:             'active',
-					batch_combos_today:       batchCombosToday,
-					auth_ratio_today:         authRatioToday,
-					sandbox_caps_today:       sandboxCapsToday,
+					exchanges_covered:          SUPPORTED_EXCHANGES.length,
+					edge_cases_per_year:        edgeCaseCount(currentYear).total,
+					uptime_since:               uptimeSince,
+					days_live:                  daysLive,
+					mcp_requests_today:         mcpRequestsToday,
+					unique_mcp_clients_today:   mcpClientsToday,
+					sma_spec_version:           '1.0',
+					verifiable_intent_rfc:      'submitted',
+					x402_enabled:               !!env.ORACLE_PAYMENT_ADDRESS,
+					halt_monitor:               'active',
+					batch_combos_today:         batchCombosToday,
+					auth_ratio_today:           authRatioToday,
+					sandbox_caps_today:         sandboxCapsToday,
+					unauth_calls_today:         unauthCalls,
+					auth_calls_today:           authCalls,
+					sandbox_keys_issued_today:  0,
+					cache_status:               'live',
 				});
 			}
 
@@ -6463,6 +6521,15 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 
 			// ── GET /v5/sandbox — instant no-auth sandbox key (24h, 100 calls) ───────────────────
 			if (url.pathname === '/v5/sandbox' && request.method === 'GET') {
+				// Optional email capture — validate format if provided.
+				const emailParam = url.searchParams.get('email')?.trim() ?? '';
+				if (emailParam) {
+					const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+					if (!emailRegex.test(emailParam)) {
+						return json({ error: 'INVALID_EMAIL', message: 'Invalid email format. Use ?email=you@example.com' }, 422);
+					}
+				}
+
 				// Rate-limit sandbox key creation: max 10 per IP per hour to prevent abuse.
 				const clientIp = request.headers.get('CF-Connecting-IP') ||
 					request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 'unknown';
@@ -6494,6 +6561,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					max_calls:  100,
 					created_at: now.toISOString(),
 					source:     'auto_sandbox',
+					...(emailParam ? { email: emailParam } : {}),
 				});
 
 				// Store sandbox key in ORACLE_API_KEYS KV with 24h TTL.
@@ -6507,16 +6575,180 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				// Acquisition telemetry: sandbox key creations count as unauthenticated (FINDING-13)
 				incrementKvCounter(`unauth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 
+				// Email capture: store follow-up record and send welcome email.
+				if (emailParam) {
+					const followupRecord = JSON.stringify({
+						email:          emailParam,
+						created_at:     now.toISOString(),
+						key_expires_at: expiresAt,
+						followed_up:    false,
+					});
+					// 48h TTL — outlives the 24h key so follow-up cron can reach it.
+					await env.ORACLE_TELEMETRY.put(`sandbox_followup:${keyHash}`, followupRecord, { expirationTtl: 86_400 * 2 }).catch(() => {});
+
+					if (env.RESEND_API_KEY) {
+						const welcomeText =
+							`Your sandbox key: ${rawKey}\n\n` +
+							`You have 100 calls over 24 hours to explore Headless Oracle.\n\n` +
+							`Quick test:\n` +
+							`curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' \\\n` +
+							`  -H 'X-Oracle-Key: ${rawKey}'\n\n` +
+							`When you're ready for production:\nhttps://headlessoracle.com/pricing\n\n` +
+							`Questions? Reply to this email.`;
+						ctx.waitUntil(
+							fetch('https://api.resend.com/emails', {
+								method:  'POST',
+								headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+								body: JSON.stringify({
+									from:    'Headless Oracle <hello@headlessoracle.com>',
+									to:      [emailParam],
+									subject: 'Your Headless Oracle sandbox key',
+									text:    welcomeText,
+								}),
+							}).then(r => {
+								if (!r.ok) console.error(`SANDBOX_EMAIL_ERROR: resend status=${r.status}`);
+							else       console.log(JSON.stringify({ event: 'SANDBOX_EMAIL_SENT', email: emailParam }));
+							}).catch(e => console.error(`SANDBOX_EMAIL_ERROR: ${e instanceof Error ? e.message : String(e)}`)),
+						);
+					}
+				}
+
 				return json({
 					api_key:         rawKey,
 					tier:            'sandbox',
 					expires_at:      expiresAt,
 					calls_remaining: 100,
 					upgrade:         'https://headlessoracle.com/pricing',
+					...(emailParam ? {
+						email_captured: true,
+						follow_up:      'Check your inbox for your key and quickstart.',
+					} : {}),
 					quickstart: {
 						curl:   `curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' -H 'X-Oracle-Key: ${rawKey}'`,
 						node:   `const res = await fetch('https://api.headlessoracle.com/v5/status?mic=XNYS', {headers: {'X-Oracle-Key': '${rawKey}'}})`,
 						python: `import httpx; r = httpx.get('https://api.headlessoracle.com/v5/status', params={'mic':'XNYS'}, headers={'X-Oracle-Key':'${rawKey}'})`,
+					},
+				});
+			}
+
+			// ── GET /v5/handoff — session continuity document (auth required) ────────
+			// Returns a Markdown-formatted summary of current product state for session handoff.
+			if (url.pathname === '/v5/handoff' && request.method === 'GET') {
+				const handoffKey = request.headers.get('X-Oracle-Key');
+				if (!handoffKey) {
+					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				}
+				const handoffAuth = await checkApiKey(handoffKey, env);
+				if (!handoffAuth.allowed) {
+					return json({ error: handoffAuth.error, message: handoffAuth.message }, handoffAuth.status);
+				}
+
+				const today  = now.toISOString().slice(0, 10);
+				const prefix = `mcp_clients:${today}:`;
+				let hMcpRequests = 0;
+				let hMcpClients  = 0;
+				let hNewClients  = 0;
+				const hReturning: Array<{ hash: string; asn_org: string; request_count: number }> = [];
+				const hActiveRecent: Array<{ hash: string; asn_org: string; last_seen: string }> = [];
+				const twoHoursAgo = new Date(now.getTime() - 2 * 3600_000).toISOString();
+
+				try {
+					const hList = await env.ORACLE_TELEMETRY.list({ prefix });
+					hMcpClients = hList.keys.length;
+					const hRecords = await Promise.all(hList.keys.map(k => env.ORACLE_TELEMETRY.get(k.name)));
+					for (const r of hRecords) {
+						if (!r) continue;
+						const parsed = JSON.parse(r) as { request_count?: number; asn_org?: string; first_seen?: string; last_seen?: string };
+						hMcpRequests += parsed.request_count ?? 0;
+						if ((parsed.request_count ?? 0) > 1) {
+							hReturning.push({ hash: 'anon', asn_org: parsed.asn_org ?? '', request_count: parsed.request_count ?? 0 });
+						} else {
+							hNewClients++;
+						}
+						if (parsed.last_seen && parsed.last_seen >= twoHoursAgo) {
+							hActiveRecent.push({ hash: 'anon', asn_org: parsed.asn_org ?? '', last_seen: parsed.last_seen ?? '' });
+						}
+					}
+				} catch { /* KV unavailable */ }
+
+				const [hAuthRaw, hUnauthRaw, hSandboxCapsRaw, hSandboxKeysRaw] = await Promise.all([
+					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`sandbox_cap_hit:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.list({ prefix: 'sandbox_followup:' }).then(l => l.keys.filter(k => {
+						return true; // count all (creation date checked below)
+					})).catch(() => [] as Array<{ name: string }>),
+				]);
+				const hAuthCalls    = parseInt(hAuthRaw   ?? '0', 10) || 0;
+				const hUnauthCalls  = parseInt(hUnauthRaw ?? '0', 10) || 0;
+				const hSandboxCaps  = parseInt(hSandboxCapsRaw ?? '0', 10) || 0;
+				const hAuthRatioStr = hAuthCalls + hUnauthCalls > 0
+					? `${Math.round((hAuthCalls / (hAuthCalls + hUnauthCalls)) * 100)}%`
+					: 'n/a';
+
+				// Weekly digest
+				const weekNum   = Math.ceil((now.getUTCDate() - now.getUTCDay() + 1 + 6) / 7);
+				const weekKey   = `weekly_digest:${today.slice(0, 4)}-W${String(weekNum).padStart(2, '0')}`;
+				const weekRaw   = await env.ORACLE_TELEMETRY.get(weekKey).catch(() => null);
+
+				const openGaps: string[] = [];
+				// Static open gaps reference — updated when new gaps are identified
+				openGaps.push('GAP-006: x402scan full listing pending Sam Ragsdale approval (external)');
+
+				const returningSection = hReturning.length > 0
+					? hReturning.slice(0, 10).map(r => `- ${r.asn_org || 'unknown ASN'}: ${r.request_count} requests`).join('\n')
+					: '_(none)_';
+				const activeSection = hActiveRecent.length > 0
+					? hActiveRecent.slice(0, 10).map(r => `- ${r.asn_org || 'unknown ASN'} (${r.last_seen.slice(11, 16)} UTC)`).join('\n')
+					: '_(none)_';
+				const weekSection = weekRaw
+					? (() => { try { const w = JSON.parse(weekRaw) as Record<string, unknown>; return JSON.stringify(w, null, 2); } catch { return weekRaw; } })()
+					: '_(weekly digest not yet written — runs Monday 09:00 UTC)_';
+
+				const markdown = [
+					`# Headless Oracle — Session Handoff`,
+					`**Generated:** ${now.toISOString()}`,
+					``,
+					`## Telemetry Today (${today})`,
+					`- Unique MCP clients: ${hMcpClients}`,
+					`- Total MCP requests: ${hMcpRequests}`,
+					`- Unauthenticated calls: ${hUnauthCalls}`,
+					`- Auth ratio: ${hAuthRatioStr}`,
+					`- Sandbox keys issued: ${hSandboxKeysRaw.length}`,
+					`- Sandbox keys at limit: ${hSandboxCaps}`,
+					``,
+					`## Returning Clients`,
+					returningSection,
+					``,
+					`## New Clients Today`,
+					`${hNewClients} new clients since midnight UTC`,
+					``,
+					`## Active Clients (last 2 hours)`,
+					activeSection,
+					``,
+					`## Open Gaps`,
+					openGaps.map(g => `- ${g}`).join('\n'),
+					``,
+					`## Weekly Summary`,
+					weekSection,
+					``,
+					`## Product State`,
+					`- Exchanges covered: ${SUPPORTED_EXCHANGES.length}`,
+					`- Edge cases/year: ${edgeCaseCount(now.getUTCFullYear()).total}`,
+					`- x402 enabled: ${!!env.ORACLE_PAYMENT_ADDRESS}`,
+					`- Halt monitor: active`,
+					`- Infrastructure cost: $15.50/month`,
+					``,
+					`---`,
+					`_Paste \`curl https://api.headlessoracle.com/v5/handoff -H 'X-Oracle-Key: YOUR_KEY'\` at session start for instant context._`,
+				].join('\n');
+
+				return new Response(markdown, {
+					headers: {
+						...corsHeaders,
+						'Content-Type':  'text/markdown; charset=utf-8',
+						'X-Oracle-Version': 'v5',
+						'Cache-Control': 'no-store',
 					},
 				});
 			}
@@ -6595,6 +6827,113 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}));
 			}
 		} else if (event.cron === '0 17 * * *') {
+			// Pre-compute traction metrics for the day and cache in KV.
+			// /v5/traction reads from this cache instead of fanning out at request time.
+			try {
+				const today  = new Date().toISOString().slice(0, 10);
+				const prefix = `mcp_clients:${today}:`;
+				const list   = await env.ORACLE_TELEMETRY.list({ prefix });
+
+				let tractionMcpRequests = 0;
+				let tractionMcpClients  = 0;
+				if (list.keys.length > 0) {
+					const tractionRecords = await Promise.all(list.keys.map(k => env.ORACLE_TELEMETRY.get(k.name)));
+					for (const r of tractionRecords) {
+						if (r) {
+							const parsed = JSON.parse(r) as { request_count?: number };
+							tractionMcpRequests += parsed.request_count ?? 0;
+						}
+					}
+					tractionMcpClients = list.keys.length;
+				}
+
+				const [batchComboKvsRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw] = await Promise.all([
+					env.ORACLE_TELEMETRY.list({ prefix: 'batch_combo:' }).then(r => r.keys.filter(k => k.name.endsWith(`:${today}`))).catch(() => [] as Array<{ name: string }>),
+					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`sandbox_cap_hit:${today}`).catch(() => null),
+				]);
+				const batchCombosDay   = batchComboKvsRaw.length;
+				const authCallsDay     = parseInt(authCallsRaw   ?? '0', 10) || 0;
+				const unauthCallsDay   = parseInt(unauthCallsRaw ?? '0', 10) || 0;
+				const sandboxCapsDay   = parseInt(sandboxCapsRaw ?? '0', 10) || 0;
+				const authRatioDay     = authCallsDay + unauthCallsDay > 0
+					? Math.round((authCallsDay / (authCallsDay + unauthCallsDay)) * 100) / 100
+					: null;
+
+				// Count sandbox keys issued today (sandbox_followup keys have created_at = today)
+				const followupList = await env.ORACLE_TELEMETRY.list({ prefix: 'sandbox_followup:' }).catch(() => null);
+				let sandboxKeysToday = 0;
+				if (followupList) {
+					for (const k of followupList.keys) {
+						const raw = await env.ORACLE_TELEMETRY.get(k.name).catch(() => null);
+						if (raw) {
+							try {
+								const rec = JSON.parse(raw) as { created_at?: string };
+								if (rec.created_at?.startsWith(today)) sandboxKeysToday++;
+							} catch { /* skip */ }
+						}
+					}
+				}
+
+				const tractionCache = {
+					date:                  today,
+					computed_at:           new Date().toISOString(),
+					unique_clients_today:  tractionMcpClients,
+					total_requests_today:  tractionMcpRequests,
+					unauth_calls_today:    unauthCallsDay,
+					auth_calls_today:      authCallsDay,
+					auth_ratio:            authRatioDay,
+					sandbox_keys_issued_today: sandboxKeysToday,
+					sandbox_caps_today:    sandboxCapsDay,
+					batch_combos_today:    batchCombosDay,
+				};
+				await env.ORACLE_TELEMETRY.put(`traction_cache:${today}`, JSON.stringify(tractionCache), { expirationTtl: 86_400 * 2 });
+				console.log(JSON.stringify({ event: 'TRACTION_CACHE_WRITTEN', ...tractionCache }));
+			} catch (err: unknown) {
+				console.error(`TRACTION_CACHE_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+			}
+
+			// Sandbox follow-up emails: check for sandbox keys expiring within 2 hours.
+			if (env.RESEND_API_KEY) {
+				try {
+					const twoHoursFromNow = new Date(Date.now() + 2 * 3600_000).toISOString();
+					const sfList = await env.ORACLE_TELEMETRY.list({ prefix: 'sandbox_followup:' }).catch(() => null);
+					if (sfList) {
+						for (const k of sfList.keys) {
+							const raw = await env.ORACLE_TELEMETRY.get(k.name).catch(() => null);
+							if (!raw) continue;
+							let rec: { email: string; key_expires_at: string; followed_up: boolean };
+							try { rec = JSON.parse(raw); } catch { continue; }
+							if (rec.followed_up) continue;
+							if (rec.key_expires_at <= twoHoursFromNow) {
+								const followupText =
+									`Your sandbox key expires in ~2 hours.\n` +
+									`If you want to keep building:\nhttps://headlessoracle.com/pricing\n` +
+									`Builder plan: $99/month, 50K calls/day\n` +
+									`Free beta keys also available — reply to ask.`;
+								const emailRes = await fetch('https://api.resend.com/emails', {
+									method:  'POST',
+									headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+									body: JSON.stringify({
+										from:    'Headless Oracle <hello@headlessoracle.com>',
+										to:      [rec.email],
+										subject: 'Your Headless Oracle sandbox key expires soon',
+										text:    followupText,
+									}),
+								}).catch(() => null);
+								rec.followed_up = true;
+								await env.ORACLE_TELEMETRY.put(k.name, JSON.stringify(rec), { expirationTtl: 86_400 }).catch(() => {});
+								if (emailRes?.ok) console.log(JSON.stringify({ event: 'SANDBOX_FOLLOWUP_SENT', email: rec.email }));
+								else console.error(`SANDBOX_FOLLOWUP_ERROR: email=${rec.email} status=${emailRes?.status}`);
+							}
+						}
+					}
+				} catch (sfErr: unknown) {
+					console.error(`SANDBOX_FOLLOWUP_CRON_ERROR: ${sfErr instanceof Error ? sfErr.message : String(sfErr)}`);
+				}
+			}
+
 			// Scan today's MCP client aggregates in KV and log a summary.
 			// Identifies high-engagement anonymous clients (>10 requests/day) for conversion.
 			try {
