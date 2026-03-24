@@ -3,12 +3,25 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 477/477 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json
+**Test suite**: 483/483 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/changelog
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 24 2026 — x402 autonomous key minting + per-tool MCP telemetry (477 tests):
+**Last significant work**: Mar 24 2026 — reach infrastructure sprint (483 tests):
+  - GET /.well-known/ai-plugin.json + /ai-plugin.json: ChatGPT/OpenAI plugin manifest (schema_version v1, name_for_model: headless_oracle)
+  - GET /status: HTML real-time market status page, all 23 exchanges, auto-refresh 60s, colour-coded OPEN/CLOSED/HALTED/UNKNOWN
+  - GET /badge/:mic: SVG shields.io-style status badge (green=OPEN, grey=CLOSED, red=HALTED, orange=UNKNOWN), Cache-Control 60s
+  - GET /v5/changelog: structured versioned changelog feed, 5 entries, no auth required
+  - docs/integrations.md: LangChain, Vercel AI SDK, AutoGen, CrewAI, OpenAI Assistants framework examples
+  - docs/quickstart.md: 5-minute quickstart (curl, Python, Node.js)
+  - docs/mcp-registry-submission.md: complete MCP registry submission document (Smithery/mcp.so ready)
+  - headless-oracle-web index.html: inline sandbox key generator with email capture, copy button, pre-filled curl command
+  - LLMS_TXT + AGENT_JSON updated with new routes
+  - 6 new tests; 483/483 passing
+  - Deployed: Version ed26b119. Pushed to main (ceae11e).
+  - Web repo: index.html updated. Pushed to main (37cfd36).
+**Previous significant work**: Mar 24 2026 — x402 autonomous key minting + per-tool MCP telemetry (477 tests):
   - POST /v5/x402/mint: agents submit Base mainnet USDC tx_hash → get persistent ho_live_ key. builder (99 USDC = 50K calls/day), pro (299 USDC = 200K calls/day). Replay protection via x402_used_tx: KV (365-day TTL, separate from per-request x402_used: TTL). Keys stored in ORACLE_API_KEYS KV (no expiry) + non-blocking Supabase insert. Non-blocking Resend email if email field present.
   - Per-tool MCP telemetry: mcp_tool:{name}:{date} KV counters for get_market_status, get_market_schedule, list_exchanges, verify_receipt (via incrementKvCounter). Per-client breakdown stored in McpClientRecord.tools (second non-blocking KV read-modify-write inside tools/call case).
   - /v5/traction: mcp_tools_today object (live 4 KV gets in both cached and uncached paths)
