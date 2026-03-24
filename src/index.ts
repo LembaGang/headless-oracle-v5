@@ -2623,6 +2623,11 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /.well-known/agent.json | GET | No | A2A Agent Card | A2A agent capabilities |
 | /.well-known/mcp/server-card.json | GET | No | MCP server card | Tool list, reliability, coverage |
 | /v5/errors/{code} | GET | No | Machine-readable error definition | { message, resolution, http_status } |
+| /v5/changelog | GET | No | Versioned changelog feed | { version, updated, entries[] } |
+| /badge/:mic | GET | No | SVG status badge (shields.io style) | image/svg+xml |
+| /status | GET | No | HTML market status page for all 23 exchanges | text/html |
+| /.well-known/ai-plugin.json | GET | No | ChatGPT plugin manifest | { schema_version, name_for_model, api, auth } |
+| /ai-plugin.json | GET | No | ChatGPT plugin manifest (root fallback) | { schema_version, name_for_model, api, auth } |
 
 ## Receipt schema
 \`\`\`json
@@ -3166,6 +3171,8 @@ const AGENT_JSON = {
 			{ path: '/v5/metrics',                  method: 'GET', auth: false, description: 'MCP client telemetry — today\'s request and unique client counts' },
 			{ path: '/v5/traction',                 method: 'GET', auth: false, description: 'Live traction metrics — exchanges, uptime, MCP usage, stack positioning' },
 			{ path: '/v5/usage',                    method: 'GET', auth: true,  description: 'Per-key usage stats — requests today/month, limits, credits, upgrade info' },
+			{ path: '/v5/changelog',                method: 'GET', auth: false, description: 'Versioned changelog — entries[], each with date, version, changes[]' },
+			{ path: '/badge/:mic',                  method: 'GET', auth: false, description: 'SVG status badge for README embedding (shields.io style)' },
 		],
 		auth: {
 			header:           'X-Oracle-Key',
@@ -7195,7 +7202,287 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				});
 			}
 
-			return json({ error: 'NOT_FOUND', message: 'Route not found' }, 404);
+			// ── GET /.well-known/ai-plugin.json and /ai-plugin.json — ChatGPT plugin manifest ──
+		// Some tools probe the root (/ai-plugin.json), others probe the well-known path.
+		// Both return the same payload so any discovery strategy succeeds.
+		if (url.pathname === '/.well-known/ai-plugin.json' || url.pathname === '/ai-plugin.json') {
+			return new Response(JSON.stringify({
+				schema_version: 'v1',
+				name_for_human: 'Headless Oracle',
+				name_for_model: 'headless_oracle',
+				description_for_human: 'Cryptographically signed market state verification for 23 global exchanges. Know if NYSE, LSE, or any major exchange is OPEN, CLOSED, or HALTED before your agent acts.',
+				description_for_model: 'Use headless_oracle to get Ed25519-signed market state receipts before executing any financial transaction. Returns OPEN, CLOSED, HALTED, or UNKNOWN with cryptographic proof. Always call get_market_status before safe_to_execute. Supports 23 exchanges by MIC code. Fail-closed: if uncertain, returns UNKNOWN rather than false OPEN.',
+				auth: {
+					type:               'api_key',
+					api_key_question:   'Enter your Headless Oracle API key (X-Oracle-Key header). Get a free sandbox key at https://api.headlessoracle.com/v5/sandbox',
+				},
+				api: {
+					type:                  'openapi',
+					url:                   'https://headlessoracle.com/openapi.json',
+					is_user_authenticated: false,
+				},
+				logo_url:      'https://headlessoracle.com/logo.png',
+				contact_email: 'hello@headlessoracle.com',
+				legal_info_url:'https://headlessoracle.com/legal',
+			}, null, 2), {
+				headers: {
+					...corsHeaders,
+					'Content-Type':     'application/json',
+					'X-Oracle-Version': 'v5',
+					'Cache-Control':    'public, max-age=3600',
+				},
+			});
+		}
+
+		// ── GET /status — HTML market status page for all 23 exchanges ───────────
+		// Not to be confused with /v5/status (the authenticated API endpoint).
+		// This is a human-readable (and agent-parseable) page that polls /v5/demo
+		// for each exchange and renders results with colour-coded status badges.
+		if (url.pathname === '/status') {
+			const statusHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Market Status — Headless Oracle</title>
+  <meta name="description" content="Real-time market open/closed status for 23 global exchanges. Cryptographically signed by Headless Oracle. NYSE, NASDAQ, LSE, Tokyo, and more.">
+  <meta property="og:title" content="Live Market Status — Headless Oracle">
+  <meta property="og:description" content="Real-time market open/closed status for 23 global exchanges.">
+  <meta property="og:url" content="https://headlessoracle.com/status">
+  <link rel="canonical" href="https://headlessoracle.com/status">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "Live Market Status",
+    "description": "Real-time market open/closed/halted status for 23 global stock exchanges, cryptographically signed.",
+    "url": "https://headlessoracle.com/status",
+    "provider": { "@type": "Organization", "name": "Headless Oracle", "url": "https://headlessoracle.com" }
+  }
+  </script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+    header{background:#1e293b;border-bottom:1px solid #334155;padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+    header a{color:#94a3b8;text-decoration:none;font-size:14px}
+    header h1{font-size:18px;font-weight:700;color:#f8fafc}
+    .badge-api{background:#1d4ed8;color:#fff;padding:6px 14px;border-radius:8px;font-size:13px;text-decoration:none;font-weight:600}
+    .meta{padding:12px 24px;background:#0f172a;border-bottom:1px solid #1e293b;font-size:12px;color:#64748b;display:flex;gap:16px;align-items:center}
+    .meta #updated{color:#94a3b8}
+    .meta .countdown{color:#3b82f6}
+    main{padding:24px;max-width:1200px;margin:0 auto}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+    .card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:16px;transition:border-color .2s}
+    .card.open{border-left:4px solid #22c55e}
+    .card.closed{border-left:4px solid #64748b}
+    .card.halted{border-left:4px solid #ef4444}
+    .card.unknown{border-left:4px solid #f97316}
+    .card.loading{border-left:4px solid #1e293b}
+    .card-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+    .name{font-weight:600;font-size:14px;color:#f1f5f9;line-height:1.3}
+    .mic{font-size:11px;font-family:monospace;color:#64748b;margin-top:2px}
+    .status-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
+    .status-badge.open{background:#14532d;color:#4ade80}
+    .status-badge.closed{background:#1e293b;color:#94a3b8;border:1px solid #334155}
+    .status-badge.halted{background:#450a0a;color:#fca5a5}
+    .status-badge.unknown{background:#431407;color:#fdba74}
+    .status-badge.loading{background:#1e293b;color:#475569}
+    .session{font-size:11px;color:#64748b;margin-top:8px}
+    .session span{color:#94a3b8}
+    .cta{text-align:center;padding:40px 24px;background:#1e293b;border-top:1px solid #334155;margin-top:40px}
+    .cta h2{font-size:20px;font-weight:700;color:#f8fafc;margin-bottom:8px}
+    .cta p{color:#94a3b8;font-size:14px;margin-bottom:16px}
+    .cta a{background:#1d4ed8;color:#fff;padding:10px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px}
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Headless Oracle — Live Market Status</h1>
+      <a href="https://headlessoracle.com" style="font-size:12px">headlessoracle.com</a>
+    </div>
+    <a href="https://api.headlessoracle.com/v5/sandbox" class="badge-api">Get API Access →</a>
+  </header>
+  <div class="meta">
+    <span>23 exchanges · Ed25519 signed · Fail-closed</span>
+    <span>Last updated: <span id="updated">loading…</span></span>
+    <span class="countdown">Refreshing in <span id="countdown">60</span>s</span>
+  </div>
+  <main>
+    <div class="grid" id="grid">
+      ${['XNYS','XNAS','XBSP','XLON','XPAR','XSWX','XMIL','XHEL','XSTO','XIST','XSAU','XDFM','XJSE','XSHG','XSHE','XHKG','XJPX','XKRX','XBOM','XNSE','XSES','XASX','XNZE'].map(mic => `
+      <div class="card loading" id="card-${mic}">
+        <div class="card-head">
+          <div>
+            <div class="name" id="name-${mic}">${mic}</div>
+            <div class="mic">${mic}</div>
+          </div>
+          <span class="status-badge loading" id="badge-${mic}">…</span>
+        </div>
+        <div class="session" id="session-${mic}"></div>
+      </div>`).join('')}
+    </div>
+  </main>
+  <div class="cta">
+    <h2>Use this data in your agent</h2>
+    <p>Get a signed receipt via API — Ed25519-verified, 60s TTL, fail-closed by design.</p>
+    <a href="https://api.headlessoracle.com/v5/sandbox">Get free sandbox key →</a>
+  </div>
+  <script>
+    const MICS = ['XNYS','XNAS','XBSP','XLON','XPAR','XSWX','XMIL','XHEL','XSTO','XIST','XSAU','XDFM','XJSE','XSHG','XSHE','XHKG','XJPX','XKRX','XBOM','XNSE','XSES','XASX','XNZE'];
+    const NAMES = {XNYS:'New York Stock Exchange',XNAS:'NASDAQ',XBSP:'B3 Brazil',XLON:'London Stock Exchange',XPAR:'Euronext Paris',XSWX:'SIX Swiss Exchange',XMIL:'Borsa Italiana',XHEL:'Nasdaq Helsinki',XSTO:'Nasdaq Stockholm',XIST:'Borsa Istanbul',XSAU:'Saudi Exchange (Tadawul)',XDFM:'Dubai Financial Market',XJSE:'Johannesburg Stock Exchange',XSHG:'Shanghai Stock Exchange',XSHE:'Shenzhen Stock Exchange',XHKG:'Hong Kong Exchanges',XJPX:'Japan Exchange Group',XKRX:'Korea Exchange',XBOM:'BSE India',XNSE:'NSE India',XSES:'Singapore Exchange',XASX:'Australian Securities Exchange',XNZE:'New Zealand Exchange'};
+    let countdown = 60;
+    function statusClass(s){return s==='OPEN'?'open':s==='HALTED'?'halted':s==='UNKNOWN'?'unknown':'closed';}
+    async function fetchStatus(mic){
+      try{
+        const r=await fetch('https://headlessoracle.com/v5/demo?mic='+mic);
+        return await r.json();
+      }catch{return null;}
+    }
+    function renderCard(mic,data){
+      const card=document.getElementById('card-'+mic);
+      const badge=document.getElementById('badge-'+mic);
+      const nameEl=document.getElementById('name-'+mic);
+      const session=document.getElementById('session-'+mic);
+      if(!data){card.className='card unknown';badge.className='status-badge unknown';badge.textContent='ERROR';return;}
+      const s=data.status||'UNKNOWN';
+      const cls=statusClass(s);
+      card.className='card '+cls;
+      badge.className='status-badge '+cls;
+      badge.textContent=s;
+      nameEl.textContent=NAMES[mic]||mic;
+      if(data.next_open||data.next_close){
+        const t=s==='OPEN'?'Closes':'Opens';
+        const ts=s==='OPEN'?data.next_close:data.next_open;
+        if(ts){
+          const d=new Date(ts);
+          session.innerHTML=t+': <span>'+d.toUTCString().replace(' GMT','Z')+'</span>';
+        }
+      }
+    }
+    async function loadAll(){
+      document.getElementById('updated').textContent=new Date().toUTCString().replace(' GMT','Z');
+      countdown=60;
+      await Promise.all(MICS.map(async mic=>{
+        const data=await fetchStatus(mic);
+        renderCard(mic,data);
+      }));
+    }
+    loadAll();
+    setInterval(()=>{countdown--;document.getElementById('countdown').textContent=countdown;if(countdown<=0)loadAll();},1000);
+  </script>
+</body>
+</html>`;
+			return new Response(statusHtml, {
+				headers: {
+					...corsHeaders,
+					'Content-Type':     'text/html; charset=utf-8',
+					'X-Oracle-Version': 'v5',
+					'Cache-Control':    'no-store',
+				},
+			});
+		}
+
+		// ── GET /badge/:mic — SVG status badge for embedding in READMEs ─────────
+		// Returns a shields.io-style flat SVG badge showing current market status.
+		// Cache-Control: max-age=60 so badges refresh once per minute.
+		const badgeMatch = url.pathname.match(/^\/badge\/([A-Z]{4})$/);
+		if (badgeMatch) {
+			const badgeMic = badgeMatch[1];
+			if (!MARKET_CONFIGS[badgeMic]) {
+				return json({ error: 'INVALID_MIC', message: `Unknown exchange: ${badgeMic}. See /v5/exchanges.` }, 404);
+			}
+			const badgeStatus = getScheduleStatus(badgeMic, now).status;
+			const colors: Record<string, string> = {
+				OPEN:    '#4c1',
+				CLOSED:  '#9f9f9f',
+				HALTED:  '#e05d44',
+				UNKNOWN: '#fe7d37',
+			};
+			const color = colors[badgeStatus] ?? '#9f9f9f';
+			const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="180" height="20">
+  <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+  <clipPath id="r"><rect width="180" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="120" height="20" fill="#555"/>
+    <rect x="120" width="60" height="20" fill="${color}"/>
+    <rect width="180" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="110">
+    <text x="605" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="1100" lengthAdjust="spacing">Headless Oracle | ${badgeMic}</text>
+    <text x="605" y="140" transform="scale(.1)" textLength="1100" lengthAdjust="spacing">Headless Oracle | ${badgeMic}</text>
+    <text x="1500" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="500" lengthAdjust="spacing">${badgeStatus}</text>
+    <text x="1500" y="140" transform="scale(.1)" textLength="500" lengthAdjust="spacing">${badgeStatus}</text>
+  </g>
+</svg>`;
+			return new Response(svg, {
+				headers: {
+					...corsHeaders,
+					'Content-Type':     'image/svg+xml',
+					'X-Oracle-Version': 'v5',
+					'Cache-Control':    'public, max-age=60',
+				},
+			});
+		}
+
+		// ── GET /v5/changelog — versioned changelog feed ──────────────────────
+		// No auth required. Returns structured changelog for agent and human consumers.
+		if (url.pathname === '/v5/changelog') {
+			return json({
+				version: 'v5.0',
+				updated: '2026-03-24',
+				entries: [
+					{
+						date:    '2026-03-24',
+						version: '5.4',
+						changes: [
+							'Autonomous x402 key minting via on-chain USDC payment',
+							'Per-tool MCP telemetry (get_market_status, verify_receipt, list_exchanges)',
+							'Per-tool MCP telemetry stored in ORACLE_TELEMETRY KV',
+						],
+					},
+					{
+						date:    '2026-03-22',
+						version: '5.3',
+						changes: [
+							'Webhook push notifications for market state changes',
+							'Receipt audit log via Supabase (/v5/receipts)',
+							'Batch safe_to_execute summary field',
+							'Sandbox endpoint for zero-friction testing (/v5/sandbox)',
+						],
+					},
+					{
+						date:    '2026-03-21',
+						version: '5.2',
+						changes: [
+							'A2A Agent Card at /.well-known/agent.json',
+							'OAuth 2.0 optional upgrade path for MCP (RFC 6749 client_credentials)',
+							'MCP metering against plan limits',
+						],
+					},
+					{
+						date:    '2026-03-20',
+						version: '5.1',
+						changes: [
+							'x402 micropayments on Base mainnet (USDC, chain 8453)',
+							'api.headlessoracle.com subdomain',
+							'Plan-based rate limits (builder: 50k/day, pro: 200k/day)',
+						],
+					},
+					{
+						date:    '2026-03-18',
+						version: '5.0',
+						changes: [
+							'23 global exchanges (expanded from 7)',
+							'Middle Eastern exchange weekends (Fri/Sat for XSAU, XDFM)',
+							'Autonomous halt monitor via Polygon.io + Alpaca',
+						],
+					},
+				],
+			});
+		}
+
+		return json({ error: 'NOT_FOUND', message: 'Route not found' }, 404);
 
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : 'Internal server error';

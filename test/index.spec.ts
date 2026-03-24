@@ -5432,3 +5432,76 @@ describe('x402 — end-to-end payment flow', () => {
 		}
 	});
 });
+
+// ─── GET /.well-known/ai-plugin.json ─────────────────────────────────────────
+
+describe('GET /.well-known/ai-plugin.json', () => {
+	it('returns 200 with schema_version: "v1"', async () => {
+		const res = await fetchWorker('/.well-known/ai-plugin.json');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('schema_version', 'v1');
+		expect(body).toHaveProperty('name_for_model', 'headless_oracle');
+	});
+
+	it('/ai-plugin.json (root path) returns 200 with schema_version: "v1"', async () => {
+		const res = await fetchWorker('/ai-plugin.json');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('schema_version', 'v1');
+	});
+});
+
+// ─── GET /badge/:mic ──────────────────────────────────────────────────────────
+
+describe('GET /badge/:mic', () => {
+	it('/badge/XNYS returns 200 with Content-Type: image/svg+xml', async () => {
+		const res = await fetchWorker('/badge/XNYS');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('image/svg+xml');
+		const body = await res.text();
+		expect(body).toContain('<svg');
+		expect(body).toContain('XNYS');
+	});
+
+	it('/badge/ZZZZ returns 404 with INVALID_MIC error (valid 4-char but unknown MIC)', async () => {
+		const res = await fetchWorker('/badge/ZZZZ');
+		expect(res.status).toBe(404);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_MIC');
+	});
+});
+
+// ─── GET /v5/changelog ───────────────────────────────────────────────────────
+
+describe('GET /v5/changelog', () => {
+	it('returns 200 with entries array', async () => {
+		const res = await fetchWorker('/v5/changelog');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('version');
+		expect(body).toHaveProperty('updated');
+		expect(Array.isArray(body.entries)).toBe(true);
+		const entries = body.entries as Array<Record<string, unknown>>;
+		expect(entries.length).toBeGreaterThan(0);
+		expect(entries[0]).toHaveProperty('date');
+		expect(entries[0]).toHaveProperty('version');
+		expect(Array.isArray(entries[0].changes)).toBe(true);
+	});
+});
+
+// ─── GET /status — HTML status page ─────────────────────────────────────────
+
+describe('GET /status (HTML page)', () => {
+	it('returns 200 with Content-Type: text/html', async () => {
+		const res = await fetchWorker('/status');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/html');
+		const body = await res.text();
+		expect(body).toContain('<html');
+		expect(body).toContain('XNYS');
+		expect(body).toContain('Headless Oracle');
+	});
+});
