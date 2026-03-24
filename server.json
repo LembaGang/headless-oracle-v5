@@ -1,16 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.LembaGang/headless-oracle",
-  "description": "Ed25519-signed market open/close receipts for NYSE, NASDAQ, LSE, JPX, Euronext, HKEX, and SGX.",
+  "description": "Cryptographically signed market state verification for 23 global exchanges. Ed25519-signed receipts with halt_detection field. Fail-closed design for autonomous financial agents. MCP-native with SSE transport, x402-payable.",
   "repository": {
     "url": "https://github.com/LembaGang/headless-oracle-v5",
     "source": "github"
   },
-  "version": "5.0.0",
+  "version": "1.0.0",
+  "websiteUrl": "https://headlessoracle.com",
   "remotes": [
     {
-      "type": "streamable-http",
-      "url": "https://headlessoracle.mmsebenzi-oracle.workers.dev/mcp"
+      "type": "sse",
+      "url": "https://api.headlessoracle.com/mcp"
     }
   ]
 }
