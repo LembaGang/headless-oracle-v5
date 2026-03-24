@@ -5287,3 +5287,146 @@ describe('halt_detection field in signed receipts', () => {
 		expect((coverage.schedule_only as string[])).toContain('XASX');
 	});
 });
+
+// ─── x402 — End-to-End Payment Flow ──────────────────────────────────────────
+// Documents the complete x402 payment flow end-to-end:
+// Path A (per-request): /v5/status → 402 → X-Payment header → 200
+// Path B (subscription): Paddle webhook → key minted in KV → key authenticates
+
+describe('x402 — end-to-end payment flow', () => {
+	const E2E_WEBHOOK_SECRET = 'pdl_ntfset_test_placeholder_for_local_tests'; // matches .dev.vars
+
+	it('step 1+2: /v5/status without auth → 402 with complete x402 payment fields', async () => {
+		const res = await fetchWorker('/v5/status?mic=XNYS');
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		// x402scan-compatible format (agents and crawlers can parse this)
+		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		const accepts = body.accepts as Array<Record<string, unknown>>;
+		expect(accepts).toBeDefined();
+		expect(accepts.length).toBeGreaterThan(0);
+		const offer = accepts[0];
+		expect(offer).toHaveProperty('scheme', 'exact');
+		expect(offer).toHaveProperty('network', 'eip155:8453');
+		expect(offer).toHaveProperty('maxAmountRequired', '1000'); // 0.001 USDC
+		expect(offer).toHaveProperty('payTo', TEST_PAYMENT_ADDRESS);
+		expect(offer).toHaveProperty('asset');   // USDC contract address
+		expect(offer).toHaveProperty('input');   // x402scan input schema for mic param
+	});
+
+	it('steps 3-5: Paddle webhook mints key in KV → minted key authenticates /v5/status', async () => {
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.activated',
+			data: {
+				id:          'sub_e2e_flow_001',
+				customer_id: 'ctm_e2e_001',
+				status:      'active',
+				items:       [{ price: { id: 'pri_test_builder_placeholder' } }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, E2E_WEBHOOK_SECRET);
+
+		let capturedEmailHtml = '';
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			// Paddle customer API → return email so key can be emailed
+			if (url.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'e2e-test@example.com' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			// Resend email → capture HTML body (contains the minted ho_live_ key)
+			if (url.includes('api.resend.com')) {
+				capturedEmailHtml = JSON.parse((init?.body as string) ?? '{}').html ?? '';
+				return new Response(JSON.stringify({ id: 'email_e2e_001' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			// Supabase SELECT api_keys → no existing row (new subscription)
+			// Status 406 makes supabase-js return data:null (falsy) — status 200 would make the
+			// body itself become data (truthy), causing the handler to take the early-return path.
+			if (url.includes('supabase.co') && url.includes('api_keys') && (init?.method === 'GET' || !init?.method)) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'No rows' } }), {
+					status: 406, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			// Supabase INSERT api_keys → success
+			if (url.includes('supabase.co') && url.includes('api_keys') && init?.method === 'POST') {
+				return new Response(JSON.stringify([{}]), {
+					status: 201, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			// Supabase PATCH → updateKeyUsage (non-blocking, called after /v5/status auth)
+			if (url.includes('supabase.co') && init?.method === 'PATCH') {
+				return new Response(null, { status: 204 });
+			}
+			// Supabase INSERT receipt_audit → insertReceiptAudit (non-blocking)
+			if (url.includes('supabase.co') && url.includes('receipt_audit')) {
+				return new Response(JSON.stringify([{}]), {
+					status: 201, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input as RequestInfo, init);
+		};
+
+		try {
+			// Step 3: Paddle webhook fires → key minted in ORACLE_API_KEYS KV
+			const webhookRes = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(webhookRes.status).toBe(200);
+			const webhookBody = await webhookRes.json() as Record<string, unknown>;
+			expect(webhookBody).toHaveProperty('received', true);
+
+			// Step 4: Extract the ho_live_ key value from the email HTML
+			// The webhook handler emails: <pre>ho_live_<64 hex chars></pre>
+			expect(capturedEmailHtml).toContain('ho_live_');
+			const keyMatch = capturedEmailHtml.match(/ho_live_[0-9a-f]+/);
+			expect(keyMatch).not.toBeNull();
+			const mintedKey = keyMatch![0];
+
+			// Step 5: The minted key is in ORACLE_API_KEYS KV — use it to authenticate
+			// checkApiKey: MASTER → BETA → KV hit → returns allowed:true, plan:'builder'
+			const statusRes = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': mintedKey },
+			});
+			expect(statusRes.status).toBe(200);
+			const statusBody = await statusRes.json() as Record<string, unknown>;
+			expect(VALID_STATUSES).toContain(statusBody.status);
+			expect(statusBody).toHaveProperty('signature');
+			expect(statusBody).toHaveProperty('receipt_mode', 'live');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('path A — keyless x402: X-Payment header → 200 with signed receipt (no key needed)', async () => {
+		// Demonstrates the per-request payment path: agent sends on-chain USDC tx, gets one receipt
+		const txHash  = '0x' + '4e2e'.repeat(16); // valid 64-char hex, unique to this test
+		const nowSec  = Math.floor(Date.now() / 1000);
+		const restore = mockBaseRpc(TEST_PAYMENT_ADDRESS, '1000', nowSec - 15);
+		const payment = JSON.stringify({
+			txHash,
+			network:        'base-mainnet',
+			amount:         '1000',
+			paymentAddress: TEST_PAYMENT_ADDRESS,
+			memo:           '',
+		});
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Payment': payment },
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(VALID_STATUSES).toContain(body.status);
+			expect(body).toHaveProperty('signature');
+			expect(body).toHaveProperty('receipt_mode', 'live');
+		} finally {
+			restore();
+		}
+	});
+});

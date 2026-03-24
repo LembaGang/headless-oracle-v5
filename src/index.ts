@@ -2609,11 +2609,28 @@ UNKNOWN status means the oracle cannot determine market state (signing offline, 
 ## Pricing
 - Free: 500 req/day (GET /v5/keys/request)
 - Sandbox: 100 req/24h, instant, no signup (GET /v5/sandbox)
-- x402: 0.001 USDC/req via Base mainnet (no key needed)
+- x402: 0.001 USDC/req via Base mainnet (no key, no signup — pay per request)
 - Builder: 50,000 req/day ($99/mo)
 - Pro: 200,000 req/day ($299/mo)
 - Protocol: unlimited ($500/mo)
 Upgrade: https://headlessoracle.com/pricing
+
+## x402 autonomous payment (verified working)
+Two payment paths — both fully implemented:
+
+Path A — per-request (no key required):
+1. GET /v5/status?mic=XNYS → 402 { x402Version:1, accepts:[{scheme:"exact", network:"eip155:8453", maxAmountRequired:"1000", payTo:"0x26D4...", asset:"0x8335..."}] }
+2. Send 0.001 USDC to payTo on Base mainnet
+3. Retry: GET /v5/status?mic=XNYS + header X-Payment: {"txHash":"0x...","network":"base-mainnet","amount":"1000","paymentAddress":"0x26D4...","memo":""}
+4. Oracle verifies on-chain via eth_getTransactionReceipt, returns signed receipt
+Discovery: GET /.well-known/x402.json → lists /v5/status and /v5/batch as payable resources
+
+Path B — subscription (persistent key via Paddle):
+1. POST /v5/checkout → { url } (Paddle checkout page)
+2. Agent redirects user (or operator) to Paddle URL to complete payment
+3. Paddle fires POST /webhooks/paddle with transaction.completed or subscription.activated
+4. Worker verifies Paddle-Signature, mints ho_live_ API key, writes to ORACLE_API_KEYS KV
+5. Key emailed to customer; immediately usable as X-Oracle-Key header
 
 ## MCP integration
 Server card: GET https://headlessoracle.com/.well-known/mcp/server-card.json
@@ -3001,13 +3018,21 @@ const AGENT_JSON = {
 	},
 
 	// ── Retained Oracle-specific blocks (existing consumers see unchanged fields) ──
+	// x402_payable: agents can autonomously pay for access via on-chain USDC without a subscription.
+	// payment_endpoint: the endpoint that returns 402 with x402 payment details on unauthenticated access.
+	// subscription_endpoint: Paddle checkout for persistent API key (Builder/Pro/Protocol plans).
+	x402_payable: true,
 	payment: {
 		schemes:               ['x402'],
 		network:               'base-mainnet',
 		chain_id:              8453,
 		currency:              'USDC',
-		amount_per_request:    '0.001',
-		payment_address_env:   'ORACLE_PAYMENT_ADDRESS',
+		amount_per_request:    '0.001 USDC',
+		amount_units:          '1000',        // 0.001 USDC at 6 decimals
+		asset:                 '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
+		payment_endpoint:      'https://headlessoracle.com/v5/status',       // returns 402 with x402 details
+		subscription_endpoint: 'https://headlessoracle.com/v5/checkout',     // Paddle — persistent key
+		discovery:             'https://headlessoracle.com/.well-known/x402.json',
 		free_tier_daily_limit: FREE_TIER_DAILY_LIMIT,
 	},
 	standards: {
@@ -5423,6 +5448,18 @@ export default {
 							schedule_only: ['XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],
 							note: 'Real-time intraday halt detection (Polygon.io + Alpaca fallback) covers XNYS and XNAS only. All other exchanges use schedule-based status: calendar hours and holidays are correct, but unscheduled intraday circuit breaker halts are not detected. Every signed receipt carries a halt_detection field ("active" | "schedule_only") so agents know which applies.',
 						},
+					},
+					// x402 autonomous payment: agents can call /v5/status without a key,
+					// receive a 402 with payment details, pay on-chain, and retry — no subscription needed.
+					x402: {
+						payable:          true,
+						scheme:           'exact',
+						network:          'eip155:8453',
+						currency:         'USDC',
+						amount:           '1000',           // 0.001 USDC at 6 decimals
+						asset:            '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+						discovery:        'https://headlessoracle.com/.well-known/x402.json',
+						payment_endpoint: 'https://headlessoracle.com/v5/status',
 					},
 				});
 			}
