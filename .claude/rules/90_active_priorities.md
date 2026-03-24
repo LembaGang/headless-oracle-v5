@@ -3,12 +3,23 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 464/464 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json
+**Test suite**: 477/477 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 24 2026 — x402 audit + E2E tests + discovery document enrichment (464 tests):
+**Last significant work**: Mar 24 2026 — x402 autonomous key minting + per-tool MCP telemetry (477 tests):
+  - POST /v5/x402/mint: agents submit Base mainnet USDC tx_hash → get persistent ho_live_ key. builder (99 USDC = 50K calls/day), pro (299 USDC = 200K calls/day). Replay protection via x402_used_tx: KV (365-day TTL, separate from per-request x402_used: TTL). Keys stored in ORACLE_API_KEYS KV (no expiry) + non-blocking Supabase insert. Non-blocking Resend email if email field present.
+  - Per-tool MCP telemetry: mcp_tool:{name}:{date} KV counters for get_market_status, get_market_schedule, list_exchanges, verify_receipt (via incrementKvCounter). Per-client breakdown stored in McpClientRecord.tools (second non-blocking KV read-modify-write inside tools/call case).
+  - /v5/traction: mcp_tools_today object (live 4 KV gets in both cached and uncached paths)
+  - /v5/handoff: "## MCP Tool Calls Today" markdown section
+  - /v5/health: mcp_tools_today in response (pre-computed via Promise.all before withRateLimitWarning)
+  - /.well-known/x402.json: /v5/x402/mint added as third resource with tier pricing
+  - agent.json: mint_endpoint: 'https://headlessoracle.com/v5/x402/mint'
+  - LLMS_TXT: Path C (autonomous key minting) documented
+  - Deployed: Version d789d582. Pushed to main (9a1dc0f).
+  - 13 new tests in test/x402_mint_telemetry.spec.ts (7 mint + 6 telemetry)
+**Previous significant work**: Mar 24 2026 — x402 audit + E2E tests + discovery document enrichment (464 tests):
   - Task 1 (audit): x402 flow is complete. Two verified payment paths:
     Path A (per-request): keyless /v5/status → 402 (x402scan format) → X-Payment header → on-chain verify → receipt
     Path B (subscription): Paddle webhook → transaction.completed/subscription.activated → ho_live_ key minted in KV → key auth
