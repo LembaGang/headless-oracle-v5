@@ -1504,7 +1504,9 @@ describe('GET /.well-known/x402.json', () => {
 		expect(body).toHaveProperty('version', 1);
 		expect(Array.isArray(body.resources)).toBe(true);
 		const resources = body.resources as Array<Record<string, unknown>>;
-		expect(resources.length).toBe(2);
+		// /v5/status, /v5/batch, and /v5/x402/mint (autonomous key minting)
+		expect(resources.length).toBe(3);
+		expect(resources.some((r) => r.path === '/v5/x402/mint')).toBe(true);
 	});
 
 	it('lists /v5/status with mic input schema and 1000 unit amount', async () => {

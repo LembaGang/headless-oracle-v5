@@ -1541,7 +1541,10 @@ const RECEIPT_TTL_SECONDS = 60;
 // USDC ERC-20 contract on Base mainnet (chain ID 8453).
 const X402_USDC_CONTRACT    = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 // 0.001 USDC = 1000 units at 6 decimals. Minimum payment per request.
-const X402_MIN_AMOUNT_UNITS = BigInt(1000);
+const X402_MIN_AMOUNT_UNITS     = BigInt(1000);
+const X402_MINT_BUILDER_UNITS   = BigInt(99_000_000);  // 99 USDC at 6 decimals
+const X402_MINT_PRO_UNITS       = BigInt(299_000_000); // 299 USDC at 6 decimals
+const X402_MINT_MAX_AGE_SECONDS = 600;                 // 10 minutes (vs 5 min per-request)
 // ERC-20 Transfer(address,address,uint256) event topic.
 const ERC20_TRANSFER_TOPIC  = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 // Base mainnet public JSON-RPC endpoint — no API key required.
@@ -1684,6 +1687,79 @@ async function verifyX402Payment(
 	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 600 }).catch(() => {});
 	console.log(JSON.stringify({ event: 'X402_PAYMENT_VERIFIED', tx_hash: txHash, amount_units: amountPaid.toString() }));
 	return { valid: true };
+}
+
+// Verifies a USDC payment for key minting on Base mainnet.
+// Separate from verifyX402Payment: uses a different replay namespace (x402_used_tx:),
+// configurable minimum amount (tier-based), and a 10-minute age window.
+async function verifyX402MintPayment(
+	txHash: string,
+	paymentAddress: string,
+	minAmountUnits: bigint,
+	env: Env,
+): Promise<{ valid: boolean; detail?: string; amountPaid?: bigint }> {
+	const txHashLower = txHash.toLowerCase();
+	if (!/^0x[0-9a-f]{64}$/.test(txHashLower)) {
+		return { valid: false, detail: 'INVALID_TX_HASH' };
+	}
+
+	// Replay check — x402_used_tx: namespace is separate from per-request x402_used:
+	const replayKey   = `x402_used_tx:${txHashLower}`;
+	const alreadyUsed = await env.ORACLE_TELEMETRY.get(replayKey).catch(() => null);
+	if (alreadyUsed !== null) {
+		return { valid: false, detail: 'TRANSACTION_ALREADY_USED' };
+	}
+
+	let receipt: EthReceipt | null = null;
+	try {
+		const rpcRes = await fetch(BASE_RPC_URL, {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHashLower] }),
+		});
+		const rpcData = await rpcRes.json() as { result: EthReceipt | null };
+		receipt = rpcData.result;
+	} catch {
+		return { valid: false, detail: 'RPC_FETCH_FAILED' };
+	}
+	if (!receipt)                  return { valid: false, detail: 'TRANSACTION_NOT_FOUND' };
+	if (receipt.status !== '0x1') return { valid: false, detail: 'TRANSACTION_FAILED' };
+
+	const transferLog = receipt.logs.find(
+		(log) =>
+			log.address.toLowerCase() === X402_USDC_CONTRACT.toLowerCase() &&
+			log.topics[0]?.toLowerCase() === ERC20_TRANSFER_TOPIC &&
+			log.topics[2] != null &&
+			('0x' + log.topics[2].slice(-40)).toLowerCase() === paymentAddress.toLowerCase(),
+	);
+	if (!transferLog) return { valid: false, detail: 'NO_USDC_TRANSFER_TO_PAYMENT_ADDRESS' };
+
+	const amountPaid = BigInt(transferLog.data);
+	if (amountPaid < minAmountUnits) {
+		return { valid: false, detail: `INSUFFICIENT_AMOUNT: paid ${amountPaid}, required ${minAmountUnits}` };
+	}
+
+	let blockTimestampSec = 0;
+	try {
+		const blockRes  = await fetch(BASE_RPC_URL, {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getBlockByNumber', params: [receipt.blockNumber, false] }),
+		});
+		const blockData = await blockRes.json() as { result: { timestamp: string } | null };
+		if (blockData.result?.timestamp) blockTimestampSec = parseInt(blockData.result.timestamp, 16);
+	} catch {
+		return { valid: false, detail: 'BLOCK_FETCH_FAILED' };
+	}
+
+	const ageSeconds = Math.floor(Date.now() / 1000) - blockTimestampSec;
+	if (ageSeconds > X402_MINT_MAX_AGE_SECONDS) {
+		return { valid: false, detail: `TRANSACTION_EXPIRED: ${ageSeconds}s old, max ${X402_MINT_MAX_AGE_SECONDS}s` };
+	}
+
+	// Mark as used — 365-day TTL so the same tx can never be replayed to mint a second key
+	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 86_400 * 365 }).catch(() => {});
+	return { valid: true, amountPaid };
 }
 
 // Build the x402 payment payload for a 402 response.
@@ -2632,6 +2708,15 @@ Path B — subscription (persistent key via Paddle):
 4. Worker verifies Paddle-Signature, mints ho_live_ API key, writes to ORACLE_API_KEYS KV
 5. Key emailed to customer; immediately usable as X-Oracle-Key header
 
+Path C — autonomous key minting (fully agent-autonomous, no human required):
+1. Decide tier: builder (99 USDC, 50K calls/day) or pro (299 USDC, 200K calls/day)
+2. Send USDC to ORACLE_PAYMENT_ADDRESS on Base mainnet (chain 8453, eip155)
+3. POST /v5/x402/mint { "tx_hash": "0x...", "tier": "builder" }
+4. Worker verifies USDC Transfer on-chain (10-minute age window, replay-protected)
+5. Returns { api_key, tier, calls_remaining, expires_never: true } — key is immediately usable
+6. Mint discovery: GET /.well-known/x402.json → includes /v5/x402/mint resource with tier pricing
+Note: tx_hash is per-key (one tx = one key). Per-request payments (Path A) use a different namespace.
+
 ## MCP integration
 Server card: GET https://headlessoracle.com/.well-known/mcp/server-card.json
 Protocol: MCP-2024-11-05
@@ -3032,6 +3117,7 @@ const AGENT_JSON = {
 		asset:                 '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
 		payment_endpoint:      'https://headlessoracle.com/v5/status',       // returns 402 with x402 details
 		subscription_endpoint: 'https://headlessoracle.com/v5/checkout',     // Paddle — persistent key
+		mint_endpoint:         'https://headlessoracle.com/v5/x402/mint',    // autonomous key minting via on-chain USDC
 		discovery:             'https://headlessoracle.com/.well-known/x402.json',
 		free_tier_daily_limit: FREE_TIER_DAILY_LIMIT,
 	},
@@ -3128,6 +3214,7 @@ interface McpClientRecord {
 	asn_org:       string;
 	country:       string;
 	city:          string;
+	tools?:        Record<string, number>; // per-client tool call counts
 }
 
 const MCP_TOOLS = [
@@ -4181,6 +4268,27 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			const p    = params as { name?: string; arguments?: Record<string, unknown> } | undefined;
 			const name = p?.name ?? '';
 			const args = p?.arguments ?? {};
+
+			// Per-tool telemetry: global counter + per-client tools object (best-effort, non-blocking)
+			const MCP_TRACKED_TOOLS = ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt'];
+			if (MCP_TRACKED_TOOLS.includes(name)) {
+				incrementKvCounter(`mcp_tool:${name}:${today}`, env, ctx);
+				// Per-client tool count: increment the tools object in the client's KV record
+				if (typeof ctx?.waitUntil === 'function') {
+					ctx.waitUntil(
+						env.ORACLE_TELEMETRY.get(kvKey).then(async (stored) => {
+							if (!stored) return;
+							const prev      = JSON.parse(stored) as McpClientRecord;
+							const prevTools = prev.tools ?? {};
+							const updated: McpClientRecord = {
+								...prev,
+								tools: { ...prevTools, [name]: (prevTools[name] ?? 0) + 1 },
+							};
+							await env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 });
+						}).catch(() => {}),
+					);
+				}
+			}
 
 			if (name === 'get_market_status') {
 				const mic = (typeof args.mic === 'string' ? args.mic : 'XNYS').toUpperCase();
@@ -5255,6 +5363,21 @@ export default {
 						activeRealtimeOverrides = overrideChecks.filter((m): m is string => m !== null);
 					} catch { /* KV unavailable — report empty */ }
 
+					// MCP per-tool counts (best-effort, unsigned informational field)
+					const healthToday = now.toISOString().slice(0, 10);
+					const [hts, htsc, htl, htv] = await Promise.all([
+						env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${healthToday}`).catch(() => null),
+						env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${healthToday}`).catch(() => null),
+						env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${healthToday}`).catch(() => null),
+						env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${healthToday}`).catch(() => null),
+					]);
+					const healthMcpToolsToday = {
+						get_market_status:   parseInt(hts  ?? '0', 10) || 0,
+						get_market_schedule: parseInt(htsc ?? '0', 10) || 0,
+						list_exchanges:      parseInt(htl  ?? '0', 10) || 0,
+						verify_receipt:      parseInt(htv  ?? '0', 10) || 0,
+					};
+
 					return withRateLimitWarning(json({
 						...healthPayload,
 						signature,
@@ -5282,6 +5405,7 @@ export default {
 							active_realtime_overrides: activeRealtimeOverrides,
 							note:                      'Real-time halt detection covers XNYS and XNAS only (Polygon.io + Alpaca). All other exchanges are schedule_only: calendar hours + holidays are authoritative but intraday circuit breaker halts are not detected. Fails open — no false halts on API errors.',
 						},
+						mcp_tools_today:           healthMcpToolsToday,
 					}));
 				} catch (healthError: unknown) {
 					const msg = healthError instanceof Error ? healthError.message : 'Unknown error';
@@ -5532,8 +5656,184 @@ export default {
 							payTo,
 						}],
 					},
+				{
+					path:        '/v5/x402/mint',
+					method:      'POST',
+					description: 'Mint a persistent ho_live_ API key by sending USDC on Base mainnet. Tier builder=99 USDC (50K calls/day), pro=299 USDC (200K calls/day). No signup required.',
+					input: {
+						type:       'object',
+						properties: {
+							tx_hash: { type: 'string', description: 'Base mainnet transaction hash of the USDC payment' },
+							network: { type: 'string', description: 'Must be "base-mainnet"' },
+							tier:    { type: 'string', enum: ['builder', 'pro'], description: 'builder=99 USDC, pro=299 USDC' },
+							email:   { type: 'string', description: 'Optional — key will also be sent by email if provided' },
+						},
+						required: ['tx_hash', 'tier'],
+					},
+					tiers: {
+						builder: { usdc: 99, calls_per_day: BUILDER_TIER_DAILY_LIMIT, asset: X402_USDC_CONTRACT, payTo },
+						pro:     { usdc: 299, calls_per_day: PRO_TIER_DAILY_LIMIT, asset: X402_USDC_CONTRACT, payTo },
+					},
+				},
 				] : [];
 				return json({ version: 1, resources: paidResources });
+			}
+
+			// ── POST /v5/x402/mint — autonomous key minting via on-chain USDC payment ──
+			// No auth required. Agents send USDC on Base mainnet and receive a persistent
+			// ho_live_ API key without any human in the loop.
+			// Tiers: builder (99 USDC → 50K calls/day), pro (299 USDC → 200K calls/day)
+			if (url.pathname === '/v5/x402/mint') {
+				if (request.method !== 'POST') {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST /v5/x402/mint with { tx_hash, network, tier }' }, 405);
+				}
+				if (!env.ORACLE_PAYMENT_ADDRESS) {
+					return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 key minting is not configured on this instance' }, 503);
+				}
+
+				let mintBody: { tx_hash?: unknown; network?: unknown; tier?: unknown; email?: unknown };
+				try { mintBody = await request.json() as typeof mintBody; }
+				catch { return json({ error: 'BAD_REQUEST', message: 'Invalid JSON body' }, 400); }
+
+				const txHash  = typeof mintBody.tx_hash  === 'string' ? mintBody.tx_hash.trim()  : '';
+				const network = typeof mintBody.network  === 'string' ? mintBody.network.trim()  : '';
+				const tier    = typeof mintBody.tier     === 'string' ? mintBody.tier.trim()     : '';
+				const email   = typeof mintBody.email    === 'string' ? mintBody.email.trim()    : null;
+
+				if (!txHash)  return json({ error: 'BAD_REQUEST', message: 'tx_hash is required' }, 400);
+				if (network && network !== 'base-mainnet') {
+					return json({ error: 'BAD_REQUEST', message: 'network must be "base-mainnet"' }, 400);
+				}
+				if (tier !== 'builder' && tier !== 'pro') {
+					return json({
+						error:   'BAD_REQUEST',
+						message: 'tier must be "builder" (99 USDC, 50K calls/day) or "pro" (299 USDC, 200K calls/day)',
+						tiers: {
+							builder: { usdc: 99, calls_per_day: BUILDER_TIER_DAILY_LIMIT },
+							pro:     { usdc: 299, calls_per_day: PRO_TIER_DAILY_LIMIT },
+						},
+					}, 400);
+				}
+
+				const minAmountUnits = tier === 'pro' ? X402_MINT_PRO_UNITS : X402_MINT_BUILDER_UNITS;
+				const verification   = await verifyX402MintPayment(txHash, env.ORACLE_PAYMENT_ADDRESS, minAmountUnits, env);
+
+				if (!verification.valid) {
+					// Return 409 for replay (already used), 402 for payment issues
+					const isReplay = verification.detail === 'TRANSACTION_ALREADY_USED';
+					const isWrongAmount = verification.detail?.startsWith('INSUFFICIENT_AMOUNT');
+					if (isReplay) {
+						return json({
+							error:    'CONFLICT',
+							message:  'This transaction hash has already been used to mint a key',
+							detail:   verification.detail,
+						}, 409);
+					}
+					if (isWrongAmount) {
+						return json({
+							error:             'PAYMENT_INSUFFICIENT',
+							message:           `Insufficient USDC amount for ${tier} tier`,
+							required_usdc:     tier === 'pro' ? '299' : '99',
+							required_units:    minAmountUnits.toString(),
+							detail:            verification.detail,
+							network:           'base-mainnet',
+							payment_address:   env.ORACLE_PAYMENT_ADDRESS,
+						}, 402);
+					}
+					if (verification.detail?.startsWith('TRANSACTION_EXPIRED')) {
+						return json({ error: 'PAYMENT_EXPIRED', message: `Transaction older than ${X402_MINT_MAX_AGE_SECONDS}s — send a fresh USDC payment`, detail: verification.detail }, 400);
+					}
+					return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: 'On-chain payment could not be verified', detail: verification.detail }, 402);
+				}
+
+				// Payment verified — mint a persistent ho_live_ key
+				const rawKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+				const keyValue    = 'ho_live_' + toHex(rawKeyBytes);
+				const mintKeyHash = await sha256Hex(keyValue);
+				const keyPrefix   = keyValue.substring(0, 14); // 'ho_live_' + 6 chars
+
+				// Store in ORACLE_API_KEYS KV (persistent, no TTL)
+				if (env.ORACLE_API_KEYS) {
+					await env.ORACLE_API_KEYS.put(
+						mintKeyHash,
+						JSON.stringify({
+							plan:       tier,
+							status:     'active',
+							source:     'x402_onchain',
+							email:      email ?? null,
+							created_at: now.toISOString(),
+						}),
+					);
+				}
+
+				// Insert into Supabase api_keys table (non-blocking — KV is source of truth for auth)
+				if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					ctx.waitUntil(
+						supabase.from('api_keys').insert({
+							id:                    crypto.randomUUID(),
+							key_hash:              mintKeyHash,
+							key_prefix:            keyPrefix,
+							plan:                  tier,
+							status:                'active',
+							stripe_customer_id:    null,
+							stripe_subscription_id: null,
+							email:                 email ?? null,
+							created_at:            now.toISOString(),
+						}).then(({ error: dbErr }) => {
+							if (dbErr && (dbErr as unknown as Record<string, string>).code !== '23505') {
+								console.error(`X402_MINT_DB_ERROR: ${dbErr.message}`);
+							}
+						}).catch((e: unknown) => {
+							console.error(`X402_MINT_DB_EXCEPTION: ${e instanceof Error ? e.message : String(e)}`);
+						}),
+					);
+				}
+
+				// Send welcome email via Resend (optional — skipped if no email provided)
+				if (env.RESEND_API_KEY && email) {
+					ctx.waitUntil(
+						fetch('https://api.resend.com/emails', {
+							method:  'POST',
+							headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								from:    'Headless Oracle <keys@headlessoracle.com>',
+								to:      [email],
+								subject: `Your Headless Oracle ${tier} API key`,
+								html: `<p>Your autonomous x402 payment was verified on Base mainnet.</p>
+<p>Your API key for the <strong>${tier}</strong> plan (${tier === 'pro' ? '200K' : '50K'} calls/day) — save this, it will not be shown again:</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
+<p>Use it as the <code>X-Oracle-Key</code> header: <code>GET https://api.headlessoracle.com/v5/status?mic=XNYS</code></p>
+<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
+							}),
+						}).then((res) => {
+							if (!res.ok) console.error(`X402_MINT_EMAIL_ERROR: status=${res.status}`);
+						}).catch((e: unknown) => {
+							console.error(`X402_MINT_EMAIL_EXCEPTION: ${e instanceof Error ? e.message : String(e)}`);
+						}),
+					);
+				}
+
+				// Telemetry: x402_mint_keys:{date} counter
+				const mintDate = now.toISOString().slice(0, 10);
+				incrementKvCounter(`x402_mint_keys:${mintDate}`, env, ctx);
+				console.log(JSON.stringify({
+					event:        'X402_MINT_SUCCESS',
+					tier,
+					key_prefix:   keyPrefix,
+					tx_hash:      txHash.toLowerCase(),
+					amount_units: verification.amountPaid?.toString() ?? '?',
+					has_email:    !!email,
+				}));
+
+				return json({
+					api_key:        keyValue,
+					tier,
+					calls_remaining: tier === 'pro' ? PRO_TIER_DAILY_LIMIT : BUILDER_TIER_DAILY_LIMIT,
+					expires_never:  true,
+					source:         'x402_onchain',
+					note:           'Save this key — it will not be shown again. Use as X-Oracle-Key header.',
+				});
 			}
 
 			// ── POST /v5/checkout — create Paddle checkout transaction ───
@@ -6085,6 +6385,19 @@ export default {
 							batch_combos_today: number;
 							zero_auth_mcp_requests_today: number;
 						};
+						// Tool counts are not in the cache — fetch live (4 KV gets, cheap)
+						const [cToolStatusRaw, cToolScheduleRaw, cToolListRaw, cToolVerifyRaw] = await Promise.all([
+							env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${today}`).catch(() => null),
+							env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${today}`).catch(() => null),
+							env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${today}`).catch(() => null),
+							env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${today}`).catch(() => null),
+						]);
+						const cachedToolsToday = {
+							get_market_status:   parseInt(cToolStatusRaw   ?? '0', 10) || 0,
+							get_market_schedule: parseInt(cToolScheduleRaw ?? '0', 10) || 0,
+							list_exchanges:      parseInt(cToolListRaw     ?? '0', 10) || 0,
+							verify_receipt:      parseInt(cToolVerifyRaw   ?? '0', 10) || 0,
+						};
 						return json({
 							exchanges_covered:             SUPPORTED_EXCHANGES.length,
 							edge_cases_per_year:           edgeCaseCount(currentYear).total,
@@ -6092,6 +6405,7 @@ export default {
 							days_live:                     daysLive,
 							mcp_requests_today:            cached.total_requests_today,
 							unique_mcp_clients_today:      cached.unique_clients_today,
+							mcp_tools_today:               cachedToolsToday,
 							sma_spec_version:              '1.0',
 							verifiable_intent_rfc:         'submitted',
 							x402_enabled:                  !!env.ORACLE_PAYMENT_ADDRESS,
@@ -6129,12 +6443,17 @@ export default {
 				} catch { /* KV unavailable — return zeros */ }
 
 				// Acquisition telemetry counters (best-effort — zeros on KV miss)
-				const [batchComboKeysRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw, zeroAuthMcpRaw] = await Promise.all([
+				const [batchComboKeysRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw, zeroAuthMcpRaw,
+					mcpToolStatusRaw, mcpToolScheduleRaw, mcpToolListRaw, mcpToolVerifyRaw] = await Promise.all([
 					env.ORACLE_TELEMETRY.list({ prefix: `batch_combo:` }).then(r => r.keys.filter(k => k.name.endsWith(`:${today}`))).catch(() => [] as Array<{ name: string }>),
 					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`sandbox_cap_hit:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`zero_auth_mcp_requests:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${today}`).catch(() => null),
 				]);
 				const batchCombosToday    = batchComboKeysRaw.length;
 				const authCalls           = parseInt(authCallsRaw    ?? '0', 10) || 0;
@@ -6144,6 +6463,12 @@ export default {
 					: null;
 				const sandboxCapsToday    = parseInt(sandboxCapsRaw   ?? '0', 10) || 0;
 				const zeroAuthMcpToday    = parseInt(zeroAuthMcpRaw   ?? '0', 10) || 0;
+				const mcpToolsToday = {
+					get_market_status:    parseInt(mcpToolStatusRaw   ?? '0', 10) || 0,
+					get_market_schedule:  parseInt(mcpToolScheduleRaw ?? '0', 10) || 0,
+					list_exchanges:       parseInt(mcpToolListRaw     ?? '0', 10) || 0,
+					verify_receipt:       parseInt(mcpToolVerifyRaw   ?? '0', 10) || 0,
+				};
 
 				return json({
 					exchanges_covered:             SUPPORTED_EXCHANGES.length,
@@ -6152,6 +6477,7 @@ export default {
 					days_live:                     daysLive,
 					mcp_requests_today:            mcpRequestsToday,
 					unique_mcp_clients_today:      mcpClientsToday,
+					mcp_tools_today:               mcpToolsToday,
 					sma_spec_version:              '1.0',
 					verifiable_intent_rfc:         'submitted',
 					x402_enabled:                  !!env.ORACLE_PAYMENT_ADDRESS,
@@ -6786,6 +7112,20 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				const weekKey   = `weekly_digest:${today.slice(0, 4)}-W${String(weekNum).padStart(2, '0')}`;
 				const weekRaw   = await env.ORACLE_TELEMETRY.get(weekKey).catch(() => null);
 
+				// MCP per-tool counts for today
+				const [hToolStatusRaw, hToolScheduleRaw, hToolListRaw, hToolVerifyRaw] = await Promise.all([
+					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${today}`).catch(() => null),
+					env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${today}`).catch(() => null),
+				]);
+				const hToolCounts = {
+					get_market_status:   parseInt(hToolStatusRaw   ?? '0', 10) || 0,
+					get_market_schedule: parseInt(hToolScheduleRaw ?? '0', 10) || 0,
+					list_exchanges:      parseInt(hToolListRaw     ?? '0', 10) || 0,
+					verify_receipt:      parseInt(hToolVerifyRaw   ?? '0', 10) || 0,
+				};
+
 				const openGaps: string[] = [];
 				// Static open gaps reference — updated when new gaps are identified
 				openGaps.push('GAP-006: x402scan full listing pending Sam Ragsdale approval (external)');
@@ -6812,6 +7152,12 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					`- Auth ratio: ${hAuthRatioStr}`,
 					`- Sandbox keys issued: ${hSandboxKeysRaw.length}`,
 					`- Sandbox keys at limit: ${hSandboxCaps}`,
+					``,
+					`## MCP Tool Calls Today`,
+					`- get_market_status: ${hToolCounts.get_market_status}`,
+					`- get_market_schedule: ${hToolCounts.get_market_schedule}`,
+					`- list_exchanges: ${hToolCounts.list_exchanges}`,
+					`- verify_receipt: ${hToolCounts.verify_receipt}`,
 					``,
 					`## Returning Clients`,
 					returningSection,

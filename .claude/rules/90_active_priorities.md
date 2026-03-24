@@ -3,12 +3,25 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 436/436 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Test suite**: 464/464 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
 **Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 22 2026 (session 2) — Discoverability + telemetry sprint (10 findings, 436 tests):
+**Last significant work**: Mar 24 2026 — x402 audit + E2E tests + discovery document enrichment (464 tests):
+  - Task 1 (audit): x402 flow is complete. Two verified payment paths:
+    Path A (per-request): keyless /v5/status → 402 (x402scan format) → X-Payment header → on-chain verify → receipt
+    Path B (subscription): Paddle webhook → transaction.completed/subscription.activated → ho_live_ key minted in KV → key auth
+  - Task 2: No code gaps. Flow is end-to-end working.
+  - Task 3 (E2E test): 3 new tests added in `x402 — end-to-end payment flow` describe block:
+    (1) /v5/status without auth → 402 with x402Version/accepts/payTo fields
+    (2) Paddle webhook → key minted in ORACLE_API_KEYS KV → key authenticates /v5/status → 200
+    (3) Keyless X-Payment header → 200 with signed receipt
+    Key fix in test mock: Supabase "no rows" response must be status 406 (not 200) for supabase-js to return data:null
+  - Task 4 (discovery docs): agent.json x402_payable:true + payment_endpoint + subscription_endpoint + asset/amount_units;
+    server-card.json x402 block with payable:true; llms.txt "x402 autonomous payment (verified working)" section
+  - Deployed: Version ca9f5268. Pushed to main (aaf39b5).
+**Previous significant work**: Mar 22 2026 (session 2) — Discoverability + telemetry sprint (10 findings, 436 tests):
   - FINDING-10: test for MCP initialize capabilities.tools object + protocolVersion (was already in code)
   - FINDING-12: test for webhook subscribe flow (deliverWebhook Content-Type already in code)
   - FINDING-09: HALT_MONITOR_TIMEOUT structured log on AbortError in halt monitor fetch + test
