@@ -5808,3 +5808,105 @@ describe('GET /v5/conformance-vectors', () => {
 		}
 	});
 });
+
+// ─── GET /v5/stream ────────────────────────────────────────────────────────────
+
+describe('GET /v5/stream', () => {
+	it('returns 401 without auth', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/stream?mic=XNYS');
+		expect(res.status).toBe(401);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('API_KEY_REQUIRED');
+	});
+
+	it('returns 400 for invalid mic', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/stream?mic=XXXX', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_MIC');
+	});
+
+	it('returns 401 for invalid api key', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/stream?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'invalid_key_not_in_kv' },
+		});
+		expect(res.status).toBe(403);
+	});
+
+	it('accepts ?key= query param instead of X-Oracle-Key header', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker(`/v5/stream?mic=XNYS&key=test_master_key_local_only`);
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/event-stream');
+		// Cancel stream immediately
+		await res.body!.cancel();
+	});
+
+	it('returns text/event-stream with cache-control no-store', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/stream?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/event-stream');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
+		await res.body!.cancel();
+	});
+
+	it('first SSE event is market_status with valid signed receipt', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/stream?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(200);
+
+		// Read chunks until we have a complete SSE event (ends with \n\n)
+		const reader  = res.body!.getReader();
+		const decoder = new TextDecoder();
+		let text = '';
+		while (!text.includes('\n\n')) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			text += decoder.decode(value, { stream: true });
+		}
+		await reader.cancel();
+
+		expect(text).toContain('event: market_status');
+		expect(text).toContain('data: ');
+
+		// Extract and parse the receipt from the SSE data line
+		const dataLine = text.split('\n').find((l) => l.startsWith('data: '));
+		expect(dataLine).toBeDefined();
+		const receipt = JSON.parse(dataLine!.slice(6)) as Record<string, unknown>;
+		expect(receipt.mic).toBe('XNYS');
+		expect(['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN']).toContain(receipt.status);
+		expect(typeof receipt.signature).toBe('string');
+		expect((receipt.signature as string).length).toBe(128);
+		expect(receipt.receipt_mode).toBe('live');
+	});
+
+	it('default MIC is XNYS when mic param omitted', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/stream', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(200);
+		const reader  = res.body!.getReader();
+		const decoder = new TextDecoder();
+		let text = '';
+		while (!text.includes('\n\n')) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			text += decoder.decode(value, { stream: true });
+		}
+		await reader.cancel();
+		const dataLine = text.split('\n').find((l) => l.startsWith('data: '));
+		const receipt = JSON.parse(dataLine!.slice(6)) as Record<string, unknown>;
+		expect(receipt.mic).toBe('XNYS');
+	});
+});

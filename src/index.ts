@@ -33,6 +33,7 @@ export interface Env {
 	POLYGON_API_KEY?:            string;  // polygon.io API key — optional; public Alpaca feed used if absent
 	// Launch date for /v5/traction days_live counter — set via wrangler.toml [vars]
 	LAUNCH_DATE?:                string;  // ISO 8601 UTC timestamp of go-live; defaults to 2026-03-10T08:00:00Z
+	STREAM_COORDINATOR:          DurableObjectNamespace;  // SSE stream coordinator — one DO per MIC
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -6464,6 +6465,31 @@ export default {
 				}));
 			}
 
+			// ── GET /v5/stream — Server-Sent Event stream of signed market receipts ───
+			// Auth: X-Oracle-Key header (same as /v5/status) or ?key= query param
+			// (EventSource browsers cannot set custom headers, so ?key= is provided).
+			// Emits market_status events every 30s. Closes on HALTED with a final halted event.
+			// Uses STREAM_COORDINATOR Durable Object — one instance per MIC for future fan-out.
+			if (url.pathname === '/v5/stream') {
+				const streamKey = request.headers.get('X-Oracle-Key') || url.searchParams.get('key') || '';
+				if (!streamKey) {
+					return json({ error: 'API_KEY_REQUIRED', message: 'API key required. Provide X-Oracle-Key header or ?key=<key> query param (for EventSource compatibility).' }, 401);
+				}
+				const streamAuth = await checkApiKey(streamKey, env);
+				if (!streamAuth.allowed) {
+					return json({ error: streamAuth.error, message: streamAuth.message }, streamAuth.status);
+				}
+				const streamMic = (url.searchParams.get('mic') || 'XNYS').toUpperCase();
+				if (!MARKET_CONFIGS[streamMic]) {
+					return json({ error: 'INVALID_MIC', message: 'mic must be a supported exchange. See /v5/exchanges.' }, 400);
+				}
+				// Route to StreamCoordinator DO (keyed by MIC so all clients watching the same
+				// exchange land on the same instance — enables future fan-out optimisation).
+				const doId   = env.STREAM_COORDINATOR.idFromName(streamMic);
+				const doStub = env.STREAM_COORDINATOR.get(doId);
+				return doStub.fetch(request);
+			}
+
 			// ── GET /v5/archive — signed receipt historical archive ─────────────
 			// Returns signed receipts written by /v5/status calls, keyed by MIC + date.
 			// No-auth / free tier: today only. Builder+ / internal: 30-day window.
@@ -8320,3 +8346,72 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 		}
 	},
 };
+
+// ─── StreamCoordinator Durable Object ────────────────────────────────────────
+// Handles SSE streams for /v5/stream. One instance per MIC — clients watching
+// the same exchange land on the same DO, enabling future fan-out optimisation.
+//
+// Each client connection gets its own ReadableStream; the DO fires a polling
+// loop per connection. A future enhancement would have the DO hold a single
+// shared alarm-based poll and fan out to all connected streams.
+//
+// Export required by Cloudflare Workers module workers for DO class registration.
+export class StreamCoordinator {
+	constructor(
+		private readonly state: DurableObjectState,
+		private readonly env: Env,
+	) {}
+
+	async fetch(request: Request): Promise<Response> {
+		const url       = new URL(request.url);
+		const mic       = (url.searchParams.get('mic') || 'XNYS').toUpperCase();
+		const encoder   = new TextEncoder();
+
+		const { readable, writable } = new TransformStream();
+		const writer = writable.getWriter();
+
+		// Fire-and-forget polling loop. Runs until the client disconnects (write throws)
+		// or the stream is explicitly closed (HALTED receipt).
+		void (async () => {
+			try {
+				while (true) {
+					const streamNow       = new Date();
+					const streamExpiresAt = new Date(streamNow.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
+					const { receipt } = await buildSignedReceipt(mic, this.env, streamNow, streamExpiresAt, 'live');
+
+					const event = `event: market_status
+data: ${JSON.stringify(receipt)}
+
+`;
+					await writer.write(encoder.encode(event));
+
+					// HALTED: send one final halted event then close — agent must reconnect.
+					if (receipt['status'] === 'HALTED') {
+						const halt = `event: halted
+data: ${JSON.stringify(receipt)}
+
+`;
+						await writer.write(encoder.encode(halt));
+						await writer.close();
+						return;
+					}
+
+					// Wait 30 seconds before next receipt
+					await new Promise<void>((resolve) => setTimeout(resolve, 30_000));
+				}
+			} catch {
+				// Client disconnected — close gracefully
+				await writer.close().catch(() => {});
+			}
+		})();
+
+		return new Response(readable, {
+			headers: {
+				'Content-Type':                'text/event-stream',
+				'Cache-Control':               'no-store',
+				'Access-Control-Allow-Origin': '*',
+				'X-Accel-Buffering':           'no',  // Disable Nginx buffering
+			},
+		});
+	}
+}

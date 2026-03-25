@@ -30,6 +30,7 @@ routes = [
   { pattern = "headlessoracle.com/upgrade", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v5/archive", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v5/conformance-vectors", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v5/stream", zone_name = "headlessoracle.com" },
 ]
 
 [vars]
@@ -102,6 +103,18 @@ id = "6fcde4c94b6b40f1913a44f410a06c5d"
 # View logs: Cloudflare Dashboard → Workers → headless-oracle-v5 → Logs
 [triggers]
 crons = ["* * * * *", "0 9 * * *", "0 17 * * *", "0 9 * * 1"]
+
+# ─── Durable Objects ──────────────────────────────────────────────────────────
+# StreamCoordinator: one instance per MIC — coordinates SSE streams for /v5/stream.
+# Each client request is routed to the DO instance for that MIC.
+[[durable_objects.bindings]]
+name = "STREAM_COORDINATOR"
+class_name = "StreamCoordinator"
+
+# Migration required to create the DO class on first deploy.
+[[migrations]]
+tag = "v1"
+new_classes = ["StreamCoordinator"]
 
 [observability]
 enabled = true
