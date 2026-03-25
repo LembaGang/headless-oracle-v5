@@ -90,6 +90,8 @@ interface MarketConfig {
 	halfDays?: HalfDay[];
 	lunchBreak?: LunchBreak;
 	weekends?: string[]; // e.g. ['Fri', 'Sat'] for Middle Eastern exchanges; default ['Sat', 'Sun']
+	overnightSession?: boolean; // true for exchanges with sessions that span midnight (e.g. CME Globex 17:00–16:00 CT)
+	mic_type?: 'iso' | 'convention'; // 'iso' = ISO 10383 MIC; 'convention' = community/non-ISO identifier
 }
 
 // Schedule edge cases per year are computed from live config by edgeCaseCount(year) below.
@@ -964,6 +966,137 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 			],
 		},
 	},
+
+	// ── Crypto / Derivatives Exchanges ─────────────────────────────────────────
+
+	// CME Globex / Chicago Board of Trade — ISO 10383 MIC XCBT
+	// Overnight session: Sun 17:00 – Fri 16:00 CT, with a daily 16:00–17:00 CT maintenance halt.
+	// Saturday is the only full-rest day. overnightSession:true enables the schedule engine
+	// to handle the "pre-open tail" on Sunday correctly (CLOSED before 17:00 CT Sunday).
+	XCBT: {
+		name: 'CME / Chicago Board of Trade',
+		timezone: 'America/Chicago',
+		openHour: 17, openMinute: 0,
+		closeHour: 16, closeMinute: 0,
+		overnightSession: true,
+		mic_type: 'iso',
+		weekends: ['Sat'],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-19', // MLK Day
+				'2026-02-16', // Presidents' Day
+				'2026-05-25', // Memorial Day
+				'2026-07-03', // Independence Day (observed)
+				'2026-09-07', // Labor Day
+				'2026-11-26', // Thanksgiving
+				'2026-12-25', // Christmas Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-18', // MLK Day
+				'2027-02-15', // Presidents' Day
+				'2027-05-31', // Memorial Day
+				'2027-07-05', // Independence Day (observed Mon)
+				'2027-09-06', // Labor Day
+				'2027-11-25', // Thanksgiving
+				'2027-12-24', // Christmas Eve (observed)
+			],
+		},
+	},
+
+	// New York Mercantile Exchange (CME Group) — ISO 10383 MIC XNYM
+	// Energy and metals futures. Same CME Globex schedule as XCBT.
+	XNYM: {
+		name: 'New York Mercantile Exchange (CME Group)',
+		timezone: 'America/Chicago',
+		openHour: 17, openMinute: 0,
+		closeHour: 16, closeMinute: 0,
+		overnightSession: true,
+		mic_type: 'iso',
+		weekends: ['Sat'],
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-19', // MLK Day
+				'2026-02-16', // Presidents' Day
+				'2026-05-25', // Memorial Day
+				'2026-07-03', // Independence Day (observed)
+				'2026-09-07', // Labor Day
+				'2026-11-26', // Thanksgiving
+				'2026-12-25', // Christmas Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-18', // MLK Day
+				'2027-02-15', // Presidents' Day
+				'2027-05-31', // Memorial Day
+				'2027-07-05', // Independence Day (observed Mon)
+				'2027-09-06', // Labor Day
+				'2027-11-25', // Thanksgiving
+				'2027-12-24', // Christmas Eve (observed)
+			],
+		},
+	},
+
+	// Cboe Options Exchange — ISO 10383 MIC XCBO
+	// Standard equity options: 9:30 AM – 4:15 PM ET, Mon–Fri, same holiday schedule as NYSE.
+	XCBO: {
+		name: 'Cboe Options Exchange',
+		timezone: 'America/New_York',
+		openHour: 9, openMinute: 30,
+		closeHour: 16, closeMinute: 15,
+		mic_type: 'iso',
+		holidays: {
+			'2026': [
+				'2026-01-01', // New Year's Day
+				'2026-01-19', // MLK Day
+				'2026-02-16', // Presidents' Day
+				'2026-04-03', // Good Friday
+				'2026-05-25', // Memorial Day
+				'2026-07-03', // Independence Day (observed)
+				'2026-09-07', // Labor Day
+				'2026-11-26', // Thanksgiving
+				'2026-12-25', // Christmas Day
+			],
+			'2027': [
+				'2027-01-01', // New Year's Day
+				'2027-01-18', // MLK Day
+				'2027-02-15', // Presidents' Day
+				'2027-03-26', // Good Friday
+				'2027-05-31', // Memorial Day
+				'2027-07-05', // Independence Day (observed)
+				'2027-09-06', // Labor Day
+				'2027-11-25', // Thanksgiving
+				'2027-12-24', // Christmas Eve (observed)
+			],
+		},
+	},
+
+	// Coinbase Exchange — convention MIC XCOI (not ISO 10383 registered)
+	// Crypto spot market: 24 hours a day, 7 days a week. No public holidays.
+	// weekends:[] means no day is treated as a rest day.
+	XCOI: {
+		name: 'Coinbase Exchange',
+		timezone: 'UTC',
+		openHour: 0, openMinute: 0,
+		closeHour: 23, closeMinute: 59,
+		mic_type: 'convention',
+		weekends: [],
+		holidays: { '2026': [], '2027': [] },
+	},
+
+	// Binance — convention MIC XBIN (not ISO 10383 registered)
+	// Crypto spot market: 24 hours a day, 7 days a week. No public holidays.
+	XBIN: {
+		name: 'Binance',
+		timezone: 'UTC',
+		openHour: 0, openMinute: 0,
+		closeHour: 23, closeMinute: 59,
+		mic_type: 'convention',
+		weekends: [],
+		holidays: { '2026': [], '2027': [] },
+	},
 };
 
 // ─── Edge Case Counter ────────────────────────────────────────────────────────
@@ -1178,6 +1311,33 @@ function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 		}
 	}
 
+	// Overnight session (e.g. CME Globex 17:00–16:00 CT with daily maintenance halt).
+	// The "closed" block is [closeMinutes, openMinutes). Everything outside that is OPEN,
+	// except Sunday before the open hour, where we must verify yesterday was tradeable
+	// (otherwise the Sunday morning tail of a closed Saturday would show as OPEN).
+	if (config.overnightSession) {
+		const closeMinutes = config.closeHour * 60 + config.closeMinute;
+		// Maintenance window: always CLOSED
+		if (timeMinutes >= closeMinutes && timeMinutes < openMinutes) {
+			return { status: 'CLOSED', source: 'SCHEDULE' };
+		}
+		// In the overnight tail (before today's open hour): confirm yesterday was a trading day.
+		// Without this check, Sunday 00:00–17:00 CT would incorrectly read as OPEN.
+		if (timeMinutes < openMinutes) {
+			const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+			const { weekday: prevWeekday, dateStr: prevDateStr, year: prevYear } = getLocalTimeParts(config.timezone, yesterday);
+			const prevWeekendsArr = config.weekends ?? ['Sat', 'Sun'];
+			if (prevWeekendsArr.includes(prevWeekday)) {
+				return { status: 'CLOSED', source: 'SCHEDULE' };
+			}
+			const prevHolidays = config.holidays[prevYear];
+			if (prevHolidays && prevHolidays.includes(prevDateStr)) {
+				return { status: 'CLOSED', source: 'SCHEDULE' };
+			}
+		}
+		return { status: 'OPEN', source: 'SCHEDULE' };
+	}
+
 	// Normal session (with optional lunch break)
 	const closeMinutes = config.closeHour * 60 + config.closeMinute;
 	const open = isInSession(timeMinutes, openMinutes, closeMinutes, config.lunchBreak);
@@ -1228,6 +1388,11 @@ function pad2(n: number): string {
 function getNextSession(mic: string, now: Date): NextSession | null {
 	const config = MARKET_CONFIGS[mic];
 	if (!config) return null;
+
+	// Overnight and 24/7 exchanges use multi-day or continuous sessions that the
+	// day-by-day open/close calculator cannot represent. Return null so /v5/schedule
+	// exposes next_open:null rather than a misleading single-day window.
+	if (config.overnightSession || (config.weekends?.length === 0)) return null;
 
 	// Walk forward up to 14 calendar days
 	const candidate = new Date(now);
@@ -1485,6 +1650,7 @@ const SUPPORTED_EXCHANGES = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => (
 	mic,
 	name:     cfg.name,
 	timezone: cfg.timezone,
+	mic_type: cfg.mic_type ?? 'iso',
 }));
 
 // ─── MICs Registry ────────────────────────────────────────────────────────────
@@ -1519,6 +1685,11 @@ const MICS_SUPPLEMENT: Record<string, { country: string; currency: string; sameA
 	XNZE: { country: 'NZ', currency: 'NZD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
 	XHEL: { country: 'FI', currency: 'EUR', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
 	XSTO: { country: 'SE', currency: 'SEK', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XCBT: { country: 'US', currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XNYM: { country: 'US', currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XCBO: { country: 'US', currency: 'USD', sameAs: 'https://www.iso20022.org/market-identifier-codes' },
+	XCOI: { country: 'US', currency: 'USD', sameAs: 'https://coinbase.com' },
+	XBIN: { country: 'KY', currency: 'USD', sameAs: 'https://binance.com' },
 };
 
 // Derived: mic, name, timezone from MARKET_CONFIGS; supplementary fields from MICS_SUPPLEMENT.
@@ -1530,6 +1701,7 @@ const MICS_REGISTRY = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => ({
 	timezone: cfg.timezone,
 	currency: MICS_SUPPLEMENT[mic].currency,
 	sameAs:   MICS_SUPPLEMENT[mic].sameAs,
+	mic_type: cfg.mic_type ?? 'iso',
 }));
 
 // ─── Receipt TTL ─────────────────────────────────────────────────────────────
@@ -3107,11 +3279,7 @@ const AGENT_JSON = {
 	// ── Oracle-specific extensions ────────────────────────────────────────────
 	// fail_closed promoted to top level — explicit signal for any consuming agent.
 	fail_closed:         true,
-	supported_exchanges: [
-		'XNYS', 'XNAS', 'XBSP', 'XLON', 'XPAR', 'XSWX', 'XMIL', 'XHEL', 'XSTO',
-		'XIST', 'XSAU', 'XDFM', 'XJSE', 'XSHG', 'XSHE', 'XHKG', 'XJPX', 'XKRX',
-		'XBOM', 'XNSE', 'XSES', 'XASX', 'XNZE',
-	],
+	supported_exchanges: SUPPORTED_EXCHANGES.map((e) => e.mic),
 	input_schema: {
 		type:       'object',
 		properties: {
@@ -5712,8 +5880,8 @@ export default {
 					reliability:    { uptime_sla: '99.9%', p95_latency_ms: 200 },
 					verification:   { algorithm: 'Ed25519', key_endpoint: 'https://api.headlessoracle.com/v5/keys' },
 					coverage:       {
-						exchanges: 23,
-						mic_codes: ['XNYS','XNAS','XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],
+						exchanges: SUPPORTED_EXCHANGES.length,
+						mic_codes: SUPPORTED_EXCHANGES.map((e) => e.mic),
 						halt_detection: {
 							active:        ['XNYS', 'XNAS'],
 							schedule_only: ['XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],

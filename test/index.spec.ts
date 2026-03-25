@@ -25,6 +25,8 @@ const ALL_MICS = [
 	'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE',
 	'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE',
 	'XHEL', 'XSTO',
+	// Crypto / derivatives (ITEM 6)
+	'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN',
 ];
 const VALID_STATUSES = ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'];
 const VALID_SOURCES  = ['SCHEDULE', 'OVERRIDE', 'SYSTEM', 'REALTIME'];
@@ -76,10 +78,10 @@ describe('GET /mics.json', () => {
 		expect(response.headers.get('Cache-Control')).toContain('public');
 	});
 
-	it('returns an array of exactly 23 exchanges', async () => {
+	it('returns an array of exactly 28 exchanges', async () => {
 		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
 		expect(Array.isArray(body)).toBe(true);
-		expect((body as unknown[]).length).toBe(23);
+		expect((body as unknown[]).length).toBe(28);
 	});
 
 	it('every entry has required fields: mic, name, country, timezone, currency, sameAs', async () => {
@@ -116,10 +118,16 @@ describe('GET /mics.json', () => {
 		}
 	});
 
-	it('sameAs points to the ISO 20022 MIC registry for every entry', async () => {
+	it('sameAs points to the ISO 20022 MIC registry for ISO MICs; convention MICs may differ', async () => {
 		const body = await fetchJSON('/mics.json') as unknown as Array<Record<string, unknown>>;
 		for (const entry of body) {
-			expect(entry.sameAs).toBe('https://www.iso20022.org/market-identifier-codes');
+			if (entry.mic_type === 'convention') {
+				// Convention MICs (e.g. XCOI, XBIN) point to the operator's own domain
+				expect(typeof entry.sameAs).toBe('string');
+				expect((entry.sameAs as string).length).toBeGreaterThan(0);
+			} else {
+				expect(entry.sameAs).toBe('https://www.iso20022.org/market-identifier-codes');
+			}
 		}
 	});
 
@@ -210,7 +218,7 @@ describe('GET /v5/demo', () => {
 		const supported = body.supported as string[];
 		expect(supported).toContain('XNYS');
 		expect(supported).toContain('XLON');
-		expect(supported.length).toBe(23);
+		expect(supported.length).toBe(28);
 	});
 
 	it('returns 400 for completely invalid MIC', async () => {
@@ -442,7 +450,7 @@ describe('GET /v5/schedule', () => {
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
 		const supported = body.supported as string[];
-		expect(supported.length).toBe(23);
+		expect(supported.length).toBe(28);
 		expect(supported).toContain('XLON');
 	});
 
@@ -593,7 +601,7 @@ describe('Settlement window in /v5/schedule', () => {
 // ─── GET /v5/exchanges ───────────────────────────────────────────────────────
 
 describe('GET /v5/exchanges', () => {
-	it('returns 200 with all 23 supported exchanges (no auth required)', async () => {
+	it('returns 200 with all 28 supported exchanges (no auth required)', async () => {
 		const response = await fetchWorker('/v5/exchanges');
 		expect(response.status).toBe(200);
 
@@ -601,7 +609,7 @@ describe('GET /v5/exchanges', () => {
 		expect(body).toHaveProperty('exchanges');
 
 		const exchanges = body.exchanges as Array<Record<string, unknown>>;
-		expect(exchanges.length).toBe(23);
+		expect(exchanges.length).toBe(28);
 	});
 
 	it('includes all 23 MIC codes in the directory', async () => {
@@ -653,6 +661,132 @@ describe('GET /v5/exchanges', () => {
 	});
 });
 
+// ─── ITEM 6: Crypto / derivatives exchange coverage ──────────────────────────
+
+describe('ITEM 6 — Crypto and derivatives exchanges', () => {
+	it('/v5/exchanges includes all 5 new exchanges with correct mic_type', async () => {
+		const body = await fetchJSON('/v5/exchanges');
+		const exchanges = body.exchanges as Array<Record<string, unknown>>;
+		const byMic = Object.fromEntries(exchanges.map((e) => [e.mic, e]));
+
+		// ISO MICs
+		expect(byMic['XCBT']).toBeDefined();
+		expect(byMic['XCBT']!.mic_type).toBe('iso');
+		expect(byMic['XNYM']).toBeDefined();
+		expect(byMic['XNYM']!.mic_type).toBe('iso');
+		expect(byMic['XCBO']).toBeDefined();
+		expect(byMic['XCBO']!.mic_type).toBe('iso');
+
+		// Convention MICs
+		expect(byMic['XCOI']).toBeDefined();
+		expect(byMic['XCOI']!.mic_type).toBe('convention');
+		expect(byMic['XBIN']).toBeDefined();
+		expect(byMic['XBIN']!.mic_type).toBe('convention');
+	});
+
+	it('all existing 23 exchanges still have mic_type: iso', async () => {
+		const body = await fetchJSON('/v5/exchanges');
+		const exchanges = body.exchanges as Array<Record<string, unknown>>;
+		const traditional = exchanges.filter((e) =>
+			['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES',
+			 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE',
+			 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE',
+			 'XHEL', 'XSTO'].includes(e.mic as string)
+		);
+		expect(traditional.length).toBe(23);
+		for (const ex of traditional) {
+			expect(ex.mic_type).toBe('iso');
+		}
+	});
+
+	it('/v5/demo?mic=XCBT returns signed receipt (CME overnight session)', async () => {
+		// Tuesday 20:00 UTC = Tuesday 15:00 CT — well inside the CME session
+		vi.setSystemTime(new Date('2026-04-07T20:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XCBT');
+		expect(body).toHaveProperty('mic', 'XCBT');
+		expect(body).toHaveProperty('signature');
+		expect(['OPEN', 'CLOSED']).toContain(body.status);
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XCBT is OPEN during active session (Tue 20:00 UTC = 15:00 CT)', async () => {
+		// CME session: Sun 17:00 CT → Fri 16:00 CT. Tuesday 15:00 CT is mid-session.
+		vi.setSystemTime(new Date('2026-04-07T20:00:00Z')); // Tuesday 15:00 CT
+		const body = await fetchJSON('/v5/demo?mic=XCBT');
+		expect(body.status).toBe('OPEN');
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XCBT is CLOSED during maintenance halt (16:00–17:00 CT = 21:00–22:00 UTC)', async () => {
+		// Tuesday 21:30 UTC = Tuesday 16:30 CT — inside the maintenance halt window
+		vi.setSystemTime(new Date('2026-04-07T21:30:00Z')); // Tuesday 16:30 CT
+		const body = await fetchJSON('/v5/demo?mic=XCBT');
+		expect(body.status).toBe('CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XCBT is CLOSED on Saturday (only weekend day for CME)', async () => {
+		// Saturday 14:00 UTC
+		vi.setSystemTime(new Date('2026-04-04T14:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XCBT');
+		expect(body.status).toBe('CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XCBT is CLOSED on Sunday before open (before 17:00 CT = 22:00 UTC)', async () => {
+		// Sunday 14:00 UTC = Sunday 09:00 CT — the session hasn't opened yet (opens 17:00 CT)
+		vi.setSystemTime(new Date('2026-04-05T14:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XCBT');
+		expect(body.status).toBe('CLOSED');
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XCBT is OPEN on Sunday after open (after 22:00 UTC = 17:00 CT)', async () => {
+		vi.setSystemTime(new Date('2026-04-05T23:00:00Z')); // Sunday 18:00 CT
+		const body = await fetchJSON('/v5/demo?mic=XCBT');
+		expect(body.status).toBe('OPEN');
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XCOI returns OPEN (Coinbase is 24/7)', async () => {
+		// Saturday 03:00 UTC — a time that would be CLOSED on any traditional exchange
+		vi.setSystemTime(new Date('2026-04-04T03:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XCOI');
+		expect(body).toHaveProperty('mic', 'XCOI');
+		expect(body.status).toBe('OPEN');
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XBIN returns OPEN (Binance is 24/7)', async () => {
+		vi.setSystemTime(new Date('2026-04-04T03:00:00Z')); // Saturday 03:00 UTC
+		const body = await fetchJSON('/v5/demo?mic=XBIN');
+		expect(body).toHaveProperty('mic', 'XBIN');
+		expect(body.status).toBe('OPEN');
+		vi.useRealTimers();
+	});
+
+	it('/v5/demo?mic=XCBO returns OPEN on a weekday during session hours', async () => {
+		// Tuesday 14:30 UTC = Tuesday 10:30 ET — Cboe is open 9:30–16:15 ET
+		vi.setSystemTime(new Date('2026-04-07T14:30:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XCBO');
+		expect(body).toHaveProperty('mic', 'XCBO');
+		expect(body.status).toBe('OPEN');
+		vi.useRealTimers();
+	});
+
+	it('/v5/schedule?mic=XCOI returns null next_open (24/7 session not modelled as day-pair)', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XCOI');
+		expect(body).toHaveProperty('mic', 'XCOI');
+		expect(body.next_open).toBeNull();
+	});
+
+	it('/v5/schedule?mic=XCBT returns null next_open (overnight session not modelled as day-pair)', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XCBT');
+		expect(body).toHaveProperty('mic', 'XCBT');
+		expect(body.next_open).toBeNull();
+	});
+});
+
 // ─── UNKNOWN MIC error responses ─────────────────────────────────────────────
 
 describe('UNKNOWN_MIC error handling', () => {
@@ -670,7 +804,7 @@ describe('UNKNOWN_MIC error handling', () => {
 			expect(body).toHaveProperty('supported');
 			const supported = body.supported as string[];
 			expect(Array.isArray(supported)).toBe(true);
-			expect(supported.length).toBe(23);
+			expect(supported.length).toBe(28);
 			// Verify all 7 MICs are in the supported list
 			for (const mic of ALL_MICS) {
 				expect(supported).toContain(mic);
@@ -930,17 +1064,17 @@ describe('GET /v5/health', () => {
 		expect(Object.prototype.hasOwnProperty.call(body, 'mic')).toBe(false);
 	});
 
-	it('health response includes exchange_count = 23 (unsigned metadata)', async () => {
+	it('health response includes exchange_count = 28 (unsigned metadata)', async () => {
 		const body = await fetchJSON('/v5/health');
-		expect(body).toHaveProperty('exchange_count', 23);
+		expect(body).toHaveProperty('exchange_count', 28);
 	});
 
-	it('health response includes supported_mics with all 23 MICs (unsigned metadata)', async () => {
+	it('health response includes supported_mics with all 28 MICs (unsigned metadata)', async () => {
 		const body = await fetchJSON('/v5/health');
 		expect(body).toHaveProperty('supported_mics');
 		const mics = body.supported_mics as string[];
 		expect(Array.isArray(mics)).toBe(true);
-		expect(mics.length).toBe(23);
+		expect(mics.length).toBe(28);
 		for (const mic of ALL_MICS) {
 			expect(mics).toContain(mic);
 		}
@@ -950,7 +1084,7 @@ describe('GET /v5/health', () => {
 		// Confirms these are unsigned annotations — not part of canonical health payload.
 		const body = await fetchJSON('/v5/health');
 		const { exchange_count, supported_mics } = body as Record<string, unknown>;
-		expect(exchange_count).toBe(23);
+		expect(exchange_count).toBe(28);
 		expect(Array.isArray(supported_mics)).toBe(true);
 		// Core signed fields must still be present
 		expect(body).toHaveProperty('signature');
@@ -1105,7 +1239,7 @@ describe('POST /mcp', () => {
 		expect(Object.prototype.hasOwnProperty.call(schedule, 'signature')).toBe(false);
 	});
 
-	it('tools/call list_exchanges → 23 exchanges with all MIC codes', async () => {
+	it('tools/call list_exchanges → 28 exchanges with all MIC codes', async () => {
 		const body = await postMcpJSON({
 			jsonrpc: '2.0', id: 6, method: 'tools/call',
 			params: { name: 'list_exchanges', arguments: {} },
@@ -1115,7 +1249,7 @@ describe('POST /mcp', () => {
 		const data = JSON.parse(content[0].text) as Record<string, unknown>;
 
 		const exchanges = data.exchanges as Array<Record<string, unknown>>;
-		expect(exchanges).toHaveLength(23);
+		expect(exchanges).toHaveLength(28);
 
 		const mics = exchanges.map((e) => e.mic as string);
 		for (const mic of ALL_MICS) {
@@ -1748,7 +1882,7 @@ describe('GET /.well-known/agent.json', () => {
 		// Oracle extensions
 		expect(body).toHaveProperty('fail_closed', true);
 		expect(Array.isArray(body.supported_exchanges)).toBe(true);
-		expect((body.supported_exchanges as string[]).length).toBe(23);
+		expect((body.supported_exchanges as string[]).length).toBe(28);
 		expect(body).toHaveProperty('input_schema');
 		expect(body).toHaveProperty('output_schema');
 		// Retained MCP block
@@ -3103,7 +3237,7 @@ describe('POST /webhooks/paddle', () => {
 // ─── edgeCaseCount() ─────────────────────────────────────────────────────────
 
 describe('edgeCaseCount()', () => {
-	it('2026: holidays = sum of all 23 exchange holiday lists', () => {
+	it('2026: holidays = sum of all 28 exchange holiday lists', () => {
 		// original 7: 81; new 16 exchanges add ~211 more; total ≥ 292
 		expect(edgeCaseCount(2026).holidays).toBeGreaterThanOrEqual(292);
 	});
@@ -3144,7 +3278,7 @@ describe('GET /v5/metrics', () => {
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('total_mcp_requests_today');
 		expect(body).toHaveProperty('unique_mcp_clients_today');
-		expect(body).toHaveProperty('exchanges_covered', 23);
+		expect(body).toHaveProperty('exchanges_covered', 28);
 		expect(body).toHaveProperty('edge_cases_per_year');
 		expect(typeof body.edge_cases_per_year).toBe('number');
 		expect((body.edge_cases_per_year as number)).toBeGreaterThan(1319);
@@ -4329,7 +4463,7 @@ describe('Session Q: GET /v5/usage', () => {
 describe('Session Q: GET /v5/traction', () => {
 	it('returns 200 with correct shape', async () => {
 		const body = await fetchJSON('/v5/traction');
-		expect(body).toHaveProperty('exchanges_covered', 23);
+		expect(body).toHaveProperty('exchanges_covered', 28);
 		expect(body).toHaveProperty('sma_spec_version', '1.0');
 		expect(body).toHaveProperty('verifiable_intent_rfc', 'submitted');
 		expect(body).toHaveProperty('halt_monitor', 'active');
@@ -4910,7 +5044,7 @@ describe('MCP server-card.json enrichment (Task 5)', () => {
 		const body = await res.json() as { reliability: { uptime_sla: string }; verification: { algorithm: string }; coverage: { exchanges: number }; fail_closed: boolean; protocols: string[] };
 		expect(body.reliability.uptime_sla).toBe('99.9%');
 		expect(body.verification.algorithm).toBe('Ed25519');
-		expect(body.coverage.exchanges).toBe(23);
+		expect(body.coverage.exchanges).toBe(28);
 		expect(body.fail_closed).toBe(true);
 		expect(body.protocols).toContain('MCP-2024-11-05');
 	});
