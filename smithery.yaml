@@ -7,7 +7,8 @@
 name: headless-oracle
 display_name: Headless Oracle — Signed Market Status
 description: |
-  Cryptographically signed real-time market status for 23 global stock exchanges.
+  Cryptographically signed real-time market status for 28 global exchanges — equities,
+  derivatives (CME, NYMEX, Cboe), and 24/7 crypto (Coinbase, Binance).
   Returns Ed25519-signed receipts (OPEN/CLOSED/HALTED/UNKNOWN) with 60-second TTL.
   Agents can verify receipts offline. Fail-closed: UNKNOWN always means CLOSED.
   SMA Protocol v1.0 compliant. Supports x402 per-request micropayments (0.001 USDC/req on Base).
@@ -58,11 +59,12 @@ tools:
       whether the market is OPEN, CLOSED, HALTED, or UNKNOWN.
       Receipt includes Ed25519 signature, 60-second TTL, and receipt_mode.
       MANDATORY: treat UNKNOWN and HALTED as CLOSED — halt all execution.
-      Covers 23 global exchanges across Americas, Europe, Middle East, Africa, Asia, and Pacific.
+      Covers 28 global exchanges across Americas, Europe, Middle East, Africa, Asia, Pacific,
+      and 24/7 derivatives/crypto (XCBT/XNYM/XCBO/XCOI/XBIN). mic_type: iso or convention.
     parameters:
       mic:
         type: string
-        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
+        description: "MIC code. Supported: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE, XCBT, XNYM, XCBO, XCOI, XBIN"
         required: true
         example: XNYS
 
@@ -75,13 +77,13 @@ tools:
     parameters:
       mic:
         type: string
-        description: ISO 10383 MIC code. Supported: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE
+        description: "MIC code. Supported: XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE, XCBT, XNYM, XCBO, XCOI, XBIN"
         required: true
         example: XNYS
 
   - name: list_exchanges
     description: |
-      Returns all 23 supported exchanges with MIC codes, names, and timezones.
+      Returns all 28 supported exchanges with MIC codes, names, timezones, and mic_type (iso|convention).
       Use to discover supported markets before calling get_market_status.
     parameters: {}
 
@@ -157,6 +159,30 @@ supported_exchanges:
   - mic: XNZE
     name: New Zealand Exchange
     timezone: Pacific/Auckland
+  - mic: XCBT
+    name: CME Futures (overnight)
+    timezone: America/Chicago
+    mic_type: iso
+    notes: overnight session; Sunday pre-open guard active
+  - mic: XNYM
+    name: NYMEX (overnight)
+    timezone: America/Chicago
+    mic_type: iso
+    notes: overnight session; Sunday pre-open guard active
+  - mic: XCBO
+    name: Cboe Options Exchange
+    timezone: America/Chicago
+    mic_type: iso
+  - mic: XCOI
+    name: Coinbase Exchange
+    timezone: UTC
+    mic_type: convention
+    notes: 24/7, no weekends
+  - mic: XBIN
+    name: Binance
+    timezone: UTC
+    mic_type: convention
+    notes: 24/7, no weekends
 
 standards:
   - "SMA Protocol v1.0: https://github.com/LembaGang/sma-protocol"
