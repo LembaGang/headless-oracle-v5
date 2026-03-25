@@ -4747,6 +4747,22 @@ export default {
 		const now = new Date();
 		const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
 
+		// ── Legacy master key migration (March–April 2026) ───────────────────────
+		// Phase 1 awareness : 2026-03-25 → 2026-03-28  (_notice in every JSON response)
+		// Phase 2 urgent    : 2026-03-29 → 2026-03-31  (_notice + X-Oracle-Migration headers)
+		// Phase 3 enforcement: 2026-04-01+              (hard 402 on all authenticated endpoints)
+		const _migDeadlineMs = Date.UTC(2026, 2, 31, 23, 59, 0); // Mar 31 23:59 UTC
+		const migrationDaysLeft = Math.max(0, Math.floor((_migDeadlineMs - now.getTime()) / 86_400_000));
+		const migrationPhase: 'awareness' | 'urgent' | 'enforcement' | null =
+			now.getTime() >= Date.UTC(2026, 3, 1, 0, 0, 0)  ? 'enforcement' :
+			now.getTime() >= Date.UTC(2026, 2, 29, 0, 0, 0) ? 'urgent' :
+			now.getTime() >= Date.UTC(2026, 2, 25, 0, 0, 0) ? 'awareness' :
+			null;
+		const isMasterKeyRequest = (() => {
+			const k = request.headers.get('X-Oracle-Key');
+			return Boolean(k && env.MASTER_API_KEY && k === env.MASTER_API_KEY);
+		})();
+
 		// Tracks the free-tier percent-used for the current request; set during the x402 gate.
 		// Used to add soft-limit warning headers to authenticated responses.
 		let freeTierPercentUsed = 0;
@@ -4858,6 +4874,26 @@ export default {
 		}
 
 		try {
+			// ── Phase 3: legacy master key hard expiry (April 1 2026) ────────────
+			// Blocks authenticated endpoints only — public endpoints are unaffected.
+			if (isMasterKeyRequest && migrationPhase === 'enforcement' && (
+				url.pathname.startsWith('/v5/status') ||
+				url.pathname === '/v5/batch' ||
+				url.pathname === '/v5/account' ||
+				url.pathname === '/v5/usage' ||
+				url.pathname === '/v5/archive' ||
+				url.pathname.startsWith('/v5/credits') ||
+				url.pathname.startsWith('/v5/webhooks') ||
+				url.pathname === '/v5/receipts' ||
+				url.pathname === '/v5/handoff'
+			)) {
+				return json({
+					error:      'legacy_key_expired',
+					message:    'Your early access key expired on March 31, 2026. Register at headlessoracle.com/upgrade to continue. Your receipt history and usage data are preserved.',
+					action_url: 'https://headlessoracle.com/upgrade?reason=legacy_migration',
+				}, 402);
+			}
+
 			// ── Auth gate — /v5/status requires X-Oracle-Key or x402 payment ─────
 			if (url.pathname.startsWith('/v5/status')) {
 				const apiKey = request.headers.get('X-Oracle-Key');
@@ -4867,6 +4903,23 @@ export default {
 					if (!auth.allowed) {
 						const authHeaders = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 						return json({ error: auth.error, message: auth.message }, auth.status, authHeaders);
+					}
+					// TEMPORARY: log master key matches for debugging
+					if (apiKey === env.MASTER_API_KEY) {
+						const xHeaders: Record<string, string> = {};
+						request.headers.forEach((value, name) => {
+							if (name.toLowerCase().startsWith('x-') && name.toLowerCase() !== 'x-oracle-key') xHeaders[name] = value;
+						});
+						console.log('MASTER_KEY_MATCH', {
+							key_prefix: apiKey.substring(0, 12),
+							path: url.pathname + (url.search || ''),
+							cf_ray: request.headers.get('CF-Ray') ?? 'none',
+							user_agent: request.headers.get('User-Agent') ?? 'none',
+							origin: request.headers.get('Origin') ?? 'none',
+							referer: request.headers.get('Referer') ?? 'none',
+							x_forwarded_for: request.headers.get('X-Forwarded-For') ?? 'none',
+							x_headers: xHeaders,
+						});
 					}
 					// Update last_used_at for keys tracked in Supabase (non-blocking, best-effort).
 					if (auth.keyHash && typeof ctx?.waitUntil === 'function') {
@@ -4985,6 +5038,42 @@ export default {
 				return new Response(response.body, { status: response.status, headers: newHeaders });
 			};
 
+			// Helper: append _notice to JSON responses during Phase 1 (awareness) and Phase 2 (urgent)
+			// for the legacy master key only. No-op for all other keys, all non-migration dates, and Phase 3.
+			const withMigrationNotice = async (response: Response): Promise<Response> => {
+				if (!isMasterKeyRequest || !migrationPhase || migrationPhase === 'enforcement') return response;
+				let body: Record<string, unknown>;
+				try { body = await response.clone().json() as Record<string, unknown>; } catch { return response; }
+				body['_notice'] = migrationPhase === 'urgent'
+					? {
+						type:                 'migration_urgent',
+						title:                'Your early access key expires soon',
+						message:              `Your early access key expires in ${migrationDaysLeft} day${migrationDaysLeft === 1 ? '' : 's'}. After March 31, 2026, this key will return 402 errors. Register now at headlessoracle.com/upgrade to avoid disruption to your integration.`,
+						action_url:           'https://headlessoracle.com/upgrade?reason=legacy_migration',
+						migration_deadline:   '2026-03-31T23:59:00Z',
+						days_remaining:       migrationDaysLeft,
+						recommended_plan:     'builder',
+						recommended_plan_url: 'https://headlessoracle.com/#pricing',
+					}
+					: {
+						type:                 'legacy_migration',
+						title:                'Your early access period is ending',
+						message:              "You've been on an early access key since March 2026. We're migrating early access users to paid plans on March 31, 2026. Your key will stop working after this date. Register now at headlessoracle.com/upgrade — it takes 2 minutes.",
+						action_url:           'https://headlessoracle.com/upgrade?reason=legacy_migration',
+						migration_deadline:   '2026-03-31T23:59:00Z',
+						days_remaining:       migrationDaysLeft,
+						recommended_plan:     'builder',
+						recommended_plan_url: 'https://headlessoracle.com/#pricing',
+					};
+				const newHeaders = new Headers(response.headers);
+				if (migrationPhase === 'urgent') {
+					newHeaders.set('X-Oracle-Migration',      'urgent');
+					newHeaders.set('X-Oracle-Deadline',       '2026-03-31');
+					newHeaders.set('X-Oracle-Days-Remaining', String(migrationDaysLeft));
+				}
+				return new Response(JSON.stringify(body), { status: response.status, headers: newHeaders });
+			};
+
 			// ── GET /v5/exchanges — public directory of supported markets ─
 			if (url.pathname === '/v5/exchanges') {
 				return withRateLimitWarning(json({ exchanges: SUPPORTED_EXCHANGES }));
@@ -5074,14 +5163,14 @@ export default {
 				// Also return the signed receipt for this MIC
 				const { receipt, status: receiptStatus } = await buildSignedReceipt(mic, env, now, expiresAt, 'live');
 
-				return json({
+				return await withMigrationNotice(json({
 					mic,
 					signed_receipt:    receipt,
 					halt_monitor: {
 						active_realtime_override: realtimeOverride,
 						note: 'halt_monitor runs every minute via cron. REALTIME overrides are auto-cleared when exchange resumes.',
 					},
-				}, receiptStatus, { 'Cache-Control': 'no-store' });
+				}, receiptStatus, { 'Cache-Control': 'no-store' }));
 			}
 
 			// ── GET /v5/status (authenticated) & /v5/demo (public) ───────
@@ -5110,8 +5199,19 @@ export default {
 						ctx.waitUntil(insertReceiptAudit(auditKeyHash, receipt as Record<string, unknown>, env).catch(() => {}));
 					}
 				}
+				// Archive: write signed receipt to ORACLE_TELEMETRY for /v5/archive (non-blocking, 30-day TTL).
+				if (mode === 'live' && typeof ctx?.waitUntil === 'function' && env.ORACLE_TELEMETRY && typeof receipt['receipt_id'] === 'string') {
+					const archiveDate = now.toISOString().slice(0, 10);
+					ctx.waitUntil(
+						env.ORACLE_TELEMETRY.put(
+							`receipt:${mic}:${archiveDate}:${receipt['receipt_id'] as string}`,
+							JSON.stringify(receipt),
+							{ expirationTtl: 2592000 },
+						).catch(() => {}),
+					);
+				}
 				// Receipts must not be cached — they expire in 60s and contain real-time status.
-				return withRateLimitWarning(json(receipt, status, { 'Cache-Control': 'no-store' }));
+				return withRateLimitWarning(await withMigrationNotice(json(receipt, status, { 'Cache-Control': 'no-store' })));
 			}
 
 			// ── GET /v5/batch — authenticated batch receipt query ─────────────────────
@@ -5296,7 +5396,7 @@ export default {
 					));
 				}
 
-				return withRateLimitWarning(json({
+				return withRateLimitWarning(await withMigrationNotice(json({
 						summary: {
 							total:          results.length,
 							open:           countOpen,
@@ -5311,7 +5411,7 @@ export default {
 						batch_id:   crypto.randomUUID(),
 						queried_at: now.toISOString(),
 						receipts:   results.map((r) => r.receipt),
-					}));
+					})));
 			}
 
 			// ── GET /v5/health — signed liveness probe (public, no auth) ──
@@ -6227,7 +6327,7 @@ export default {
 					? env.BETA_API_KEYS.split(',').map((k) => k.trim()).includes(apiKey)
 					: false;
 				if (isMaster || isBeta) {
-					return json({ plan: 'internal', status: 'active', key_prefix: null });
+					return await withMigrationNotice(json({ plan: 'internal', status: 'active', key_prefix: null }));
 				}
 
 				// Paid key — KV should be warm from checkApiKey call above
@@ -6236,7 +6336,7 @@ export default {
 					const cached = await env.ORACLE_API_KEYS.get(keyHash);
 					if (cached) {
 						const data = JSON.parse(cached) as { plan: string; status: string };
-						return json({ plan: data.plan, status: data.status, key_prefix: apiKey.substring(0, 14) });
+						return await withMigrationNotice(json({ plan: data.plan, status: data.status, key_prefix: apiKey.substring(0, 14) }));
 					}
 				}
 
@@ -6249,7 +6349,7 @@ export default {
 						.eq('key_hash', keyHash)
 						.single();
 					if (data) {
-						return json({ plan: data.plan, status: data.status, key_prefix: data.key_prefix });
+						return await withMigrationNotice(json({ plan: data.plan, status: data.status, key_prefix: data.key_prefix }));
 					}
 				}
 
@@ -6347,7 +6447,7 @@ export default {
 				const pctToday     = isFree && dailyLimit ? Math.round((requestsToday / dailyLimit) * 1000) / 10 : 0;
 				const pctMonth     = isFree && monthlyLimit ? Math.round((requestsThisMonth / monthlyLimit) * 1000) / 10 : 0;
 
-				return json({
+				return await withMigrationNotice(json({
 					key_prefix:              keyPrefix,
 					plan:                    usageAuth.plan,
 					requests_today:          requestsToday,
@@ -6361,7 +6461,64 @@ export default {
 					x402_available:          !!env.ORACLE_PAYMENT_ADDRESS,
 					x402_amount:             '0.001 USDC',
 					credit_balance:          creditBalance,
-				});
+				}));
+			}
+
+			// ── GET /v5/archive — signed receipt historical archive ─────────────
+			// Returns signed receipts written by /v5/status calls, keyed by MIC + date.
+			// No-auth / free tier: today only. Builder+ / internal: 30-day window.
+			// Receipts are already Ed25519-signed — consumers can verify without trusting us.
+			if (url.pathname === '/v5/archive') {
+				const archiveMic = (url.searchParams.get('mic') || '').toUpperCase();
+				if (!archiveMic || !MARKET_CONFIGS[archiveMic]) {
+					return json({ error: 'INVALID_MIC', message: 'mic is required and must be a supported exchange. See /v5/exchanges.' }, 400);
+				}
+				const archiveDateParam = url.searchParams.get('date') || '';
+				const archiveDateToday = now.toISOString().slice(0, 10);
+				const archiveDate      = archiveDateParam || archiveDateToday;
+				if (!/^\d{4}-\d{2}-\d{2}$/.test(archiveDate)) {
+					return json({ error: 'INVALID_DATE', message: 'date must be YYYY-MM-DD format. Example: ?date=2026-03-25' }, 400);
+				}
+				// Auth: optional — determines date range allowed
+				const archiveApiKey = request.headers.get('X-Oracle-Key');
+				let archiveAuth: Awaited<ReturnType<typeof checkApiKey>> | null = null;
+				if (archiveApiKey) {
+					archiveAuth = await checkApiKey(archiveApiKey, env);
+					if (!archiveAuth.allowed) {
+						return json({ error: archiveAuth.error, message: archiveAuth.message }, archiveAuth.status);
+					}
+				}
+				const isPaidArchive = archiveAuth !== null && ['builder', 'pro', 'protocol', 'internal'].includes(archiveAuth.plan ?? '');
+				// Date range enforcement: restrict non-paid callers to today only
+				if (archiveDate !== archiveDateToday && !isPaidArchive) {
+					return json({
+						error:       'ARCHIVE_DATE_RESTRICTED',
+						message:     'Historical archive access (beyond today) requires a Builder or Pro plan.',
+						today:       archiveDateToday,
+						upgrade_url: 'https://headlessoracle.com/upgrade',
+					}, 403);
+				}
+				if (isPaidArchive) {
+					const archiveDaysAgo = Math.floor((new Date(archiveDateToday).getTime() - new Date(archiveDate).getTime()) / 86_400_000);
+					if (archiveDaysAgo > 30 || archiveDaysAgo < 0) {
+						return json({ error: 'ARCHIVE_DATE_OUT_OF_RANGE', message: 'Archive retains receipts for 30 days. date must be within 30 days of today.', ttl_days: 30 }, 400);
+					}
+				}
+				if (!env.ORACLE_TELEMETRY) {
+					return json({ mic: archiveMic, date: archiveDate, count: 0, receipts: [] });
+				}
+				// KV list: max 1000 keys. Add cursor pagination when daily /v5/status volume > 1000.
+				const archivePrefix = `receipt:${archiveMic}:${archiveDate}:`;
+				const listed = await env.ORACLE_TELEMETRY.list({ prefix: archivePrefix }).catch(() => ({ keys: [] as KVNamespaceListKey<unknown>[] }));
+				const archiveReceipts = await Promise.all(
+					listed.keys.map(async (k) => {
+						const raw = await env.ORACLE_TELEMETRY.get(k.name).catch(() => null);
+						if (!raw) return null;
+						try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; }
+					}),
+				);
+				const validArchiveReceipts = archiveReceipts.filter((r): r is Record<string, unknown> => r !== null);
+				return json({ mic: archiveMic, date: archiveDate, count: validArchiveReceipts.length, receipts: validArchiveReceipts });
 			}
 
 			// ── GET /v5/traction — public live metrics snapshot ──────────
@@ -6504,6 +6661,25 @@ export default {
 			// No auth required. Validates email, generates ho_free_ key,
 			// stores in KV + Supabase, sends via Resend.
 			if (url.pathname === '/v5/keys/request') {
+				if (request.method === 'GET') {
+					return json({
+						message:    'To get an API key, choose a plan at headlessoracle.com/upgrade',
+						action_url: 'https://headlessoracle.com/upgrade',
+						plans: {
+							builder: {
+								price: '$99/month',
+								calls: '50,000/month',
+								url:   'https://headlessoracle.com/upgrade',
+							},
+							pro: {
+								price: '$299/month',
+								calls: '200,000/month',
+								url:   'https://headlessoracle.com/upgrade',
+							},
+						},
+						docs: 'https://headlessoracle.com/docs',
+					});
+				}
 				if (request.method !== 'POST') {
 					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
 				}
@@ -6768,7 +6944,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				else if (amountPaid >= BigInt(90000)) creditsToAdd = 100;    // 0.09 USDC → 100 credits
 				const keyHash = await sha256Hex(apiKey);
 				await addCredits(keyHash, creditsToAdd, env);
-				return json({ purchased: creditsToAdd, message: `${creditsToAdd} credits added to your account` });
+				return await withMigrationNotice(json({ purchased: creditsToAdd, message: `${creditsToAdd} credits added to your account` }));
 			}
 
 			// ── GET /v5/credits/balance — credit balance for the calling key
@@ -6783,11 +6959,11 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 				const keyHash = await sha256Hex(apiKey);
 				const credits = await getCreditBalance(keyHash, env);
-				return json({
+				return await withMigrationNotice(json({
 					balance:                      credits.balance,
 					estimated_requests_remaining: credits.balance,
 					last_purchased:               credits.last_purchased || null,
-				});
+				}));
 			}
 
 			// ── POST /v5/webhooks/subscribe — register a webhook for state-change events ──
@@ -6857,7 +7033,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					await env.ORACLE_API_KEYS.put(`webhooks_by_mic:${mic}`, JSON.stringify(micTargets));
 				}
 
-				return json({ subscription_id: subscription.subscription_id, mics, status: 'active', secret });
+				return await withMigrationNotice(json({ subscription_id: subscription.subscription_id, mics, status: 'active', secret }));
 			}
 
 			// ── DELETE /v5/webhooks/unsubscribe — remove a subscription ──────────
@@ -6891,7 +7067,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					await env.ORACLE_API_KEYS.put(`webhooks_by_mic:${mic}`, JSON.stringify(filtered));
 				}
 
-				return json({ subscription_id: body.subscription_id, status: 'deleted' });
+				return await withMigrationNotice(json({ subscription_id: body.subscription_id, status: 'deleted' }));
 			}
 
 			// ── 404 ──────────────────────────────────────────────────────
@@ -6939,7 +7115,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					if (fromParam) query = query.gte('issued_at', fromParam);
 					const { data, error } = await query;
 					if (error) return json({ error: 'QUERY_ERROR', message: error.message }, 500);
-					return json({ receipts: data ?? [], count: (data ?? []).length, limit });
+					return await withMigrationNotice(json({ receipts: data ?? [], count: (data ?? []).length, limit }));
 				} catch (e) {
 					return json({ error: 'QUERY_ERROR', message: e instanceof Error ? e.message : 'Unknown error' }, 500);
 				}
@@ -7383,10 +7559,352 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 			});
 		}
 
+		// ── GET /upgrade — plan selection page (general) or migration landing (legacy_migration) ──
+		if (url.pathname === '/upgrade') {
+			const isMigration = url.searchParams.get('reason') === 'legacy_migration';
+
+			const upgradeNow      = new Date();
+			const upgradeDeadline = new Date('2026-03-31T23:59:00Z');
+			const upgradeDaysLeft = Math.max(0, Math.floor((upgradeDeadline.getTime() - upgradeNow.getTime()) / 86_400_000));
+			const upgradeDaysExpired = upgradeNow > upgradeDeadline;
+			const deadlineColor   = upgradeDaysExpired ? '#ef4444' : upgradeDaysLeft <= 3 ? '#ef4444' : '#f97316';
+			const deadlineText    = upgradeDaysExpired
+				? 'EXPIRED'
+				: `Key expires March 31, 2026 — ${upgradeDaysLeft} day${upgradeDaysLeft === 1 ? '' : 's'} remaining`;
+
+			const upgradeHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${isMigration ? 'Migrate Your Key' : 'Choose a Plan'} — Headless Oracle</title>
+<meta name="robots" content="noindex">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0a0f;
+    --surface: #13131a;
+    --border: #1e1e2e;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+    --highlight: #1e1b4b;
+    --green: #22c55e;
+    --orange: #f97316;
+    --red: #ef4444;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  a { color: var(--accent-hover); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Header */
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .wordmark {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text);
+  }
+  .wordmark span { color: var(--accent-hover); }
+  .tagline {
+    font-size: 13px;
+    color: var(--muted);
+    border-left: 1px solid var(--border);
+    padding-left: 12px;
+    margin-left: 4px;
+  }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 64px 24px 48px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .hero h1 {
+    font-size: clamp(28px, 5vw, 42px);
+    font-weight: 700;
+    letter-spacing: -1px;
+    line-height: 1.2;
+    margin-bottom: 16px;
+  }
+  .hero p {
+    font-size: 18px;
+    color: var(--muted);
+    max-width: 560px;
+    margin: 0 auto 28px;
+  }
+  .deadline-badge {
+    display: inline-block;
+    background: rgba(239,68,68,0.12);
+    border: 1px solid ${deadlineColor};
+    color: ${deadlineColor};
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px 20px;
+    border-radius: 100px;
+    letter-spacing: 0.02em;
+  }
+
+  /* Plans */
+  .plans {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 20px;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 24px 64px;
+  }
+  .plan {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    position: relative;
+  }
+  .plan.recommended {
+    border-color: var(--accent);
+    background: linear-gradient(135deg, var(--highlight) 0%, var(--surface) 60%);
+  }
+  .recommended-badge {
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 4px 14px;
+    border-radius: 100px;
+    white-space: nowrap;
+  }
+  .plan-name {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .plan.recommended .plan-name { color: var(--accent-hover); }
+  .plan-price {
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  .plan-price span {
+    font-size: 16px;
+    font-weight: 400;
+    color: var(--muted);
+    letter-spacing: 0;
+  }
+  .plan-features {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+  }
+  .plan-features li {
+    font-size: 14px;
+    color: var(--muted);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .plan-features li::before {
+    content: '✓';
+    color: var(--green);
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .plan-cta {
+    display: block;
+    text-align: center;
+    padding: 13px 24px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: opacity 0.15s;
+  }
+  .plan-cta:hover { opacity: 0.85; text-decoration: none; }
+  .plan-cta.primary { background: var(--accent); color: #fff; }
+  .plan-cta.secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  /* Reassurance */
+  .reassurance {
+    border-top: 1px solid var(--border);
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 48px 24px;
+    text-align: center;
+  }
+  .reassurance h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 24px;
+    color: var(--text);
+  }
+  .reassurance-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }
+  .reassurance-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    font-size: 14px;
+    color: var(--muted);
+    text-align: left;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .reassurance-item::before {
+    content: '→';
+    color: var(--green);
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  /* Footer */
+  .footer {
+    border-top: 1px solid var(--border);
+    padding: 24px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--muted);
+    display: flex;
+    gap: 24px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  @media (max-width: 600px) {
+    .tagline { display: none; }
+    .hero { padding: 40px 20px 32px; }
+    .plans { padding: 0 16px 48px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="wordmark">Headless <span>Oracle</span></div>
+  <div class="tagline">Cryptographic market state verification for autonomous agents</div>
+</header>
+
+<section class="hero">
+  ${isMigration
+		? `<h1>Your early access period is ending</h1>
+  <p>You've been using Headless Oracle since March 2026 on an early access key. To continue uninterrupted, choose a plan below.</p>
+  <div class="deadline-badge">${deadlineText}</div>`
+		: `<h1>Choose a plan</h1>
+  <p>Get started with Headless Oracle. Signed market state verification for autonomous financial agents.</p>`
+  }
+</section>
+
+<section class="plans">
+
+  <div class="plan">
+    <div class="plan-name">Pro</div>
+    <div class="plan-price">$299<span>/month</span></div>
+    <ul class="plan-features">
+      <li>200,000 calls/month</li>
+      <li>Everything in Builder</li>
+      <li>Priority support</li>
+      <li>SLA guarantee</li>
+    </ul>
+    <a class="plan-cta secondary" href="https://headlessoracle.com/v5/checkout?plan=pro">Start Pro Plan</a>
+  </div>
+
+  <div class="plan recommended">
+    <div class="recommended-badge">Recommended</div>
+    <div class="plan-name">Builder</div>
+    <div class="plan-price">$99<span>/month</span></div>
+    <ul class="plan-features">
+      <li>50,000 calls/month</li>
+      <li>All 23 global exchanges</li>
+      <li>Ed25519 signed receipts</li>
+      <li>Batch endpoint</li>
+      <li>Email support</li>
+    </ul>
+    <a class="plan-cta primary" href="https://headlessoracle.com/v5/checkout?plan=builder">Start Builder Plan</a>
+  </div>
+
+  <div class="plan">
+    <div class="plan-name">Protocol</div>
+    <div class="plan-price">$500<span>+/month</span></div>
+    <ul class="plan-features">
+      <li>Custom call volume</li>
+      <li>Custom SLA</li>
+      <li>Dedicated support</li>
+      <li>White-glove onboarding</li>
+    </ul>
+    <a class="plan-cta secondary" href="mailto:hello@headlessoracle.com">Contact Us</a>
+  </div>
+
+</section>
+
+<section class="reassurance">
+  <h2>Zero-disruption migration</h2>
+  <div class="reassurance-grid">
+    <div class="reassurance-item">Your existing receipts and usage history are preserved</div>
+    <div class="reassurance-item">Migration takes 2 minutes — no integration changes required</div>
+    <div class="reassurance-item">Same API, same endpoints, new key</div>
+    <div class="reassurance-item">Zero downtime migration</div>
+  </div>
+</section>
+
+<footer class="footer">
+  <span>Questions? Email <a href="mailto:hello@headlessoracle.com">hello@headlessoracle.com</a></span>
+  <a href="https://headlessoracle.com">← headlessoracle.com</a>
+</footer>
+
+</body>
+</html>`;
+			return new Response(upgradeHtml, {
+				headers: {
+					...corsHeaders,
+					'Content-Type':  'text/html; charset=utf-8',
+					'Cache-Control': 'no-store',
+				},
+			});
+		}
+
 		// ── GET /badge/:mic — SVG status badge for embedding in READMEs ─────────
 		// Returns a shields.io-style flat SVG badge showing current market status.
 		// Cache-Control: max-age=60 so badges refresh once per minute.
-		const badgeMatch = url.pathname.match(/^\/badge\/([A-Z]{4})$/);
+		const badgeMatch = url.pathname.match(/^\/badge\/([A-Z0-9]+)$/);
 		if (badgeMatch) {
 			const badgeMic = badgeMatch[1];
 			if (!MARKET_CONFIGS[badgeMic]) {

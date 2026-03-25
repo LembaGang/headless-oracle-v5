@@ -25,6 +25,10 @@ routes = [
   { pattern = "headlessoracle.com/docs/integrations/datacamp-workspace.md", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/bun", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/bun.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/badge/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/status", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/upgrade", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v5/archive", zone_name = "headlessoracle.com" },
 ]
 
 [vars]

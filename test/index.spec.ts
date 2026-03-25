@@ -2401,11 +2401,14 @@ describe('GET /v5/account', () => {
 // ─── POST /v5/keys/request — free tier key provisioning ──────────────────────
 
 describe('POST /v5/keys/request', () => {
-	it('GET /v5/keys/request → 405 Method Not Allowed', async () => {
+	it('GET /v5/keys/request → 200 with plan info', async () => {
 		const response = await fetchWorker('/v5/keys/request');
-		expect(response.status).toBe(405);
+		expect(response.status).toBe(200);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
+		expect(body).toHaveProperty('message');
+		expect(body).toHaveProperty('action_url', 'https://headlessoracle.com/upgrade');
+		expect(body).toHaveProperty('plans');
+		expect(body).toHaveProperty('docs');
 	});
 
 	it('missing email → 400 INVALID_EMAIL', async () => {
@@ -5471,6 +5474,13 @@ describe('GET /badge/:mic', () => {
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'INVALID_MIC');
 	});
+
+	it('/badge/INVALID returns 404 (longer-than-4-char code not in MARKET_CONFIGS)', async () => {
+		const res = await fetchWorker('/badge/INVALID');
+		expect(res.status).toBe(404);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_MIC');
+	});
 });
 
 // ─── GET /v5/changelog ───────────────────────────────────────────────────────
@@ -5503,5 +5513,161 @@ describe('GET /status (HTML page)', () => {
 		expect(body).toContain('<html');
 		expect(body).toContain('XNYS');
 		expect(body).toContain('Headless Oracle');
+	});
+	it('returns 200 HTML with schema.org markup', async () => {
+		const res = await fetchWorker('/status');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('content-type')).toContain('text/html');
+		const body = await res.text();
+		expect(body).toContain('Headless Oracle');
+		expect(body).toContain('schema.org');
+	});
+});
+
+// ─── GET /v5/archive ──────────────────────────────────────────────────────────
+
+describe('GET /v5/archive', () => {
+	it('returns 400 when mic is missing', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/archive?date=2026-03-25');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_MIC');
+	});
+
+	it('returns 400 for unsupported mic', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/archive?mic=XXXX&date=2026-03-25');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_MIC');
+	});
+
+	it('returns 400 for invalid date format', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/archive?mic=XNYS&date=25-03-2026');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_DATE');
+	});
+
+	it('returns today\'s archive (empty) without auth', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/archive?mic=XNYS&date=2026-03-25');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.mic).toBe('XNYS');
+		expect(body.date).toBe('2026-03-25');
+		expect(typeof body.count).toBe('number');
+		expect(Array.isArray(body.receipts)).toBe(true);
+	});
+
+	it('returns 403 for past date without auth', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/archive?mic=XNYS&date=2026-03-24');
+		expect(res.status).toBe(403);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('ARCHIVE_DATE_RESTRICTED');
+		expect(typeof body.upgrade_url).toBe('string');
+	});
+
+	it('returns 403 for past date with free-plan key', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const freeHash = await sha256Hex('ho_free_archive_test_key');
+		await env.ORACLE_API_KEYS.put(freeHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		const res = await fetchWorker('/v5/archive?mic=XNYS&date=2026-03-24', {
+			headers: { 'X-Oracle-Key': 'ho_free_archive_test_key' },
+		});
+		expect(res.status).toBe(403);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('ARCHIVE_DATE_RESTRICTED');
+	});
+
+	it('returns 200 for past date with paid (builder) key', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const builderHash = await sha256Hex('ho_live_builder_archive_test');
+		await env.ORACLE_API_KEYS.put(builderHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		const res = await fetchWorker('/v5/archive?mic=XNYS&date=2026-03-24', {
+			headers: { 'X-Oracle-Key': 'ho_live_builder_archive_test' },
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.mic).toBe('XNYS');
+		expect(body.date).toBe('2026-03-24');
+		expect(Array.isArray(body.receipts)).toBe(true);
+	});
+
+	it('returns 400 for date older than 30 days with paid key', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const builderHash2 = await sha256Hex('ho_live_builder_archive_old');
+		await env.ORACLE_API_KEYS.put(builderHash2, JSON.stringify({ plan: 'builder', status: 'active' }));
+		const res = await fetchWorker('/v5/archive?mic=XNYS&date=2026-01-01', {
+			headers: { 'X-Oracle-Key': 'ho_live_builder_archive_old' },
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('ARCHIVE_DATE_OUT_OF_RANGE');
+	});
+
+	it('/v5/status live call writes receipt to archive, /v5/archive returns it', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		// Trigger a live /v5/status call to write to the archive
+		await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		// Archive should now contain that receipt
+		const archiveRes = await fetchWorker('/v5/archive?mic=XNYS&date=2026-03-25', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(archiveRes.status).toBe(200);
+		const body = await archiveRes.json() as Record<string, unknown>;
+		expect((body.count as number)).toBeGreaterThan(0);
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		expect(receipts[0]).toHaveProperty('receipt_id');
+		expect(receipts[0]).toHaveProperty('signature');
+		expect(receipts[0].mic).toBe('XNYS');
+		expect(receipts[0].receipt_mode).toBe('live');
+	});
+
+	it('archive response contains all required receipt fields on pre-seeded data', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const seeded = {
+			receipt_id: 'archive-seed-test-uuid-001',
+			issued_at: '2026-03-25T10:00:00.000Z',
+			expires_at: '2026-03-25T10:01:00.000Z',
+			issuer: 'headlessoracle.com',
+			mic: 'XNYS',
+			status: 'OPEN',
+			source: 'SCHEDULE',
+			receipt_mode: 'live',
+			schema_version: 'v5.0',
+			public_key_id: 'key_2026_v1',
+			signature: 'deadbeef',
+		};
+		await env.ORACLE_TELEMETRY.put(
+			'receipt:XNYS:2026-03-25:archive-seed-test-uuid-001',
+			JSON.stringify(seeded),
+		);
+		const res = await fetchWorker('/v5/archive?mic=XNYS&date=2026-03-25');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		const found = receipts.find((r) => r.receipt_id === 'archive-seed-test-uuid-001');
+		expect(found).toBeDefined();
+		expect(found?.mic).toBe('XNYS');
+		expect(found?.status).toBe('OPEN');
+		expect(found?.signature).toBe('deadbeef');
+	});
+
+	it('demo mode /v5/demo calls do NOT write to archive', async () => {
+		vi.setSystemTime(new Date('2026-03-25T15:00:00Z'));
+		await fetchWorker('/v5/demo?mic=XNAS');
+		const archiveRes = await fetchWorker('/v5/archive?mic=XNAS&date=2026-03-25');
+		expect(archiveRes.status).toBe(200);
+		const body = await archiveRes.json() as Record<string, unknown>;
+		// May have 0 or entries from prior tests — just confirm no demo-mode receipts
+		const receipts = body.receipts as Array<Record<string, unknown>>;
+		const demoReceipts = receipts.filter((r) => r.receipt_mode === 'demo');
+		expect(demoReceipts.length).toBe(0);
 	});
 });
