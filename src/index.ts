@@ -1537,6 +1537,44 @@ const MICS_REGISTRY = Object.entries(MARKET_CONFIGS).map(([mic, cfg]) => ({
 // Consumers MUST NOT act on a receipt whose expires_at has passed.
 const RECEIPT_TTL_SECONDS = 60;
 
+// ─── Settlement Window Metadata ───────────────────────────────────────────────
+// Informational only — not signed. Returned by /v5/schedule so agents know when
+// a trade will settle. Only 4 exchanges have verified data; all others are null.
+// Sources: SEC Rule 15c6-1 (US T+1), JSCC rulebook (JP T+2), Euroclear (UK T+2).
+interface SettlementWindow {
+	cycle:         string;  // e.g. "T+1", "T+2"
+	clearinghouse: string;  // Clearing entity name
+	cutoff_utc:    string;  // HH:MM UTC — approximate daily settlement cutoff
+	notes:         string;  // Free-text context for agents
+}
+
+const SETTLEMENT_WINDOWS: Readonly<Record<string, SettlementWindow>> = {
+	XNYS: {
+		cycle:         'T+1',
+		clearinghouse: 'DTCC/NSCC',
+		cutoff_utc:    '20:30',
+		notes:         'US equities settled T+1 since May 28 2024 (SEC Rule 15c6-1 amendment). Cutoff approx 20:30 UTC (16:30 EDT / 15:30 EST).',
+	},
+	XNAS: {
+		cycle:         'T+1',
+		clearinghouse: 'DTCC/NSCC',
+		cutoff_utc:    '20:30',
+		notes:         'US equities settled T+1 since May 28 2024 (SEC Rule 15c6-1 amendment). Cutoff approx 20:30 UTC (16:30 EDT / 15:30 EST).',
+	},
+	XLON: {
+		cycle:         'T+2',
+		clearinghouse: 'Euroclear UK & Ireland',
+		cutoff_utc:    '15:30',
+		notes:         'UK equities T+2. Cutoff 15:30 UTC (16:30 BST / 15:30 GMT). Formerly operated as CREST.',
+	},
+	XJPX: {
+		cycle:         'T+2',
+		clearinghouse: 'JSCC',
+		cutoff_utc:    '06:30',
+		notes:         'Japanese equities T+2. Cutoff 15:30 JST = 06:30 UTC (Japan has no DST — offset is always UTC+9).',
+	},
+} as const;
+
 // ─── x402 Micropayment ────────────────────────────────────────────────────────
 
 // USDC ERC-20 contract on Base mainnet (chain ID 8453).
@@ -5131,7 +5169,8 @@ export default {
 					lunch_break:         config.lunchBreak
 						? { start: `${pad2(config.lunchBreak.startHour)}:${pad2(config.lunchBreak.startMinute)}`, end: `${pad2(config.lunchBreak.endHour)}:${pad2(config.lunchBreak.endMinute)}` }
 						: null,
-					note:                'Times are UTC. lunch_break times are local exchange time (see timezone field). next_open is null when coverage for the current year is unavailable.',
+					settlement_window:   SETTLEMENT_WINDOWS[mic] ?? null,
+					note:                'Times are UTC. lunch_break times are local exchange time (see timezone field). next_open is null when coverage for the current year is unavailable. settlement_window is informational only (not signed).',
 				}));
 			}
 

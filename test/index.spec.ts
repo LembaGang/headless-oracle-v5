@@ -535,6 +535,61 @@ describe('Lunch break in /v5/schedule', () => {
 	});
 });
 
+// ─── Settlement window in /v5/schedule ────────────────────────────────────────
+
+describe('Settlement window in /v5/schedule', () => {
+	it('XNYS has T+1 DTCC settlement window', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XNYS');
+		const sw = body.settlement_window as Record<string, unknown>;
+		expect(sw).not.toBeNull();
+		expect(sw.cycle).toBe('T+1');
+		expect(sw.clearinghouse).toContain('DTCC');
+		expect(sw.cutoff_utc).toBe('20:30');
+		expect(typeof sw.notes).toBe('string');
+	});
+
+	it('XNAS has T+1 DTCC settlement window', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XNAS');
+		const sw = body.settlement_window as Record<string, unknown>;
+		expect(sw).not.toBeNull();
+		expect(sw.cycle).toBe('T+1');
+		expect(sw.clearinghouse).toContain('DTCC');
+	});
+
+	it('XLON has T+2 Euroclear settlement window', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XLON');
+		const sw = body.settlement_window as Record<string, unknown>;
+		expect(sw).not.toBeNull();
+		expect(sw.cycle).toBe('T+2');
+		expect((sw.clearinghouse as string).toLowerCase()).toContain('euroclear');
+		expect(sw.cutoff_utc).toBe('15:30');
+	});
+
+	it('XJPX has T+2 JSCC settlement window with 06:30 UTC cutoff', async () => {
+		const body = await fetchJSON('/v5/schedule?mic=XJPX');
+		const sw = body.settlement_window as Record<string, unknown>;
+		expect(sw).not.toBeNull();
+		expect(sw.cycle).toBe('T+2');
+		expect(sw.clearinghouse).toBe('JSCC');
+		expect(sw.cutoff_utc).toBe('06:30');
+	});
+
+	it('exchanges without settlement data return null settlement_window', async () => {
+		for (const mic of ['XPAR', 'XHKG', 'XSES', 'XASX', 'XKRX', 'XJSE']) {
+			const body = await fetchJSON(`/v5/schedule?mic=${mic}`);
+			expect(Object.prototype.hasOwnProperty.call(body, 'settlement_window')).toBe(true);
+			expect(body.settlement_window).toBeNull();
+		}
+	});
+
+	it('settlement_window present as key in schedule response for all 23 MICs', async () => {
+		for (const mic of ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XBSP']) {
+			const body = await fetchJSON(`/v5/schedule?mic=${mic}`);
+			expect(Object.prototype.hasOwnProperty.call(body, 'settlement_window')).toBe(true);
+		}
+	});
+});
+
 // ─── GET /v5/exchanges ───────────────────────────────────────────────────────
 
 describe('GET /v5/exchanges', () => {
