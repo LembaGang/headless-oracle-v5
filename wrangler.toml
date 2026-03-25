@@ -29,6 +29,7 @@ routes = [
   { pattern = "headlessoracle.com/status", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/upgrade", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v5/archive", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v5/conformance-vectors", zone_name = "headlessoracle.com" },
 ]
 
 [vars]

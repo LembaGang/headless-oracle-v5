@@ -5671,3 +5671,140 @@ describe('GET /v5/archive', () => {
 		expect(demoReceipts.length).toBe(0);
 	});
 });
+
+// ─── GET /v5/conformance-vectors ──────────────────────────────────────────────
+
+describe('GET /v5/conformance-vectors', () => {
+	it('returns 200 with correct top-level shape', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/conformance-vectors');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.spec_version).toBe('v1');
+		expect(typeof body.generated_at).toBe('string');
+		expect(typeof body.public_key).toBe('string');
+		expect(body.algorithm).toBe('ed25519');
+		expect(typeof body.ttl_seconds).toBe('number');
+		expect(typeof body.note).toBe('string');
+		expect(Array.isArray(body.vectors)).toBe(true);
+	});
+
+	it('returns exactly 5 vectors with correct vector_ids', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const vectors = body.vectors as Array<Record<string, unknown>>;
+		expect(vectors.length).toBe(5);
+		const ids = vectors.map((v) => v.vector_id);
+		expect(ids).toContain('v1_xnys_open');
+		expect(ids).toContain('v1_xnys_closed');
+		expect(ids).toContain('v1_xjpx_lunch');
+		expect(ids).toContain('v1_unknown');
+		expect(ids).toContain('v1_health');
+	});
+
+	it('each vector has required fields', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const vectors = body.vectors as Array<Record<string, unknown>>;
+		for (const v of vectors) {
+			expect(typeof v.vector_id).toBe('string');
+			expect(typeof v.description).toBe('string');
+			expect(typeof v.canonical_payload).toBe('string');
+			expect(typeof v.public_key).toBe('string');
+			expect(v.algorithm).toBe('ed25519');
+			const receipt = v.receipt as Record<string, unknown>;
+			expect(typeof receipt.receipt_id).toBe('string');
+			expect(typeof receipt.issued_at).toBe('string');
+			expect(typeof receipt.expires_at).toBe('string');
+			expect(typeof receipt.signature).toBe('string');
+			expect((receipt.signature as string).length).toBe(128);
+		}
+	});
+
+	it('v1_xnys_open has status OPEN and mic XNYS', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const vectors = body.vectors as Array<Record<string, unknown>>;
+		const v = vectors.find((x) => x.vector_id === 'v1_xnys_open')!;
+		const receipt = v.receipt as Record<string, unknown>;
+		expect(receipt.mic).toBe('XNYS');
+		expect(receipt.status).toBe('OPEN');
+		expect(receipt.receipt_mode).toBe('live');
+		expect(receipt.schema_version).toBe('v5.0');
+	});
+
+	it('v1_xnys_closed has status CLOSED and mic XNYS', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const vectors = body.vectors as Array<Record<string, unknown>>;
+		const v = vectors.find((x) => x.vector_id === 'v1_xnys_closed')!;
+		const receipt = v.receipt as Record<string, unknown>;
+		expect(receipt.mic).toBe('XNYS');
+		expect(receipt.status).toBe('CLOSED');
+	});
+
+	it('v1_xjpx_lunch has status CLOSED and mic XJPX', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const vectors = body.vectors as Array<Record<string, unknown>>;
+		const v = vectors.find((x) => x.vector_id === 'v1_xjpx_lunch')!;
+		const receipt = v.receipt as Record<string, unknown>;
+		expect(receipt.mic).toBe('XJPX');
+		expect(receipt.status).toBe('CLOSED');
+	});
+
+	it('v1_unknown has status UNKNOWN and source SYSTEM', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const vectors = body.vectors as Array<Record<string, unknown>>;
+		const v = vectors.find((x) => x.vector_id === 'v1_unknown')!;
+		const receipt = v.receipt as Record<string, unknown>;
+		expect(receipt.status).toBe('UNKNOWN');
+		expect(receipt.source).toBe('SYSTEM');
+	});
+
+	it('v1_health has status OK and no mic field', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const vectors = body.vectors as Array<Record<string, unknown>>;
+		const v = vectors.find((x) => x.vector_id === 'v1_health')!;
+		const receipt = v.receipt as Record<string, unknown>;
+		expect(receipt.status).toBe('OK');
+		expect(receipt.source).toBe('SYSTEM');
+		expect(receipt.mic).toBeUndefined();
+		expect(receipt.schema_version).toBeUndefined();
+	});
+
+	it('no auth required', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const res = await fetchWorker('/v5/conformance-vectors');
+		expect(res.status).toBe(200);
+	});
+
+	it('signature is valid Ed25519 over canonical_payload bytes (round-trip verification)', async () => {
+		vi.setSystemTime(new Date('2026-03-25T14:00:00Z'));
+		const body = await fetchJSON('/v5/conformance-vectors');
+		const pubKeyHex = body.public_key as string;
+		const vectors   = body.vectors as Array<Record<string, unknown>>;
+		// Verify all 5 vectors
+		for (const v of vectors) {
+			const receipt    = v.receipt as Record<string, unknown>;
+			const sigHex     = receipt.signature as string;
+			const b64payload = v.canonical_payload as string;
+			// Decode canonical_payload: base64 → bytes
+			const canonicalBytes = Uint8Array.from(atob(b64payload), (c) => c.charCodeAt(0));
+			// Decode public key and signature
+			const fromHexLocal = (h: string) => new Uint8Array(h.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+			const pubKeyBytes = fromHexLocal(pubKeyHex);
+			const sigBytes    = fromHexLocal(sigHex);
+			// Verify with Web Crypto (same as @headlessoracle/verify SDK)
+			const cryptoKey = await crypto.subtle.importKey(
+				'raw', pubKeyBytes,
+				{ name: 'Ed25519' },
+				false, ['verify'],
+			);
+			const valid = await crypto.subtle.verify({ name: 'Ed25519' }, cryptoKey, sigBytes, canonicalBytes);
+			expect(valid).toBe(true);
+		}
+	});
+});

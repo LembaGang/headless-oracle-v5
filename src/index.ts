@@ -6521,6 +6521,87 @@ export default {
 				return json({ mic: archiveMic, date: archiveDate, count: validArchiveReceipts.length, receipts: validArchiveReceipts });
 			}
 
+			// ── GET /v5/conformance-vectors ─────────────────────────────────────────────
+			// Public. Returns 5 live-signed canonical test receipts for SDK and verifier testing.
+			// Each call generates fresh receipts (new receipt_id, issued_at, expires_at, signature).
+			// canonical_payload: base64(UTF-8 bytes of alphabetically-sorted compact JSON) — exact bytes signed.
+			// Purpose: verify your Ed25519 implementation against real Oracle output, no keypair needed.
+			if (url.pathname === '/v5/conformance-vectors') {
+				const cvPubKey    = env.ED25519_PUBLIC_KEY || '';
+				const cvPrivKey   = env.ED25519_PRIVATE_KEY || '';
+				const cvKeyId     = env.PUBLIC_KEY_ID || 'key_2026_v1';
+				const cvIssuedAt  = now.toISOString();
+				const cvExpiresAt = expiresAt;
+
+				// Sort keys alphabetically, compute canonical JSON, sign, base64-encode the signed bytes.
+				const signVector = async (payload: Record<string, unknown>): Promise<{
+					receipt: Record<string, unknown>;
+					canonical_payload: string;
+					public_key: string;
+					algorithm: string;
+				}> => {
+					const sorted: Record<string, unknown> = {};
+					for (const k of Object.keys(payload).sort()) sorted[k] = payload[k];
+					const canonical = JSON.stringify(sorted);
+					const msgBytes  = new TextEncoder().encode(canonical);
+					const privKey   = fromHex(cvPrivKey);
+					const sig       = await ed.sign(msgBytes, privKey);
+					const canonical_payload = btoa(String.fromCharCode(...Array.from(msgBytes)));
+					return {
+						receipt:           { ...payload, signature: toHex(sig) },
+						canonical_payload,
+						public_key:        cvPubKey,
+						algorithm:         'ed25519',
+					};
+				};
+
+				// Synthetic times chosen to produce deterministic market states.
+				// The receipt issued_at/expires_at use the real call time; status comes from these.
+				const tXnysOpen   = new Date('2026-04-07T15:00:00Z'); // Tuesday 11:00 ET → XNYS OPEN
+				const tXnysClosed = new Date('2026-04-04T15:00:00Z'); // Saturday         → XNYS CLOSED
+				const tXjpxLunch  = new Date('2026-04-07T03:00:00Z'); // Tuesday 12:00 JST → XJPX lunch CLOSED
+
+				let sXnysOpen:   MarketStatusResult;
+				let sXnysClosed: MarketStatusResult;
+				let sXjpxLunch:  MarketStatusResult;
+				try { sXnysOpen   = getScheduleStatus('XNYS', tXnysOpen);  } catch { sXnysOpen   = { status: 'UNKNOWN', source: 'SYSTEM' }; }
+				try { sXnysClosed = getScheduleStatus('XNYS', tXnysClosed); } catch { sXnysClosed = { status: 'UNKNOWN', source: 'SYSTEM' }; }
+				try { sXjpxLunch  = getScheduleStatus('XJPX', tXjpxLunch); } catch { sXjpxLunch  = { status: 'UNKNOWN', source: 'SYSTEM' }; }
+
+				const cvBase = {
+					issued_at:      cvIssuedAt,
+					expires_at:     cvExpiresAt,
+					issuer:         ORACLE_ISSUER,
+					receipt_mode:   'live',
+					schema_version: 'v5.0',
+					public_key_id:  cvKeyId,
+				};
+
+				const [r1, r2, r3, r4, r5] = await Promise.all([
+					signVector({ receipt_id: crypto.randomUUID(), ...cvBase, mic: 'XNYS', status: sXnysOpen.status,   source: sXnysOpen.source,   halt_detection: getHaltDetection('XNYS') }),
+					signVector({ receipt_id: crypto.randomUUID(), ...cvBase, mic: 'XNYS', status: sXnysClosed.status, source: sXnysClosed.source, halt_detection: getHaltDetection('XNYS') }),
+					signVector({ receipt_id: crypto.randomUUID(), ...cvBase, mic: 'XJPX', status: sXjpxLunch.status,  source: sXjpxLunch.source,  halt_detection: getHaltDetection('XJPX') }),
+					signVector({ receipt_id: crypto.randomUUID(), ...cvBase, mic: 'XNYS', status: 'UNKNOWN',          source: 'SYSTEM',           halt_detection: getHaltDetection('XNYS') }),
+					signVector({ receipt_id: crypto.randomUUID(), issued_at: cvIssuedAt, expires_at: cvExpiresAt, issuer: ORACLE_ISSUER, status: 'OK', source: 'SYSTEM', public_key_id: cvKeyId }),
+				]);
+
+				return json({
+					spec_version: 'v1',
+					generated_at: cvIssuedAt,
+					public_key:   cvPubKey,
+					algorithm:    'ed25519',
+					ttl_seconds:  RECEIPT_TTL_SECONDS,
+					note: 'Freshly signed on every call. receipt_id/issued_at/expires_at/signature change each time. Verify: base64-decode canonical_payload → UTF-8 bytes → Ed25519.verify(sig_hex, bytes, pub_key_hex).',
+					vectors: [
+						{ vector_id: 'v1_xnys_open',   description: 'XNYS OPEN — weekday trading hours (09:30–16:00 ET). status: OPEN, source: SCHEDULE.',             synthetic_time: tXnysOpen.toISOString(),   ...r1 },
+						{ vector_id: 'v1_xnys_closed', description: 'XNYS CLOSED — weekend (Saturday). status: CLOSED, source: SCHEDULE.',                           synthetic_time: tXnysClosed.toISOString(), ...r2 },
+						{ vector_id: 'v1_xjpx_lunch',  description: 'XJPX CLOSED — lunch break 11:30–12:30 JST. status: CLOSED, source: SCHEDULE.',             synthetic_time: tXjpxLunch.toISOString(),  ...r3 },
+						{ vector_id: 'v1_unknown',      description: 'UNKNOWN/SYSTEM — no holiday data for this year. Agents MUST treat UNKNOWN as CLOSED.',          synthetic_time: null,                       ...r4 },
+						{ vector_id: 'v1_health',       description: 'HEALTH OK — same schema as /v5/health. No mic or schema_version fields.',                       synthetic_time: cvIssuedAt,                ...r5 },
+					],
+				});
+			}
+
 			// ── GET /v5/traction — public live metrics snapshot ──────────
 			// Shows exchanges covered, uptime, MCP usage, and stack positioning.
 			// No auth required. Suitable for investor / partner check-ins.
