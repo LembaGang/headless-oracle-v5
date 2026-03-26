@@ -13,6 +13,7 @@ routes = [
   { pattern = "headlessoracle.com/mics.json", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/oauth/token", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/oauth/introspect", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/sitemap.xml", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/robots.txt", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/llms.txt", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/SKILL.md", zone_name = "headlessoracle.com" },

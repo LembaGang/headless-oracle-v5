@@ -33,6 +33,8 @@ export interface Env {
 	POLYGON_API_KEY?:            string;  // polygon.io API key — optional; public Alpaca feed used if absent
 	// Launch date for /v5/traction days_live counter — set via wrangler.toml [vars]
 	LAUNCH_DATE?:                string;  // ISO 8601 UTC timestamp of go-live; defaults to 2026-03-10T08:00:00Z
+	// Beta key sunset — when set, new-key emails include a notice that old keys stop working on this date
+	BETA_KEY_SUNSET_DATE?:       string;  // Human-readable date string, e.g. "March 31, 2026"
 	STREAM_COORDINATOR:          DurableObjectNamespace;  // SSE stream coordinator — one DO per MIC
 }
 
@@ -2761,6 +2763,52 @@ bun run oracle-gate.ts
 - **Return \`422 Unprocessable Entity\` (not \`200\`) for rejected signals.** A 200 response with \`accepted: false\` in the body is ambiguous for agent callers. A 4xx status is deterministic.
 `;
 
+const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://headlessoracle.com/</loc>
+    <lastmod>2026-03-26</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/docs</loc>
+    <lastmod>2026-03-26</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/pricing</loc>
+    <lastmod>2026-03-26</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/status</loc>
+    <lastmod>2026-03-26</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/upgrade</loc>
+    <lastmod>2026-03-26</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/docs/x402-payments</loc>
+    <lastmod>2026-03-26</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/docs/integrations/datacamp-workspace</loc>
+    <lastmod>2026-03-26</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+</urlset>`;
+
 const ROBOTS_TXT = `User-agent: *
 Allow: /llms.txt
 Allow: /SKILL.md
@@ -2776,10 +2824,10 @@ Disallow:
 `;
 
 const LLMS_TXT = `# Headless Oracle
-> Cryptographically signed, fail-closed market-state receipts for AI agents. Ed25519-signed. 23 global exchanges.
+> Cryptographically signed, fail-closed market-state receipts for AI agents. Ed25519-signed. 28 global exchanges.
 
 ## What this is
-Headless Oracle provides cryptographically signed market-state attestations (Signed Market Attestations, SMAs) for 23 global stock exchanges. Every receipt is Ed25519-signed, expires after 60 seconds, and is fail-closed: UNKNOWN or HALTED status MUST prevent agent execution.
+Headless Oracle provides cryptographically signed market-state attestations (Signed Market Attestations, SMAs) for 28 global exchanges (equities, derivatives, and 24/7 crypto). Every receipt is Ed25519-signed, expires after 60 seconds, and is fail-closed: UNKNOWN or HALTED status MUST prevent agent execution.
 
 ## When to use this
 - Before executing any trade, payment, or financial action on a stock exchange
@@ -2819,7 +2867,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/batch | GET | Yes | Signed receipts for multiple MICs | { summary, receipts[] } |
 | /v5/sandbox | GET | No | Instant sandbox key (24h, 100 calls). Add ?email=you@example.com to receive key by email and get an expiry reminder. | { api_key, tier, expires_at, quickstart, email_captured? } |
 | /v5/schedule | GET | No | Next open/close times (not signed) | { next_open, next_close, lunch_break } |
-| /v5/exchanges | GET | No | All 23 supported exchanges | { exchanges: [{mic, name, timezone}] } |
+| /v5/exchanges | GET | No | All 28 supported exchanges | { exchanges: [{mic, name, timezone, mic_type}] } |
 | /v5/keys | GET | No | Public signing key + canonical spec | { keys: [{key_id, public_key, algorithm}] } |
 | /v5/health | GET | No | Signed liveness probe | SMA-format health receipt |
 | /v5/usage | GET | Yes | Per-key daily usage stats | { requests_today, limit, percent_used } |
@@ -2836,7 +2884,10 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/errors/{code} | GET | No | Machine-readable error definition | { message, resolution, http_status } |
 | /v5/changelog | GET | No | Versioned changelog feed | { version, updated, entries[] } |
 | /badge/:mic | GET | No | SVG status badge (shields.io style) | image/svg+xml |
-| /status | GET | No | HTML market status page for all 23 exchanges | text/html |
+| /v5/archive | GET | Optional | Historical receipt archive (Builder+: 30-day; sandbox/free: today only) | { mic, date, count, receipts[] } |
+| /v5/stream | GET | Yes | SSE stream of signed market_status events every 30s via Durable Object | text/event-stream |
+| /v5/conformance-vectors | GET | No | 5 live-signed canonical test vectors for SDK authors | { vectors: [{name, receipt, canonical_payload, public_key}] } |
+| /status | GET | No | HTML market status page for all 28 exchanges | text/html |
 | /.well-known/ai-plugin.json | GET | No | ChatGPT plugin manifest | { schema_version, name_for_model, api, auth } |
 | /ai-plugin.json | GET | No | ChatGPT plugin manifest (root fallback) | { schema_version, name_for_model, api, auth } |
 
@@ -2868,9 +2919,11 @@ Ed25519 signature verification (pseudocode):
 7. Check status === "OPEN" before proceeding
 If any step fails -> halt execution
 
-SDK: npm install @headlessoracle/verify (zero deps, Web Crypto)
+SDK (JS): npm install @headlessoracle/verify (zero deps, Web Crypto)
+SDK (Go): go get github.com/LembaGang/headless-oracle-go (zero stdlib deps, oracle.Verify())
 
 ## Exchanges covered
+Equities (23):
 XNYS (NYSE, America/New_York)
 XNAS (NASDAQ, America/New_York)
 XLON (London, Europe/London)
@@ -2894,6 +2947,13 @@ XDFM (Dubai, Asia/Dubai) -- Fri/Sat weekends
 XNZE (Auckland, Pacific/Auckland)
 XHEL (Helsinki, Europe/Helsinki)
 XSTO (Stockholm, Europe/Stockholm)
+Derivatives & crypto (5):
+XCBT (CME Futures, America/Chicago) -- overnight/Sunday pre-open session, mic_type: iso
+XNYM (NYMEX, America/Chicago) -- overnight/Sunday pre-open session, mic_type: iso
+XCBO (Cboe Options, America/Chicago) -- 9:30-16:15 ET, mic_type: iso
+XCOI (Coinbase, UTC) -- 24/7, no weekends, mic_type: convention
+XBIN (Binance, UTC) -- 24/7, no weekends, mic_type: convention
+settlement_window field on /v5/schedule: T+1/DTCC (XNYS/XNAS), T+2/Euroclear (XLON), T+2/JSCC (XJPX), null for all others
 
 ## Fail-closed guarantee
 UNKNOWN status means the oracle cannot determine market state (signing offline, missing holiday data, unknown year). Agents MUST treat UNKNOWN as CLOSED and halt. This is not optional. HALTED means a circuit breaker or operator override is active -- also treat as CLOSED. The absence of a valid signed receipt is itself proof of unsafety.
@@ -2958,15 +3018,15 @@ Headless Oracle returns cryptographically signed receipts that tell you whether 
 | A timezone library is sufficient | You need Headless Oracle |
 |----------------------------------|--------------------------|
 | Displaying local time to a user | Gating trade execution on market state |
-| Computing UTC offsets | Detecting exchange holiday closures (200+ across 23 venues) |
+| Computing UTC offsets | Detecting exchange holiday closures (200+ across 28 venues) |
 | Formatting timestamps | Handling unscheduled circuit breaker halts |
 | Scheduling calendar events | Detecting early close days |
 | Building a world clock | Lunch break windows (XJPX, XHKG, XSHG, XSHE) |
-| Converting between timezones | DST correctness across 23 separate exchange calendars |
+| Converting between timezones | DST correctness across 28 separate exchange calendars |
 | Checking if an office is open | Cryptographic proof that you checked before executing |
 | | Fail-closed UNKNOWN when state cannot be determined |
 
-**Rule of thumb**: If your code makes financial execution decisions based on time, a timezone library is necessary but not sufficient. You need attestable market state, not computable clock time. Across all 23 exchanges, approximately 5,000+ schedule edge cases per year require explicit handling beyond UTC offset arithmetic.
+**Rule of thumb**: If your code makes financial execution decisions based on time, a timezone library is necessary but not sufficient. You need attestable market state, not computable clock time. Across all 28 exchanges, approximately 5,000+ schedule edge cases per year require explicit handling beyond UTC offset arithmetic.
 
 ---
 
@@ -3024,7 +3084,7 @@ Then call tools/call with \`get_market_status\`, \`get_market_schedule\`, or \`l
 |------|-------------|-----------------|
 | \`get_market_status\` | Signed receipt (OPEN/CLOSED/HALTED/UNKNOWN) | \`mic\` (e.g. "XNYS") |
 | \`get_market_schedule\` | Next open/close times in UTC | \`mic\` |
-| \`list_exchanges\` | All 23 supported exchanges with names and timezones | none |
+| \`list_exchanges\` | All 28 supported exchanges with names, timezones, and mic_type | none |
 
 The MCP tools use the same 4-tier fail-closed logic as the REST API. UNKNOWN always means CLOSED.
 
@@ -3095,15 +3155,36 @@ if (receipt.status !== 'OPEN') {
 
 ## Supported Exchanges (MIC codes)
 
-| MIC   | Exchange                   | Timezone             |
-|-------|----------------------------|----------------------|
-| XNYS  | NYSE                       | America/New_York     |
-| XNAS  | NASDAQ                     | America/New_York     |
-| XLON  | London Stock Exchange      | Europe/London        |
-| XJPX  | Japan Exchange Group       | Asia/Tokyo           |
-| XPAR  | Euronext Paris             | Europe/Paris         |
-| XHKG  | Hong Kong Exchanges        | Asia/Hong_Kong       |
-| XSES  | Singapore Exchange         | Asia/Singapore       |
+| MIC   | Exchange                       | Timezone                | mic_type   |
+|-------|--------------------------------|-------------------------|------------|
+| XNYS  | NYSE                           | America/New_York        | iso        |
+| XNAS  | NASDAQ                         | America/New_York        | iso        |
+| XLON  | London Stock Exchange          | Europe/London           | iso        |
+| XJPX  | Japan Exchange Group           | Asia/Tokyo              | iso        |
+| XPAR  | Euronext Paris                 | Europe/Paris            | iso        |
+| XHKG  | Hong Kong Exchanges            | Asia/Hong_Kong          | iso        |
+| XSES  | Singapore Exchange             | Asia/Singapore          | iso        |
+| XASX  | ASX Australia                  | Australia/Sydney        | iso        |
+| XBOM  | BSE India                      | Asia/Kolkata            | iso        |
+| XNSE  | NSE India                      | Asia/Kolkata            | iso        |
+| XSHG  | Shanghai Stock Exchange        | Asia/Shanghai           | iso        |
+| XSHE  | Shenzhen Stock Exchange        | Asia/Shanghai           | iso        |
+| XKRX  | Korea Exchange                 | Asia/Seoul              | iso        |
+| XJSE  | Johannesburg Stock Exchange    | Africa/Johannesburg     | iso        |
+| XBSP  | B3 Brazil                      | America/Sao_Paulo       | iso        |
+| XSWX  | SIX Swiss Exchange             | Europe/Zurich           | iso        |
+| XMIL  | Borsa Italiana                 | Europe/Rome             | iso        |
+| XIST  | Borsa Istanbul                 | Europe/Istanbul         | iso        |
+| XSAU  | Saudi Exchange (Tadawul)       | Asia/Riyadh             | iso        |
+| XDFM  | Dubai Financial Market         | Asia/Dubai              | iso        |
+| XNZE  | New Zealand Exchange           | Pacific/Auckland        | iso        |
+| XHEL  | Nasdaq Helsinki                | Europe/Helsinki         | iso        |
+| XSTO  | Nasdaq Stockholm               | Europe/Stockholm        | iso        |
+| XCBT  | CME Futures (overnight)        | America/Chicago         | iso        |
+| XNYM  | NYMEX (overnight)              | America/Chicago         | iso        |
+| XCBO  | Cboe Options                   | America/Chicago         | iso        |
+| XCOI  | Coinbase (24/7)                | UTC                     | convention |
+| XBIN  | Binance (24/7)                 | UTC                     | convention |
 
 ---
 
@@ -3156,7 +3237,11 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 - \`GET /v5/health\` — signed liveness probe (verify oracle is up before a batch)
 - \`GET /v5/schedule?mic=XNYS\` — next open/close times, lunch breaks, public holidays
 - \`GET /v5/compliance\` — APTS v1.0 compliance self-report (6 pre-trade safety checks)
+- \`GET /v5/conformance-vectors\` — 5 live-signed test vectors for SDK verification (no auth)
+- \`GET /v5/archive?mic=XNYS&date=YYYY-MM-DD\` — historical receipt archive (Builder+ 30-day)
+- \`GET /v5/stream?mic=XNYS\` — SSE stream of signed receipts every 30s (auth required)
 - \`POST /v5/keys/request\` — free tier key self-provisioning (no payment required)
+SDKs: npm install @headlessoracle/verify | go get github.com/LembaGang/headless-oracle-go | pip install headless-oracle
 
 ---
 
@@ -3241,7 +3326,7 @@ const AGENT_JSON = {
 		{
 			id:          'list_exchanges',
 			name:        'List Exchanges',
-			description: 'Returns all 23 supported exchanges with MIC codes, names, and timezones. Use to discover supported markets before calling get_market_status.',
+			description: 'Returns all 28 supported exchanges with MIC codes, names, and timezones. Use to discover supported markets before calling get_market_status.',
 			tags:        ['finance', 'exchange-directory'],
 			examples:    ['Which exchanges does this oracle cover?'],
 			inputModes:  ['application/json'],
@@ -3370,7 +3455,10 @@ const AGENT_JSON = {
 			{ path: '/v5/batch',              method: 'GET',  auth: true,  description: 'Batch signed receipts for multiple MICs' },
 			{ path: '/v5/schedule',           method: 'GET',  auth: false, description: 'Next open/close times' },
 			{ path: '/v5/exchanges',          method: 'GET',  auth: false, description: 'All supported exchanges' },
-			{ path: '/mics.json',             method: 'GET',  auth: false, description: 'All 23 supported MICs with exchange metadata and ISO 20022 registry links' },
+			{ path: '/mics.json',             method: 'GET',  auth: false, description: 'All 28 supported MICs with exchange metadata and ISO 20022 registry links' },
+			{ path: '/v5/archive',            method: 'GET',  auth: false, description: 'Historical receipt archive (Builder+: 30-day; sandbox/free: today only)' },
+			{ path: '/v5/stream',             method: 'GET',  auth: true,  description: 'SSE stream of signed market_status events every 30s via StreamCoordinator Durable Object' },
+			{ path: '/v5/conformance-vectors', method: 'GET', auth: false, description: 'Live-signed canonical test vectors for SDK authors (5 vectors: XNYS OPEN/CLOSED, XJPX lunch, UNKNOWN, HEALTH OK)' },
 			{ path: '/v5/keys',               method: 'GET',  auth: false, description: 'Public key registry + canonical payload spec' },
 			{ path: '/v5/health',             method: 'GET',  auth: false, description: 'Signed liveness probe' },
 			{ path: '/.well-known/oracle-keys.json', method: 'GET', auth: false, description: 'RFC 8615 key discovery' },
@@ -3440,16 +3528,16 @@ const MCP_TOOLS = [
 			'RETURNS: { receipt_id: string, mic: string, status: "OPEN"|"CLOSED"|"HALTED"|"UNKNOWN", issued_at: ISO8601, expires_at: ISO8601, issuer: string, source: "SCHEDULE"|"OVERRIDE"|"REALTIME"|"SYSTEM", schema_version: "v5.0", receipt_mode: "live"|"demo", public_key_id: string, signature: string (hex Ed25519) }. ' +
 			'FAILURE BEHAVIOUR: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately. Do not act on a receipt where expires_at is in the past (TTL = 60s). ' +
 			'LATENCY: sub-200ms p95 from Cloudflare edge. ' +
-			'Covers 23 global exchanges: XNYS (NYSE), XNAS (NASDAQ), XLON (London), XJPX (Tokyo), XPAR (Paris), XHKG (Hong Kong), XSES (Singapore), XASX (Sydney), XBOM (Mumbai BSE), XNSE (Mumbai NSE), XSHG (Shanghai), XSHE (Shenzhen), XKRX (Seoul), XJSE (Johannesburg), XBSP (São Paulo), XSWX (Zurich), XMIL (Milan), XIST (Istanbul), XSAU (Riyadh), XDFM (Dubai), XNZE (Auckland), XHEL (Helsinki), XSTO (Stockholm).',
+			'Covers 28 global exchanges. Equities: XNYS (NYSE), XNAS (NASDAQ), XLON (London), XJPX (Tokyo), XPAR (Paris), XHKG (Hong Kong), XSES (Singapore), XASX (Sydney), XBOM (Mumbai BSE), XNSE (Mumbai NSE), XSHG (Shanghai), XSHE (Shenzhen), XKRX (Seoul), XJSE (Johannesburg), XBSP (São Paulo), XSWX (Zurich), XMIL (Milan), XIST (Istanbul), XSAU (Riyadh), XDFM (Dubai), XNZE (Auckland), XHEL (Helsinki), XSTO (Stockholm). Derivatives: XCBT (CME Futures, overnight), XNYM (NYMEX, overnight), XCBO (Cboe Options). Crypto 24/7: XCOI (Coinbase), XBIN (Binance).',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				mic: {
 					type: 'string',
 					description:
-						'ISO 10383 Market Identifier Code. Required. Examples: XNYS=NYSE, XNAS=NASDAQ, XLON=London, XJPX=Tokyo. ' +
-						'Call list_exchanges to discover all 23 supported codes.',
-					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'],
+						'ISO 10383 Market Identifier Code. Required. Examples: XNYS=NYSE, XNAS=NASDAQ, XLON=London, XJPX=Tokyo, XCBT=CME Futures, XCOI=Coinbase (24/7), XBIN=Binance (24/7). ' +
+						'Call list_exchanges to discover all 28 supported codes.',
+					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN'],
 				},
 			},
 		},
@@ -3470,8 +3558,8 @@ const MCP_TOOLS = [
 					type: 'string',
 					description:
 						'ISO 10383 Market Identifier Code. Defaults to XNYS (NYSE). ' +
-						'Call list_exchanges to see all 23 supported codes.',
-					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'],
+						'Call list_exchanges to see all 28 supported codes.',
+					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN'],
 				},
 			},
 		},
@@ -3479,9 +3567,9 @@ const MCP_TOOLS = [
 	{
 		name: 'list_exchanges',
 		description:
-			'Returns all 23 stock exchanges supported by Headless Oracle with their MIC codes, names, and IANA timezones. ' +
+			'Returns all 28 exchanges supported by Headless Oracle with their MIC codes, names, IANA timezones, and mic_type (iso | convention). ' +
 			'WHEN TO USE: call this once at agent startup to discover supported markets before calling get_market_status or get_market_schedule. ' +
-			'RETURNS: { exchanges: Array<{ mic: string, name: string, timezone: string }> } — 23 entries. ' +
+			'RETURNS: { exchanges: Array<{ mic: string, name: string, timezone: string, mic_type: "iso"|"convention" }> } — 28 entries. ' +
 			'FAILURE BEHAVIOUR: pure static data, no signing, no failure modes. Always returns 200. ' +
 			'LATENCY: sub-50ms p95.',
 		inputSchema: { type: 'object', properties: {} },
@@ -3671,7 +3759,7 @@ const OPENAPI_SPEC = {
 				responses: {
 					'200': {
 						description: 'Signed health receipt',
-						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature', 'exchange_count', 'supported_mics'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' }, exchange_count: { type: 'integer', example: 23, description: 'Number of exchanges currently configured (unsigned).' }, supported_mics: { type: 'array', items: { type: 'string' }, example: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO'], description: 'List of supported MIC codes (unsigned).' } } } } },
+						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature', 'exchange_count', 'supported_mics'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' }, exchange_count: { type: 'integer', example: 28, description: 'Number of exchanges currently configured (unsigned).' }, supported_mics: { type: 'array', items: { type: 'string' }, example: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN'], description: 'List of supported MIC codes (unsigned).' } } } } },
 					},
 					'500': { description: 'Signing system offline — CRITICAL_FAILURE', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
@@ -3686,7 +3774,7 @@ const OPENAPI_SPEC = {
 		'/mics.json': {
 			get: {
 				summary:     'Exchange registry — full ISO metadata',
-				description: 'Static JSON array of all 23 supported exchanges. Each entry carries: ' +
+				description: 'Static JSON array of all 28 supported exchanges. Each entry carries: ' +
 					'mic (ISO 10383), name, country (ISO 3166-1 alpha-2), timezone (IANA), ' +
 					'currency (ISO 4217), and sameAs (ISO 20022 MIC registry URL). ' +
 					'No authentication required. Response is a top-level array, not an object wrapper. ' +
@@ -3864,7 +3952,7 @@ const OPENAPI_SPEC = {
 							properties: {
 								total_mcp_requests_today: { type: 'integer', description: 'Sum of all MCP request_count values for today.' },
 								unique_mcp_clients_today: { type: 'integer', description: 'Distinct MCP client IPs seen today (hashed).' },
-								exchanges_covered:        { type: 'integer', example: 23 },
+								exchanges_covered:        { type: 'integer', example: 28 },
 								edge_cases_per_year:      { type: 'integer', example: 1319 },
 								uptime_status:            { type: 'string', enum: ['operational'] },
 							},
@@ -4010,7 +4098,7 @@ const OPENAPI_SPEC = {
 						content: { 'application/json': { schema: {
 							type: 'object',
 							properties: {
-								exchanges_covered:        { type: 'integer', example: 23 },
+								exchanges_covered:        { type: 'integer', example: 28 },
 								edge_cases_per_year:      { type: 'integer', example: 1319 },
 								uptime_since:             { type: 'string', format: 'date-time' },
 								days_live:                { type: 'integer' },
@@ -4065,6 +4153,86 @@ const OPENAPI_SPEC = {
 								error:   { type: 'string', example: 'SANDBOX_RATE_LIMIT' },
 								message: { type: 'string' },
 								upgrade: { type: 'string' },
+							},
+						} } },
+					},
+				},
+			},
+		},
+		'/v5/archive': {
+			get: {
+				summary:     'Historical receipt archive',
+				description: 'Returns historical signed receipts for a MIC. Builder+ keys: 30-day window. Sandbox/free keys: today only. ' +
+					'Use the date query param (YYYY-MM-DD) to request a specific day.',
+				security:    [{ ApiKeyAuth: [] }],
+				parameters:  [
+					{ name: 'mic', in: 'query', required: false, schema: { type: 'string' }, description: 'MIC code. Defaults to XNYS.' },
+					{ name: 'date', in: 'query', required: false, schema: { type: 'string' }, description: 'Date in YYYY-MM-DD format. Defaults to today.' },
+				],
+				responses: {
+					'200': {
+						description: 'Receipt archive for the requested MIC and date',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								mic:      { type: 'string', example: 'XNYS' },
+								date:     { type: 'string', example: '2026-03-25' },
+								count:    { type: 'integer' },
+								receipts: { type: 'array', items: { type: 'object' } },
+							},
+						} } },
+					},
+					'401': { description: 'Missing API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'403': { description: 'Invalid API key or tier restriction', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/stream': {
+			get: {
+				summary:     'SSE stream of signed market_status events',
+				description: 'Server-Sent Events stream delivering a signed market_status receipt every 30 seconds via a StreamCoordinator Durable Object. ' +
+					'One Durable Object instance per MIC. Emits event:halted as a terminal event when a circuit breaker override is active. ' +
+					'Auth required (X-Oracle-Key header or ?key= query param).',
+				security:    [{ ApiKeyAuth: [] }],
+				parameters:  [
+					{ name: 'mic', in: 'query', required: false, schema: { type: 'string' }, description: 'MIC code. Defaults to XNYS.' },
+					{ name: 'key', in: 'query', required: false, schema: { type: 'string' }, description: 'API key (alternative to X-Oracle-Key header).' },
+				],
+				responses: {
+					'200': { description: 'SSE stream (text/event-stream). Events: market_status (recurring), halted (terminal).' },
+					'401': { description: 'Missing API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'403': { description: 'Invalid API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/conformance-vectors': {
+			get: {
+				summary:     'Canonical test vectors for SDK authors',
+				description: 'Returns 5 live-signed canonical test vectors covering the full receipt space: ' +
+					'XNYS OPEN, XNYS CLOSED, XJPX lunch break, UNKNOWN (system), and HEALTH OK. ' +
+					'Each vector includes the receipt, the canonical_payload (base64-encoded canonical JSON string before signing), ' +
+					'and the public_key (hex) used to sign it. SDK authors can use these to verify their Ed25519 implementation. ' +
+					'No authentication required.',
+				responses: {
+					'200': {
+						description: 'Conformance test vectors',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								generated_at: { type: 'string', format: 'date-time' },
+								public_key:   { type: 'string', description: 'Hex-encoded Ed25519 public key used for all vectors.' },
+								vectors: {
+									type: 'array',
+									items: {
+										type: 'object',
+										properties: {
+											name:              { type: 'string', example: 'XNYS_OPEN' },
+											receipt:           { type: 'object' },
+											canonical_payload: { type: 'string', description: 'Base64-encoded canonical JSON payload that was signed.' },
+											public_key:        { type: 'string', description: 'Hex-encoded public key for this vector.' },
+										},
+									},
+								},
 							},
 						} } },
 					},
@@ -5768,6 +5936,14 @@ export default {
 					},
 				});
 			}
+			if (url.pathname === '/sitemap.xml') {
+				return new Response(SITEMAP_XML, {
+					headers: {
+						'Content-Type':  'application/xml',
+						'Cache-Control': 'public, max-age=86400',
+					},
+				});
+			}
 			if (url.pathname === '/robots.txt') {
 				return new Response(ROBOTS_TXT, { headers: { 'Content-Type': 'text/plain' } });
 			}
@@ -6314,7 +6490,10 @@ export default {
 								html: `<p>Thank you for subscribing to Headless Oracle.</p>
 <p>Your API key (save this — it will not be shown again):</p>
 <pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
-<p>Use it in your requests as the <code>X-Oracle-Key</code> header against <code>https://headlessoracle.com/v5/status</code>.</p>
+<p>Use it as the <code>X-Oracle-Key</code> header in every request:</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">curl https://headlessoracle.com/v5/status?mic=XNYS \\
+  -H "X-Oracle-Key: ${keyValue}"</pre>
+${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc107;padding:12px;border-radius:4px"><strong>Action required:</strong> Your previous beta key will stop working on <strong>${env.BETA_KEY_SUNSET_DATE}</strong>. Switch to the key above before that date.</p>` : ''}
 <p>Check your account status anytime: <a href="https://headlessoracle.com/v5/account">GET /v5/account</a></p>
 <p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
 							}),
@@ -6503,7 +6682,7 @@ export default {
 								from:    'Headless Oracle <keys@headlessoracle.com>',
 								to:      [activEmail],
 								subject: 'Your Headless Oracle API key',
-								html: `<p>Thank you for subscribing to Headless Oracle.</p><p>Your API key (save this — it will not be shown again):</p><pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${activKeyValue}</pre><p>Plan: ${activPlan} • Use as <code>X-Oracle-Key</code> header against <code>https://headlessoracle.com/v5/status</code>.</p><p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
+								html: `<p>Thank you for subscribing to Headless Oracle.</p><p>Your API key (save this — it will not be shown again):</p><pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${activKeyValue}</pre><p>Plan: ${activPlan} &bull; Use it as the <code>X-Oracle-Key</code> header in every request:</p><pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">curl https://headlessoracle.com/v5/status?mic=XNYS \\\n  -H "X-Oracle-Key: ${activKeyValue}"</pre>${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc107;padding:12px;border-radius:4px"><strong>Action required:</strong> Your previous beta key will stop working on <strong>${env.BETA_KEY_SUNSET_DATE}</strong>. Switch to the key above before that date.</p>` : ''}<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
 							}),
 						});
 						if (!activEmailRes.ok) console.error(`RESEND_ERROR: failed to send key email to ${activEmail}`);
