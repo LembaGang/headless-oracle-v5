@@ -6185,8 +6185,13 @@ describe('GET /v5/card/:mic — live SVG status card', () => {
 		expect(res.status).toBe(404);
 	});
 
-	it('Cache-Control is no-cache (live data)', async () => {
+	it('Cache-Control is public max-age=60 (KV-cached, aligns with 60s receipt TTL)', async () => {
 		const res = await fetchWorker('/v5/card/XNYS');
-		expect(res.headers.get('Cache-Control')).toContain('no-cache');
+		expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
+	});
+
+	it('X-Cache header is present (HIT or MISS)', async () => {
+		const res = await fetchWorker('/v5/card/XNYS');
+		expect(res.headers.get('X-Cache')).toMatch(/^(HIT|MISS)$/);
 	});
 });

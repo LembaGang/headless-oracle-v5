@@ -8914,24 +8914,42 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 
 		// ── GET /v5/card/:mic — Live SVG status card for GitHub README embedding ─
 		// Returns a terminal-style SVG card with the current market status baked in.
-		// Dynamic: fetches a live demo receipt on every request. No recording needed.
+		// KV-cached per MIC with 60s TTL — signing happens once per minute per exchange,
+		// not once per page view, so a viral README can't spike signing costs.
+		// Cache-Control: public, max-age=60 lets GitHub's CDN serve edge copies and
+		// aligns exactly with the 60s receipt TTL window.
 		// Use in README: <img src="https://api.headlessoracle.com/v5/card/XNYS" />
-		// Cache-Control: no-cache so GitHub's CDN revalidates frequently.
 		const cardMatch = url.pathname.match(/^\/v5\/card\/([A-Z0-9]+)$/);
 		if (cardMatch) {
 			const cardMic = cardMatch[1];
 			if (!MARKET_CONFIGS[cardMic]) {
 				return json({ error: 'INVALID_MIC', message: `Unknown exchange: ${cardMic}. See /v5/exchanges.` }, 404);
 			}
+			const cardCacheKey = `card_svg:${cardMic}`;
+			const cachedSvg = await env.ORACLE_TELEMETRY.get(cardCacheKey);
+			if (cachedSvg) {
+				return new Response(cachedSvg, {
+					headers: {
+						...corsHeaders,
+						'Content-Type':     'image/svg+xml',
+						'X-Oracle-Version': 'v5',
+						'Cache-Control':    'public, max-age=60',
+						'X-Cache':          'HIT',
+					},
+				});
+			}
 			const cardExpiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
 			const { receipt: cardReceiptData } = await buildSignedReceipt(cardMic, env, now, cardExpiresAt, 'demo');
 			const cardSvg = generateStatusCard(cardMic, cardReceiptData as Record<string, string>);
+			// Non-blocking KV write — 60s TTL aligns with receipt TTL (KV minimum is 60s)
+			ctx.waitUntil(env.ORACLE_TELEMETRY.put(cardCacheKey, cardSvg, { expirationTtl: 60 }));
 			return new Response(cardSvg, {
 				headers: {
 					...corsHeaders,
 					'Content-Type':     'image/svg+xml',
 					'X-Oracle-Version': 'v5',
-					'Cache-Control':    'no-cache, max-age=0',
+					'Cache-Control':    'public, max-age=60',
+					'X-Cache':          'MISS',
 				},
 			});
 		}

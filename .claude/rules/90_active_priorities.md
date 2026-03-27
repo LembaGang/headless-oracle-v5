@@ -3,16 +3,22 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 553/553 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public)
-**PyPI packages**: headless-oracle-langchain@1.0.0 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.0 (pypi.org/project/headless-oracle-crewai/)
+**Test suite**: 558/558 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public)
+**PyPI packages**: headless-oracle-langchain@1.0.1 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.1 (pypi.org/project/headless-oracle-crewai/)
 **npm packages**: headless-oracle-setup@1.0.1 (npx headless-oracle-setup — zero-dep MCP setup for Claude Desktop/Cursor/Windsurf)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
 **Go SDK**: github.com/LembaGang/headless-oracle-go — zero stdlib deps, oracle.Verify(), 9 tests
 **Exchanges**: 28 total (23 traditional + XCBT/XNYM overnight CME, XCBO Cboe options, XCOI Coinbase 24/7, XBIN Binance 24/7). mic_type: "iso" | "convention" on all entries.
-**Last significant work**: Mar 27 2026 — Day 27 sprint (553 tests + PyPI packages):
+**Last significant work**: Mar 27 2026 — Day 27 continued: /v5/card/:mic + agent-demo repo (558 tests):
+  - /v5/card/:mic live endpoint: terminal-style SVG card, image/svg+xml, Cache-Control: no-cache
+  - generateStatusCard(): dark chrome, syntax-highlighted JSON fields, status-coloured text, pulsing LIVE dot
+  - headless-oracle-agent-demo repo: README updated with live SVG card (replaces planned demo GIF)
+  - headless-oracle-langchain@1.0.1 + headless-oracle-crewai@1.0.1: 3-priority key resolution (env → config file → sandbox auto-provision)
+  - 558/558 tests passing. Deployed (Version 22989c5c). Pushed.
+**Previous significant work**: Mar 27 2026 — Day 27 sprint (553 tests + PyPI packages):
   - SMA disambiguation: "SMA = Signed Market Attestation, not Simple Moving Average" added to MCP tool descriptions, ai-plugin.json, LLMS_TXT, all SDK READMEs
   - "23 exchanges" bug fixed: 10 occurrences in src/index.ts updated to "28 global exchanges (equities, derivatives, and 24/7 crypto)"
   - /v5/dst-risk endpoint: EU DST transition March 29 — affected_exchanges (7), transition details, timing_utc, agent advisory (2 tests)
