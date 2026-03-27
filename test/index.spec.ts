@@ -241,7 +241,7 @@ describe('GET /v5/status', () => {
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('x402Version', 1);
-		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		expect(body).toHaveProperty('error', 'Payment Required');
 		expect(Array.isArray(body.accepts)).toBe(true);
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('scheme', 'exact');
@@ -1444,7 +1444,7 @@ describe('GET /v5/batch', () => {
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('x402Version', 1);
-		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		expect(body).toHaveProperty('error', 'Payment Required');
 		expect(Array.isArray(body.accepts)).toBe(true);
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('maxAmountRequired', '5000');
@@ -3492,7 +3492,7 @@ describe('Error responses include docs field', () => {
 	it('402 x402scan format on keyless /v5/status (ORACLE_PAYMENT_ADDRESS configured in dev.vars)', async () => {
 		// Keyless /v5/status returns x402scan 402, not API_KEY_REQUIRED 401, when payment address is set.
 		const body = await fetchJSON('/v5/status');
-		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		expect(body).toHaveProperty('error', 'Payment Required');
 		expect(body).toHaveProperty('x402Version', 1);
 	});
 
@@ -5496,7 +5496,7 @@ describe('x402 — end-to-end payment flow', () => {
 		const body = await res.json() as Record<string, unknown>;
 		// x402scan-compatible format (agents and crawlers can parse this)
 		expect(body).toHaveProperty('x402Version', 1);
-		expect(body).toHaveProperty('error', 'X-Payment-Required');
+		expect(body).toHaveProperty('error', 'Payment Required');
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts).toBeDefined();
 		expect(accepts.length).toBeGreaterThan(0);

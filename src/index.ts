@@ -2002,6 +2002,31 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 	};
 }
 
+// Build the Payment-Required header value required by x402 index crawlers (e.g. 402index.io).
+// Crawlers read this header (base64 JSON) rather than parsing the response body.
+// Uses bare "base" network name and "amount" field (x402 v2 header convention).
+function buildX402IndexHeaders(paymentAddress: string, endpoint: 'status' | 'batch' = 'status'): Record<string, string> {
+	const payload = {
+		x402Version: 1,
+		error:       'Payment Required',
+		accepts: [
+			{
+				scheme:            'exact',
+				network:           'base',
+				amount:            endpoint === 'status' ? '1000' : '5000',
+				asset:             X402_USDC_CONTRACT,
+				payTo:             paymentAddress,
+				maxTimeoutSeconds: 300,
+			},
+		],
+	};
+	const json = JSON.stringify(payload);
+	return {
+		'Payment-Required':      btoa(json),
+		'Payment-Required-Json': json,
+	};
+}
+
 // Build an x402scan-compatible 402 payload.
 // Format matches the x402 standard (https://x402.org): x402Version, accepts[], error.
 // endpoint: 'status' for /v5/status (mic param), 'batch' for /v5/batch (mics param).
@@ -2051,7 +2076,7 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 				},
 			},
 		],
-		error: 'X-Payment-Required',
+		error: 'Payment Required',
 	};
 }
 
@@ -5388,13 +5413,13 @@ export default {
 						const verified = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
 						if (!verified.valid) {
 							const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-							return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+							return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 						}
 						// Valid keyless x402 payment — fall through to serve receipt (no rate limit applied)
 					} else if (env.ORACLE_PAYMENT_ADDRESS) {
 						// No key, no payment — return x402scan-compatible 402 so crawlers can register this endpoint
 						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 					} else {
 						// ORACLE_PAYMENT_ADDRESS not configured — fall back to 401 (dev/test environments)
 						return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
@@ -5599,7 +5624,7 @@ export default {
 					// No key — return x402scan-compatible 402 so the endpoint is registered as x402-native.
 					// Keyless batch execution requires a key (use /v5/status for single keyless x402 requests).
 					if (env.ORACLE_PAYMENT_ADDRESS) {
-						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/batch', 'batch'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/batch', 'batch'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'batch') });
 					}
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/pricing', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 				}
@@ -6168,6 +6193,12 @@ export default {
 				},
 				] : [];
 				return json({ version: 1, resources: paidResources });
+			}
+
+			if (url.pathname === '/.well-known/402index-verify.txt') {
+				return new Response('c59d748d9df8fe67e4b3a0a2adf73b0e3ee9a3b7e7759572758feb89f69e37bd\n', {
+					headers: { 'Content-Type': 'text/plain' },
+				});
 			}
 
 			// ── POST /v5/x402/mint — autonomous key minting via on-chain USDC payment ──
