@@ -6157,3 +6157,36 @@ describe('Day 27: discovery_url wrapper on receipt endpoints', () => {
 		expect(body).toHaveProperty('discovery_url', DISCOVERY_URL);
 	});
 });
+
+// ─── GET /v5/card/:mic — live SVG status card ─────────────────────────────────
+describe('GET /v5/card/:mic — live SVG status card', () => {
+	it('returns 200 with Content-Type image/svg+xml', async () => {
+		const res = await fetchWorker('/v5/card/XNYS');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('image/svg+xml');
+	});
+
+	it('SVG body contains the MIC and a status value', async () => {
+		const res = await fetchWorker('/v5/card/XNYS');
+		const svg = await res.text();
+		expect(svg).toContain('XNYS');
+		expect(svg).toMatch(/OPEN|CLOSED|HALTED|UNKNOWN/);
+	});
+
+	it('SVG body is valid XML (starts with <svg)', async () => {
+		const res = await fetchWorker('/v5/card/XLON');
+		const svg = await res.text();
+		expect(svg.trim()).toMatch(/^<svg/);
+		expect(svg).toContain('</svg>');
+	});
+
+	it('returns 404 for unknown MIC', async () => {
+		const res = await fetchWorker('/v5/card/ZZZZ');
+		expect(res.status).toBe(404);
+	});
+
+	it('Cache-Control is no-cache (live data)', async () => {
+		const res = await fetchWorker('/v5/card/XNYS');
+		expect(res.headers.get('Cache-Control')).toContain('no-cache');
+	});
+});
