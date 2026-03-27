@@ -3,12 +3,46 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 483/483 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/changelog
+**Test suite**: 553/553 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public)
+**PyPI packages**: headless-oracle-langchain@1.0.0 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.0 (pypi.org/project/headless-oracle-crewai/)
+**npm packages**: headless-oracle-setup@1.0.1 (npx headless-oracle-setup — zero-dep MCP setup for Claude Desktop/Cursor/Windsurf)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
 **api subdomain**: api.headlessoracle.com/* → same worker, all routes work identically. NOTE: requires DNS A/CNAME for api.headlessoracle.com pointing to Cloudflare.
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
-**Last significant work**: Mar 24 2026 — reach infrastructure sprint (483 tests):
+**Go SDK**: github.com/LembaGang/headless-oracle-go — zero stdlib deps, oracle.Verify(), 9 tests
+**Exchanges**: 28 total (23 traditional + XCBT/XNYM overnight CME, XCBO Cboe options, XCOI Coinbase 24/7, XBIN Binance 24/7). mic_type: "iso" | "convention" on all entries.
+**Last significant work**: Mar 27 2026 — Day 27 sprint (553 tests + PyPI packages):
+  - SMA disambiguation: "SMA = Signed Market Attestation, not Simple Moving Average" added to MCP tool descriptions, ai-plugin.json, LLMS_TXT, all SDK READMEs
+  - "23 exchanges" bug fixed: 10 occurrences in src/index.ts updated to "28 global exchanges (equities, derivatives, and 24/7 crypto)"
+  - /v5/dst-risk endpoint: EU DST transition March 29 — affected_exchanges (7), transition details, timing_utc, agent advisory (2 tests)
+  - discovery_url wrapper: every receipt endpoint (/v5/demo, /v5/status, /v5/batch, /v5/health) now returns discovery_url + nested receipt copy (4 tests)
+  - verify_receipt canonical payload: UNSIGNED_WRAPPER_FIELDS = Set(['discovery_url', 'receipt']) excluded from sig verification
+  - server-card.json: sma_protocol_version, sma_note, conformance_vectors URL, dst_aware, discovery_url added
+  - AGENT_JSON: sma_protocol_version, conformance_vectors, sma_disambiguation, dst_aware, discovery_url added
+  - /docs/sma-protocol/rfc-001: SMA_RFC_001_MD constant + route serving RFC-001 markdown
+  - npx headless-oracle-setup@1.0.1: published to npm — zero-dependency MCP client setup for Claude Desktop/Cursor/Windsurf
+  - headless-oracle-langchain@1.0.0: published to PyPI — LangChain MarketStatusTool + MarketScheduleTool, auto-provision sandbox key
+  - headless-oracle-crewai@1.0.0: published to PyPI — CrewAI MarketStatusTool + MarketScheduleTool, auto-provision sandbox key
+  - LLMS_TXT: rewritten with "Instructions for Autonomous Agents" section, SMA disambiguation, 28 exchanges
+  - Deployed: 3 worker versions (f712f79a, 42b90a62, 8b26624e). 553 tests passing.
+**Previous significant work**: Mar 25 2026 — capability audit + surface update (547 tests):
+  - Updated all user-facing surfaces from 23 → 28 exchanges (LLMS_TXT, SKILL_MD, MCP_TOOLS, AGENT_JSON, OpenAPI spec, docs/registry-server.json, docs/mcp-listing.md)
+  - Added /v5/archive, /v5/stream, /v5/conformance-vectors to LLMS_TXT endpoint table, AGENT_JSON endpoints, and OpenAPI spec
+  - MCP tool mic enums expanded: XCBT, XNYM, XCBO, XCOI, XBIN added to get_market_status and get_market_schedule
+  - SKILL_MD exchange table expanded from 7 → 28 rows with mic_type column
+  - Go SDK (github.com/LembaGang/headless-oracle-go) mentioned in LLMS_TXT verification section and SKILL_MD discovery endpoints
+  - settlement_window (T+1/T+2) documented in LLMS_TXT exchanges section
+  - Deployed: Version e615148e-81f6-4feb-9495-ac6f0973a62b
+**Previous significant work**: Mar 25 2026 — infrastructure sprint (547 tests):
+  - ITEM 1: /v5/archive — template literal bug fixed; KV list prefix now resolves correctly
+  - ITEM 2: /v5/conformance-vectors — 5 live-signed test vectors (XNYS OPEN/CLOSED, XJPX lunch, UNKNOWN, HEALTH OK) with canonical_payload base64 + public_key for SDK authors
+  - ITEM 3: headless-oracle-go SDK — github.com/LembaGang/headless-oracle-go; zero non-stdlib deps; crypto/ed25519 verify; oracle.Verify() with 4 sentinel errors; 9 tests
+  - ITEM 4: /v5/stream — SSE endpoint via StreamCoordinator Durable Object; signed market_status events every 30s; halted terminal event; auth required; DO binding + migration in wrangler.toml
+  - ITEM 5: settlement_window in /v5/schedule — T+1 (XNYS/XNAS/DTCC), T+2 (XLON/Euroclear, XJPX/JSCC); null for all others; 6 tests
+  - ITEM 6: crypto/derivatives exchange coverage — XCBT/XNYM (ISO, overnight CME Globex, overnightSession flag + Sunday pre-open guard), XCBO (ISO, 9:30–16:15 ET), XCOI/XBIN (convention, 24/7 weekends:[]); mic_type field on all exchanges; 28 new tests; AGENT_JSON + server-card.json now derive exchange list dynamically from SUPPORTED_EXCHANGES
+  - Deployed: Version bb6992d7. Pushed to main (dc4ef5f).
+**Previous significant work**: Mar 24 2026 — reach infrastructure sprint (483 tests):
   - GET /.well-known/ai-plugin.json + /ai-plugin.json: ChatGPT/OpenAI plugin manifest (schema_version v1, name_for_model: headless_oracle)
   - GET /status: HTML real-time market status page, all 23 exchanges, auto-refresh 60s, colour-coded OPEN/CLOSED/HALTED/UNKNOWN
   - GET /badge/:mic: SVG shields.io-style status badge (green=OPEN, grey=CLOSED, red=HALTED, orange=UNKNOWN), Cache-Control 60s

@@ -1,6 +1,6 @@
 {
   "name": "headless-oracle",
-  "description": "Real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 23 global stock exchanges with Ed25519 signed receipts. Designed for AI agents and automated trading systems. Fail-closed: any error defaults to CLOSED.",
+  "description": "Real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges (equities, derivatives, and 24/7 crypto) with Ed25519 signed receipts. Designed for AI agents and automated trading systems. Fail-closed: any error defaults to CLOSED.",
   "vendor": "LembaGang",
   "sourceUrl": "https://github.com/LembaGang/headless-oracle-v5",
   "homepage": "https://headlessoracle.com",
@@ -16,7 +16,7 @@
   "tools": [
     {
       "name": "get_market_status",
-      "description": "Check if a stock exchange is currently OPEN, CLOSED, HALTED, or UNKNOWN. Returns a cryptographically signed Ed25519 receipt. Input: MIC code (XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE). ALWAYS check before executing any trade."
+      "description": "Check if an exchange is currently OPEN, CLOSED, HALTED, or UNKNOWN. Returns a cryptographically signed Ed25519 receipt. Input: MIC code (XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE, XCBT, XNYM, XCBO, XCOI, XBIN). ALWAYS check before executing any trade."
     },
     {
       "name": "get_market_schedule",
@@ -24,7 +24,7 @@
     },
     {
       "name": "list_exchanges",
-      "description": "List all 23 supported exchanges with names, MIC codes, timezones, and current status."
+      "description": "List all 28 supported exchanges with names, MIC codes, timezones, mic_type (iso|convention), and current status."
     }
   ],
   "categories": ["finance", "trading", "market-data"],

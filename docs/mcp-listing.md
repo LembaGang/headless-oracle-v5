@@ -6,9 +6,10 @@ Use this block for submissions to Smithery, MCP.so, and any other MCP registry.
 
 ```yaml
 name: Headless Oracle
-description: Real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 23 global stock exchanges
-  with Ed25519-signed receipts. Designed for AI agents and automated trading systems. Fail-closed:
-  UNKNOWN always means CLOSED. Handles DST, holidays, lunch breaks, early closes, and circuit breakers.
+description: Real-time market status (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges (equities,
+  derivatives, and 24/7 crypto) with Ed25519-signed receipts. Designed for AI agents and automated
+  trading systems. Fail-closed: UNKNOWN always means CLOSED. Handles DST, holidays, lunch breaks,
+  early closes, and circuit breakers.
 endpoint: https://headlessoracle.com/mcp
 protocol: MCP 2024-11-05
 transport: Streamable HTTP (POST)
@@ -22,7 +23,7 @@ tools:
       - name: mic
         type: string
         required: true
-        description: ISO 10383 MIC code — XNYS, XNAS, XLON, XJPX, XPAR, XHKG, or XSES
+        description: MIC code — XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES, XASX, XBOM, XNSE, XSHG, XSHE, XKRX, XJSE, XBSP, XSWX, XMIL, XIST, XSAU, XDFM, XNZE, XHEL, XSTO, XCBT, XNYM, XCBO, XCOI, XBIN
   - name: get_market_schedule
     description: >
       Get the next open/close times for a specific exchange. Returns times in UTC, plus
@@ -35,7 +36,8 @@ tools:
         description: ISO 10383 MIC code
   - name: list_exchanges
     description: >
-      List all 23 supported exchanges with MIC codes, names, timezones, and trading hours.
+      List all 28 supported exchanges (equities, derivatives, and 24/7 crypto) with MIC codes,
+      names, timezones, mic_type (iso|convention), and trading hours.
       Use this to discover which exchanges are supported before calling get_market_status.
     inputs: []
 auth: None required for MCP tools (uses /v5/demo internally — public, no API key)
@@ -52,27 +54,34 @@ tags:
   - exchange-calendar
   - ai-agents
 exchanges:
-  - mic: XNYS
-    name: New York Stock Exchange
-    timezone: America/New_York
-  - mic: XNAS
-    name: NASDAQ
-    timezone: America/New_York
-  - mic: XLON
-    name: London Stock Exchange
-    timezone: Europe/London
-  - mic: XJPX
-    name: Japan Exchange Group (Tokyo)
-    timezone: Asia/Tokyo
-  - mic: XPAR
-    name: Euronext Paris
-    timezone: Europe/Paris
-  - mic: XHKG
-    name: Hong Kong Exchanges and Clearing
-    timezone: Asia/Hong_Kong
-  - mic: XSES
-    name: Singapore Exchange
-    timezone: Asia/Singapore
+  - { mic: XNYS, name: New York Stock Exchange, timezone: America/New_York, mic_type: iso }
+  - { mic: XNAS, name: NASDAQ, timezone: America/New_York, mic_type: iso }
+  - { mic: XLON, name: London Stock Exchange, timezone: Europe/London, mic_type: iso }
+  - { mic: XJPX, name: Japan Exchange Group, timezone: Asia/Tokyo, mic_type: iso }
+  - { mic: XPAR, name: Euronext Paris, timezone: Europe/Paris, mic_type: iso }
+  - { mic: XHKG, name: Hong Kong Exchanges and Clearing, timezone: Asia/Hong_Kong, mic_type: iso }
+  - { mic: XSES, name: Singapore Exchange, timezone: Asia/Singapore, mic_type: iso }
+  - { mic: XASX, name: ASX Australia, timezone: Australia/Sydney, mic_type: iso }
+  - { mic: XBOM, name: BSE India, timezone: Asia/Kolkata, mic_type: iso }
+  - { mic: XNSE, name: NSE India, timezone: Asia/Kolkata, mic_type: iso }
+  - { mic: XSHG, name: Shanghai Stock Exchange, timezone: Asia/Shanghai, mic_type: iso }
+  - { mic: XSHE, name: Shenzhen Stock Exchange, timezone: Asia/Shanghai, mic_type: iso }
+  - { mic: XKRX, name: Korea Exchange, timezone: Asia/Seoul, mic_type: iso }
+  - { mic: XJSE, name: Johannesburg Stock Exchange, timezone: Africa/Johannesburg, mic_type: iso }
+  - { mic: XBSP, name: B3 Brazil, timezone: America/Sao_Paulo, mic_type: iso }
+  - { mic: XSWX, name: SIX Swiss Exchange, timezone: Europe/Zurich, mic_type: iso }
+  - { mic: XMIL, name: Borsa Italiana, timezone: Europe/Rome, mic_type: iso }
+  - { mic: XIST, name: Borsa Istanbul, timezone: Europe/Istanbul, mic_type: iso }
+  - { mic: XSAU, name: Saudi Exchange (Tadawul), timezone: Asia/Riyadh, mic_type: iso }
+  - { mic: XDFM, name: Dubai Financial Market, timezone: Asia/Dubai, mic_type: iso }
+  - { mic: XNZE, name: New Zealand Exchange, timezone: Pacific/Auckland, mic_type: iso }
+  - { mic: XHEL, name: Nasdaq Helsinki, timezone: Europe/Helsinki, mic_type: iso }
+  - { mic: XSTO, name: Nasdaq Stockholm, timezone: Europe/Stockholm, mic_type: iso }
+  - { mic: XCBT, name: CME Futures (overnight), timezone: America/Chicago, mic_type: iso }
+  - { mic: XNYM, name: NYMEX (overnight), timezone: America/Chicago, mic_type: iso }
+  - { mic: XCBO, name: Cboe Options, timezone: America/Chicago, mic_type: iso }
+  - { mic: XCOI, name: Coinbase (24/7), timezone: UTC, mic_type: convention }
+  - { mic: XBIN, name: Binance (24/7), timezone: UTC, mic_type: convention }
 safety_guarantees:
   - fail_closed: true
     description: UNKNOWN status means CLOSED — the oracle never fails open

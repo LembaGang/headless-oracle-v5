@@ -6099,3 +6099,61 @@ describe('GET /v5/stream', () => {
 		expect(receipt.mic).toBe('XNYS');
 	});
 });
+
+// ─── Day 27: GET /v5/dst-risk ─────────────────────────────────────────────────
+
+describe('Day 27: GET /v5/dst-risk', () => {
+	it('returns 200 with correct shape', async () => {
+		const body = await fetchJSON('/v5/dst-risk');
+		expect(body).toHaveProperty('event', 'EU_DST_SPRING_2026');
+		expect(body).toHaveProperty('transition_utc', '2026-03-29T01:00:00Z');
+		expect(body).toHaveProperty('expires_at', '2026-03-29T02:00:00Z');
+		expect(body).toHaveProperty('description');
+		expect(body).toHaveProperty('affected_exchanges');
+		expect(body).toHaveProperty('risk_window_minutes', 60);
+		expect(body).toHaveProperty('sma_protocol_note');
+		expect(body).toHaveProperty('note');
+	});
+
+	it('affected_exchanges has exactly 7 entries', async () => {
+		const body = await fetchJSON('/v5/dst-risk');
+		expect(Array.isArray(body.affected_exchanges)).toBe(true);
+		expect((body.affected_exchanges as unknown[]).length).toBe(7);
+	});
+});
+
+// ─── Day 27: discovery_url in receipts ────────────────────────────────────────
+
+describe('Day 27: discovery_url wrapper on receipt endpoints', () => {
+	const DISCOVERY_URL = 'https://headlessoracle.com/.well-known/mcp/server-card.json';
+
+	it('/v5/demo includes discovery_url', async () => {
+		vi.setSystemTime(new Date('2026-03-27T14:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(body).toHaveProperty('discovery_url', DISCOVERY_URL);
+		// backward compat: flat fields still present
+		expect(body).toHaveProperty('status');
+		expect(body).toHaveProperty('mic', 'XNYS');
+	});
+
+	it('/v5/status includes discovery_url', async () => {
+		vi.setSystemTime(new Date('2026-03-27T14:00:00Z'));
+		const body = await fetchJSON('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(body).toHaveProperty('discovery_url', DISCOVERY_URL);
+		expect(body).toHaveProperty('status');
+	});
+
+	it('/v5/batch receipts include discovery_url on each entry', async () => {
+		vi.setSystemTime(new Date('2026-03-27T14:00:00Z'));
+		const body = await fetchJSON('/v5/batch?mics=XNYS,XNAS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(Array.isArray(body.receipts)).toBe(true);
+		for (const r of body.receipts as Record<string, unknown>[]) {
+			expect(r).toHaveProperty('discovery_url', DISCOVERY_URL);
+		}
+	});
+
+	it('/v5/health includes discovery_url', async () => {
+		const body = await fetchJSON('/v5/health');
+		expect(body).toHaveProperty('discovery_url', DISCOVERY_URL);
+	});
+});
