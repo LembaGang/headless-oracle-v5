@@ -8745,7 +8745,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
       <li>Priority support</li>
       <li>SLA guarantee</li>
     </ul>
-    <a class="plan-cta secondary" href="https://headlessoracle.com/v5/checkout?plan=pro">Start Pro Plan</a>
+    <button class="plan-cta secondary" onclick="openCheckout('pro')">Start Pro Plan</button>
   </div>
 
   <div class="plan recommended">
@@ -8759,7 +8759,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
       <li>Batch endpoint</li>
       <li>Email support</li>
     </ul>
-    <a class="plan-cta primary" href="https://headlessoracle.com/v5/checkout?plan=builder">Start Builder Plan</a>
+    <button class="plan-cta primary" onclick="openCheckout('builder')">Start Builder Plan</button>
   </div>
 
   <div class="plan">
@@ -8790,6 +8790,34 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
   <span>Questions? Email <a href="mailto:hello@headlessoracle.com">hello@headlessoracle.com</a></span>
   <a href="https://headlessoracle.com">← headlessoracle.com</a>
 </footer>
+
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
+<script>
+  Paddle.Initialize({ token: 'live_8d7ef54e91c43573f6afd77c7bd' });
+
+  async function openCheckout(plan) {
+    const btns = document.querySelectorAll('.plan-cta');
+    btns.forEach(b => { b.disabled = true; b.textContent = 'Loading…'; });
+    try {
+      const res = await fetch('/v5/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.transaction_id) {
+        throw new Error(data.message || 'Checkout unavailable');
+      }
+      Paddle.Checkout.open({ transactionId: data.transaction_id });
+    } catch (err) {
+      alert('Could not open checkout: ' + err.message + '\\nEmail hello@headlessoracle.com for help.');
+    } finally {
+      btns.forEach(b => { b.disabled = false; });
+      document.querySelector('.plan-cta.primary').textContent = 'Start Builder Plan';
+      document.querySelector('.plan-cta.secondary').textContent = 'Start Pro Plan';
+    }
+  }
+</script>
 
 </body>
 </html>`;
