@@ -2232,6 +2232,49 @@ describe('POST /mcp — OAuth rate limiting', () => {
 		}
 	});
 
+	it('sandbox OAuth token at 25-call limit → JSON-RPC -32000 RATE_LIMITED', async () => {
+		const token   = 'mcp_ratelimit_sandbox_token_' + 'd'.repeat(36);
+		const keyHash = 'mcp_ratelimit_sandbox_keyhash' + 'd'.repeat(35);
+		const today   = new Date().toISOString().slice(0, 10);
+		await putOAuthToken(token, keyHash, 'sandbox');
+		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '25', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+				body:    mcpInit,
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error');
+			const err = body.error as Record<string, unknown>;
+			expect(err).toHaveProperty('code', -32000);
+			expect(String(err.message)).toContain('RATE_LIMITED');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${today}`);
+		}
+	});
+
+	it('sandbox OAuth token below 25-call limit → request succeeds', async () => {
+		const token   = 'mcp_ratelimit_sandbox_under_' + 'e'.repeat(36);
+		const keyHash = 'mcp_ratelimit_sandbox_under_h' + 'e'.repeat(35);
+		const today   = new Date().toISOString().slice(0, 10);
+		await putOAuthToken(token, keyHash, 'sandbox');
+		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '1', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+				body:    mcpInit,
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('result'); // succeeds — not rate-limited
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${today}`);
+		}
+	});
+
 	it('unauthenticated MCP ignores usage counter — always succeeds', async () => {
 		// Even if a counter key existed for some hash, unauthenticated MCP skips metering
 		const res = await fetchWorker('/mcp', {

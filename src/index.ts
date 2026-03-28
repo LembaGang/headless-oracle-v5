@@ -1772,6 +1772,7 @@ const PRO_TIER_DAILY_LIMIT     = 200_000;
 function getPlanDailyLimit(plan: string): number | null {
 	switch (plan) {
 		case 'free':    return FREE_TIER_DAILY_LIMIT;
+		case 'sandbox': return SANDBOX_DAILY_LIMIT;
 		case 'builder': return BUILDER_TIER_DAILY_LIMIT;
 		case 'pro':     return PRO_TIER_DAILY_LIMIT;
 		default:        return null; // protocol, internal — no limit
@@ -3107,9 +3108,10 @@ Before executing any trade or financial action, call \`get_market_status\` with 
 - [Python (headless-oracle)](https://headlessoracle.com/docs/sdks/python)
 - [Go (headless-oracle-go)](https://headlessoracle.com/docs/sdks/go)
 
-## Quick Start (no signup required)
-# Get an instant sandbox key (24h, 100 calls):
-GET https://api.headlessoracle.com/v5/sandbox
+## Quick Start
+# Get a sandbox key (24h, 25 calls) — email required:
+POST https://api.headlessoracle.com/v5/sandbox
+Body: { "email": "you@example.com" }
 
 # Use it immediately:
 GET https://api.headlessoracle.com/v5/status?mic=XNYS
@@ -3124,7 +3126,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/demo | GET | No | Signed receipt, demo mode | SMA receipt (receipt_mode=demo) |
 | /v5/status | GET | Yes | Signed receipt, live mode | SMA receipt (receipt_mode=live) |
 | /v5/batch | GET | Yes | Signed receipts for multiple MICs | { summary, receipts[] } |
-| /v5/sandbox | GET | No | Instant sandbox key (24h, 100 calls) | { api_key, tier, expires_at } |
+| /v5/sandbox | POST | No | Sandbox key (24h, 25 calls) — email required | { api_key, tier, email_captured, expires_at } |
 | /v5/schedule | GET | No | Next open/close times (not signed) | { next_open, next_close, lunch_break, settlement_window } |
 | /v5/exchanges | GET | No | All 28 supported exchanges | { exchanges: [{mic, name, timezone, mic_type}] } |
 | /v5/keys | GET | No | Public signing key + canonical spec | { keys: [{key_id, public_key, algorithm}] } |
@@ -3213,7 +3215,7 @@ UNKNOWN status means the oracle cannot determine market state. Agents MUST treat
 
 ## Pricing
 - Free: 500 req/day (GET /v5/keys/request)
-- Sandbox: 100 req/24h, instant, no signup (GET /v5/sandbox)
+- Sandbox: 25 req/24h, email required (POST /v5/sandbox with { "email": "you@example.com" })
 - x402: 0.001 USDC/req via Base mainnet (no key, no signup)
 - Builder: 50,000 req/day ($99/mo)
 - Pro: 200,000 req/day ($299/mo)
@@ -3576,11 +3578,11 @@ const AGENT_JSON = {
 		{
 			id:          'get_sandbox_key',
 			name:        'Get Sandbox Key',
-			description: 'Get an instant 24-hour API key with 100 calls. No signup. Start calling /v5/status immediately.',
+			description: 'Provision a 24-hour API key (25 calls). POST { "email": "you@example.com" } — email required, one per address.',
 			endpoint:    '/v5/sandbox',
-			method:      'GET',
+			method:      'POST',
 			auth:        false,
-			input:       {},
+			input:       { email: { type: 'string', required: true, description: 'Email address — key is sent to this address' } },
 			output:      {
 				type:       'object',
 				properties: {
@@ -4391,14 +4393,23 @@ const OPENAPI_SPEC = {
 			},
 		},
 		'/v5/sandbox': {
-			get: {
+			post: {
 				tags:        ['Authentication'],
-				summary:     'Instant 24-hour sandbox API key — no signup required',
-				description: 'Generates a temporary API key valid for 24 hours and 100 calls. No authentication required. ' +
-					'Use for integration testing, demos, and evaluating Headless Oracle before committing to a free tier key. ' +
+				summary:     'Email-gated 24-hour sandbox API key',
+				description: 'Provisions a temporary API key valid for 24 hours and 25 calls. Requires an email address. ' +
+					'One key per email address and per IP address (7-day window). ' +
 					'Sandbox keys are rejected by /v5/receipts and /v5/webhooks/subscribe (paid features). ' +
-					'Rate limited to 10 keys per IP per hour.',
-				parameters: [],
+					'A welcome email with the key and quickstart instructions is sent to the provided address.',
+				requestBody: {
+					required: true,
+					content: { 'application/json': { schema: {
+						type: 'object',
+						required: ['email'],
+						properties: {
+							email: { type: 'string', format: 'email', example: 'developer@example.com' },
+						},
+					} } },
+				},
 				responses: {
 					'200': {
 						description: 'Sandbox key issued',
@@ -4407,9 +4418,11 @@ const OPENAPI_SPEC = {
 							properties: {
 								api_key:         { type: 'string', example: 'sb_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4' },
 								tier:            { type: 'string', enum: ['sandbox'] },
+								email_captured:  { type: 'boolean', example: true },
 								expires_at:      { type: 'string', format: 'date-time' },
-								calls_remaining: { type: 'integer', example: 100 },
+								calls_remaining: { type: 'integer', example: 25 },
 								upgrade:         { type: 'string', example: 'https://headlessoracle.com/upgrade' },
+								follow_up:       { type: 'string' },
 								quickstart: {
 									type: 'object',
 									properties: {
@@ -4421,14 +4434,25 @@ const OPENAPI_SPEC = {
 							},
 						} } },
 					},
-					'429': {
-						description: 'IP rate limit exceeded — max 10 sandbox keys per hour',
+					'400': {
+						description: 'Email missing or invalid',
 						content: { 'application/json': { schema: {
 							type: 'object',
 							properties: {
-								error:   { type: 'string', example: 'SANDBOX_RATE_LIMIT' },
+								error:   { type: 'string', example: 'EMAIL_REQUIRED' },
 								message: { type: 'string' },
-								upgrade: { type: 'string' },
+							},
+						} } },
+					},
+					'429': {
+						description: 'Sandbox allocation already used for this IP or email',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								error:       { type: 'string', example: 'SANDBOX_LIMIT_REACHED' },
+								message:     { type: 'string' },
+								upgrade_url: { type: 'string' },
+								plans:       { type: 'object' },
 							},
 						} } },
 					},
@@ -8028,24 +8052,40 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 			}
 
-			// ── GET /v5/sandbox — instant no-auth sandbox key (24h, 100 calls) ───────────────────
-			if (url.pathname === '/v5/sandbox' && request.method === 'GET') {
-				// Optional email capture — validate format if provided.
-				const emailParam = url.searchParams.get('email')?.trim() ?? '';
-				if (emailParam) {
-					const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-					if (!emailRegex.test(emailParam)) {
-						return json({ error: 'INVALID_EMAIL', message: 'Invalid email format. Use ?email=you@example.com' }, 422);
-					}
+			// ── POST /v5/sandbox — email-gated sandbox key (24h, 25 calls) ────────────────────────
+			if (url.pathname === '/v5/sandbox') {
+				if (request.method === 'GET') {
+					// Helpful error for callers using the old GET interface.
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'POST /v5/sandbox with JSON body { "email": "you@example.com" }' }, 405);
+				}
+				if (request.method !== 'POST') {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
 				}
 
-				// Fingerprint check: each IP may only ever provision one sandbox key (7-day window).
-				const clientIp = request.headers.get('CF-Connecting-IP') ||
+				// Email is required — no anonymous sandbox keys.
+				const sbBody     = await request.json().catch(() => null) as { email?: unknown } | null;
+				const emailRaw   = sbBody?.email;
+				if (!emailRaw || typeof emailRaw !== 'string' || !emailRaw.trim()) {
+					return json({ error: 'EMAIL_REQUIRED', message: 'An email address is required to provision a sandbox key.' }, 400);
+				}
+				const emailParam = emailRaw.trim().toLowerCase();
+				const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+				if (!emailRegex.test(emailParam)) {
+					return json({ error: 'EMAIL_INVALID', message: 'Invalid email format.' }, 400);
+				}
+
+				// Fingerprint checks: IP and email — both prevent double-provisioning (7-day window).
+				const clientIp    = request.headers.get('CF-Connecting-IP') ||
 					request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 'unknown';
-				const ipHash         = await sha256Hex(clientIp);
-				const fpKey          = `sandbox_fingerprint:ip:${ipHash}`;
-				const existingFp     = await env.ORACLE_TELEMETRY.get(fpKey).catch(() => null);
-				if (existingFp !== null) {
+				const ipHash      = await sha256Hex(clientIp);
+				const emailHash   = await sha256Hex(emailParam);
+				const fpKeyIp     = `sandbox_fingerprint:ip:${ipHash}`;
+				const fpKeyEmail  = `sandbox_fingerprint:email:${emailHash}`;
+				const [existingIpFp, existingEmailFp] = await Promise.all([
+					env.ORACLE_TELEMETRY.get(fpKeyIp).catch(() => null),
+					env.ORACLE_TELEMETRY.get(fpKeyEmail).catch(() => null),
+				]);
+				if (existingIpFp !== null || existingEmailFp !== null) {
 					return json({
 						error:       'SANDBOX_LIMIT_REACHED',
 						message:     'You have already used your free sandbox allocation.',
@@ -8058,7 +8098,6 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				const hourKey   = `sandbox_rate:${ipHash}:${new Date().toISOString().slice(0, 13)}`; // YYYY-MM-DDTHH
 				const hourCount = parseInt(await env.ORACLE_TELEMETRY.get(hourKey).catch(() => '0') || '0', 10);
 				if (hourCount >= 10) {
-					// Sandbox rate limit resets on the hour — Retry-After is seconds to next hour boundary.
 					const nextHour = new Date(now);
 					nextHour.setUTCMinutes(0, 0, 0);
 					nextHour.setUTCHours(nextHour.getUTCHours() + 1);
@@ -8078,11 +8117,11 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				const sandboxMeta = JSON.stringify({
 					tier:       'sandbox',
 					status:     'active',
+					email:      emailParam,
 					expires_at: expiresAt,
 					max_calls:  25,
 					created_at: now.toISOString(),
 					source:     'auto_sandbox',
-					...(emailParam ? { email: emailParam } : {}),
 				});
 
 				// Store sandbox key in ORACLE_API_KEYS KV with 24h TTL.
@@ -8090,8 +8129,11 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					await env.ORACLE_API_KEYS.put(keyHash, sandboxMeta, { expirationTtl: 86_400 });
 				}
 
-				// Store IP fingerprint: prevents this IP from provisioning another sandbox key for 7 days.
-				await env.ORACLE_TELEMETRY.put(fpKey, now.toISOString(), { expirationTtl: 604_800 }).catch(() => {});
+				// Store both fingerprints: prevent re-provisioning for 7 days.
+				await Promise.all([
+					env.ORACLE_TELEMETRY.put(fpKeyIp, now.toISOString(), { expirationTtl: 604_800 }).catch(() => {}),
+					env.ORACLE_TELEMETRY.put(fpKeyEmail, now.toISOString(), { expirationTtl: 604_800 }).catch(() => {}),
+				]);
 
 				// Increment IP rate-limit counter (90min TTL — covers hour rollover).
 				await env.ORACLE_TELEMETRY.put(hourKey, String(hourCount + 1), { expirationTtl: 90 * 60 }).catch(() => {});
@@ -8099,54 +8141,52 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				// Acquisition telemetry: sandbox key creations count as unauthenticated (FINDING-13)
 				incrementKvCounter(`unauth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 
-				// Email capture: store follow-up record and send welcome email.
-				if (emailParam) {
-					const followupRecord = JSON.stringify({
-						email:          emailParam,
-						created_at:     now.toISOString(),
-						key_expires_at: expiresAt,
-						followed_up:    false,
-					});
-					// 48h TTL — outlives the 24h key so follow-up cron can reach it.
-					await env.ORACLE_TELEMETRY.put(`sandbox_followup:${keyHash}`, followupRecord, { expirationTtl: 86_400 * 2 }).catch(() => {});
+				// Store follow-up record (48h TTL — outlives the 24h key so follow-up cron can reach it).
+				const followupRecord = JSON.stringify({
+					email:          emailParam,
+					created_at:     now.toISOString(),
+					key_expires_at: expiresAt,
+					followed_up:    false,
+				});
+				await env.ORACLE_TELEMETRY.put(`sandbox_followup:${keyHash}`, followupRecord, { expirationTtl: 86_400 * 2 }).catch(() => {});
 
-					if (env.RESEND_API_KEY) {
-						const welcomeText =
-							`Your sandbox key: ${rawKey}\n\n` +
-							`You have 25 calls over 24 hours to explore Headless Oracle.\n\n` +
-							`Quick test:\n` +
-							`curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' \\\n` +
-							`  -H 'X-Oracle-Key: ${rawKey}'\n\n` +
-							`When you're ready for production:\nhttps://headlessoracle.com/upgrade\n\n` +
-							`Questions? Reply to this email.`;
-						ctx.waitUntil(
-							fetch('https://api.resend.com/emails', {
-								method:  'POST',
-								headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-								body: JSON.stringify({
-									from:    'Headless Oracle <hello@headlessoracle.com>',
-									to:      [emailParam],
-									subject: 'Your Headless Oracle sandbox key',
-									text:    welcomeText,
-								}),
-							}).then(r => {
-								if (!r.ok) console.error(`SANDBOX_EMAIL_ERROR: resend status=${r.status}`);
+				// Send welcome email (non-blocking).
+				if (env.RESEND_API_KEY) {
+					const welcomeText =
+						`Your sandbox key: ${rawKey}\n\n` +
+						`You have 25 calls over 24 hours to explore Headless Oracle.\n\n` +
+						`Quick test:\n` +
+						`curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' \\\n` +
+						`  -H 'X-Oracle-Key: ${rawKey}'\n\n` +
+						`Docs: https://headlessoracle.com/docs\n\n` +
+						`When you're ready to build in production, Builder plan is $99/month for 50,000 calls:\n` +
+						`https://headlessoracle.com/upgrade\n\n` +
+						`Questions? Reply to this email.`;
+					ctx.waitUntil(
+						fetch('https://api.resend.com/emails', {
+							method:  'POST',
+							headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								from:    'Headless Oracle <hello@headlessoracle.com>',
+								to:      [emailParam],
+								subject: 'Your Headless Oracle sandbox key',
+								text:    welcomeText,
+							}),
+						}).then(r => {
+							if (!r.ok) console.error(`SANDBOX_EMAIL_ERROR: resend status=${r.status}`);
 							else       console.log(JSON.stringify({ event: 'SANDBOX_EMAIL_SENT', email: emailParam }));
-							}).catch(e => console.error(`SANDBOX_EMAIL_ERROR: ${e instanceof Error ? e.message : String(e)}`)),
-						);
-					}
+						}).catch(e => console.error(`SANDBOX_EMAIL_ERROR: ${e instanceof Error ? e.message : String(e)}`)),
+					);
 				}
 
 				return json({
 					api_key:         rawKey,
 					tier:            'sandbox',
+					email_captured:  true,
 					expires_at:      expiresAt,
 					calls_remaining: 25,
 					upgrade:         'https://headlessoracle.com/upgrade',
-					...(emailParam ? {
-						email_captured: true,
-						follow_up:      'Check your inbox for your key and quickstart.',
-					} : {}),
+					follow_up:       'Check your inbox for your key and quickstart.',
 					quickstart: {
 						curl:   `curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' -H 'X-Oracle-Key: ${rawKey}'`,
 						node:   `const res = await fetch('https://api.headlessoracle.com/v5/status?mic=XNYS', {headers: {'X-Oracle-Key': '${rawKey}'}})`,
@@ -8312,7 +8352,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				description_for_model: 'Use headless_oracle to get Ed25519-signed market state receipts before executing any financial transaction. Returns OPEN, CLOSED, HALTED, or UNKNOWN with cryptographic proof. Always call get_market_status before safe_to_execute. Supports 28 exchanges by MIC code (equities, derivatives, 24/7 crypto). Note: SMA in receipts denotes Signed Market Attestation, not Simple Moving Average. Fail-closed: if uncertain, returns UNKNOWN rather than false OPEN.',
 				auth: {
 					type:               'api_key',
-					api_key_question:   'Enter your Headless Oracle API key (X-Oracle-Key header). Get a free sandbox key at https://api.headlessoracle.com/v5/sandbox',
+					api_key_question:   'Enter your Headless Oracle API key (X-Oracle-Key header). Get a sandbox key: POST https://api.headlessoracle.com/v5/sandbox with body {"email":"you@example.com"}',
 				},
 				api: {
 					type:                  'openapi',
@@ -8399,7 +8439,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
       <h1>Headless Oracle — Live Market Status</h1>
       <a href="https://headlessoracle.com" style="font-size:12px">headlessoracle.com</a>
     </div>
-    <a href="https://api.headlessoracle.com/v5/sandbox" class="badge-api">Get API Access →</a>
+    <a href="https://headlessoracle.com/upgrade" class="badge-api">Get API Access →</a>
   </header>
   <div class="meta">
     <span>28 exchanges · Ed25519 signed · Fail-closed</span>
@@ -8424,7 +8464,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
   <div class="cta">
     <h2>Use this data in your agent</h2>
     <p>Get a signed receipt via API — Ed25519-verified, 60s TTL, fail-closed by design.</p>
-    <a href="https://api.headlessoracle.com/v5/sandbox">Get free sandbox key →</a>
+    <a href="https://headlessoracle.com/upgrade">Get API access →</a>
   </div>
   <script>
     const MICS = ['XNYS','XNAS','XBSP','XLON','XPAR','XSWX','XMIL','XHEL','XSTO','XIST','XSAU','XDFM','XJSE','XSHG','XSHE','XHKG','XJPX','XKRX','XBOM','XNSE','XSES','XASX','XNZE'];
