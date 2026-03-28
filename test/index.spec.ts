@@ -20,6 +20,15 @@ async function fetchJSON(path: string, options: RequestInit = {}): Promise<Recor
 	return response.json() as Promise<Record<string, unknown>>;
 }
 
+/** POST /v5/sandbox with a JSON body — default email used across most sandbox tests. */
+function fetchSandbox(email = 'sandbox-test@example.com'): Promise<Response> {
+	return fetchWorker('/v5/sandbox', {
+		method:  'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body:    JSON.stringify({ email }),
+	});
+}
+
 const ALL_MICS = [
 	'XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES',
 	'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE',
@@ -5000,34 +5009,106 @@ describe('Rate-limit headers', () => {
 
 // ─── GET /v5/sandbox ─────────────────────────────────────────────────────────────────────────────────────────
 
-describe('GET /v5/sandbox', () => {
-	// Clear the 'unknown' IP fingerprint before and after each test so tests don't
-	// interfere with each other — the fingerprint is keyed to the test-env IP ('unknown').
-	let sandboxFpKey: string;
+describe('POST /v5/sandbox', () => {
+	// Clear both the IP fingerprint and the email fingerprint for the default test email
+	// before and after each test so tests don't interfere with each other.
+	let sandboxIpFpKey: string;
+	let sandboxEmailFpKeyDefault: string;
 	beforeEach(async () => {
-		sandboxFpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
-		await env.ORACLE_TELEMETRY.delete(sandboxFpKey);
+		sandboxIpFpKey            = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
+		sandboxEmailFpKeyDefault  = `sandbox_fingerprint:email:${await sha256Hex('sandbox-test@example.com')}`;
+		await env.ORACLE_TELEMETRY.delete(sandboxIpFpKey);
+		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKeyDefault);
 	});
 	afterEach(async () => {
-		await env.ORACLE_TELEMETRY.delete(sandboxFpKey);
+		await env.ORACLE_TELEMETRY.delete(sandboxIpFpKey);
+		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKeyDefault);
+	});
+
+	it('GET /v5/sandbox returns 405 with helpful message', async () => {
+		const res  = await fetchWorker('/v5/sandbox');
+		expect(res.status).toBe(405);
+		const body = await res.json() as { error: string; message: string };
+		expect(body.error).toBe('METHOD_NOT_ALLOWED');
+		expect(body.message).toContain('POST');
+	});
+
+	it('missing email returns 400 EMAIL_REQUIRED', async () => {
+		const res  = await fetchWorker('/v5/sandbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('EMAIL_REQUIRED');
+	});
+
+	it('invalid email returns 400 EMAIL_INVALID', async () => {
+		const res  = await fetchWorker('/v5/sandbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'notanemail' }) });
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('EMAIL_INVALID');
 	});
 
 	it('returns a sandbox key with correct shape', async () => {
-		const res  = await fetchWorker('/v5/sandbox');
+		const res  = await fetchSandbox();
 		expect(res.status).toBe(200);
-		const body = await res.json() as { api_key: string; tier: string; expires_at: string; calls_remaining: number; upgrade: string; quickstart: { curl: string; node: string; python: string } };
+		const body = await res.json() as { api_key: string; tier: string; email_captured: boolean; expires_at: string; calls_remaining: number; upgrade: string; follow_up: string; quickstart: { curl: string; node: string; python: string } };
 		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
 		expect(body.tier).toBe('sandbox');
+		expect(body.email_captured).toBe(true);
 		expect(body.calls_remaining).toBe(25);
+		expect(body.follow_up).toBeTruthy();
 		expect(body.upgrade).toBeTruthy();
 		expect(body.quickstart.curl).toContain(body.api_key);
 		expect(body.quickstart.node).toContain(body.api_key);
 		expect(body.quickstart.python).toContain(body.api_key);
 	});
 
+	it('email is stored in KV record', async () => {
+		const res     = await fetchSandbox();
+		const { api_key } = await res.json() as { api_key: string };
+		const keyHash = await sha256Hex(api_key);
+		const kvRaw   = await env.ORACLE_API_KEYS.get(keyHash);
+		expect(kvRaw).toBeTruthy();
+		const kv = JSON.parse(kvRaw!) as { email: string };
+		expect(kv.email).toBe('sandbox-test@example.com');
+		await env.ORACLE_API_KEYS.delete(keyHash);
+	});
+
+	it('welcome email fires via Resend with key and docs link', async () => {
+		let resendCalled = false;
+		let capturedTo: string[] = [];
+		let capturedText = '';
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('resend.com')) {
+				resendCalled = true;
+				const b = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { to?: string[]; text?: string };
+				capturedTo   = b.to   ?? [];
+				capturedText = b.text ?? '';
+				return new Response(JSON.stringify({ id: 'email_sb_001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchSandbox('welcome-email-test@example.com');
+			expect(res.status).toBe(200);
+			const body = await res.json() as { api_key: string };
+			// Flush waitUntil promises (miniflare drains them after response)
+			await new Promise(r => setTimeout(r, 50));
+			expect(resendCalled).toBe(true);
+			expect(capturedTo).toContain('welcome-email-test@example.com');
+			expect(capturedText).toContain(body.api_key);
+			expect(capturedText).toContain('headlessoracle.com/docs');
+			expect(capturedText).toContain('headlessoracle.com/upgrade');
+		} finally {
+			globalThis.fetch = originalFetch;
+			await env.ORACLE_TELEMETRY.delete(`sandbox_fingerprint:email:${await sha256Hex('welcome-email-test@example.com')}`);
+		}
+	});
+
 	it('sandbox key is valid for /v5/status calls', async () => {
 		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
-		const sandboxRes = await fetchWorker('/v5/sandbox');
+		const sandboxRes = await fetchSandbox();
 		const { api_key } = await sandboxRes.json() as { api_key: string };
 		const statusRes = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': api_key } });
 		expect(statusRes.status).toBe(200);
@@ -5039,7 +5120,7 @@ describe('GET /v5/sandbox', () => {
 		const hourKey = `sandbox_rate:${ipHash}:${new Date().toISOString().slice(0, 13)}`;
 		await env.ORACLE_TELEMETRY.put(hourKey, '10', { expirationTtl: 90 * 60 });
 		try {
-			const res = await fetchWorker('/v5/sandbox');
+			const res = await fetchSandbox();
 			expect(res.status).toBe(429);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(hourKey);
@@ -5047,16 +5128,30 @@ describe('GET /v5/sandbox', () => {
 	});
 
 	it('second sandbox request from same IP returns 429 SANDBOX_LIMIT_REACHED', async () => {
-		// First provisioning succeeds
-		const res1 = await fetchWorker('/v5/sandbox');
+		const res1 = await fetchSandbox();
 		expect(res1.status).toBe(200);
-		// Second provisioning from same IP (fingerprint now stored) must be blocked
-		const res2 = await fetchWorker('/v5/sandbox');
+		// Second provisioning from same IP — fingerprint now set
+		const res2 = await fetchSandbox('sandbox-test-2@example.com');
 		expect(res2.status).toBe(429);
 		const body = await res2.json() as Record<string, unknown>;
 		expect(body.error).toBe('SANDBOX_LIMIT_REACHED');
 		expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
 		expect(body).toHaveProperty('plans');
+		// cleanup extra email fingerprint
+		await env.ORACLE_TELEMETRY.delete(`sandbox_fingerprint:email:${await sha256Hex('sandbox-test-2@example.com')}`);
+	});
+
+	it('duplicate email from different IP is blocked by email fingerprint', async () => {
+		// Simulate: first provision from current IP
+		const res1 = await fetchSandbox();
+		expect(res1.status).toBe(200);
+		// Clear IP fingerprint to simulate a different IP — email fingerprint remains
+		await env.ORACLE_TELEMETRY.delete(sandboxIpFpKey);
+		// Second request same email — should be blocked by email fingerprint
+		const res2 = await fetchSandbox();
+		expect(res2.status).toBe(429);
+		const body = await res2.json() as Record<string, unknown>;
+		expect(body.error).toBe('SANDBOX_LIMIT_REACHED');
 	});
 });
 
@@ -5190,25 +5285,30 @@ describe('Tier-gated 402 responses (Task 7)', () => {
 	});
 
 	it('sandbox key on /v5/receipts gets 402 paid_feature', async () => {
-		const fpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
-		await env.ORACLE_TELEMETRY.delete(fpKey);
+		const ipFpKey    = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
+		const emailFpKey = `sandbox_fingerprint:email:${await sha256Hex('tier7-receipts@example.com')}`;
+		await env.ORACLE_TELEMETRY.delete(ipFpKey);
+		await env.ORACLE_TELEMETRY.delete(emailFpKey);
 		try {
-			const sandboxRes = await fetchWorker('/v5/sandbox');
+			const sandboxRes = await fetchSandbox('tier7-receipts@example.com');
 			const { api_key } = await sandboxRes.json() as { api_key: string };
 			const res  = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': api_key } });
 			expect(res.status).toBe(402);
 			const body = await res.json() as { error: string };
 			expect(body.error).toBe('paid_feature');
 		} finally {
-			await env.ORACLE_TELEMETRY.delete(fpKey);
+			await env.ORACLE_TELEMETRY.delete(ipFpKey);
+			await env.ORACLE_TELEMETRY.delete(emailFpKey);
 		}
 	});
 
 	it('sandbox key on /v5/webhooks/subscribe gets 402 paid_feature', async () => {
-		const fpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
-		await env.ORACLE_TELEMETRY.delete(fpKey);
+		const ipFpKey    = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
+		const emailFpKey = `sandbox_fingerprint:email:${await sha256Hex('tier7-webhook@example.com')}`;
+		await env.ORACLE_TELEMETRY.delete(ipFpKey);
+		await env.ORACLE_TELEMETRY.delete(emailFpKey);
 		try {
-			const sandboxRes = await fetchWorker('/v5/sandbox');
+			const sandboxRes = await fetchSandbox('tier7-webhook@example.com');
 			const { api_key } = await sandboxRes.json() as { api_key: string };
 			const res  = await fetchWorker('/v5/webhooks/subscribe', {
 				method: 'POST',
@@ -5219,7 +5319,8 @@ describe('Tier-gated 402 responses (Task 7)', () => {
 			const body = await res.json() as { error: string };
 			expect(body.error).toBe('paid_feature');
 		} finally {
-			await env.ORACLE_TELEMETRY.delete(fpKey);
+			await env.ORACLE_TELEMETRY.delete(ipFpKey);
+			await env.ORACLE_TELEMETRY.delete(emailFpKey);
 		}
 	});
 });
@@ -5325,9 +5426,11 @@ describe('Retry-After on 429 responses (FINDING-03)', () => {
 		const unknownHourKey = `sandbox_rate:${unknownIpHash}:2026-03-16T14`;
 		const fpKey          = `sandbox_fingerprint:ip:${unknownIpHash}`;
 		await env.ORACLE_TELEMETRY.put(unknownHourKey, '10', { expirationTtl: 90 * 60 });
-		// Clear fingerprint so the rate-limit check (not fingerprint check) triggers
+		// Clear both fingerprints so the rate-limit check (not fingerprint check) triggers
 		await env.ORACLE_TELEMETRY.delete(fpKey);
-		const res = await fetchWorker('/v5/sandbox');
+		const emailFpKeyRl = `sandbox_fingerprint:email:${await sha256Hex('sandbox-rl-test@example.com')}`;
+		await env.ORACLE_TELEMETRY.delete(emailFpKeyRl);
+		const res = await fetchSandbox('sandbox-rl-test@example.com');
 		expect(res.status).toBe(429);
 		const retryAfter = res.headers.get('Retry-After');
 		expect(retryAfter).toBeTruthy();
@@ -5336,6 +5439,7 @@ describe('Retry-After on 429 responses (FINDING-03)', () => {
 		await env.ORACLE_TELEMETRY.delete(hourKey);
 		await env.ORACLE_TELEMETRY.delete(unknownHourKey);
 		await env.ORACLE_TELEMETRY.delete(fpKey);
+		await env.ORACLE_TELEMETRY.delete(emailFpKeyRl);
 		vi.useRealTimers();
 	});
 });
@@ -5386,63 +5490,61 @@ describe('Halt monitor timeout handling (FINDING-09)', () => {
 // ─── Task 1: Sandbox email capture ──────────────────────────────────────────────────────────────────
 
 describe('Sandbox email capture (Task 1)', () => {
-	let sandboxEmailFpKey: string;
-	beforeEach(async () => {
-		sandboxEmailFpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
-		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKey);
-	});
-	afterEach(async () => {
-		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKey);
+	// Each test uses a unique email to avoid fingerprint collisions; cleanup both fingerprints.
+	async function clearFps(email: string) {
+		await env.ORACLE_TELEMETRY.delete(`sandbox_fingerprint:ip:${await sha256Hex('unknown')}`);
+		await env.ORACLE_TELEMETRY.delete(`sandbox_fingerprint:email:${await sha256Hex(email)}`);
+	}
+
+	it('email is required — POST without email returns 400 EMAIL_REQUIRED', async () => {
+		const res = await fetchWorker('/v5/sandbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('EMAIL_REQUIRED');
 	});
 
-	it('sandbox with valid email stores email in KV record', async () => {
-		const res  = await fetchWorker('/v5/sandbox?email=test@example.com');
+	it('invalid email format returns 400 EMAIL_INVALID', async () => {
+		const res = await fetchWorker('/v5/sandbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'notanemail' }) });
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('EMAIL_INVALID');
+	});
+
+	it('valid email provisions key and stores email in KV record', async () => {
+		const email = 'task1-capture@example.com';
+		await clearFps(email);
+		const res  = await fetchSandbox(email);
 		expect(res.status).toBe(200);
 		const body = await res.json() as { api_key: string; email_captured: boolean; follow_up: string };
 		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
 		expect(body.email_captured).toBe(true);
 		expect(body.follow_up).toBeTruthy();
-		// Verify email stored in KV
-		const keyHash   = await sha256Hex(body.api_key);
-		const kvRaw     = await env.ORACLE_API_KEYS.get(keyHash);
+		const keyHash  = await sha256Hex(body.api_key);
+		const kvRaw    = await env.ORACLE_API_KEYS.get(keyHash);
 		expect(kvRaw).toBeTruthy();
-		const kvRecord  = JSON.parse(kvRaw!) as { email?: string };
-		expect(kvRecord.email).toBe('test@example.com');
-		// Clean up
+		const kvRecord = JSON.parse(kvRaw!) as { email?: string };
+		expect(kvRecord.email).toBe(email);
 		await env.ORACLE_API_KEYS.delete(keyHash);
 		await env.ORACLE_TELEMETRY.delete(`sandbox_followup:${keyHash}`);
+		await clearFps(email);
 	});
 
-	it('sandbox with invalid email returns 422', async () => {
-		// Invalid email is rejected before fingerprint check — no cleanup needed
-		const res = await fetchWorker('/v5/sandbox?email=notanemail');
-		expect(res.status).toBe(422);
-		const body = await res.json() as { error: string };
-		expect(body.error).toBe('INVALID_EMAIL');
-	});
-
-	it('sandbox without email returns 200 with no email_captured field (no regression)', async () => {
-		const res  = await fetchWorker('/v5/sandbox');
+	it('email stores follow-up record in ORACLE_TELEMETRY', async () => {
+		const email = 'task1-followup@example.com';
+		await clearFps(email);
+		const res     = await fetchSandbox(email);
 		expect(res.status).toBe(200);
-		const body = await res.json() as { api_key: string; email_captured?: boolean };
-		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
-		expect(body.email_captured).toBeUndefined();
-	});
-
-	it('sandbox with email stores follow-up record in ORACLE_TELEMETRY', async () => {
-		const res  = await fetchWorker('/v5/sandbox?email=followup@example.com');
-		expect(res.status).toBe(200);
-		const body = await res.json() as { api_key: string };
+		const body    = await res.json() as { api_key: string };
 		const keyHash = await sha256Hex(body.api_key);
 		const fuRaw   = await env.ORACLE_TELEMETRY.get(`sandbox_followup:${keyHash}`);
 		expect(fuRaw).toBeTruthy();
 		const fuRecord = JSON.parse(fuRaw!) as { email: string; followed_up: boolean; key_expires_at: string };
-		expect(fuRecord.email).toBe('followup@example.com');
+		expect(fuRecord.email).toBe(email);
 		expect(fuRecord.followed_up).toBe(false);
 		expect(fuRecord.key_expires_at).toBeTruthy();
-		// Clean up
 		await env.ORACLE_API_KEYS.delete(keyHash);
 		await env.ORACLE_TELEMETRY.delete(`sandbox_followup:${keyHash}`);
+		await clearFps(email);
 	});
 });
 
