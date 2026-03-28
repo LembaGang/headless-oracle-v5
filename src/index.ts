@@ -1765,6 +1765,7 @@ const BASE_RPC_URL          = 'https://mainnet.base.org';
 // Free tier: daily request cap before x402 micropayment is required.
 const FREE_TIER_DAILY_LIMIT    = 500;
 const SANDBOX_DAILY_LIMIT      = 25;    // Sandbox keys: 25 calls per 24h key lifetime — enough to evaluate, not enough to build
+const UNAUTH_MCP_STATUS_LIMIT  = 10;   // Unauthenticated get_market_status calls per IP per day via /mcp
 const BUILDER_TIER_DAILY_LIMIT = 50_000;
 const PRO_TIER_DAILY_LIMIT     = 200_000;
 
@@ -4973,6 +4974,26 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			}
 
 			if (name === 'get_market_status') {
+				// ── Unauthenticated IP rate-limit: 10 get_market_status calls per IP per day ──
+				// Authenticated requests (_mcpKeyHash !== null) are already metered above.
+				if (_mcpKeyHash === null) {
+					const unauthKey   = `unauth_mcp_status:${ipHash}:${today}`;
+					const unauthCount = parseInt(await env.ORACLE_TELEMETRY.get(unauthKey).catch(() => '0') || '0', 10);
+					if (unauthCount >= UNAUTH_MCP_STATUS_LIMIT) {
+						return rpcResult({
+							isError: true,
+							content: [{ type: 'text', text: JSON.stringify({
+								error:       'UNAUTHENTICATED_LIMIT_REACHED',
+								message:     'Free market status checks exhausted. Add your sandbox key as a Bearer token or upgrade.',
+								upgrade_url: 'https://headlessoracle.com/upgrade',
+							}) }],
+						});
+					}
+					// Increment non-blocking; 25h TTL so counter expires after the day rolls over.
+					const unauthPut = env.ORACLE_TELEMETRY.put(unauthKey, String(unauthCount + 1), { expirationTtl: 25 * 3600 }).catch(() => {});
+					if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(unauthPut);
+				}
+
 				const mic = (typeof args.mic === 'string' ? args.mic : 'XNYS').toUpperCase();
 				if (!MARKET_CONFIGS[mic]) {
 					return rpcResult({

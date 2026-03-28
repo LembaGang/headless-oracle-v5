@@ -2275,8 +2275,8 @@ describe('POST /mcp — OAuth rate limiting', () => {
 		}
 	});
 
-	it('unauthenticated MCP ignores usage counter — always succeeds', async () => {
-		// Even if a counter key existed for some hash, unauthenticated MCP skips metering
+	it('unauthenticated MCP ignores usage counter — always succeeds for non-status tools', async () => {
+		// Even if a counter key existed for some hash, unauthenticated MCP skips metering for initialize
 		const res = await fetchWorker('/mcp', {
 			method:  'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -2285,6 +2285,71 @@ describe('POST /mcp — OAuth rate limiting', () => {
 		expect(res.status).toBe(200);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('result');
+	});
+
+	it('unauthenticated get_market_status: blocked after 10 calls from same IP', async () => {
+		// handleMcp computes rawIp = X-Original-IP || CF-Connecting-IP ?? ''
+		// In the test environment neither header is present, so rawIp = '' (empty string).
+		const ipHash    = await sha256Hex('');
+		const today     = new Date().toISOString().slice(0, 10);
+		const unauthKey = `unauth_mcp_status:${ipHash}:${today}`;
+		await env.ORACLE_TELEMETRY.put(unauthKey, '10', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'get_market_status', arguments: { mic: 'XNYS' } } }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			const result = body.result as Record<string, unknown>;
+			expect(result.isError).toBe(true);
+			const text = JSON.parse((result.content as Array<{ text: string }>)[0].text) as Record<string, unknown>;
+			expect(text.error).toBe('UNAUTHENTICATED_LIMIT_REACHED');
+			expect(text).toHaveProperty('upgrade_url');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(unauthKey);
+		}
+	});
+
+	it('unauthenticated get_market_status: succeeds below 10-call limit', async () => {
+		const ipHash    = await sha256Hex('');
+		const today     = new Date().toISOString().slice(0, 10);
+		const unauthKey = `unauth_mcp_status:${ipHash}:${today}`;
+		await env.ORACLE_TELEMETRY.put(unauthKey, '5', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ jsonrpc: '2.0', id: 100, method: 'tools/call', params: { name: 'get_market_status', arguments: { mic: 'XNYS' } } }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			const result = body.result as Record<string, unknown>;
+			expect(result).not.toHaveProperty('isError', true);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(unauthKey);
+		}
+	});
+
+	it('unauthenticated get_market_schedule is NOT rate-limited by IP gate', async () => {
+		const ipHash    = await sha256Hex('');
+		const today     = new Date().toISOString().slice(0, 10);
+		const unauthKey = `unauth_mcp_status:${ipHash}:${today}`;
+		// Exhaust the status counter — schedule must still succeed
+		await env.ORACLE_TELEMETRY.put(unauthKey, '10', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/mcp', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ jsonrpc: '2.0', id: 101, method: 'tools/call', params: { name: 'get_market_schedule', arguments: { mic: 'XNYS' } } }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect((body.result as Record<string, unknown>)).not.toHaveProperty('isError', true);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(unauthKey);
+		}
 	});
 
 	it('logically expired Bearer token falls through as anonymous — not blocked', async () => {
