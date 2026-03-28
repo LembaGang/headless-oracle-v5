@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import worker, { edgeCaseCount } from '../src';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -2460,7 +2460,7 @@ describe('Auth hot path — paid keys via KV', () => {
 			expect(response.status).toBe(402);
 			const body = await response.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('error', 'PAYMENT_REQUIRED');
-			expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+			expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/upgrade');
 			expect(response.headers.get('X-Oracle-Plans')).toBe('free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500');
 		} finally {
 			await env.ORACLE_API_KEYS.delete(hash);
@@ -2697,7 +2697,7 @@ describe('POST /v5/keys/request', () => {
 	it('401 on /v5/account without key includes X-Oracle-Upgrade header', async () => {
 		const response = await fetchWorker('/v5/account');
 		expect(response.status).toBe(401);
-		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/pricing');
+		expect(response.headers.get('X-Oracle-Upgrade')).toBe('https://headlessoracle.com/upgrade');
 	});
 });
 
@@ -4421,7 +4421,7 @@ describe('Session Q: GET /v5/usage', () => {
 		expect(body).toHaveProperty('requests_today');
 		expect(body).toHaveProperty('requests_this_month');
 		expect(body).toHaveProperty('rate_limit_resets_at');
-		expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/pricing');
+		expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
 		expect(body).toHaveProperty('x402_available');
 		expect(body).toHaveProperty('x402_amount', '0.001 USDC');
 		expect(body).toHaveProperty('credit_balance');
@@ -4523,7 +4523,7 @@ describe('Session Q: Soft rate-limit warning headers', () => {
 				headers: { 'X-Oracle-Key': key },
 			});
 			expect(response.headers.get('X-RateLimit-Warning')).toBe('true');
-			expect(response.headers.get('X-RateLimit-Upgrade-URL')).toContain('pricing');
+			expect(response.headers.get('X-RateLimit-Upgrade-URL')).toContain('upgrade');
 		} finally {
 			await env.ORACLE_API_KEYS.delete(keyHash);
 			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`);
@@ -5001,13 +5001,24 @@ describe('Rate-limit headers', () => {
 // ─── GET /v5/sandbox ─────────────────────────────────────────────────────────────────────────────────────────
 
 describe('GET /v5/sandbox', () => {
+	// Clear the 'unknown' IP fingerprint before and after each test so tests don't
+	// interfere with each other — the fingerprint is keyed to the test-env IP ('unknown').
+	let sandboxFpKey: string;
+	beforeEach(async () => {
+		sandboxFpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
+		await env.ORACLE_TELEMETRY.delete(sandboxFpKey);
+	});
+	afterEach(async () => {
+		await env.ORACLE_TELEMETRY.delete(sandboxFpKey);
+	});
+
 	it('returns a sandbox key with correct shape', async () => {
 		const res  = await fetchWorker('/v5/sandbox');
 		expect(res.status).toBe(200);
 		const body = await res.json() as { api_key: string; tier: string; expires_at: string; calls_remaining: number; upgrade: string; quickstart: { curl: string; node: string; python: string } };
 		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
 		expect(body.tier).toBe('sandbox');
-		expect(body.calls_remaining).toBe(100);
+		expect(body.calls_remaining).toBe(25);
 		expect(body.upgrade).toBeTruthy();
 		expect(body.quickstart.curl).toContain(body.api_key);
 		expect(body.quickstart.node).toContain(body.api_key);
@@ -5032,6 +5043,100 @@ describe('GET /v5/sandbox', () => {
 			expect(res.status).toBe(429);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(hourKey);
+		}
+	});
+
+	it('second sandbox request from same IP returns 429 SANDBOX_LIMIT_REACHED', async () => {
+		// First provisioning succeeds
+		const res1 = await fetchWorker('/v5/sandbox');
+		expect(res1.status).toBe(200);
+		// Second provisioning from same IP (fingerprint now stored) must be blocked
+		const res2 = await fetchWorker('/v5/sandbox');
+		expect(res2.status).toBe(429);
+		const body = await res2.json() as Record<string, unknown>;
+		expect(body.error).toBe('SANDBOX_LIMIT_REACHED');
+		expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
+		expect(body).toHaveProperty('plans');
+	});
+});
+
+// ─── Sandbox 402 response body shapes ───────────────────────────────────────
+
+describe('Sandbox 402 response body shapes', () => {
+	it('SANDBOX_LIMIT_REACHED body includes upgrade_url, plans, and docs', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const key     = 'sb_sandbox_limit_test_key00000001';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ tier: 'sandbox', plan: 'sandbox', status: 'active', expires_at: '2026-03-17T15:00:00Z' }), { expirationTtl: 86400 });
+		// Exhaust the 25-call daily cap (same key pattern as getDailyUsage: free_usage:hash:date)
+		const usageKey = `free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
+		await env.ORACLE_TELEMETRY.put(usageKey, '25', { expirationTtl: 3600 });
+		try {
+			const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'SANDBOX_LIMIT_REACHED');
+			expect(body).toHaveProperty('message', 'Your free sandbox key has reached its 25-call limit. Upgrade to continue.');
+			expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
+			expect(body).toHaveProperty('plans');
+			const plans = body.plans as Record<string, string>;
+			expect(plans).toHaveProperty('builder');
+			expect(plans).toHaveProperty('pro');
+			expect(plans.builder).toContain('$99');
+			expect(plans.pro).toContain('$299');
+			expect(body).toHaveProperty('docs', 'https://headlessoracle.com/docs');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_TELEMETRY.delete(usageKey);
+		}
+	});
+
+	it('expired sandbox key returns SANDBOX_KEY_EXPIRED with upgrade path only — no new-key offer', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const key     = 'sb_sandbox_expired_test_key000001';
+		const keyHash = await sha256Hex(key);
+		// Store as sandbox key with expires_at in the past
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ tier: 'sandbox', plan: 'sandbox', status: 'active', expires_at: '2026-03-15T10:00:00Z' }), { expirationTtl: 86400 });
+		try {
+			const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'SANDBOX_KEY_EXPIRED');
+			expect(body).toHaveProperty('message', 'Your free sandbox has expired. Upgrade to continue.');
+			expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
+			expect(body).toHaveProperty('plans');
+			const plans = body.plans as Record<string, string>;
+			expect(plans.builder).toContain('$99');
+			expect(plans.pro).toContain('$299');
+			// Must NOT suggest getting another sandbox key
+			const message = body.message as string;
+			expect(message).not.toContain('/v5/sandbox');
+			expect(message).not.toContain('fresh key');
+			expect(body).toHaveProperty('docs', 'https://headlessoracle.com/docs');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+		}
+	});
+
+	it('25-call sandbox limit is enforced on /v5/status', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const key     = 'sb_sandbox_25_limit_test_key0001';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ tier: 'sandbox', plan: 'sandbox', status: 'active', expires_at: '2026-03-17T15:00:00Z' }), { expirationTtl: 86400 });
+		const usageKey = `free_usage:${keyHash}:2026-03-16`;
+		await env.ORACLE_TELEMETRY.put(usageKey, '25', { expirationTtl: 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.error).toBe('SANDBOX_LIMIT_REACHED');
+			// 24 calls should NOT be capped
+			await env.ORACLE_TELEMETRY.put(usageKey, '24', { expirationTtl: 3600 });
+			const res2 = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res2.status).toBe(200);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_TELEMETRY.delete(usageKey);
 		}
 	});
 });
@@ -5085,25 +5190,37 @@ describe('Tier-gated 402 responses (Task 7)', () => {
 	});
 
 	it('sandbox key on /v5/receipts gets 402 paid_feature', async () => {
-		const sandboxRes = await fetchWorker('/v5/sandbox');
-		const { api_key } = await sandboxRes.json() as { api_key: string };
-		const res  = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': api_key } });
-		expect(res.status).toBe(402);
-		const body = await res.json() as { error: string };
-		expect(body.error).toBe('paid_feature');
+		const fpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
+		await env.ORACLE_TELEMETRY.delete(fpKey);
+		try {
+			const sandboxRes = await fetchWorker('/v5/sandbox');
+			const { api_key } = await sandboxRes.json() as { api_key: string };
+			const res  = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': api_key } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as { error: string };
+			expect(body.error).toBe('paid_feature');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(fpKey);
+		}
 	});
 
 	it('sandbox key on /v5/webhooks/subscribe gets 402 paid_feature', async () => {
-		const sandboxRes = await fetchWorker('/v5/sandbox');
-		const { api_key } = await sandboxRes.json() as { api_key: string };
-		const res  = await fetchWorker('/v5/webhooks/subscribe', {
-			method: 'POST',
-			headers: { 'X-Oracle-Key': api_key, 'Content-Type': 'application/json' },
-			body: JSON.stringify({ url: 'https://example.com/hook', mics: ['XNYS'] }),
-		});
-		expect(res.status).toBe(402);
-		const body = await res.json() as { error: string };
-		expect(body.error).toBe('paid_feature');
+		const fpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
+		await env.ORACLE_TELEMETRY.delete(fpKey);
+		try {
+			const sandboxRes = await fetchWorker('/v5/sandbox');
+			const { api_key } = await sandboxRes.json() as { api_key: string };
+			const res  = await fetchWorker('/v5/webhooks/subscribe', {
+				method: 'POST',
+				headers: { 'X-Oracle-Key': api_key, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url: 'https://example.com/hook', mics: ['XNYS'] }),
+			});
+			expect(res.status).toBe(402);
+			const body = await res.json() as { error: string };
+			expect(body.error).toBe('paid_feature');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(fpKey);
+		}
 	});
 });
 
@@ -5204,18 +5321,21 @@ describe('Retry-After on 429 responses (FINDING-03)', () => {
 		await env.ORACLE_TELEMETRY.put(hourKey, '10', { expirationTtl: 90 * 60 });
 		// The actual sandbox endpoint uses CF-Connecting-IP header — we seed via known ipHash
 		// In test env CF-Connecting-IP is 'unknown', so compute that hash
-		const unknownIpHash = await sha256Hex('unknown');
+		const unknownIpHash  = await sha256Hex('unknown');
 		const unknownHourKey = `sandbox_rate:${unknownIpHash}:2026-03-16T14`;
+		const fpKey          = `sandbox_fingerprint:ip:${unknownIpHash}`;
 		await env.ORACLE_TELEMETRY.put(unknownHourKey, '10', { expirationTtl: 90 * 60 });
+		// Clear fingerprint so the rate-limit check (not fingerprint check) triggers
+		await env.ORACLE_TELEMETRY.delete(fpKey);
 		const res = await fetchWorker('/v5/sandbox');
-		if (res.status === 429) {
-			const retryAfter = res.headers.get('Retry-After');
-			expect(retryAfter).toBeTruthy();
-			expect(parseInt(retryAfter!, 10)).toBeGreaterThan(0);
-		}
+		expect(res.status).toBe(429);
+		const retryAfter = res.headers.get('Retry-After');
+		expect(retryAfter).toBeTruthy();
+		expect(parseInt(retryAfter!, 10)).toBeGreaterThan(0);
 		// Cleanup
 		await env.ORACLE_TELEMETRY.delete(hourKey);
 		await env.ORACLE_TELEMETRY.delete(unknownHourKey);
+		await env.ORACLE_TELEMETRY.delete(fpKey);
 		vi.useRealTimers();
 	});
 });
@@ -5266,6 +5386,15 @@ describe('Halt monitor timeout handling (FINDING-09)', () => {
 // ─── Task 1: Sandbox email capture ──────────────────────────────────────────────────────────────────
 
 describe('Sandbox email capture (Task 1)', () => {
+	let sandboxEmailFpKey: string;
+	beforeEach(async () => {
+		sandboxEmailFpKey = `sandbox_fingerprint:ip:${await sha256Hex('unknown')}`;
+		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKey);
+	});
+	afterEach(async () => {
+		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKey);
+	});
+
 	it('sandbox with valid email stores email in KV record', async () => {
 		const res  = await fetchWorker('/v5/sandbox?email=test@example.com');
 		expect(res.status).toBe(200);
@@ -5285,6 +5414,7 @@ describe('Sandbox email capture (Task 1)', () => {
 	});
 
 	it('sandbox with invalid email returns 422', async () => {
+		// Invalid email is rejected before fingerprint check — no cleanup needed
 		const res = await fetchWorker('/v5/sandbox?email=notanemail');
 		expect(res.status).toBe(422);
 		const body = await res.json() as { error: string };
