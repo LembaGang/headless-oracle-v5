@@ -6947,6 +6947,67 @@ describe('Paddle credit packs — webhook minting', () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toMatchObject({ received: true });
 	});
+
+	it('GAP-014: credits key minting inserts receipt_audit row with mic=credits and source=paddle_credits', async () => {
+		const auditBodies: Array<Record<string, unknown>> = [];
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'gap014@example.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('api.resend.com')) {
+				return new Response(JSON.stringify({ id: 'email_gap014' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('receipt_audit') && init?.method === 'POST') {
+				const body = JSON.parse((init.body as string) ?? '[]') as unknown;
+				const entries = Array.isArray(body) ? body as Record<string, unknown>[] : [body as Record<string, unknown>];
+				auditBodies.push(...entries);
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id:          'txn_gap014_test',
+				customer_id: 'ctm_gap014',
+				items:       [{ price_id: CREDITS_PRICE_ID }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		try {
+			const res = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(res.status).toBe(200);
+
+			// receipt_audit must have been called with the correct fields
+			expect(auditBodies.length).toBeGreaterThanOrEqual(1);
+			const auditRow = auditBodies[0];
+			expect(auditRow.mic).toBe('credits');
+			expect(auditRow.status).toBe('minted');
+			expect(auditRow.source).toBe('paddle_credits');
+			expect(typeof auditRow.key_hash).toBe('string');
+			expect((auditRow.key_hash as string).length).toBe(64); // sha256 hex
+		} finally {
+			globalThis.fetch = originalFetch;
+			// Clean up any minted key from KV
+			const listed = await env.ORACLE_API_KEYS.list({ prefix: '' });
+			for (const kv of listed.keys) {
+				const val = await env.ORACLE_API_KEYS.get(kv.name);
+				if (!val) continue;
+				const parsed = JSON.parse(val) as Record<string, unknown>;
+				if (parsed.source === 'paddle_credits' && parsed.email === 'gap014@example.com') {
+					await env.ORACLE_API_KEYS.delete(kv.name);
+				}
+			}
+		}
+	});
 });
 
 describe('Paddle credit packs — auth layer', () => {

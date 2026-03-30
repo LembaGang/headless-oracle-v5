@@ -7788,6 +7788,13 @@ export default {
 								source:     'paddle_credits',
 							}));
 						}
+						// GAP-014: audit the credit key minting in receipt_audit
+						ctx.waitUntil(insertReceiptAudit(creditsHash, {
+							mic:        'credits',
+							status:     'minted',
+							source:     'paddle_credits',
+							issued_at:  new Date().toISOString(),
+						}, env).catch(() => {}));
 						// Send welcome email (fire-and-forget — key is already stored)
 						if (env.RESEND_API_KEY && creditsEmail) {
 							fetch('https://api.resend.com/emails', {
