@@ -157,8 +157,9 @@ Full strategic context: `.claude/rules/05_strategic_vision.md`
 | Artefact | Location | Status |
 |---|---|---|
 | Halt Simulator | `github.com/LembaGang/halt-simulator` | Live — 31/31 tests passing |
-| Agent Pre-Trade Safety Standard | `docs/agent-safety-standard/STANDARD.md` | Public draft v1.0.0 — Apache 2.0 |
-| SMA Protocol Specification | `docs/sma-spec.md` | v1.0.0 — Apache 2.0 |
+| Agent Pre-Trade Safety Standard | `github.com/LembaGang/agent-pretrade-safety-standard` | Public v1.0.0 — Apache 2.0 |
+| SMA Protocol Specification | `github.com/LembaGang/sma-protocol` | v1.0.0 — Apache 2.0 |
+| MPAS Specification | `github.com/LembaGang/mpas-spec` | Draft v1.0.0 — Apache 2.0 |
 | ERC-8183 Evaluator Spec | `docs/erc-8183-evaluator-spec.md` | Draft — for Virtuals + EF dAI submission |
 | Python SDK | PyPI: `headless-oracle` v0.1.0 (published Mar 2) | `pip install headless-oracle` — includes `OracleClient`, `verify()`, LangChain tool, CrewAI tool |
 

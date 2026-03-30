@@ -2605,6 +2605,7 @@ const MPAS_SPEC_MD = `# Multi-Party Attestation Aggregation Spec (MPAS-1.0)
 **Authors**: Headless Oracle Project
 **Date**: 2026-03-30
 **Canonical URL**: https://headlessoracle.com/docs/mpas
+**GitHub**: https://github.com/LembaGang/mpas-spec
 
 ---
 
@@ -3809,7 +3810,7 @@ Before executing any trade or financial action, call \`get_market_status\` with 
 - [REST API Reference](https://headlessoracle.com/docs/api)
 - [Receipt Verification](https://headlessoracle.com/docs/verification)
 - [SMA Protocol RFC-001](https://headlessoracle.com/docs/sma-protocol/rfc-001)
-- [Multi-Party Attestation Spec (MPAS-1.0)](https://headlessoracle.com/docs/mpas)
+- [Multi-Party Attestation Spec (MPAS-1.0)](https://github.com/LembaGang/mpas-spec)
 
 ## SDK Documentation
 

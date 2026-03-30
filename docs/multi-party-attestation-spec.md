@@ -5,6 +5,7 @@
 **Authors**: Headless Oracle Project
 **Date**: 2026-03-30
 **Canonical URL**: https://headlessoracle.com/docs/mpas
+**GitHub**: https://github.com/LembaGang/mpas-spec
 
 ---
 

@@ -20,7 +20,7 @@ produce identical signatures, which eliminates an entire class of implementation
 ECDSA without RFC 6979 is non-deterministic and has caused real-world key leaks. Second,
 Ed25519 keys are 32 bytes and signatures are 64 bytes — small enough to embed in any
 payload without bloat. Third, Ed25519 composes cleanly into threshold signing schemes
-(e.g. 2-of-3 multi-party attestation) when single-operator trust is no longer sufficient
+(e.g. 2-of-3 multi-party attestation per [MPAS-1.0](https://github.com/LembaGang/mpas-spec)) when single-operator trust is no longer sufficient
 at scale. RSA does not compose cleanly into these schemes.
 
 ---
