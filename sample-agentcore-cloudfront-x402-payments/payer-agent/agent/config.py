@@ -30,6 +30,11 @@ class AgentConfig:
 
     # Seller API configuration
     seller_api_url: str = ""
+
+    # Headless Oracle configuration (market state verification before payments)
+    oracle_api_url: str = "https://headlessoracle.com"
+    oracle_mic: str = "XNYS"
+    oracle_api_key: str = ""  # Optional: use /v5/status (live mode) when set; /v5/demo otherwise
     
     # OpenTelemetry configuration
     otel_endpoint: str = ""
@@ -50,6 +55,9 @@ class AgentConfig:
             seller_api_url=os.getenv("SELLER_API_URL", ""),
             otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
             otel_console_export=os.getenv("OTEL_CONSOLE_EXPORT", "").lower() == "true",
+            oracle_api_url=os.getenv("ORACLE_API_URL", "https://headlessoracle.com"),
+            oracle_mic=os.getenv("ORACLE_MIC", "XNYS"),
+            oracle_api_key=os.getenv("ORACLE_API_KEY", ""),
         )
 
 

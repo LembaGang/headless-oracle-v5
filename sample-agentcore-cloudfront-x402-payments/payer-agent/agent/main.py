@@ -39,6 +39,10 @@ from .tools.content import (
     request_content,
     request_content_with_payment,
 )
+from .tools.oracle_tools import (
+    check_market_status,
+    build_payment_attestation,
+)
 from .mcp_client import MCPClient, discover_mcp_tools, get_mcp_client
 
 # Core tools that are always available to the agent
@@ -56,6 +60,9 @@ CORE_TOOLS = [
     get_wallet_balance,
     request_faucet_funds,
     check_faucet_eligibility,
+    # Oracle Market Safety (Pre-Payment Verification)
+    check_market_status,
+    build_payment_attestation,
     # Legacy content tools (kept for backward compatibility)
     request_content,
     request_content_with_payment,
@@ -85,6 +92,15 @@ You do NOT have hardcoded knowledge of available services. Instead, you MUST use
 - sign_payment: Sign blockchain transactions using your AgentKit wallet
 
 ## Workflow for Accessing Paid Services
+
+### Step 0: Verify Market State (for financial content)
+Before purchasing market-related content (market analysis, financial data, trading tools):
+1. Call check_market_status() to verify the relevant market is open
+2. If is_open=False → inform the user and do NOT proceed with payment
+3. If should_refetch=True → call check_market_status() again before signing
+4. After payment is confirmed, call build_payment_attestation() with the x402 transaction ID and receipt to get an attestation_ref for audit purposes
+
+For non-financial content (articles, tutorials, datasets), Step 0 is optional but recommended.
 
 ### Step 1: Discover Available Services
 When a user asks about available services or wants to access content:

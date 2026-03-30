@@ -297,6 +297,53 @@ in the `/v5/batch` handler, wrapped in `ctx.waitUntil(Promise.all([...audits]))`
 
 ---
 
+## GAP-014 — Credit pack keys (`ho_crd_`) have no Supabase record
+**Priority**: MEDIUM — audit completeness / billing disputes
+**Status**: OPEN
+
+When a credit pack is purchased via Paddle (`POST /v5/checkout?type=credits`), the
+resulting `ho_crd_` key is written only to `ORACLE_API_KEYS` KV. Unlike subscription
+keys (`ho_live_`), no row is inserted into Supabase `api_keys`. This means:
+- `/v5/receipts` audit log is blind to credit-tier usage (audit rows only record `key_hash`)
+- `updateKeyUsage()` (`last_used_at` PATCH) fails silently for credit keys (no DB row to update)
+- Usage disputes cannot be resolved from Supabase — only KV is authoritative
+
+**Fix**: In the `transaction.completed` Paddle webhook handler, insert a Supabase row for
+`ho_crd_` keys using the same schema as subscription keys. Set `plan: 'credits'`,
+`status: 'active'`, no `paddle_subscription_id`. The `key_hash` is already computed — add
+a `ctx.waitUntil(supabaseInsertCreditsKey(...))` call parallel to the KV write.
+
+**Implementation notes**:
+- Supabase insert is non-blocking (`ctx.waitUntil`) — does not affect key delivery latency
+- Use `INSERT ... ON CONFLICT (key_hash) DO NOTHING` for idempotency
+- No schema change needed — existing `api_keys` table columns cover all required fields
+- Add 1 test: `transaction.completed` with credits price_id → Supabase insert called
+
+---
+
+## GAP-015 — No upgrade path from credits tier to subscription without a new key
+**Priority**: LOW — UX / agent friction
+**Status**: OPEN
+
+A user who bought a credit pack (`ho_crd_` key) and wants to upgrade to a Builder
+subscription receives a new `ho_live_` key with a different key hash. They cannot
+re-use their existing `ho_crd_` key with upgraded limits. This creates:
+- Key rotation friction for agents that have cached the credit key
+- No bridge between x402-purchased credits and Paddle subscription billing
+- Support burden when users ask "how do I keep my key and upgrade?"
+
+**Fix** (two options):
+1. **(Simple)** Document the "two-key" reality explicitly in pricing and at credits exhaustion:
+   when `CREDITS_EXHAUSTED` is returned, the `upgrade_url` and `plans` body already point
+   to Paddle — add `"key_continuity": "upgrade mints a new key; update your ORACLE_API_KEY env var"`.
+2. **(Full fix)** Link credit keys to Paddle: allow `POST /v5/checkout` with
+   `{ plan: "builder", existing_key_hash: "..." }` — on `subscription.activated`, upgrade
+   the existing KV record to `tier: 'builder'` instead of minting a new key.
+
+Option 1 is the correct immediate fix. Option 2 requires careful idempotency handling.
+
+---
+
 ## Closed Gaps (reference)
 
 | Gap | Resolution | Date |

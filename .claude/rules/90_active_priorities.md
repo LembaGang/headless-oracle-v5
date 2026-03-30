@@ -3,8 +3,8 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 586/586 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks (GET list), /v5/webhooks/:id (DELETE), /v5/webhooks/unsubscribe (legacy DELETE), /v5/webhooks/test/:id (POST test delivery), /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public)
+**Test suite**: 597/597 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks (GET list), /v5/webhooks/:id (DELETE), /v5/webhooks/unsubscribe (legacy DELETE), /v5/webhooks/test/:id (POST test delivery), /v5/webhooks/health (public), /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public), /docs/mpas (public)
 **PyPI packages**: headless-oracle-langchain@1.0.1 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.1 (pypi.org/project/headless-oracle-crewai/)
 **npm packages**: headless-oracle-setup@1.0.1 (npx headless-oracle-setup — zero-dep MCP setup for Claude Desktop/Cursor/Windsurf)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
@@ -12,7 +12,28 @@
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
 **Go SDK**: github.com/LembaGang/headless-oracle-go — zero stdlib deps, oracle.Verify(), 9 tests
 **Exchanges**: 28 total (23 traditional + XCBT/XNYM overnight CME, XCBO Cboe options, XCOI Coinbase 24/7, XBIN Binance 24/7). mic_type: "iso" | "convention" on all entries.
-**Last significant work**: Mar 30 2026 — Sprint 2: webhook CRUD + plan limits + WebhookDispatcher DO (586 tests):
+**Last significant work**: Mar 30 2026 — Sprint 4: OpenAPI paths fix, MPAS spec, AgentCore oracle integration (597 tests + 16 payer-agent tests):
+  - OpenAPI spec bug fixed: 10 new paths (webhooks, credits, x402/mint, card) now correctly nested inside paths: object — 39 total
+  - MPAS-1.0 spec published: docs/multi-party-attestation-spec.md (651 lines, Apache 2.0)
+  - /docs/mpas route live — serves MPAS spec; wrangler.toml routes added for /docs/mpas and /docs/sma-protocol/rfc-001
+  - agent.json and server-card.json updated with mpas_spec + mpas_version fields
+  - LLMS_TXT updated with MPAS link
+  - AgentCore sample wired: oracle_tools.py check_market_status + build_payment_attestation @tool wrappers
+  - config.py: oracle_api_url, oracle_mic, oracle_api_key fields; .env.example oracle section
+  - main.py: oracle tools in CORE_TOOLS, Step 0 market verification in SYSTEM_PROMPT
+  - 16/16 payer-agent pytest tests passing
+  - Deployed: Version d2d0eb83 → eb708338
+**Previous significant work**: Mar 30 2026 — Sprint 3: GAP-012/013, credit packs, DO health endpoint (597 tests):
+  - GAP-012 CLOSED: safe_to_execute re-checks ORACLE_OVERRIDES after buildSignedReceipt (catches halt-monitor race)
+  - GAP-013 CLOSED: batch receipts now written to Supabase audit log (source='batch') via insertReceiptAudit()
+  - Paddle credit packs: PADDLE_PRICE_ID_CREDITS secret; POST /v5/checkout?type=credits creates one-time transaction
+  - Webhook transaction.completed: detects credits price_id before subscription_id guard → mints ho_crd_ key (balance:1000, no expiry)
+  - checkApiKey credits tier: balance-based auth, atomic decrement on each call, 402 CREDITS_EXHAUSTED at balance=0 (insight + plans in body)
+  - GET /v5/webhooks/health (public): reads webhook_dispatcher:health KV key written by DO alarm() — no DO instance creation
+  - WebhookDispatcher.alarm(): writes { status, next_alarm } to ORACLE_TELEMETRY KV after rescheduling
+  - Removed cron DO heartbeat call (durable alarms survive eviction; heartbeat was unnecessary and caused Miniflare SQLite EBUSY on Windows)
+  - 597/597 tests passing. Deployed (Version 4e7665cd).
+**Previous significant work**: Mar 30 2026 — Sprint 2: webhook CRUD + plan limits + WebhookDispatcher DO (586 tests):
   - GET /v5/webhooks — list all webhooks for authenticated key (webhook_id, url, mics, events, created_at, status)
   - DELETE /v5/webhooks/:webhook_id — path-based delete → 204, decrements webhook_count KV
   - POST /v5/webhooks/test/:webhook_id — synthetic delivery, 1 attempt, returns payload_sent schema
