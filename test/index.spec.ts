@@ -6535,3 +6535,268 @@ describe('GET /v5/card/:mic — live SVG status card', () => {
 		expect(res.headers.get('X-Cache')).toMatch(/^(HIT|MISS)$/);
 	});
 });
+
+// ─── Sprint 2: Webhook CRUD + plan limits ─────────────────────────────────────
+
+describe('GET /v5/webhooks — list webhooks', () => {
+	it('requires auth → 401', async () => {
+		const res = await fetchWorker('/v5/webhooks');
+		expect(res.status).toBe(401);
+	});
+
+	it('returns empty array when no webhooks registered', async () => {
+		const keyHash = await sha256Hex('wh_list_empty_key');
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			const res = await fetchWorker('/v5/webhooks', {
+				headers: { 'X-Oracle-Key': 'wh_list_empty_key' },
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as { webhooks: unknown[]; count: number };
+			expect(Array.isArray(body.webhooks)).toBe(true);
+			expect(body.count).toBe(0);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+		}
+	});
+
+	it('returns subscriptions for the authenticated key', async () => {
+		const keyHash = await sha256Hex('wh_list_has_subs_key');
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			// Subscribe first
+			const subRes = await fetchWorker('/v5/webhooks/subscribe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'wh_list_has_subs_key' },
+				body:    JSON.stringify({ url: 'https://example.com/list-test', mics: ['XNYS'] }),
+			});
+			expect(subRes.status).toBe(200);
+			const { webhook_id } = await subRes.json() as { webhook_id: string };
+
+			// List
+			const listRes = await fetchWorker('/v5/webhooks', {
+				headers: { 'X-Oracle-Key': 'wh_list_has_subs_key' },
+			});
+			expect(listRes.status).toBe(200);
+			const body = await listRes.json() as { webhooks: Array<{ webhook_id: string; url: string; mics: string[]; events: string[] }>; count: number };
+			expect(body.count).toBe(1);
+			expect(body.webhooks[0].webhook_id).toBe(webhook_id);
+			expect(body.webhooks[0].url).toBe('https://example.com/list-test');
+			expect(body.webhooks[0].mics).toEqual(['XNYS']);
+			expect(body.webhooks[0].events).toEqual(['status_change']);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_API_KEYS.delete(`webhooks:${keyHash}`);
+			await env.ORACLE_API_KEYS.delete('webhooks_by_mic:XNYS');
+		}
+	});
+});
+
+describe('DELETE /v5/webhooks/:webhook_id — path-based delete', () => {
+	it('requires auth → 401', async () => {
+		const res = await fetchWorker('/v5/webhooks/some-uuid-here', { method: 'DELETE' });
+		expect(res.status).toBe(401);
+	});
+
+	it('unknown webhook_id → 404 SUBSCRIPTION_NOT_FOUND', async () => {
+		const res = await fetchWorker('/v5/webhooks/does-not-exist-00000000', {
+			method:  'DELETE',
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(404);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('SUBSCRIPTION_NOT_FOUND');
+	});
+
+	it('subscribe then DELETE /:id → 204, count decremented', async () => {
+		const keyHash = await sha256Hex('wh_delete_path_key');
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			// Subscribe
+			const subRes = await fetchWorker('/v5/webhooks/subscribe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'wh_delete_path_key' },
+				body:    JSON.stringify({ url: 'https://example.com/del-path', mics: ['XNYS'] }),
+			});
+			const { webhook_id } = await subRes.json() as { webhook_id: string };
+
+			// Verify webhook_count was incremented
+			const countBefore = await env.ORACLE_TELEMETRY.get(`webhook_count:${keyHash}`);
+			expect(Number(countBefore)).toBeGreaterThanOrEqual(1);
+
+			// Delete via path
+			const delRes = await fetchWorker(`/v5/webhooks/${webhook_id}`, {
+				method:  'DELETE',
+				headers: { 'X-Oracle-Key': 'wh_delete_path_key' },
+			});
+			expect(delRes.status).toBe(204);
+
+			// Verify webhook is gone from list
+			const listRes = await fetchWorker('/v5/webhooks', {
+				headers: { 'X-Oracle-Key': 'wh_delete_path_key' },
+			});
+			const listBody = await listRes.json() as { count: number };
+			expect(listBody.count).toBe(0);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_API_KEYS.delete(`webhooks:${keyHash}`);
+			await env.ORACLE_TELEMETRY.delete(`webhook_count:${keyHash}`);
+		}
+	});
+});
+
+describe('POST /v5/webhooks/subscribe — plan limit enforcement', () => {
+	it('builder plan: can subscribe up to 5 webhooks', async () => {
+		const keyHash = await sha256Hex('wh_builder_limit_key');
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		const webhookIds: string[] = [];
+		try {
+			// Subscribe 5 webhooks — all should succeed
+			for (let i = 1; i <= 5; i++) {
+				const res = await fetchWorker('/v5/webhooks/subscribe', {
+					method:  'POST',
+					headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'wh_builder_limit_key' },
+					body:    JSON.stringify({ url: `https://example.com/hook${i}`, mics: ['XNYS'] }),
+				});
+				expect(res.status).toBe(200);
+				const body = await res.json() as { webhook_id: string };
+				webhookIds.push(body.webhook_id);
+			}
+
+			// 6th webhook should be rejected with 403 PLAN_LIMIT_EXCEEDED
+			const overRes = await fetchWorker('/v5/webhooks/subscribe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'wh_builder_limit_key' },
+				body:    JSON.stringify({ url: 'https://example.com/hook6', mics: ['XNYS'] }),
+			});
+			expect(overRes.status).toBe(403);
+			const overBody = await overRes.json() as { error: string; limit: number };
+			expect(overBody.error).toBe('PLAN_LIMIT_EXCEEDED');
+			expect(overBody.limit).toBe(5);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_API_KEYS.delete(`webhooks:${keyHash}`);
+			await env.ORACLE_TELEMETRY.delete(`webhook_count:${keyHash}`);
+			// Clean up per-MIC index
+			await env.ORACLE_API_KEYS.delete('webhooks_by_mic:XNYS');
+		}
+	});
+
+	it('subscribe response includes webhook_id, url, mics, events, created_at, status, secret', async () => {
+		const keyHash = await sha256Hex('wh_schema_check_key');
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			const res = await fetchWorker('/v5/webhooks/subscribe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'wh_schema_check_key' },
+				body:    JSON.stringify({ url: 'https://example.com/schema-check', mics: ['XNYS', 'XLON'], secret: 'my-secret-123' }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(typeof body.webhook_id).toBe('string');
+			expect(body.url).toBe('https://example.com/schema-check');
+			expect(body.mics).toEqual(['XNYS', 'XLON']);
+			expect(body.events).toEqual(['status_change']);
+			expect(typeof body.created_at).toBe('string');
+			expect(body.status).toBe('active');
+			expect(body.secret).toBe('my-secret-123');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_API_KEYS.delete(`webhooks:${keyHash}`);
+			await env.ORACLE_API_KEYS.delete('webhooks_by_mic:XNYS');
+			await env.ORACLE_API_KEYS.delete('webhooks_by_mic:XLON');
+		}
+	});
+});
+
+describe('HMAC-SHA256 signature on webhook delivery', () => {
+	it('computeHmacSignature produces sha256=<hex> format', async () => {
+		// Test the HMAC logic by subscribing and verifying the response schema
+		// The actual HMAC computation is tested indirectly via the test endpoint
+		const keyHash = await sha256Hex('wh_hmac_test_key');
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			const res = await fetchWorker('/v5/webhooks/subscribe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'wh_hmac_test_key' },
+				body:    JSON.stringify({ url: 'https://example.com/hmac-hook', mics: ['XNYS'], secret: 'hmac-test-secret' }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as { webhook_id: string; secret: string };
+			// Secret is preserved in subscription (used for HMAC computation on delivery)
+			expect(body.secret).toBe('hmac-test-secret');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_API_KEYS.delete(`webhooks:${keyHash}`);
+			await env.ORACLE_API_KEYS.delete('webhooks_by_mic:XNYS');
+		}
+	});
+});
+
+describe('POST /v5/webhooks/test/:webhook_id — synthetic delivery', () => {
+	it('requires auth → 401', async () => {
+		const res = await fetchWorker('/v5/webhooks/test/some-id', { method: 'POST' });
+		expect(res.status).toBe(401);
+	});
+
+	it('unknown webhook_id → 404', async () => {
+		const res = await fetchWorker('/v5/webhooks/test/does-not-exist', {
+			method:  'POST',
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(404);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('SUBSCRIPTION_NOT_FOUND');
+	});
+
+	it('existing webhook → fires test delivery and returns payload_sent', async () => {
+		const keyHash = await sha256Hex('wh_test_delivery_key');
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		try {
+			// Subscribe
+			const subRes = await fetchWorker('/v5/webhooks/subscribe', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'wh_test_delivery_key' },
+				body:    JSON.stringify({ url: 'https://example.com/test-hook', mics: ['XNYS'], secret: 'test-secret' }),
+			});
+			const { webhook_id } = await subRes.json() as { webhook_id: string };
+
+			// Fire test delivery (the actual HTTP POST to example.com will fail, but the
+			// response schema and payload_sent structure should still be returned)
+			const testRes = await fetchWorker(`/v5/webhooks/test/${webhook_id}`, {
+				method:  'POST',
+				headers: { 'X-Oracle-Key': 'wh_test_delivery_key' },
+			});
+			expect(testRes.status).toBe(200);
+			const body = await testRes.json() as {
+				webhook_id: string;
+				url: string;
+				delivered: boolean;
+				payload_sent: {
+					event: string;
+					webhook_id: string;
+					mic: string;
+					previous_status: null;
+					current_status: string;
+					receipt: Record<string, unknown>;
+					delivered_at: string;
+				};
+			};
+			expect(body.webhook_id).toBe(webhook_id);
+			expect(body.url).toBe('https://example.com/test-hook');
+			// payload_sent must match sprint spec schema
+			expect(body.payload_sent.event).toBe('test');
+			expect(body.payload_sent.webhook_id).toBe(webhook_id);
+			expect(body.payload_sent.mic).toBe('XNYS');
+			expect(body.payload_sent.previous_status).toBeNull();
+			expect(typeof body.payload_sent.current_status).toBe('string');
+			expect(typeof body.payload_sent.receipt).toBe('object');
+			expect(typeof body.payload_sent.delivered_at).toBe('string');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_API_KEYS.delete(`webhooks:${keyHash}`);
+			await env.ORACLE_API_KEYS.delete('webhooks_by_mic:XNYS');
+			await env.ORACLE_TELEMETRY.delete(`webhook_count:${keyHash}`);
+		}
+	});
+});

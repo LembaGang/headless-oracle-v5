@@ -36,6 +36,7 @@ export interface Env {
 	// Beta key sunset — when set, new-key emails include a notice that old keys stop working on this date
 	BETA_KEY_SUNSET_DATE?:       string;  // Human-readable date string, e.g. "March 31, 2026"
 	STREAM_COORDINATOR:          DurableObjectNamespace;  // SSE stream coordinator — one DO per MIC
+	WEBHOOK_DISPATCHER:          DurableObjectNamespace;  // Webhook delivery DO — alarm-based state-change fan-out
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -1778,6 +1779,35 @@ function getPlanDailyLimit(plan: string): number | null {
 		case 'pro':     return PRO_TIER_DAILY_LIMIT;
 		default:        return null; // protocol, internal — no limit
 	}
+}
+
+// Max active webhook subscriptions per plan.
+// null = unlimited (protocol, internal keys).
+// 0 = not allowed (sandbox).
+const BUILDER_WEBHOOK_LIMIT = 5;
+const PRO_WEBHOOK_LIMIT     = 25;
+
+function getPlanWebhookLimit(plan: string): number | null {
+	switch (plan) {
+		case 'sandbox': return 0;
+		case 'builder': return BUILDER_WEBHOOK_LIMIT;
+		case 'pro':     return PRO_WEBHOOK_LIMIT;
+		default:        return null; // protocol, internal, free — handled by separate MIC limit
+	}
+}
+
+// Computes HMAC-SHA256 over a payload string using a shared secret.
+// Returns "sha256=<hex>" for use in the X-Oracle-Signature header.
+async function computeHmacSignature(secret: string, payload: string): Promise<string> {
+	const key = await crypto.subtle.importKey(
+		'raw',
+		new TextEncoder().encode(secret),
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign'],
+	);
+	const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+	return 'sha256=' + toHex(new Uint8Array(sig));
 }
 
 // Response headers signalling to HTTP clients that a payment is required.
@@ -5188,35 +5218,53 @@ async function getWebhooksByMic(mic: string, env: Env): Promise<WebhookDeliveryT
 	catch { return []; }
 }
 
-async function deliverWebhook(target: WebhookDeliveryTarget, payload: Record<string, unknown>): Promise<void> {
+async function deliverWebhook(target: WebhookDeliveryTarget, payload: Record<string, unknown>, maxAttempts = 4): Promise<{ ok: boolean; status?: number; error?: string }> {
 	const body = JSON.stringify(payload);
-	const attempt = async () => fetch(target.url, {
+	const deliveredAt = new Date().toISOString();
+
+	// Add HMAC-SHA256 signature to the payload if the subscription has a secret.
+	// Header: X-Oracle-Signature: sha256=<hmac_hex>
+	const sigHeaders: Record<string, string> = {};
+	if (target.secret) {
+		sigHeaders['X-Oracle-Signature'] = await computeHmacSignature(target.secret, body);
+	}
+
+	const attempt = () => fetch(target.url, {
 		method:  'POST',
-		headers: { 'Content-Type': 'application/json', 'User-Agent': 'HeadlessOracle-Webhook/1.0' },
+		headers: {
+			'Content-Type': 'application/json',
+			'User-Agent':   'HeadlessOracle-Webhook/1.0',
+			'X-Oracle-Event-At': deliveredAt,
+			...sigHeaders,
+		},
 		body,
-		signal:  AbortSignal.timeout(10000),
+		signal: AbortSignal.timeout(10000),
 	});
-	try {
-		const resp = await attempt();
-		if (!resp.ok) {
-			// One retry after 1 second
-			await scheduler.wait(1000);
-			const retry = await attempt();
-			if (!retry.ok) {
-				console.log(JSON.stringify({ event: 'WEBHOOK_FAILED', subscription_id: target.subscription_id, url: target.url, status: retry.status }));
-				return;
+
+	// Up to maxAttempts attempts with exponential backoff: immediate, 1s, 4s, 16s
+	const allDelays = [0, 1000, 4000, 16000];
+	const delays = allDelays.slice(0, maxAttempts);
+	for (let i = 0; i < delays.length; i++) {
+		if (delays[i] > 0) await scheduler.wait(delays[i]);
+		try {
+			const resp = await attempt();
+			if (resp.ok) {
+				console.log(JSON.stringify({ event: 'WEBHOOK_DELIVERED', subscription_id: target.subscription_id, attempt: i + 1 }));
+				return { ok: true, status: resp.status };
+			}
+			if (i === delays.length - 1) {
+				console.log(JSON.stringify({ event: 'WEBHOOK_FAILED', subscription_id: target.subscription_id, url: target.url, status: resp.status, attempts: delays.length }));
+				return { ok: false, status: resp.status };
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (i === delays.length - 1) {
+				console.log(JSON.stringify({ event: 'WEBHOOK_FAILED', subscription_id: target.subscription_id, error: msg, attempts: delays.length }));
+				return { ok: false, error: msg };
 			}
 		}
-		console.log(JSON.stringify({ event: 'WEBHOOK_DELIVERED', subscription_id: target.subscription_id }));
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		try {
-			await scheduler.wait(1000);
-			const retry = await attempt();
-			if (retry.ok) { console.log(JSON.stringify({ event: 'WEBHOOK_DELIVERED_RETRY', subscription_id: target.subscription_id })); return; }
-		} catch { /* ignore retry error */ }
-		console.log(JSON.stringify({ event: 'WEBHOOK_FAILED', subscription_id: target.subscription_id, error: msg }));
 	}
+	return { ok: false, error: 'exhausted' };
 }
 
 async function runHaltMonitor(env: Env): Promise<void> {
@@ -5406,13 +5454,13 @@ async function runHaltMonitor(env: Env): Promise<void> {
 
 		for (const target of targets) {
 			const payload = {
-				event:           'state_changed',
+				event:           'status_change',
+				webhook_id:      target.subscription_id,
 				mic,
 				previous_status: lastState,
-				new_status:      currentStatus,
+				current_status:  currentStatus,
 				receipt,
-				secret:          target.secret,
-				timestamp:       now.toISOString(),
+				delivered_at:    now.toISOString(),
 			};
 			webhookDeliveries.push(deliverWebhook(target, payload));
 		}
@@ -7781,7 +7829,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					standard:         'Agent Pre-Trade Safety Standard v1.0',
 					oracle:           'Headless Oracle v5',
 					version:          'v5.0',
-					last_verified:    '2026-03-17T00:00:00Z',
+					last_verified:    '2026-03-29T00:00:00Z',
 					checks: [
 						{
 							check:    'APTS-001',
@@ -7937,6 +7985,23 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					}, 402, { 'X-Upgrade-URL': 'https://headlessoracle.com/upgrade' });
 				}
 
+				// Enforce per-plan webhook count limits (builder: 5, pro: 25, protocol: unlimited)
+				const webhookPlanLimit = getPlanWebhookLimit(subAuth.plan ?? 'free');
+				if (webhookPlanLimit !== null && webhookPlanLimit > 0) {
+					const subKeyHash = subAuth.keyHash ?? await sha256Hex(request.headers.get('X-Oracle-Key')!);
+					const existingSubs = await getWebhookSubscriptions(subKeyHash, env);
+					if (existingSubs.length >= webhookPlanLimit) {
+						return json({
+							error:       'PLAN_LIMIT_EXCEEDED',
+							message:     `Your ${subAuth.plan} plan allows up to ${webhookPlanLimit} webhook subscription(s). Delete an existing webhook to add a new one, or upgrade at headlessoracle.com/upgrade.`,
+							plan:        subAuth.plan,
+							limit:       webhookPlanLimit,
+							current:     existingSubs.length,
+							upgrade_url: 'https://headlessoracle.com/upgrade',
+						}, 403);
+					}
+				}
+
 				let body: { url?: unknown; mics?: unknown; secret?: unknown };
 				try { body = await request.json() as typeof body; }
 				catch { return json({ error: 'INVALID_REQUEST', message: 'Request body must be valid JSON' }, 400); }
@@ -7985,7 +8050,118 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					await env.ORACLE_API_KEYS.put(`webhooks_by_mic:${mic}`, JSON.stringify(micTargets));
 				}
 
-				return await withMigrationNotice(json({ subscription_id: subscription.subscription_id, mics, status: 'active', secret }));
+				// Increment webhook_count in ORACLE_TELEMETRY for plan-limit tracking
+				const wkCountKey = `webhook_count:${keyHash}`;
+				const wkCountRaw = await env.ORACLE_TELEMETRY.get(wkCountKey).catch(() => null);
+				const wkCount = wkCountRaw ? parseInt(wkCountRaw, 10) : 0;
+				await env.ORACLE_TELEMETRY.put(wkCountKey, String(wkCount + 1)).catch(() => {});
+
+				return await withMigrationNotice(json({
+					webhook_id:      subscription.subscription_id, // canonical Sprint 2 field
+					subscription_id: subscription.subscription_id, // backward compat
+					url:             subscription.url,
+					mics,
+					events:          ['status_change'],
+					created_at:      subscription.created_at,
+					status:          'active',
+					secret,
+				}));
+			}
+
+			// ── GET /v5/webhooks — list all webhooks for this API key ────────────
+			if (url.pathname === '/v5/webhooks' && request.method === 'GET') {
+				const apiKey = request.headers.get('X-Oracle-Key');
+				if (!apiKey) return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+				const listAuth = await checkApiKey(apiKey, env);
+				if (!listAuth.allowed) return json({ error: listAuth.error, message: listAuth.message }, listAuth.status);
+				const listKeyHash = listAuth.keyHash ?? await sha256Hex(apiKey);
+				const subs = await getWebhookSubscriptions(listKeyHash, env);
+				const result = subs.map((s) => ({
+					webhook_id:  s.subscription_id,
+					url:         s.url,
+					mics:        s.mics,
+					events:      ['status_change'],
+					created_at:  s.created_at,
+					status:      'active',
+				}));
+				return await withMigrationNotice(json({ webhooks: result, count: result.length }));
+			}
+
+			// ── DELETE /v5/webhooks/:webhook_id — delete a specific webhook ───────
+			{
+				const webhookDeleteMatch = url.pathname.match(/^\/v5\/webhooks\/([^/]+)$/);
+				if (webhookDeleteMatch && request.method === 'DELETE' && url.pathname !== '/v5/webhooks/unsubscribe') {
+					const webhookId = webhookDeleteMatch[1];
+					const apiKey = request.headers.get('X-Oracle-Key');
+					if (!apiKey) return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+					const delAuth = await checkApiKey(apiKey, env);
+					if (!delAuth.allowed) return json({ error: delAuth.error, message: delAuth.message }, delAuth.status);
+					const delKeyHash = delAuth.keyHash ?? await sha256Hex(apiKey);
+					const delExisting = await getWebhookSubscriptions(delKeyHash, env);
+					const delSub = delExisting.find((s) => s.subscription_id === webhookId);
+					if (!delSub) return json({ error: 'SUBSCRIPTION_NOT_FOUND', message: 'No webhook with that id found for this key' }, 404);
+					// Remove from subscriber record
+					const delUpdated = delExisting.filter((s) => s.subscription_id !== webhookId);
+					await env.ORACLE_API_KEYS.put(`webhooks:${delKeyHash}`, JSON.stringify(delUpdated));
+					// Remove from per-MIC fan-out index
+					for (const mic of delSub.mics) {
+						const micTargets = await getWebhooksByMic(mic, env);
+						const filtered   = micTargets.filter((t) => t.subscription_id !== webhookId);
+						await env.ORACLE_API_KEYS.put(`webhooks_by_mic:${mic}`, JSON.stringify(filtered));
+					}
+					// Decrement webhook_count
+					const wkDelCountKey = `webhook_count:${delKeyHash}`;
+					const wkDelCountRaw = await env.ORACLE_TELEMETRY.get(wkDelCountKey).catch(() => null);
+					const wkDelCount = wkDelCountRaw ? parseInt(wkDelCountRaw, 10) : 0;
+					if (wkDelCount > 0) await env.ORACLE_TELEMETRY.put(wkDelCountKey, String(wkDelCount - 1)).catch(() => {});
+					return new Response(null, { status: 204, headers: { 'X-Oracle-Version': 'v5' } });
+				}
+			}
+
+			// ── POST /v5/webhooks/test/:webhook_id — send a synthetic test delivery ─
+			{
+				const webhookTestMatch = url.pathname.match(/^\/v5\/webhooks\/test\/([^/]+)$/);
+				if (webhookTestMatch && request.method === 'POST') {
+					const webhookId = webhookTestMatch[1];
+					const apiKey = request.headers.get('X-Oracle-Key');
+					if (!apiKey) return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
+					const testAuth = await checkApiKey(apiKey, env);
+					if (!testAuth.allowed) return json({ error: testAuth.error, message: testAuth.message }, testAuth.status);
+					const testKeyHash = testAuth.keyHash ?? await sha256Hex(apiKey);
+					const testSubs = await getWebhookSubscriptions(testKeyHash, env);
+					const testSub = testSubs.find((s) => s.subscription_id === webhookId);
+					if (!testSub) return json({ error: 'SUBSCRIPTION_NOT_FOUND', message: 'No webhook with that id found for this key' }, 404);
+					// Build a synthetic test receipt (using the first MIC in the subscription)
+					const testMic = testSub.mics[0] ?? 'XNYS';
+					const testNow = new Date();
+					const testExpiresAt = new Date(testNow.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
+					const { receipt: testReceipt } = await buildSignedReceipt(testMic, env, testNow, testExpiresAt, 'live');
+					const testPayload = {
+						event:           'test',
+						webhook_id:      testSub.subscription_id,
+						mic:             testMic,
+						previous_status: null,
+						current_status:  testReceipt['status'],
+						receipt:         testReceipt,
+						delivered_at:    testNow.toISOString(),
+					};
+					const testTarget: WebhookDeliveryTarget = {
+						subscription_id: testSub.subscription_id,
+						key_hash:        testKeyHash,
+						url:             testSub.url,
+						secret:          testSub.secret,
+					};
+					// maxAttempts=1 for test deliveries — no retry, fast response regardless of subscriber health
+				const testResult = await deliverWebhook(testTarget, testPayload, 1);
+					return await withMigrationNotice(json({
+						webhook_id:   webhookId,
+						url:          testSub.url,
+						delivered:    testResult.ok,
+						status:       testResult.status ?? null,
+						error:        testResult.error ?? null,
+						payload_sent: testPayload,
+					}));
+				}
 			}
 
 			// ── DELETE /v5/webhooks/unsubscribe — remove a subscription ──────────
@@ -9402,6 +9578,102 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 		}
 	},
 };
+
+// ─── WebhookDispatcher Durable Object ────────────────────────────────────────
+// Handles alarm-based state-change detection and webhook fan-out delivery.
+// One global instance (keyed by "global") runs an alarm every 60 seconds.
+// Reads subscriptions from ORACLE_API_KEYS KV (compatible with REST endpoints).
+// Each alarm cycle: compute status for all MICs → compare vs stored last state
+// → if changed, fan out signed receipts to all registered subscribers.
+//
+// Bootstrap: the main worker's cron handler ensures the alarm is scheduled on
+// first run. After that the DO self-reschedules its alarm after each cycle.
+export class WebhookDispatcher {
+	constructor(
+		private readonly state: DurableObjectState,
+		private readonly env: Env,
+	) {}
+
+	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+		if (url.pathname === '/bootstrap') {
+			// Ensure the alarm is scheduled. Called by the cron handler to bootstrap.
+			const existing = await this.state.storage.getAlarm();
+			if (existing === null) {
+				await this.state.storage.setAlarm(Date.now() + 60_000);
+			}
+			return new Response(JSON.stringify({ scheduled: true }), { headers: { 'Content-Type': 'application/json' } });
+		}
+		return new Response('not found', { status: 404 });
+	}
+
+	async alarm(): Promise<void> {
+		const now = new Date();
+		const deliveries: Promise<unknown>[] = [];
+
+		for (const [mic] of Object.entries(MARKET_CONFIGS)) {
+			let currentStatus: string;
+			try {
+				const result = getScheduleStatus(mic, now);
+				// Check for active KV override
+				const overrideRaw = await this.env.ORACLE_OVERRIDES.get(mic);
+				if (overrideRaw) {
+					try {
+						const ov = JSON.parse(overrideRaw) as { status?: string; expires?: string };
+						currentStatus = (ov.expires && new Date(ov.expires) > now)
+							? (ov.status ?? result.status)
+							: result.status;
+					} catch { currentStatus = result.status; }
+				} else {
+					currentStatus = result.status;
+				}
+			} catch { continue; }
+
+			// Read last known state from DO storage
+			const stateKey = `last_state:${mic}`;
+			const lastState = await this.state.storage.get<string>(stateKey);
+
+			// Always write current state back (establishes baseline on first run)
+			await this.state.storage.put(stateKey, currentStatus);
+
+			if (lastState === undefined || lastState === currentStatus) continue;
+
+			// State changed — build signed receipt and fan out to subscribers
+			const targets = await getWebhooksByMic(mic, this.env);
+			if (targets.length === 0) continue;
+
+			const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
+			const { receipt } = await buildSignedReceipt(mic, this.env, now, expiresAt, 'live');
+
+			for (const target of targets) {
+				const payload = {
+					event:           'status_change',
+					webhook_id:      target.subscription_id,
+					mic,
+					previous_status: lastState,
+					current_status:  currentStatus,
+					receipt,
+					delivered_at:    now.toISOString(),
+				};
+				deliveries.push(deliverWebhook(target, payload));
+			}
+
+			console.log(JSON.stringify({
+				event:            'WEBHOOK_DO_STATE_CHANGE',
+				mic,
+				previous_status:  lastState,
+				current_status:   currentStatus,
+				subscriber_count: targets.length,
+				timestamp:        now.toISOString(),
+			}));
+		}
+
+		await Promise.allSettled(deliveries);
+
+		// Reschedule for 60 seconds from now
+		await this.state.storage.setAlarm(Date.now() + 60_000);
+	}
+}
 
 // ─── StreamCoordinator Durable Object ────────────────────────────────────────
 // Handles SSE streams for /v5/stream. One instance per MIC — clients watching

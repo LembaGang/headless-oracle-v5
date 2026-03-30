@@ -112,10 +112,18 @@ crons = ["* * * * *", "0 9 * * *", "0 17 * * *", "0 9 * * 1"]
 name = "STREAM_COORDINATOR"
 class_name = "StreamCoordinator"
 
+[[durable_objects.bindings]]
+name = "WEBHOOK_DISPATCHER"
+class_name = "WebhookDispatcher"
+
 # Migration required to create the DO class on first deploy.
 [[migrations]]
 tag = "v1"
 new_classes = ["StreamCoordinator"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["WebhookDispatcher"]
 
 [observability]
 enabled = true

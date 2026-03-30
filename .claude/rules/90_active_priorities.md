@@ -3,8 +3,8 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 558/558 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks/unsubscribe, /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public)
+**Test suite**: 586/586 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks (GET list), /v5/webhooks/:id (DELETE), /v5/webhooks/unsubscribe (legacy DELETE), /v5/webhooks/test/:id (POST test delivery), /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public)
 **PyPI packages**: headless-oracle-langchain@1.0.1 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.1 (pypi.org/project/headless-oracle-crewai/)
 **npm packages**: headless-oracle-setup@1.0.1 (npx headless-oracle-setup — zero-dep MCP setup for Claude Desktop/Cursor/Windsurf)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
@@ -12,7 +12,18 @@
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
 **Go SDK**: github.com/LembaGang/headless-oracle-go — zero stdlib deps, oracle.Verify(), 9 tests
 **Exchanges**: 28 total (23 traditional + XCBT/XNYM overnight CME, XCBO Cboe options, XCOI Coinbase 24/7, XBIN Binance 24/7). mic_type: "iso" | "convention" on all entries.
-**Last significant work**: Mar 27 2026 — Day 27 continued: /v5/card/:mic + agent-demo repo (558 tests):
+**Last significant work**: Mar 30 2026 — Sprint 2: webhook CRUD + plan limits + WebhookDispatcher DO (586 tests):
+  - GET /v5/webhooks — list all webhooks for authenticated key (webhook_id, url, mics, events, created_at, status)
+  - DELETE /v5/webhooks/:webhook_id — path-based delete → 204, decrements webhook_count KV
+  - POST /v5/webhooks/test/:webhook_id — synthetic delivery, 1 attempt, returns payload_sent schema
+  - POST /v5/webhooks/subscribe: plan limits (builder=5, pro=25); response now includes webhook_id + subscription_id (backward compat); webhook_count KV tracking
+  - deliverWebhook(): HMAC-SHA256 (X-Oracle-Signature header), 3-retry exponential backoff (1s/4s/16s), maxAttempts param (1 for test endpoint)
+  - computeHmacSignature() helper: sha256=<hmac_hex> format
+  - Webhook payload schema: event, webhook_id, mic, previous_status, current_status, receipt, delivered_at (removed secret from body)
+  - WebhookDispatcher DO: alarm-based state-change detection every 60s; reads from KV; DO storage for last_state; self-reschedules alarm; bootstrap via fetch /bootstrap
+  - wrangler.toml: WEBHOOK_DISPATCHER binding + v2 migration
+  - 12 new tests added (574→586)
+**Previous significant work**: Mar 27 2026 — Day 27 continued: /v5/card/:mic + agent-demo repo (558 tests):
   - /v5/card/:mic live endpoint: terminal-style SVG card, image/svg+xml, Cache-Control: no-cache
   - generateStatusCard(): dark chrome, syntax-highlighted JSON fields, status-coloured text, pulsing LIVE dot
   - headless-oracle-agent-demo repo: README updated with live SVG card (replaces planned demo GIF)
