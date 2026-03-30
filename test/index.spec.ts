@@ -2877,6 +2877,32 @@ describe('POST /v5/checkout', () => {
 			globalThis.fetch = originalFetch;
 		}
 	});
+
+	it('POST /v5/checkout?type=credits → 200 with checkout_url when credits price is configured', async () => {
+		const mockTransactionId = 'txn_credits_01abc';
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				// Verify credits price_id is used (pri_test_credits_placeholder from .dev.vars)
+				const body = JSON.parse((init?.body as string) ?? '{}') as { items?: Array<{ price_id?: string }> };
+				expect(body.items?.[0]?.price_id).toBe('pri_test_credits_placeholder');
+				return new Response(JSON.stringify({ data: { id: mockTransactionId, checkout: { url: `https://buy.paddle.com/checkout/${mockTransactionId}` } } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout?type=credits', { method: 'POST' });
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('url');
+			expect(body).toHaveProperty('transaction_id', mockTransactionId);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
 });
 
 // ─── Billing: POST /webhooks/paddle ──────────────────────────────────────────
@@ -5087,6 +5113,36 @@ describe('GAP-013: batch receipt audit', () => {
 		const res = await worker.fetch(new Request('https://headlessoracle.com/v5/batch?mics=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } }), env, ctx);
 		expect(res.status).toBe(200);
 	});
+
+	it('GAP-013: batch receipts are audited with source=batch', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		// Intercept Supabase receipt_audit inserts — SUPABASE_URL is set in .dev.vars so
+		// insertReceiptAudit will make real fetch calls we can capture here.
+		const auditBodies: Array<Record<string, unknown>> = [];
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+			if (url.includes('receipt_audit') && init?.method === 'POST') {
+				const body = JSON.parse((init.body as string) ?? '[]') as unknown;
+				const entries = Array.isArray(body) ? body as Record<string, unknown>[] : [body as Record<string, unknown>];
+				auditBodies.push(...entries);
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			// fetchWorker already calls waitOnExecutionContext, so waitUntil promises complete
+			const res = await fetchWorker('/v5/batch?mics=XNYS,XNAS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+			expect(res.status).toBe(200);
+			// Two MICs → two audit entries, each with source='batch'
+			expect(auditBodies.length).toBeGreaterThanOrEqual(2);
+			for (const entry of auditBodies) {
+				expect(entry.source).toBe('batch');
+			}
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
 });
 
 // ─── Rate-limit headers ──────────────────────────────────────────────────────────────────────────────
@@ -6798,5 +6854,235 @@ describe('POST /v5/webhooks/test/:webhook_id — synthetic delivery', () => {
 			await env.ORACLE_API_KEYS.delete('webhooks_by_mic:XNYS');
 			await env.ORACLE_TELEMETRY.delete(`webhook_count:${keyHash}`);
 		}
+	});
+});
+
+// ─── Paddle credit packs ──────────────────────────────────────────────────────
+
+describe('Paddle credit packs — webhook minting', () => {
+	const WEBHOOK_SECRET = 'pdl_ntfset_test_placeholder_for_local_tests';
+	const CREDITS_PRICE_ID = 'pri_test_credits_placeholder'; // matches .dev.vars
+
+	it('transaction.completed with credits price_id → mints credits key with balance=1000', async () => {
+		const originalFetch = globalThis.fetch;
+		let resendEmailHtml = '';
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'credits-buyer@example.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('api.resend.com')) {
+				resendEmailHtml = JSON.parse((init?.body as string) ?? '{}').html ?? '';
+				return new Response(JSON.stringify({ id: 'email_credits_001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id:          'txn_credits_test_001',
+				customer_id: 'ctm_credits_001',
+				items:       [{ price_id: CREDITS_PRICE_ID }],
+				// No subscription_id — this is a one-time payment
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		try {
+			const res = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('received', true);
+
+			// Key must be in ORACLE_API_KEYS with tier=credits and balance=1000
+			// Find the minted key by iterating KV — search for ho_crd_ keys
+			// (We can't predict the random key, so we check via listing)
+			const listed = await env.ORACLE_API_KEYS.list({ prefix: '' });
+			let creditsEntry: Record<string, unknown> | null = null;
+			for (const kv of listed.keys) {
+				const val = await env.ORACLE_API_KEYS.get(kv.name);
+				if (!val) continue;
+				const parsed = JSON.parse(val) as Record<string, unknown>;
+				if (parsed.tier === 'credits' && parsed.source === 'paddle_credits') {
+					creditsEntry = parsed;
+					await env.ORACLE_API_KEYS.delete(kv.name); // cleanup
+					break;
+				}
+			}
+			expect(creditsEntry).not.toBeNull();
+			expect(creditsEntry?.balance).toBe(1000);
+			expect(creditsEntry?.status).toBe('active');
+			expect(creditsEntry?.email).toBe('credits-buyer@example.com');
+			// Credits key has no expires_at — it never expires
+			expect(creditsEntry?.expires_at).toBeUndefined();
+			// Welcome email was sent
+			expect(resendEmailHtml).toContain('1,000');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('transaction.completed with subscription price_id still follows normal subscription path', async () => {
+		// Non-credits price should fall through to subscription_id guard and be skipped (no subscription_id)
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id:          'txn_sub_test_001',
+				customer_id: 'ctm_sub_001',
+				items:       [{ price_id: 'pri_test_builder_placeholder' }],
+				// No subscription_id → must be skipped by the existing guard
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+		const res = await fetchWorker('/webhooks/paddle', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+			body:    rawBody,
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ received: true });
+	});
+});
+
+describe('Paddle credit packs — auth layer', () => {
+	async function sha256Hex(value: string): Promise<string> {
+		const bytes = new TextEncoder().encode(value);
+		const hash  = await crypto.subtle.digest('SHA-256', bytes);
+		return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+	}
+
+	it('credits key with balance > 0 → decrements balance and allows request', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const creditsKey  = 'ho_crd_' + 'a'.repeat(64);
+		const creditsHash = await sha256Hex(creditsKey);
+		await env.ORACLE_API_KEYS.put(creditsHash, JSON.stringify({
+			tier: 'credits', status: 'active', balance: 10, created_at: new Date().toISOString(),
+		}));
+
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': creditsKey } });
+			expect(res.status).toBe(200);
+
+			// Balance must be decremented by 1
+			const updated = JSON.parse((await env.ORACLE_API_KEYS.get(creditsHash)) ?? '{}') as { balance: number };
+			expect(updated.balance).toBe(9);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(creditsHash);
+		}
+	});
+
+	it('credits key with balance=0 → 402 CREDITS_EXHAUSTED', async () => {
+		const creditsKey  = 'ho_crd_' + 'b'.repeat(64);
+		const creditsHash = await sha256Hex(creditsKey);
+		await env.ORACLE_API_KEYS.put(creditsHash, JSON.stringify({
+			tier: 'credits', status: 'active', balance: 0, created_at: new Date().toISOString(),
+		}));
+
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': creditsKey } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'CREDITS_EXHAUSTED');
+			expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(creditsHash);
+		}
+	});
+
+	it('CREDITS_EXHAUSTED response includes insight and plan comparison', async () => {
+		const creditsKey  = 'ho_crd_' + 'c'.repeat(64);
+		const creditsHash = await sha256Hex(creditsKey);
+		await env.ORACLE_API_KEYS.put(creditsHash, JSON.stringify({
+			tier: 'credits', status: 'active', balance: 0, created_at: new Date().toISOString(),
+		}));
+
+		try {
+			const res  = await fetchWorker('/v5/batch?mics=XNYS', { headers: { 'X-Oracle-Key': creditsKey } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'CREDITS_EXHAUSTED');
+			expect(typeof body.insight).toBe('string');
+			expect(body.insight).toContain('Builder');
+			const plans = body.plans as Record<string, string>;
+			expect(plans).toHaveProperty('credits');
+			expect(plans).toHaveProperty('builder');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(creditsHash);
+		}
+	});
+
+	it('credits key with no expires_at field — credits never expire by time', async () => {
+		const creditsKey  = 'ho_crd_' + 'd'.repeat(64);
+		const creditsHash = await sha256Hex(creditsKey);
+		// Simulate a key with balance=1 and no expires_at
+		await env.ORACLE_API_KEYS.put(creditsHash, JSON.stringify({
+			tier: 'credits', status: 'active', balance: 1, created_at: '2020-01-01T00:00:00Z',
+		}));
+
+		try {
+			vi.setSystemTime(new Date('2030-01-01T14:00:00Z')); // far in the future
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': creditsKey } });
+			// Must succeed — no time-based expiry on credits keys
+			expect(res.status).toBe(200);
+		} finally {
+			vi.useRealTimers();
+			await env.ORACLE_API_KEYS.delete(creditsHash);
+		}
+	});
+});
+
+// ─── WebhookDispatcher DO hardening ──────────────────────────────────────────
+
+describe('WebhookDispatcher DO — heartbeat + /v5/webhooks/health', () => {
+	it('GET /v5/webhooks/health → 200 with dispatcher_status and next_alarm', async () => {
+		// Without a KV key the endpoint reports no_alarm (safe default).
+		const res = await fetchWorker('/v5/webhooks/health');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('dispatcher_status');
+		expect(['active', 'no_alarm']).toContain(body.dispatcher_status);
+		// next_alarm is either an ISO8601 string or null
+		if (body.next_alarm !== null) {
+			expect(typeof body.next_alarm).toBe('string');
+			expect(() => new Date(body.next_alarm as string)).not.toThrow();
+		}
+	});
+
+	it('GET /v5/webhooks/health — no auth required', async () => {
+		// Health endpoint is public — must not return 401 or 403
+		const res = await fetchWorker('/v5/webhooks/health');
+		expect(res.status).not.toBe(401);
+		expect(res.status).not.toBe(403);
+	});
+
+	it('GET /v5/webhooks/health reports active when DO has written health KV key', async () => {
+		// Simulate the DO alarm() having run — it writes webhook_dispatcher:health to KV.
+		// The health endpoint reads that key; no DO instance is created (avoids SQLite locking).
+		const nextAlarm = new Date(Date.now() + 60_000).toISOString();
+		await env.ORACLE_TELEMETRY.put(
+			'webhook_dispatcher:health',
+			JSON.stringify({ status: 'active', next_alarm: nextAlarm }),
+		);
+
+		const res = await fetchWorker('/v5/webhooks/health');
+		expect(res.status).toBe(200);
+		const body = await res.json() as { dispatcher_status: string; next_alarm: string | null };
+		expect(body.dispatcher_status).toBe('active');
+		expect(typeof body.next_alarm).toBe('string');
+		expect(new Date(body.next_alarm as string).getTime()).toBeGreaterThan(Date.now());
+
+		// Second call is idempotent — same KV key, same result
+		const res2 = await fetchWorker('/v5/webhooks/health');
+		expect(res2.status).toBe(200);
+		const body2 = await res2.json() as { dispatcher_status: string; next_alarm: string | null };
+		expect(body2.dispatcher_status).toBe('active');
+
+		// Cleanup
+		await env.ORACLE_TELEMETRY.delete('webhook_dispatcher:health');
 	});
 });

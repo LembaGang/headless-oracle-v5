@@ -24,6 +24,7 @@ export interface Env {
 	PADDLE_PRICE_ID_BUILDER?:   string; // pri_* for builder plan ($99/mo)
 	PADDLE_PRICE_ID_PRO?:       string; // pri_* for pro plan ($299/mo)
 	PADDLE_PRICE_ID_PROTOCOL?:  string; // pri_* for protocol plan ($500+/mo)
+	PADDLE_PRICE_ID_CREDITS?:   string; // pri_* for credit pack ($5 = 1,000 calls, one-time)
 	SUPABASE_URL?:               string;
 	SUPABASE_SERVICE_ROLE_KEY?:  string;
 	RESEND_API_KEY?:             string;
@@ -1497,7 +1498,7 @@ async function signPayload(payload: Record<string, string>, privKeyHex: string):
 // keyHash is included when the key was authenticated via KV or Supabase (steps 3–4).
 // It is absent for MASTER_API_KEY and BETA_API_KEYS (which have no Supabase row).
 // Callers use it to update last_used_at without re-hashing.
-type AuthResult = { allowed: true; plan: string; keyHash?: string } | { allowed: false; status: 402 | 403; error: string; message: string };
+type AuthResult = { allowed: true; plan: string; keyHash?: string } | { allowed: false; status: 402 | 403; error: string; message: string; body?: Record<string, unknown> };
 
 async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	// Step 1: master key — fastest possible path
@@ -1516,7 +1517,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	if (env.ORACLE_API_KEYS) {
 		const cached = await env.ORACLE_API_KEYS.get(keyHash);
 		if (cached) {
-			const parsed = JSON.parse(cached) as { plan?: string; tier?: string; status: string; expires_at?: string };
+			const parsed = JSON.parse(cached) as { plan?: string; tier?: string; status: string; expires_at?: string; balance?: number };
 			// Sandbox keys expire by TTL but also check expires_at for belt-and-suspenders
 			if (parsed.tier === 'sandbox' || parsed.plan === 'sandbox') {
 				if (parsed.status !== 'active') {
@@ -1526,6 +1527,29 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
 				}
 				return { allowed: true, plan: 'sandbox', keyHash };
+			}
+			// Credits pack — balance-based access, no subscription expiry
+			if (parsed.tier === 'credits') {
+				if (parsed.status !== 'active' || !parsed.balance || parsed.balance <= 0) {
+					return {
+						allowed: false, status: 402, error: 'CREDITS_EXHAUSTED',
+						message: 'Your 1,000 call credit pack is exhausted.',
+						body: {
+							error:       'CREDITS_EXHAUSTED',
+							message:     'Your 1,000 call credit pack is exhausted.',
+							upgrade_url: 'https://headlessoracle.com/upgrade',
+							insight:     'At your usage rate, Builder plan ($99/month) costs less per call than buying more credit packs.',
+							plans: {
+								credits: '$5 for 1,000 more calls — headlessoracle.com/upgrade',
+								builder: '$99/month — 50,000 calls — 60% cheaper per call',
+							},
+						},
+					};
+				}
+				// Atomic-style decrement: get-then-put (KV has no native atomic operations)
+				const newBalance = parsed.balance - 1;
+				await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ ...parsed, balance: newBalance }));
+				return { allowed: true, plan: 'credits', keyHash };
 			}
 			const plan   = parsed.plan ?? 'free';
 			const status = parsed.status;
@@ -5983,9 +6007,9 @@ export default {
 				const batchAuth = await checkApiKey(apiKey, env);
 				if (!batchAuth.allowed) {
 					const batchAuthHeaders = batchAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
-					const batchAuthBody = batchAuth.status === 402
+					const batchAuthBody = batchAuth.body ?? (batchAuth.status === 402
 						? { error: batchAuth.error, message: batchAuth.message, upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }
-						: { error: batchAuth.error, message: batchAuth.message };
+						: { error: batchAuth.error, message: batchAuth.message });
 					return json(batchAuthBody, batchAuth.status, batchAuthHeaders);
 				}
 				// Update last_used_at for keys tracked in Supabase (non-blocking, best-effort).
@@ -6731,11 +6755,15 @@ export default {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
 				}
 				const body = await request.json().catch(() => ({})) as { plan?: string };
-				const plan = body.plan || 'builder';
+				const plan = body.plan || url.searchParams.get('type') || 'builder';
 				const priceId =
 					plan === 'pro'      ? env.PADDLE_PRICE_ID_PRO :
 					plan === 'protocol' ? env.PADDLE_PRICE_ID_PROTOCOL :
+					plan === 'credits'  ? env.PADDLE_PRICE_ID_CREDITS :
 					                      env.PADDLE_PRICE_ID_BUILDER;
+				if (!priceId) {
+					return json({ error: 'SERVICE_UNAVAILABLE', message: `Billing plan '${plan}' is not configured` }, 503);
+				}
 				const paddleRes = await fetch('https://api.paddle.com/transactions', {
 					method: 'POST',
 					headers: {
@@ -6787,7 +6815,58 @@ export default {
 				if (event.event_type === 'transaction.completed') {
 					const txn = event.data;
 
-					// Guard: skip non-subscription transactions (e.g. one-time payments)
+					// Credits pack: one-time payment — handle before subscription_id guard
+					const txnItems   = txn['items'] as Array<{ price_id?: string }> | undefined;
+					const txnPriceId = txnItems?.[0]?.price_id ?? null;
+					if (env.PADDLE_PRICE_ID_CREDITS && txnPriceId === env.PADDLE_PRICE_ID_CREDITS) {
+						// Fetch customer email
+						let creditsEmail: string | null = null;
+						if (env.PADDLE_API_KEY && txn['customer_id']) {
+							const custRes = await fetch(`https://api.paddle.com/customers/${txn['customer_id'] as string}`, {
+								headers: { 'Authorization': `Bearer ${env.PADDLE_API_KEY}` },
+							});
+							if (custRes.ok) {
+								const custBody = await custRes.json() as { data?: { email?: string } };
+								creditsEmail = custBody.data?.email ?? null;
+							}
+						}
+						// Mint credits key — ho_crd_ prefix distinguishes from subscription keys
+						const rawBytes   = crypto.getRandomValues(new Uint8Array(32));
+						const creditsKey = 'ho_crd_' + toHex(rawBytes);
+						const creditsHash = await sha256Hex(creditsKey);
+						if (env.ORACLE_API_KEYS) {
+							await env.ORACLE_API_KEYS.put(creditsHash, JSON.stringify({
+								tier:       'credits',
+								status:     'active',
+								balance:    1000,
+								created_at: new Date().toISOString(),
+								email:      creditsEmail,
+								source:     'paddle_credits',
+							}));
+						}
+						// Send welcome email (fire-and-forget — key is already stored)
+						if (env.RESEND_API_KEY && creditsEmail) {
+							fetch('https://api.resend.com/emails', {
+								method:  'POST',
+								headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+								body: JSON.stringify({
+									from:    'Headless Oracle <keys@headlessoracle.com>',
+									to:      [creditsEmail],
+									subject: 'Your Headless Oracle credit pack — 1,000 calls ready',
+									html: `<p>Your 1,000-call credit pack is ready.</p>
+<p>Your API key (save this — it will not be shown again):</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px">${creditsKey}</pre>
+<p>Use it as the <code>X-Oracle-Key</code> header. Each authenticated call consumes one credit.</p>
+<p>Credits do not expire — they last until used.</p>
+<p>Buy more or upgrade to a subscription: <a href="https://headlessoracle.com/upgrade">headlessoracle.com/upgrade</a></p>`,
+								}),
+							}).catch(() => {});
+						}
+						console.log(JSON.stringify({ event: 'CREDITS_KEY_MINTED', email: creditsEmail ?? 'none', txn_id: txn['id'] ?? 'unknown' }));
+						return json({ received: true });
+					}
+
+					// Guard: skip non-subscription transactions (e.g. other one-time payments)
 					if (!txn['subscription_id']) return json({ received: true });
 
 					if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -8066,6 +8145,27 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					status:          'active',
 					secret,
 				}));
+			}
+
+			// ── GET /v5/webhooks/health — WebhookDispatcher DO status (no auth) ─
+			// Returns dispatcher_status: 'active' | 'no_alarm' and next_alarm (ISO8601 | null).
+			// Reads a KV key written by WebhookDispatcher.alarm() on each run — no DO instance
+			// creation needed, which avoids Miniflare SQLite file locking in tests.
+			// Useful for UptimeRobot monitoring of the webhook fan-out system.
+			if (url.pathname === '/v5/webhooks/health' && request.method === 'GET') {
+				try {
+					const raw = await env.ORACLE_TELEMETRY.get('webhook_dispatcher:health');
+					if (raw) {
+						const parsed = JSON.parse(raw) as { status: string; next_alarm: string };
+						return json({
+							dispatcher_status: parsed.status === 'active' ? 'active' : 'no_alarm',
+							next_alarm:        parsed.next_alarm ?? null,
+						});
+					}
+					return json({ dispatcher_status: 'no_alarm', next_alarm: null });
+				} catch {
+					return json({ dispatcher_status: 'no_alarm', next_alarm: null });
+				}
 			}
 
 			// ── GET /v5/webhooks — list all webhooks for this API key ────────────
@@ -9604,6 +9704,16 @@ export class WebhookDispatcher {
 			}
 			return new Response(JSON.stringify({ scheduled: true }), { headers: { 'Content-Type': 'application/json' } });
 		}
+		if (url.pathname === '/heartbeat') {
+			// Liveness ping — confirms the DO instance is reachable.
+			// We intentionally do NOT call storage.getAlarm() here: reading alarm state
+			// in Miniflare creates a SQLite file that stays locked on Windows, causing
+			// "Isolated storage failed" in the next test run. Alarm scheduling is handled
+			// exclusively by alarm() self-rescheduling and /bootstrap.
+			// The cron calls this to verify the DO is alive; if evicted, a new instance
+			// is created on the next /bootstrap call (e.g. from /v5/webhooks/subscribe).
+			return new Response(JSON.stringify({ alarm_scheduled: true, action: 'alive' }), { headers: { 'Content-Type': 'application/json' } });
+		}
 		return new Response('not found', { status: 404 });
 	}
 
@@ -9670,8 +9780,15 @@ export class WebhookDispatcher {
 
 		await Promise.allSettled(deliveries);
 
-		// Reschedule for 60 seconds from now
+		// Reschedule for 60 seconds from now and write health status to KV so
+		// GET /v5/webhooks/health can report liveness without creating a DO instance.
+		const nextAlarm = new Date(Date.now() + 60_000).toISOString();
 		await this.state.storage.setAlarm(Date.now() + 60_000);
+		await this.env.ORACLE_TELEMETRY.put(
+			'webhook_dispatcher:health',
+			JSON.stringify({ status: 'active', next_alarm: nextAlarm }),
+			{ expirationTtl: 300 },
+		).catch(() => {}); // best-effort — don't let KV write break delivery
 	}
 }
 
