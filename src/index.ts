@@ -1789,7 +1789,7 @@ const ERC20_TRANSFER_TOPIC  = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11
 const BASE_RPC_URL          = 'https://mainnet.base.org';
 // Free tier: daily request cap before x402 micropayment is required.
 const FREE_TIER_DAILY_LIMIT    = 500;
-const SANDBOX_DAILY_LIMIT      = 25;    // Sandbox keys: 25 calls per 24h key lifetime — enough to evaluate, not enough to build
+const SANDBOX_DAILY_LIMIT      = 200;   // Sandbox keys: 200 calls per 7-day key lifetime — enough to evaluate without replacing credit pack
 const UNAUTH_MCP_STATUS_LIMIT  = 10;   // Unauthenticated get_market_status calls per IP per day via /mcp
 const BUILDER_TIER_DAILY_LIMIT = 50_000;
 const PRO_TIER_DAILY_LIMIT     = 200_000;
@@ -3811,6 +3811,7 @@ Before executing any trade or financial action, call \`get_market_status\` with 
 - [Receipt Verification](https://headlessoracle.com/docs/verification)
 - [SMA Protocol RFC-001](https://headlessoracle.com/docs/sma-protocol/rfc-001)
 - [Multi-Party Attestation Spec (MPAS-1.0)](https://github.com/LembaGang/mpas-spec)
+- Known implementations across SMA, MPAS, and APTS: GET /v5/implementations (public). Submit yours via the submit_url field.
 
 ## SDK Documentation
 
@@ -3819,7 +3820,7 @@ Before executing any trade or financial action, call \`get_market_status\` with 
 - [Go (headless-oracle-go)](https://headlessoracle.com/docs/sdks/go)
 
 ## Quick Start
-# Get a sandbox key (24h, 25 calls) — email required:
+# Get a sandbox key (7 days, 200 calls) — email required:
 POST https://api.headlessoracle.com/v5/sandbox
 Body: { "email": "you@example.com" }
 
@@ -3836,13 +3837,15 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/demo | GET | No | Signed receipt, demo mode | SMA receipt (receipt_mode=demo) |
 | /v5/status | GET | Yes | Signed receipt, live mode | SMA receipt (receipt_mode=live) |
 | /v5/batch | GET | Yes | Signed receipts for multiple MICs | { summary, receipts[] } |
-| /v5/sandbox | POST | No | Sandbox key (24h, 25 calls) — email required | { api_key, tier, email_captured, expires_at } |
+| /v5/sandbox | POST | No | Sandbox key (7 days, 200 calls) — email required | { api_key, tier, email_captured, expires_at } |
 | /v5/schedule | GET | No | Next open/close times (not signed) | { next_open, next_close, lunch_break, settlement_window } |
 | /v5/exchanges | GET | No | All 28 supported exchanges | { exchanges: [{mic, name, timezone, mic_type}] } |
 | /v5/keys | GET | No | Public signing key + canonical spec | { keys: [{key_id, public_key, algorithm}] } |
 | /v5/health | GET | No | Signed liveness probe | SMA-format health receipt |
 | /v5/usage | GET | Yes | Per-key daily usage stats | { requests_today, limit, percent_used } |
 | /v5/traction | GET | No | Live metrics snapshot | { exchanges_covered, mcp_requests_today, ... } |
+| /v5/implementations | GET | No | Standards implementations registry (SMA/MPAS/APTS) | { standards: { sma, mpas, apts }, total_implementations } |
+| /v5/showcase | GET | No | Reference projects using Headless Oracle | { entries: [{name, url, category}], submit_url } |
 | /v5/receipts | GET | Builder+ | Receipt audit log | { receipts: [{mic, status, issued_at}] } |
 | /v5/dst-risk | GET | No | DST transition risk for affected exchanges | { event, affected_exchanges[], risk_window_minutes } |
 | /v5/webhooks/subscribe | POST | Yes | Subscribe to state-change webhooks | { subscription_id } |
@@ -3933,7 +3936,7 @@ UNKNOWN status means the oracle cannot determine market state. Agents MUST treat
 
 ## Pricing
 - Free: 500 req/day (GET /v5/keys/request)
-- Sandbox: 25 req/24h, email required (POST /v5/sandbox with { "email": "you@example.com" })
+- Sandbox: 200 req/7 days, email required (POST /v5/sandbox with { "email": "you@example.com" })
 - x402: 0.001 USDC/req via Base mainnet (no key, no signup)
 - Builder: 50,000 req/day ($99/mo)
 - Pro: 200,000 req/day ($299/mo)
@@ -4296,7 +4299,7 @@ const AGENT_JSON = {
 		{
 			id:          'get_sandbox_key',
 			name:        'Get Sandbox Key',
-			description: 'Provision a 24-hour API key (25 calls). POST { "email": "you@example.com" } — email required, one per address.',
+			description: 'Provision a 7-day API key (200 calls). POST { "email": "you@example.com" } — email required, one per address.',
 			endpoint:    '/v5/sandbox',
 			method:      'POST',
 			auth:        false,
@@ -4380,7 +4383,8 @@ const AGENT_JSON = {
 		conformance_vectors:   'https://api.headlessoracle.com/v5/conformance-vectors',
 		mpas_spec:             'https://github.com/LembaGang/mpas-spec',
 		mpas_version:          '1.0',
-		sma_disambiguation:    'SMA denotes Signed Market Attestation, not Simple Moving Average',
+		sma_disambiguation:      'SMA denotes Signed Market Attestation, not Simple Moving Average',
+		implementations_registry: 'https://headlessoracle.com/v5/implementations',
 	},
 	dst_aware:           true,
 	discovery_url:       'https://headlessoracle.com/.well-known/agent.json',
@@ -5112,11 +5116,49 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/implementations': {
+			get: {
+				summary:     'Standards implementations registry',
+				description: 'Returns known implementations of SMA, MPAS, and APTS open standards. No authentication required. Submit your own via the submit_url field.',
+				responses: {
+					'200': {
+						description: 'Implementations registry',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								standards:             { type: 'object' },
+								total_implementations: { type: 'integer', example: 5 },
+								last_updated:          { type: 'string', example: '2026-03-31' },
+							},
+						} } },
+					},
+				},
+			},
+		},
+		'/v5/showcase': {
+			get: {
+				summary:     'Reference projects using Headless Oracle',
+				description: 'Returns a curated list of projects using Headless Oracle in production or for research. Submit yours via the submit_url field.',
+				responses: {
+					'200': {
+						description: 'Showcase entries',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								entries:    { type: 'array', items: { type: 'object' } },
+								submit_url: { type: 'string' },
+								note:       { type: 'string' },
+							},
+						} } },
+					},
+				},
+			},
+		},
 		'/v5/sandbox': {
 			post: {
 				tags:        ['Authentication'],
-				summary:     'Email-gated 24-hour sandbox API key',
-				description: 'Provisions a temporary API key valid for 24 hours and 25 calls. Requires an email address. ' +
+				summary:     'Email-gated 7-day sandbox API key',
+				description: 'Provisions a temporary API key valid for 7 days and 200 calls. Requires an email address. ' +
 					'One key per email address and per IP address (7-day window). ' +
 					'Sandbox keys are rejected by /v5/receipts and /v5/webhooks/subscribe (paid features). ' +
 					'A welcome email with the key and quickstart instructions is sent to the provided address.',
@@ -5126,7 +5168,8 @@ const OPENAPI_SPEC = {
 						type: 'object',
 						required: ['email'],
 						properties: {
-							email: { type: 'string', format: 'email', example: 'developer@example.com' },
+							email:    { type: 'string', format: 'email', example: 'developer@example.com' },
+							use_case: { type: 'string', maxLength: 500, description: "Brief description of what you're building (helps us prioritise)." },
 						},
 					} } },
 				},
@@ -5140,7 +5183,7 @@ const OPENAPI_SPEC = {
 								tier:            { type: 'string', enum: ['sandbox'] },
 								email_captured:  { type: 'boolean', example: true },
 								expires_at:      { type: 'string', format: 'date-time' },
-								calls_remaining: { type: 'integer', example: 25 },
+								calls_remaining: { type: 'integer', example: 200 },
 								upgrade:         { type: 'string', example: 'https://headlessoracle.com/upgrade' },
 								follow_up:       { type: 'string' },
 								quickstart: {
@@ -6702,7 +6745,7 @@ export default {
 						if (sbUsage >= SANDBOX_DAILY_LIMIT) {
 							// Track sandbox cap hits for acquisition telemetry (FINDING-13)
 							incrementKvCounter(`sandbox_cap_hit:${now.toISOString().slice(0, 10)}`, env, ctx);
-							return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Your free sandbox key has reached its 25-call limit. Upgrade to continue.', upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }, 402);
+							return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Your free sandbox key has reached its 200-call limit. Upgrade to continue.', upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }, 402);
 						}
 						incrementDailyUsage(sbKeyHash, env, ctx, sbUsage);
 					// ── Paid tier daily limits (builder: 50k/day, pro: 200k/day) ──
@@ -6996,7 +7039,7 @@ export default {
 					const sbBatchUsage   = await getDailyUsage(sbBatchKeyHash, env);
 					if (sbBatchUsage >= SANDBOX_DAILY_LIMIT) {
 						incrementKvCounter(`sandbox_cap_hit:${now.toISOString().slice(0, 10)}`, env, ctx);
-						return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Your free sandbox key has reached its 25-call limit. Upgrade to continue.', upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }, 402);
+						return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Your free sandbox key has reached its 200-call limit. Upgrade to continue.', upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }, 402);
 					}
 					incrementDailyUsage(sbBatchKeyHash, env, ctx, sbBatchUsage);
 				// ── Paid tier daily limits for batch (builder: 50k/day, pro: 200k/day) ──
@@ -9300,7 +9343,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 			}
 
-			// ── POST /v5/sandbox — email-gated sandbox key (24h, 25 calls) ────────────────────────
+			// ── POST /v5/sandbox — email-gated sandbox key (7 days, 200 calls) ────────────────────
 			if (url.pathname === '/v5/sandbox') {
 				if (request.method === 'GET') {
 					// Helpful error for callers using the old GET interface.
@@ -9311,8 +9354,9 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 
 				// Email is required — no anonymous sandbox keys.
-				const sbBody     = await request.json().catch(() => null) as { email?: unknown } | null;
+				const sbBody     = await request.json().catch(() => null) as { email?: unknown; use_case?: unknown } | null;
 				const emailRaw   = sbBody?.email;
+				const useCaseRaw = typeof sbBody?.use_case === 'string' ? sbBody.use_case.slice(0, 500).trim() : null;
 				if (!emailRaw || typeof emailRaw !== 'string' || !emailRaw.trim()) {
 					return json({ error: 'EMAIL_REQUIRED', message: 'An email address is required to provision a sandbox key.' }, 400);
 				}
@@ -9360,21 +9404,21 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				// Generate sandbox key: sb_ prefix + 32 hex chars
 				const rawKey    = `sb_${Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2,'0')).join('')}`;
 				const keyHash   = await sha256Hex(rawKey);
-				const expiresAt = new Date(now.getTime() + 86_400_000).toISOString(); // 24 hours
+				const expiresAt = new Date(now.getTime() + 604_800_000).toISOString(); // 7 days
 
 				const sandboxMeta = JSON.stringify({
 					tier:       'sandbox',
 					status:     'active',
 					email:      emailParam,
 					expires_at: expiresAt,
-					max_calls:  25,
+					max_calls:  200,
 					created_at: now.toISOString(),
 					source:     'auto_sandbox',
 				});
 
-				// Store sandbox key in ORACLE_API_KEYS KV with 24h TTL.
+				// Store sandbox key in ORACLE_API_KEYS KV with 7-day TTL.
 				if (env.ORACLE_API_KEYS) {
-					await env.ORACLE_API_KEYS.put(keyHash, sandboxMeta, { expirationTtl: 86_400 });
+					await env.ORACLE_API_KEYS.put(keyHash, sandboxMeta, { expirationTtl: 604_800 });
 				}
 
 				// Store both fingerprints: prevent re-provisioning for 7 days.
@@ -9389,27 +9433,39 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				// Acquisition telemetry: sandbox key creations count as unauthenticated (FINDING-13)
 				incrementKvCounter(`unauth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 
-				// Store follow-up record (48h TTL — outlives the 24h key so follow-up cron can reach it).
+				// Store follow-up record (192h TTL — outlives the 7-day key so follow-up cron can reach it).
 				const followupRecord = JSON.stringify({
 					email:          emailParam,
 					created_at:     now.toISOString(),
 					key_expires_at: expiresAt,
 					followed_up:    false,
 				});
-				await env.ORACLE_TELEMETRY.put(`sandbox_followup:${keyHash}`, followupRecord, { expirationTtl: 86_400 * 2 }).catch(() => {});
+				await env.ORACLE_TELEMETRY.put(`sandbox_followup:${keyHash}`, followupRecord, { expirationTtl: 86_400 * 8 }).catch(() => {});
+
+				// Log structured acquisition event (never log raw email or use_case).
+				console.log(JSON.stringify({
+					event:            'SANDBOX_SIGNUP',
+					email_hash:       emailHash,
+					ip_hash:          ipHash,
+					use_case_present: useCaseRaw !== null,
+					use_case_length:  useCaseRaw?.length ?? 0,
+				}));
 
 				// Send welcome email (non-blocking).
 				if (env.RESEND_API_KEY) {
+					const useCaseLine = useCaseRaw ? `You told us you're building: ${useCaseRaw}\n\n` : '';
 					const welcomeText =
 						`Your sandbox key: ${rawKey}\n\n` +
-						`You have 25 calls over 24 hours to explore Headless Oracle.\n\n` +
+						`You have 200 calls over 7 days to explore Headless Oracle.\n\n` +
+						useCaseLine +
 						`Quick test:\n` +
 						`curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' \\\n` +
 						`  -H 'X-Oracle-Key: ${rawKey}'\n\n` +
 						`Docs: https://headlessoracle.com/docs\n\n` +
 						`When you're ready to build in production, Builder plan is $99/month for 50,000 calls:\n` +
 						`https://headlessoracle.com/upgrade\n\n` +
-						`Questions? Reply to this email.`;
+						`Questions? Reply to this email.\n\n` +
+						`P.S. If you'd like to share what you're building, just reply. Design partners get early access to new features and direct support.`;
 					ctx.waitUntil(
 						fetch('https://api.resend.com/emails', {
 							method:  'POST',
@@ -9432,7 +9488,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					tier:            'sandbox',
 					email_captured:  true,
 					expires_at:      expiresAt,
-					calls_remaining: 25,
+					calls_remaining: 200,
 					upgrade:         'https://headlessoracle.com/upgrade',
 					follow_up:       'Check your inbox for your key and quickstart.',
 					quickstart: {
@@ -10387,6 +10443,94 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 						],
 					},
 				],
+			});
+		}
+
+		// ── GET /v5/implementations — standards implementations registry ────────────
+		if (url.pathname === '/v5/implementations' && request.method === 'GET') {
+			return json({
+				standards: {
+					sma: {
+						version:  '1.0',
+						spec_url: 'https://github.com/LembaGang/sma-protocol',
+						implementations: [
+							{
+								name:     'Headless Oracle',
+								type:     'issuer',
+								language: 'TypeScript',
+								url:      'https://headlessoracle.com',
+								verified: true,
+								notes:    'Reference implementation',
+							},
+							{
+								name:     '@headlessoracle/verify',
+								type:     'verifier',
+								language: 'TypeScript',
+								url:      'https://npmjs.com/package/@headlessoracle/verify',
+								verified: true,
+								notes:    'Reference verifier SDK, zero prod deps',
+							},
+							{
+								name:     'headless-oracle (Python SDK)',
+								type:     'verifier',
+								language: 'Python',
+								url:      'https://pypi.org/project/headless-oracle/',
+								verified: true,
+								notes:    'Includes OracleClient and verify()',
+							},
+							{
+								name:     'headless-oracle-go',
+								type:     'verifier',
+								language: 'Go',
+								url:      'https://github.com/LembaGang/headless-oracle-go',
+								verified: true,
+								notes:    'Zero stdlib deps, oracle.Verify(), 9 tests',
+							},
+						],
+						submit_url: 'https://github.com/LembaGang/sma-protocol/issues/new?template=add-implementation.md',
+					},
+					mpas: {
+						version:          '1.0',
+						spec_url:         'https://github.com/LembaGang/mpas-spec',
+						implementations:  [],
+						submit_url:       'https://github.com/LembaGang/mpas-spec/issues/new?template=add-implementation.md',
+					},
+					apts: {
+						version:  '1.0',
+						spec_url: 'https://github.com/LembaGang/agent-pretrade-safety-standard',
+						implementations: [
+							{
+								name:     'Halt Simulator',
+								type:     'reference-tool',
+								language: 'Python',
+								url:      'https://github.com/LembaGang/halt-simulator',
+								verified: true,
+								notes:    '31/31 tests passing. 4 scenarios.',
+							},
+						],
+						submit_url: 'https://github.com/LembaGang/agent-pretrade-safety-standard/issues/new?template=add-implementation.md',
+					},
+				},
+				total_implementations: 5,
+				last_updated:          '2026-03-31',
+			});
+		}
+
+		// ── GET /v5/showcase — social proof and reference projects ───────────────────
+		if (url.pathname === '/v5/showcase' && request.method === 'GET') {
+			return json({
+				entries: [
+					{
+						name:        'Halt Simulator',
+						description: 'Open-source trading agent safety simulator. Demonstrates APTS compliance across 4 halt scenarios including DST transitions and circuit breakers.',
+						url:         'https://github.com/LembaGang/halt-simulator',
+						category:    'open-source-tool',
+						mic_coverage: ['XNYS', 'XNAS'],
+						featured:    true,
+					},
+				],
+				submit_url: 'https://headlessoracle.com/showcase-submit',
+				note:       'Using Headless Oracle in production? We\'d love to feature your project.',
 			});
 		}
 

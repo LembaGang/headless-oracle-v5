@@ -2232,12 +2232,12 @@ describe('POST /mcp — OAuth rate limiting', () => {
 		}
 	});
 
-	it('sandbox OAuth token at 25-call limit → JSON-RPC -32000 RATE_LIMITED', async () => {
+	it('sandbox OAuth token at 200-call limit → JSON-RPC -32000 RATE_LIMITED', async () => {
 		const token   = 'mcp_ratelimit_sandbox_token_' + 'd'.repeat(36);
 		const keyHash = 'mcp_ratelimit_sandbox_keyhash' + 'd'.repeat(35);
 		const today   = new Date().toISOString().slice(0, 10);
 		await putOAuthToken(token, keyHash, 'sandbox');
-		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '25', { expirationTtl: 3600 });
+		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '200', { expirationTtl: 3600 });
 		try {
 			const res  = await fetchWorker('/mcp', {
 				method:  'POST',
@@ -2255,7 +2255,7 @@ describe('POST /mcp — OAuth rate limiting', () => {
 		}
 	});
 
-	it('sandbox OAuth token below 25-call limit → request succeeds', async () => {
+	it('sandbox OAuth token below 200-call limit → request succeeds', async () => {
 		const token   = 'mcp_ratelimit_sandbox_under_' + 'e'.repeat(36);
 		const keyHash = 'mcp_ratelimit_sandbox_under_h' + 'e'.repeat(35);
 		const today   = new Date().toISOString().slice(0, 10);
@@ -5218,7 +5218,7 @@ describe('POST /v5/sandbox', () => {
 		expect(body.api_key).toMatch(/^sb_[0-9a-f]{32}$/);
 		expect(body.tier).toBe('sandbox');
 		expect(body.email_captured).toBe(true);
-		expect(body.calls_remaining).toBe(25);
+		expect(body.calls_remaining).toBe(200);
 		expect(body.follow_up).toBeTruthy();
 		expect(body.upgrade).toBeTruthy();
 		expect(body.quickstart.curl).toContain(body.api_key);
@@ -5327,15 +5327,15 @@ describe('Sandbox 402 response body shapes', () => {
 		const key     = 'sb_sandbox_limit_test_key00000001';
 		const keyHash = await sha256Hex(key);
 		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ tier: 'sandbox', plan: 'sandbox', status: 'active', expires_at: '2026-03-17T15:00:00Z' }), { expirationTtl: 86400 });
-		// Exhaust the 25-call daily cap (same key pattern as getDailyUsage: free_usage:hash:date)
+		// Exhaust the 200-call daily cap (same key pattern as getDailyUsage: free_usage:hash:date)
 		const usageKey = `free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
-		await env.ORACLE_TELEMETRY.put(usageKey, '25', { expirationTtl: 3600 });
+		await env.ORACLE_TELEMETRY.put(usageKey, '200', { expirationTtl: 3600 });
 		try {
 			const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('error', 'SANDBOX_LIMIT_REACHED');
-			expect(body).toHaveProperty('message', 'Your free sandbox key has reached its 25-call limit. Upgrade to continue.');
+			expect(body).toHaveProperty('message', 'Your free sandbox key has reached its 200-call limit. Upgrade to continue.');
 			expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
 			expect(body).toHaveProperty('plans');
 			const plans = body.plans as Record<string, string>;
@@ -5377,20 +5377,20 @@ describe('Sandbox 402 response body shapes', () => {
 		}
 	});
 
-	it('25-call sandbox limit is enforced on /v5/status', async () => {
+	it('200-call sandbox limit is enforced on /v5/status', async () => {
 		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
 		const key     = 'sb_sandbox_25_limit_test_key0001';
 		const keyHash = await sha256Hex(key);
 		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ tier: 'sandbox', plan: 'sandbox', status: 'active', expires_at: '2026-03-17T15:00:00Z' }), { expirationTtl: 86400 });
 		const usageKey = `free_usage:${keyHash}:2026-03-16`;
-		await env.ORACLE_TELEMETRY.put(usageKey, '25', { expirationTtl: 3600 });
+		await env.ORACLE_TELEMETRY.put(usageKey, '200', { expirationTtl: 3600 });
 		try {
 			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
 			expect(body.error).toBe('SANDBOX_LIMIT_REACHED');
-			// 24 calls should NOT be capped
-			await env.ORACLE_TELEMETRY.put(usageKey, '24', { expirationTtl: 3600 });
+			// 199 calls should NOT be capped
+			await env.ORACLE_TELEMETRY.put(usageKey, '199', { expirationTtl: 3600 });
 			const res2 = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
 			expect(res2.status).toBe(200);
 		} finally {
@@ -7145,5 +7145,40 @@ describe('WebhookDispatcher DO — heartbeat + /v5/webhooks/health', () => {
 
 		// Cleanup
 		await env.ORACLE_TELEMETRY.delete('webhook_dispatcher:health');
+	});
+});
+
+// ─── GAP-B: Standards implementations registry ───────────────────────────────
+
+describe('GET /v5/implementations — standards registry', () => {
+	it('returns 200 with application/json', async () => {
+		const res = await fetchWorker('/v5/implementations');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('response has standards.sma.implementations array and submit_url', async () => {
+		const res  = await fetchWorker('/v5/implementations');
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('standards');
+		const standards = body.standards as Record<string, unknown>;
+		expect(standards).toHaveProperty('sma');
+		const sma = standards.sma as Record<string, unknown>;
+		expect(Array.isArray(sma.implementations)).toBe(true);
+		expect((sma.implementations as unknown[]).length).toBeGreaterThanOrEqual(1);
+		expect(typeof sma.submit_url).toBe('string');
+		expect(body).toHaveProperty('total_implementations');
+	});
+});
+
+// ─── GAP-D: Showcase endpoint ─────────────────────────────────────────────────
+
+describe('GET /v5/showcase', () => {
+	it('returns 200 with entries array and submit_url', async () => {
+		const res  = await fetchWorker('/v5/showcase');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(Array.isArray(body.entries)).toBe(true);
+		expect(typeof body.submit_url).toBe('string');
 	});
 });
