@@ -3,8 +3,8 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 597/597 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks (GET list), /v5/webhooks/:id (DELETE), /v5/webhooks/unsubscribe (legacy DELETE), /v5/webhooks/test/:id (POST test delivery), /v5/webhooks/health (public), /v5/receipts (builder+), /v5/sandbox (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public), /docs/mpas (public)
+**Test suite**: 601/601 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks (GET list), /v5/webhooks/:id (DELETE), /v5/webhooks/unsubscribe (legacy DELETE), /v5/webhooks/test/:id (POST test delivery), /v5/webhooks/health (public), /v5/receipts (builder+), /v5/sandbox (public), /v5/implementations (public), /v5/showcase (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public), /docs/mpas (public)
 **PyPI packages**: headless-oracle-langchain@1.0.1 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.1 (pypi.org/project/headless-oracle-crewai/)
 **npm packages**: headless-oracle-setup@1.0.1 (npx headless-oracle-setup — zero-dep MCP setup for Claude Desktop/Cursor/Windsurf)
 **www redirect**: www.headlessoracle.com/* → 301 → headlessoracle.com/* (Worker-level, permanent)
@@ -12,7 +12,14 @@
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
 **Go SDK**: github.com/LembaGang/headless-oracle-go — zero stdlib deps, oracle.Verify(), 9 tests
 **Exchanges**: 28 total (23 traditional + XCBT/XNYM overnight CME, XCBO Cboe options, XCOI Coinbase 24/7, XBIN Binance 24/7). mic_type: "iso" | "convention" on all entries.
-**Last significant work**: Mar 30 2026 — Sprint 4: OpenAPI paths fix, MPAS spec, AgentCore oracle integration (597 tests + 16 payer-agent tests):
+**Last significant work**: Mar 31 2026 — Conversion & ecosystem gaps (601 tests):
+  - GAP-A: Sandbox 25 calls/24h → 200 calls/7 days. Upgrade ladder now clear: sandbox → credits → Builder.
+  - GAP-B: GET /v5/implementations — public standards registry (SMA/MPAS/APTS, 5 implementations). AGENT_JSON gets implementations_registry field. GitHub issue templates in sma-protocol + mpas-spec repos.
+  - GAP-C: POST /v5/sandbox accepts optional use_case field. SANDBOX_SIGNUP event logged (hashed, no PII). P.S. line in welcome email invites design partner conversation.
+  - GAP-D: GET /v5/showcase — seeded with Halt Simulator. submit_url points to showcase-submit page (human task: build form on headless-oracle-web).
+  - GAP-014: Already implemented + tested in previous session — no new work needed.
+  - Deployed: Version 0b420ca0. Pushed to main (b66e9f6).
+**Previous significant work**: Mar 30 2026 — Sprint 4: OpenAPI paths fix, MPAS spec, AgentCore oracle integration (597 tests + 16 payer-agent tests):
   - OpenAPI spec bug fixed: 10 new paths (webhooks, credits, x402/mint, card) now correctly nested inside paths: object — 39 total
   - MPAS-1.0 spec published: docs/multi-party-attestation-spec.md (651 lines, Apache 2.0)
   - /docs/mpas route live — serves MPAS spec; wrangler.toml routes added for /docs/mpas and /docs/sma-protocol/rfc-001
@@ -480,7 +487,9 @@
 **npm publish**: @headlessoracle/verify@1.0.0 confirmed live on npmjs.com. Auth token already in ~/.npmrc. Human task marked DONE.
 
 ## Immediate Next Engineering Tasks (when user returns)
-1. **Before deploy: Supabase schema** — create the `api_keys` table (human task):
+1. **HUMAN TASK: showcase-submit page** — Build a simple form at headlessoracle.com/showcase-submit that emails mike@headlessoracle.com. Basic fields: name, project URL, brief description. Can be a static HTML form in headless-oracle-web or a Cloudflare Pages Function. No worker changes needed.
+
+2. **Before deploy: Supabase schema** — create the `api_keys` table (human task):
    ```sql
    create table api_keys (
      id                       uuid primary key,
