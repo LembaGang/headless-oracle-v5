@@ -7407,6 +7407,10 @@ export default {
 					PAYMENT_ALREADY_USED:  { message: 'This transaction hash has already been used for a payment.', resolution: 'Each txHash can only be used once. Send a new USDC transaction.', http_status: 402 },
 					PAYMENT_EXPIRED:       { message: 'The transaction is older than 300 seconds.', resolution: 'Send a new USDC transaction and retry immediately.', http_status: 402 },
 					ACCOUNT_NOT_FOUND:     { message: 'No account found for this API key.', resolution: 'Verify your X-Oracle-Key. If subscribed via Paddle, check your email for the key.', http_status: 404 },
+					SANDBOX_LIMIT_REACHED: { message: 'Sandbox key has reached its 200-call limit.', resolution: 'Upgrade to a credit pack ($5 for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder ($99/mo) for 50,000 calls/day.', http_status: 402 },
+					SANDBOX_KEY_EXPIRED:   { message: 'Sandbox key has expired (7-day TTL).', resolution: 'Upgrade to a credit pack ($5 for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder ($99/mo).', http_status: 402 },
+					CREDITS_EXHAUSTED:     { message: 'Credit pack balance is zero.', resolution: 'Purchase a new credit pack at https://headlessoracle.com/upgrade, or subscribe to Builder ($99/mo) for a daily allowance.', http_status: 402 },
+					PLAN_LIMIT_EXCEEDED:   { message: 'Daily request limit for your plan has been reached.', resolution: 'Upgrade your plan at https://headlessoracle.com/upgrade. Limit resets at UTC midnight.', http_status: 429 },
 				};
 				const doc = errorDocs[code];
 				if (!doc) {
