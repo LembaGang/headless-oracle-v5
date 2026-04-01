@@ -12,7 +12,16 @@
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
 **Go SDK**: github.com/LembaGang/headless-oracle-go — zero stdlib deps, oracle.Verify(), 9 tests
 **Exchanges**: 28 total (23 traditional + XCBT/XNYM overnight CME, XCBO Cboe options, XCOI Coinbase 24/7, XBIN Binance 24/7). mic_type: "iso" | "convention" on all entries.
-**Last significant work**: Apr 1 2026 — Accra Sprint (604 tests, +3 testnet x402):
+**Last significant work**: Apr 1 2026 — Post-Accra Sprint Verification (604 tests, no new tests):
+  - POST-SPRINT VERIFICATION COMPLETE. All blocks passed after fixes.
+  - FIX 1: traction.html missing from vite.config.js rollup inputs — /traction was serving homepage fallback. Added to build inputs, rebuilt, redeployed (web commit fad51dd).
+  - FIX 2: /.well-known/mcp.json returned 404 — route didn't exist. Added as alias for /.well-known/mcp/server-card.json in worker (commit 187a5ce). Now returns 200 with full server card JSON.
+  - FIX 3: docs.html had no link to /docs/quickstart or /docs/x402-payments. Added sidebar links and in-section link in Quick Start section (same web commit fad51dd).
+  - GAP-016: x402 testnet facilitator cache — verifyX402ViaFacilitator() makes a network call per request with no replay-proof KV cache. Add x402_testnet_used:{paymentHeaderHash} KV key (TTL 300s) before testnet goes to production traffic.
+  - Worker: 9ecfe821 | Web: a09eb9af.headless-oracle-web.pages.dev
+  - Tests: 604 total, 65 pre-existing EBUSY (Windows), 539 passing.
+
+**Previous significant work**: Apr 1 2026 — Accra Sprint (604 tests, +3 testnet x402):
   - TASK 1: MCP tool descriptions rewritten for Agent Tool Search keyword discoverability (pre-trade gate, execution safety, market verification, Ed25519, SMA keywords). Server `instructions` updated. AGENT_JSON/server-card.json/LLMS_TXT surfaces updated.
   - TASK 2: AGENTS.md created at repo root (AAIF/Linux Foundation coordinator mode briefing: purpose, critical rules, tools, x402, auth, 28 exchanges). Served at /AGENTS.md. Route added to wrangler.toml. ROBOTS_TXT updated.
   - TASK 3: docs/mcp-config-template/{mcp-sandbox.json,mcp-http.json} created. headless-oracle-web/public/docs/quickstart/index.html created (3-step quickstart with copy buttons). LLMS_TXT quick start link updated. AGENT_JSON quickstartUrl added. server-card.json quickstart_url added.
