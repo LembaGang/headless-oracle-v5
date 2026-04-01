@@ -4,6 +4,17 @@
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
 **Test suite**: 604/604 tests (worker — 65 pre-existing Miniflare EBUSY + isolated-storage failures on Windows, not introduced this session) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Last significant work**: Apr 1 2026 (evening) — Ampersend integration (commit 4d9aec5, worker abac0129):
+  - GET /skill.md live — Ampersend skill format (YAML frontmatter: x402 payment details, ERC-8004 8453:38413, pricing $0.001 USDC, networks base+base-sepolia, MCP endpoint, all 28 exchanges, verify usage pattern)
+  - AGENT_JSON updated: skill_url, erc8004 (8453:38413), ampersend listing URL
+  - /.well-known/mcp/server-card.json updated: same skill_url + erc8004 fields
+  - LLMS_TXT updated: Listings section with Ampersend registry + ERC-8004 entry
+  - ROBOTS_TXT: Allow /skill.md added
+  - wrangler.toml: headlessoracle.com/skill.md route added
+  - X402_TEST_WALLET set in .dev.vars (gitignored) — HUMAN TASK: wrangler secret put X402_TEST_WALLET (value: 0x26d4ffe98017d2f160e2daae9d119e3d8b860ad3)
+  - GAP: /skill.md has no unit test yet — add test when Ampersend format stabilises
+  - Tests: 539/604 (65 pre-existing Windows EBUSY, no regressions)
+
 **Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks (GET list), /v5/webhooks/:id (DELETE), /v5/webhooks/unsubscribe (legacy DELETE), /v5/webhooks/test/:id (POST test delivery), /v5/webhooks/health (public), /v5/receipts (builder+), /v5/sandbox (public), /v5/implementations (public), /v5/showcase (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public), /docs/mpas (public)
 **PyPI packages**: headless-oracle-langchain@1.0.1 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.1 (pypi.org/project/headless-oracle-crewai/)
 **npm packages**: headless-oracle-setup@1.0.1 (npx headless-oracle-setup — zero-dep MCP setup for Claude Desktop/Cursor/Windsurf)
