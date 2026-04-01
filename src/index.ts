@@ -7575,7 +7575,9 @@ export default {
 			if (url.pathname === '/.well-known/agent.json') {
 				return json(AGENT_JSON);
 			}
-			if (url.pathname === '/.well-known/mcp/server-card.json') {
+			// RFC-standard MCP discovery alias — agents that probe /.well-known/mcp.json
+			// before /.well-known/mcp/server-card.json get the same payload.
+			if (url.pathname === '/.well-known/mcp.json' || url.pathname === '/.well-known/mcp/server-card.json') {
 				return json({
 					name:           'Headless Oracle',
 					version:        'v5.0',
