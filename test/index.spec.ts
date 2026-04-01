@@ -7182,3 +7182,86 @@ describe('GET /v5/showcase', () => {
 		expect(typeof body.submit_url).toBe('string');
 	});
 });
+
+// ── x402 testnet facilitator path ────────────────────────────────────────────
+// Gated behind X402_ENABLED=true + X402_TEST_WALLET. Uses Base Sepolia testnet
+// via the Coinbase-hosted facilitator at https://x402.org/facilitator/settle.
+// These tests mock globalThis.fetch to avoid real facilitator network calls.
+
+describe('x402 testnet facilitator path (X402_ENABLED=true)', () => {
+	const TEST_WALLET = '0xTestSepoliaWallet000000000000000000000001';
+
+	beforeEach(() => {
+		(env as unknown as Record<string, string>).X402_ENABLED    = 'true';
+		(env as unknown as Record<string, string>).X402_TEST_WALLET = TEST_WALLET;
+	});
+
+	afterEach(() => {
+		delete (env as unknown as Record<string, string>).X402_ENABLED;
+		delete (env as unknown as Record<string, string>).X402_TEST_WALLET;
+	});
+
+	it('no X-Payment + X402_ENABLED=true → 402 with testnet x402 payload', async () => {
+		const res = await fetchWorker('/v5/status?mic=XNYS');
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('network', 'testnet');
+		const accepts = body.accepts as Array<Record<string, unknown>>;
+		expect(accepts[0]).toHaveProperty('network', 'eip155:84532');
+		expect(accepts[0]).toHaveProperty('payTo', TEST_WALLET);
+		expect(res.headers.get('X-X402-Network')).toBe('testnet');
+		expect(res.headers.get('X-Payment-Required')).toBe('true');
+	});
+
+	it('valid testnet payment via mocked facilitator → 200 signed receipt', async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			if (url.includes('x402.org/facilitator/settle')) {
+				return new Response(JSON.stringify({ success: true, txHash: '0xmocktestnetpayment' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			// Supabase non-blocking calls (insertReceiptAudit, updateKeyUsage)
+			if (url.includes('supabase.co')) return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			return originalFetch(input as RequestInfo, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Payment': 'testnet-payment-header-value' },
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(VALID_STATUSES).toContain(body.status);
+			expect(body).toHaveProperty('signature');
+			expect(body).toHaveProperty('receipt_mode', 'live');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('invalid testnet payment → facilitator rejects → 402', async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			if (url.includes('x402.org/facilitator/settle')) {
+				return new Response(JSON.stringify({ success: false, error: 'INSUFFICIENT_FUNDS' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input as RequestInfo, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Payment': 'invalid-payment-header' },
+			});
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('network', 'testnet');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+});

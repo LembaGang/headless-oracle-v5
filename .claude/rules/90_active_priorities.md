@@ -3,7 +3,7 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 601/601 tests passing (worker) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
+**Test suite**: 604/604 tests (worker — 65 pre-existing Miniflare EBUSY + isolated-storage failures on Windows, not introduced this session) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
 **Live endpoints**: All including /v5/usage (auth), /v5/traction (public), /v5/x402/mint (public), /v5/webhooks/subscribe, /v5/webhooks (GET list), /v5/webhooks/:id (DELETE), /v5/webhooks/unsubscribe (legacy DELETE), /v5/webhooks/test/:id (POST test delivery), /v5/webhooks/health (public), /v5/receipts (builder+), /v5/sandbox (public), /v5/implementations (public), /v5/showcase (public), api.headlessoracle.com/*, /.well-known/x402.json, /oauth/token, /oauth/introspect, /.well-known/oauth-authorization-server, /.well-known/agent.json (A2A), /.well-known/mcp/server-card.json, /.well-known/ai-plugin.json, /ai-plugin.json, /status, /badge/:mic, /v5/card/:mic (live SVG status card), /v5/changelog, /v5/archive, /v5/conformance-vectors, /v5/stream (SSE via Durable Object), /v5/dst-risk (public), /docs/sma-protocol/rfc-001 (public), /docs/mpas (public)
 **PyPI packages**: headless-oracle-langchain@1.0.1 (pypi.org/project/headless-oracle-langchain/), headless-oracle-crewai@1.0.1 (pypi.org/project/headless-oracle-crewai/)
 **npm packages**: headless-oracle-setup@1.0.1 (npx headless-oracle-setup — zero-dep MCP setup for Claude Desktop/Cursor/Windsurf)
@@ -12,7 +12,14 @@
 **@headlessoracle/verify**: Published — npmjs.com/package/@headlessoracle/verify v1.0.0 (published, auth token in ~/.npmrc)
 **Go SDK**: github.com/LembaGang/headless-oracle-go — zero stdlib deps, oracle.Verify(), 9 tests
 **Exchanges**: 28 total (23 traditional + XCBT/XNYM overnight CME, XCBO Cboe options, XCOI Coinbase 24/7, XBIN Binance 24/7). mic_type: "iso" | "convention" on all entries.
-**Last significant work**: Mar 31 2026 — Conversion & ecosystem gaps (601 tests):
+**Last significant work**: Apr 1 2026 — Accra Sprint (604 tests, +3 testnet x402):
+  - TASK 1: MCP tool descriptions rewritten for Agent Tool Search keyword discoverability (pre-trade gate, execution safety, market verification, Ed25519, SMA keywords). Server `instructions` updated. AGENT_JSON/server-card.json/LLMS_TXT surfaces updated.
+  - TASK 2: AGENTS.md created at repo root (AAIF/Linux Foundation coordinator mode briefing: purpose, critical rules, tools, x402, auth, 28 exchanges). Served at /AGENTS.md. Route added to wrangler.toml. ROBOTS_TXT updated.
+  - TASK 3: docs/mcp-config-template/{mcp-sandbox.json,mcp-http.json} created. headless-oracle-web/public/docs/quickstart/index.html created (3-step quickstart with copy buttons). LLMS_TXT quick start link updated. AGENT_JSON quickstartUrl added. server-card.json quickstart_url added.
+  - TASK 4: GitHub Issue #11 on aws-samples/sample-agentcore-cloudfront-x402-payments reviewed. Follow-up comment prepared (human task — see SESSION END REPORT below).
+  - TASK 5: x402 testnet facilitator prototype implemented. New env vars: X402_ENABLED, X402_TEST_WALLET. New constants: X402_SEPOLIA_USDC_CONTRACT (Base Sepolia), X402_FACILITATOR_URL. New functions: verifyX402ViaFacilitator(), buildTestnetX402Payload(). Testnet path injected into /v5/status no-API-key branch (gated behind X402_ENABLED=true). 3 new tests: 402 on no payment, 200 on valid facilitator mock, 402 on rejected facilitator.
+  - TASK 6: /.well-known/x402.json updated to include testnet resources when X402_ENABLED=true + X402_TEST_WALLET set (Base Sepolia, eip155:84532, X402_SEPOLIA_USDC_CONTRACT).
+**Previous significant work**: Mar 31 2026 — Conversion & ecosystem gaps (601 tests):
   - GAP-A: Sandbox 25 calls/24h → 200 calls/7 days. Upgrade ladder now clear: sandbox → credits → Builder.
   - GAP-B: GET /v5/implementations — public standards registry (SMA/MPAS/APTS, 5 implementations). AGENT_JSON gets implementations_registry field. GitHub issue templates in sma-protocol + mpas-spec repos.
   - GAP-C: POST /v5/sandbox accepts optional use_case field. SANDBOX_SIGNUP event logged (hashed, no PII). P.S. line in welcome email invites design partner conversation.

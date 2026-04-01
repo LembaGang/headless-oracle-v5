@@ -30,6 +30,9 @@ export interface Env {
 	RESEND_API_KEY?:             string;
 	// x402 micropayments — set via `wrangler secret put ORACLE_PAYMENT_ADDRESS`
 	ORACLE_PAYMENT_ADDRESS?:     string;  // Base mainnet wallet for USDC micropayments
+	// x402 testnet prototype — Base Sepolia testnet, facilitator-based verification
+	X402_ENABLED?:               string;  // Set to 'true' to enable testnet x402 via facilitator (default: off)
+	X402_TEST_WALLET?:           string;  // Base Sepolia test wallet address for testnet payments
 	// Real-time halt monitoring — optional Polygon.io API key for enhanced data
 	POLYGON_API_KEY?:            string;  // polygon.io API key — optional; public Alpaca feed used if absent
 	// Launch date for /v5/traction days_live counter — set via wrangler.toml [vars]
@@ -1778,6 +1781,10 @@ const SETTLEMENT_WINDOWS: Readonly<Record<string, SettlementWindow>> = {
 
 // USDC ERC-20 contract on Base mainnet (chain ID 8453).
 const X402_USDC_CONTRACT    = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+// USDC ERC-20 contract on Base Sepolia testnet (chain ID 84532).
+const X402_SEPOLIA_USDC_CONTRACT = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+// x402 facilitator endpoint — Coinbase-hosted, verifies payments for both mainnet and testnet.
+const X402_FACILITATOR_URL = 'https://x402.org/facilitator';
 // 0.001 USDC = 1000 units at 6 decimals. Minimum payment per request.
 const X402_MIN_AMOUNT_UNITS     = BigInt(1000);
 const X402_MINT_BUILDER_UNITS   = BigInt(99_000_000);  // 99 USDC at 6 decimals
@@ -1956,6 +1963,61 @@ async function verifyX402Payment(
 	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 600 }).catch(() => {});
 	console.log(JSON.stringify({ event: 'X402_PAYMENT_VERIFIED', tx_hash: txHash, amount_units: amountPaid.toString() }));
 	return { valid: true };
+}
+
+// Verifies a testnet x402 payment via the official Coinbase facilitator (https://x402.org/facilitator).
+// Used when X402_ENABLED=true. Posts the raw X-Payment header to the facilitator's /settle endpoint.
+// Does NOT perform direct on-chain RPC calls — the facilitator handles EVM verification.
+async function verifyX402ViaFacilitator(
+	paymentHeader: string,
+	testWallet: string,
+): Promise<{ valid: boolean; txHash?: string; detail?: string }> {
+	const paymentRequirements = [{
+		scheme:            'exact',
+		network:           'eip155:84532',  // Base Sepolia testnet
+		maxAmountRequired: '1000',          // 0.001 USDC at 6 decimals
+		asset:             X402_SEPOLIA_USDC_CONTRACT,
+		payTo:             testWallet,
+		maxTimeoutSeconds: 300,
+	}];
+	try {
+		const res = await fetch(`${X402_FACILITATOR_URL}/settle`, {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ x402Version: 1, payment: paymentHeader, paymentRequirements }),
+		});
+		if (!res.ok) {
+			return { valid: false, detail: `FACILITATOR_HTTP_ERROR: ${res.status}` };
+		}
+		const data = await res.json() as { success?: boolean; error?: string; txHash?: string };
+		if (!data.success) {
+			return { valid: false, detail: `FACILITATOR_REJECTED: ${data.error ?? 'unknown'}` };
+		}
+		console.log(JSON.stringify({ event: 'X402_TESTNET_PAYMENT_VERIFIED', tx_hash: data.txHash ?? 'n/a' }));
+		return { valid: true, txHash: data.txHash };
+	} catch (err) {
+		return { valid: false, detail: `FACILITATOR_FETCH_FAILED: ${err instanceof Error ? err.message : 'unknown'}` };
+	}
+}
+
+// Build x402scan-compatible 402 payload for Base Sepolia testnet.
+function buildTestnetX402Payload(testWallet: string, resourceUrl: string): Record<string, unknown> {
+	return {
+		x402Version: 1,
+		accepts: [{
+			scheme:            'exact',
+			network:           'eip155:84532',
+			maxAmountRequired: '1000',
+			asset:             X402_SEPOLIA_USDC_CONTRACT,
+			payTo:             testWallet,
+			maxTimeoutSeconds: 300,
+			resource:          resourceUrl,
+			description:       'Signed market-state receipt (TESTNET). Ed25519 signed, 60s TTL. $0.001 USDC on Base Sepolia.',
+			mimeType:          'application/json',
+		}],
+		error:   'Payment Required',
+		network: 'testnet',
+	};
 }
 
 // Verifies a USDC payment for key minting on Base mainnet.
@@ -6823,7 +6885,22 @@ export default {
 				} else {
 					// No API key — x402 payment path (step 4) or 402 gate (step 5)
 					const paymentHeader = request.headers.get('X-Payment');
-					if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
+					// ── Testnet x402 facilitator path (X402_ENABLED=true gating) ─────────────────
+					// When enabled, accepts Base Sepolia USDC payments via official x402 facilitator.
+					// Gated behind X402_ENABLED to avoid affecting production traffic.
+					if (env.X402_ENABLED === 'true' && env.X402_TEST_WALLET) {
+						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
+						if (paymentHeader) {
+							const verified = await verifyX402ViaFacilitator(paymentHeader, env.X402_TEST_WALLET);
+							if (!verified.valid) {
+								return json(buildTestnetX402Payload(env.X402_TEST_WALLET, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'testnet', 'X-Payment-Required': 'true' });
+							}
+							// Valid testnet payment — fall through to serve receipt
+						} else {
+							// No payment — return testnet 402 with facilitator payment requirements
+							return json(buildTestnetX402Payload(env.X402_TEST_WALLET, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'testnet', 'X-Payment-Required': 'true' });
+						}
+					} else if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 						// Keyless x402: verify on-chain payment, then serve receipt
 						let payment: X402Payment;
 						try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
@@ -7639,7 +7716,21 @@ export default {
 					},
 				},
 				] : [];
-				return json({ version: 1, resources: paidResources });
+				// Testnet resources: when X402_ENABLED=true, advertise Base Sepolia endpoint
+				const testnetResources = (env.X402_ENABLED === 'true' && env.X402_TEST_WALLET) ? [{
+					path:        '/v5/status',
+					method:      'GET',
+					description: 'Signed market-state receipt (TESTNET). Ed25519 signed, 60s TTL. $0.001 USDC on Base Sepolia.',
+					network:     'testnet',
+					accepts: [{
+						scheme:            'exact',
+						network:           'eip155:84532',
+						maxAmountRequired: '1000',
+						asset:             X402_SEPOLIA_USDC_CONTRACT,
+						payTo:             env.X402_TEST_WALLET,
+					}],
+				}] : [];
+				return json({ version: 1, resources: [...paidResources, ...testnetResources] });
 			}
 
 			if (url.pathname === '/.well-known/402index-verify.txt') {
