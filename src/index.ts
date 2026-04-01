@@ -3821,6 +3821,7 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 const ROBOTS_TXT = `User-agent: *
 Allow: /llms.txt
 Allow: /SKILL.md
+Allow: /skill.md
 Allow: /AGENTS.md
 Allow: /openapi.json
 Allow: /.well-known/
@@ -4275,6 +4276,142 @@ Headless Oracle conforms to two open standards. Agents can verify conformance pr
 **Signed Market Attestation (SMA) Protocol v1.0** — vendor-neutral format for cryptographically attested market state. All receipts are SMA-compliant: alphabetically-sorted compact JSON signed with Ed25519.
 
 SMA conformance means: any independent verifier with the public key can validate receipts without calling Oracle again.
+
+## Listings
+
+- **Ampersend registry**: https://app.ampersend.ai/agents/headless-oracle
+- **Skill file**: https://headlessoracle.com/skill.md
+- **ERC-8004 registry**: 8453:38413
+- **Smithery**: smithery.ai/server/headless-oracle
+`;
+
+// ─── Ampersend skill.md ───────────────────────────────────────────────────────
+// Served at GET /skill.md (lowercase) — Ampersend agent skill format.
+// Describes how autonomous agents can call Headless Oracle via x402 micropayments
+// using the Ampersend CLI (`ampersend fetch`).
+const AMPERSEND_SKILL_MD = `---
+name: headless-oracle
+description: Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.
+metadata:
+  x402:
+    endpoint: https://headlessoracle.com/v5/status
+    price: "1000"
+    currency: USDC
+    network: eip155:8453
+    testnet: eip155:84532
+    asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  erc8004: "8453:38413"
+  agent_card: https://headlessoracle.com/.well-known/agent.json
+  agents_md: https://headlessoracle.com/AGENTS.md
+  mcp_endpoint: https://headlessoracle.com/mcp
+---
+
+# Headless Oracle
+
+Headless Oracle provides cryptographically signed market-state receipts for 28 global exchanges. Every receipt is Ed25519-signed with a 60-second TTL — a verifiable pre-trade attestation that the agent checked market state before executing.
+
+**Critical safety rule**: \`UNKNOWN\` and \`HALTED\` MUST be treated as \`CLOSED\` — halt all execution immediately.
+
+## Pricing
+
+**$0.001 USDC per call** via x402 micropayments — no subscription, no API key required.
+
+- **Network**: Base mainnet (eip155:8453) + Base Sepolia testnet (eip155:84532)
+- **x402 payment endpoint**: https://headlessoracle.com/v5/status
+- **ERC-8004 registry**: 8453:38413
+- **Ampersend listing**: https://app.ampersend.ai/agents/headless-oracle
+
+## Usage
+
+Check market status before executing a trade or financial operation:
+
+\`\`\`bash
+# Inspect payment requirements (no charge)
+ampersend fetch --inspect "https://headlessoracle.com/v5/status?mic=XNYS"
+
+# Check if NYSE is open — pays $0.001 USDC automatically
+ampersend fetch "https://headlessoracle.com/v5/status?mic=XNYS"
+
+# Check other exchanges
+ampersend fetch "https://headlessoracle.com/v5/status?mic=XLON"
+ampersend fetch "https://headlessoracle.com/v5/status?mic=XJPX"
+\`\`\`
+
+## Response
+
+Returns an Ed25519-signed JSON receipt:
+
+\`\`\`json
+{
+  "mic": "XNYS",
+  "status": "OPEN",
+  "timestamp": "2026-04-01T14:30:00Z",
+  "expires_at": "2026-04-01T14:31:00Z",
+  "issuer": "headlessoracle.com",
+  "key_id": "key_2026_v1",
+  "receipt_mode": "live",
+  "schema_version": "v5.0",
+  "signature": "..."
+}
+\`\`\`
+
+Status values: \`OPEN\` | \`CLOSED\` | \`HALTED\` | \`UNKNOWN\`
+
+**UNKNOWN and HALTED = CLOSED. Halt all execution.**
+
+## Verify the Signature
+
+\`\`\`bash
+# After receiving a receipt, verify the Ed25519 signature offline
+# npm install @headlessoracle/verify
+import { verify } from '@headlessoracle/verify';
+const result = await verify(receipt);
+if (!result.valid) throw new Error(\`Invalid receipt: \${result.reason}\`);
+\`\`\`
+
+## Supported Exchanges (28)
+
+| Region | MICs |
+|--------|------|
+| Americas | XNYS, XNAS, XBSP |
+| Europe | XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST |
+| Middle East / Africa | XSAU, XDFM, XJSE |
+| Asia | XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES |
+| Pacific | XASX, XNZE |
+| Derivatives | XCBT, XNYM, XCBO |
+| 24/7 Crypto | XCOI, XBIN |
+
+## MCP Integration (No x402 Required)
+
+Connect to the MCP server for tool-based access within Claude, Cursor, or any MCP-compatible agent:
+
+\`\`\`json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://headlessoracle.com/mcp"]
+    }
+  }
+}
+\`\`\`
+
+**Protocol**: MCP 2024-11-05 | **Endpoint**: https://headlessoracle.com/mcp
+
+Available tools:
+- \`get_market_status\` — signed receipt (OPEN/CLOSED/HALTED/UNKNOWN) for any MIC
+- \`get_market_schedule\` — next open/close times in UTC
+- \`list_exchanges\` — directory of all 28 supported exchanges
+- \`verify_receipt\` — Ed25519 signature verification in-worker
+
+## Discovery
+
+- **Agent card (A2A)**: https://headlessoracle.com/.well-known/agent.json
+- **AGENTS.md**: https://headlessoracle.com/AGENTS.md
+- **MCP server card**: https://headlessoracle.com/.well-known/mcp/server-card.json
+- **OpenAPI 3.1**: https://headlessoracle.com/openapi.json
+- **Public key registry**: https://headlessoracle.com/v5/keys
+- **x402 discovery**: https://headlessoracle.com/.well-known/x402.json
 `;
 
 // FNV-1a 32-bit hash — deterministic, synchronous, no crypto API needed.
@@ -4504,6 +4641,9 @@ const AGENT_JSON = {
 	},
 	dst_aware:           true,
 	discovery_url:       'https://headlessoracle.com/.well-known/agent.json',
+	skill_url:           'https://headlessoracle.com/skill.md',
+	erc8004:             '8453:38413',
+	ampersend:           'https://app.ampersend.ai/agents/headless-oracle',
 	mcp: {
 		endpoint:         'https://headlessoracle.com/mcp',
 		protocol_version: '2024-11-05',
@@ -7486,6 +7626,13 @@ export default {
 					},
 				});
 			}
+			if (url.pathname === '/skill.md') {
+				// Ampersend skill format — describes x402 payment details and CLI usage.
+				// Served lowercase per Ampersend convention (distinct from /SKILL.md agent guide).
+				return new Response(AMPERSEND_SKILL_MD, {
+					headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+				});
+			}
 			if (url.pathname === '/AGENTS.md') {
 				return new Response(AGENTS_MD, {
 					headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
@@ -7627,6 +7774,9 @@ export default {
 					mpas_version:          '1.0',
 					dst_aware:             true,
 					discovery_url:         'https://headlessoracle.com/.well-known/mcp/server-card.json',
+					skill_url:             'https://headlessoracle.com/skill.md',
+					erc8004:               '8453:38413',
+					ampersend:             'https://app.ampersend.ai/agents/headless-oracle',
 				});
 			}
 			if (url.pathname === '/.well-known/oauth-protected-resource') {
