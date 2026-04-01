@@ -3806,7 +3806,8 @@ These tools are a PRE-EXECUTION gate. Call \`get_market_status\` before any trad
 
 ## Core Documentation
 
-- [Quick Start](https://headlessoracle.com/docs)
+- [Quick Start (.mcp.json setup)](https://headlessoracle.com/docs/quickstart)
+- [Full Documentation](https://headlessoracle.com/docs)
 - [MCP Integration Guide](https://headlessoracle.com/docs/integrations/mcp)
 - [LangChain Integration](https://headlessoracle.com/docs/integrations/langchain)
 - [CrewAI Integration](https://headlessoracle.com/docs/integrations/crewai)
@@ -4299,6 +4300,7 @@ const AGENT_JSON = {
 		url:          'https://headlessoracle.com',
 	},
 	documentationUrl:    'https://headlessoracle.com/docs',
+	quickstartUrl:       'https://headlessoracle.com/docs/quickstart',
 	// A2A capabilities object — streaming/push/history are all false (pure request/response).
 	capabilities: {
 		streaming:              false,
@@ -7509,6 +7511,7 @@ export default {
 					authentication: ['bearer', 'apiKey', 'x402'],
 					homepage:       'https://headlessoracle.com',
 					docs:           'https://headlessoracle.com/docs',
+					quickstart_url: 'https://headlessoracle.com/docs/quickstart',
 					key_request:    'https://headlessoracle.com/v5/keys/request',
 					openapi:        'https://headlessoracle.com/openapi.json',
 					protocol:       '2024-11-05',

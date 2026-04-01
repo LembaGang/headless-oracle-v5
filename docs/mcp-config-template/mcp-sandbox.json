@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "type": "url",
+      "url": "https://headlessoracle.com/mcp"
+    }
+  }
+}
