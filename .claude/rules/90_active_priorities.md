@@ -4,7 +4,19 @@
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
 **Test suite**: 604/604 tests (worker — 65 pre-existing Miniflare EBUSY + isolated-storage failures on Windows, not introduced this session) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Last significant work**: Apr 1 2026 (evening) — Ampersend integration (commit 4d9aec5, worker abac0129):
+**Last significant work**: Apr 1 2026 (night) — Agent Zero Plugin Hub submission (commit 22e0206, worker c50b004c):
+  - plugin.yaml at repo root (name: headless_oracle, v1.0.0) — required by Agent Zero plugin system
+  - skills/headless_oracle.md — Agent Zero skill file (auto-loaded when market context needed)
+  - docs/agent-zero-plugin/index.yaml — PR-ready submission for agent0ai/a0-plugins registry
+  - docs/agent-zero-plugin/SUBMISSION.md — exact PR title, description, and steps for human to complete
+  - /SKILL.md updated: YAML frontmatter added (name, description, triggers, allowed_tools, tags) for Agent Zero skill classification
+  - /SKILL.md Listings: Agent Zero Plugin Hub entry added
+  - HUMAN TASK: Submit PR to https://github.com/agent0ai/a0-plugins — see docs/agent-zero-plugin/SUBMISSION.md
+  - Triggered by: Agent Zero instance AgentZero/19353 hit MCP endpoint unprompted tonight
+  - GAP: plugin.yaml has no backend code — purely a skill+metadata plugin. If Agent Zero users want MCP auto-configuration on install, a Python backend extension would be needed (out of scope for initial listing)
+  - Tests: 539/604 passing (65 pre-existing EBUSY, no regressions)
+
+**Previous significant work**: Apr 1 2026 (evening) — Ampersend integration (commit 4d9aec5, worker abac0129):
   - GET /skill.md live — Ampersend skill format (YAML frontmatter: x402 payment details, ERC-8004 8453:38413, pricing $0.001 USDC, networks base+base-sepolia, MCP endpoint, all 28 exchanges, verify usage pattern)
   - AGENT_JSON updated: skill_url, erc8004 (8453:38413), ampersend listing URL
   - /.well-known/mcp/server-card.json updated: same skill_url + erc8004 fields
