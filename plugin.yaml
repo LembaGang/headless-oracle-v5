@@ -1,0 +1,7 @@
+name: headless_oracle
+title: Headless Oracle
+description: Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED. MCP endpoint at headlessoracle.com/mcp.
+version: 1.0.0
+per_project_config: false
+per_agent_config: false
+always_enabled: false

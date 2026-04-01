@@ -4025,7 +4025,17 @@ Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 
 // SKILL.md — step-by-step integration guide optimised for AI agents.
 // Intentionally concise and action-first: agents parse this to decide how to integrate.
-const SKILL_MD = `# Headless Oracle — Agent Integration Guide
+const SKILL_MD = `---
+name: headless_oracle
+description: Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED. MCP endpoint at headlessoracle.com/mcp.
+version: 1.0.0
+author: Headless Oracle
+license: Apache-2.0
+tags: [finance, api, security, tools, agents]
+triggers: [market status, pre-trade check, exchange open, trading gate, NYSE, NASDAQ, exchange hours, XNYS, XNAS, XLON, XJPX, market oracle]
+allowed_tools: [get_market_status, get_market_schedule, list_exchanges, verify_receipt]
+---
+# Headless Oracle — Agent Integration Guide
 
 ## What This Is
 
@@ -4279,6 +4289,7 @@ SMA conformance means: any independent verifier with the public key can validate
 
 ## Listings
 
+- **Agent Zero Plugin Hub**: https://github.com/agent0ai/a0-plugins (plugin: headless_oracle)
 - **Ampersend registry**: https://app.ampersend.ai/agents/headless-oracle
 - **Skill file**: https://headlessoracle.com/skill.md
 - **ERC-8004 registry**: 8453:38413
