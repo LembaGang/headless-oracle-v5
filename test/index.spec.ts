@@ -3942,7 +3942,7 @@ describe('x402 — agent.json discovery', () => {
 		const body    = await fetchJSON('/.well-known/agent.json');
 		const payment = body.payment as Record<string, unknown>;
 		expect(payment).toBeDefined();
-		expect(payment.network).toBe('base-mainnet');
+		expect(payment.network).toBe('eip155:8453');
 		expect(payment.chain_id).toBe(8453);
 		expect(payment.currency).toBe('USDC');
 	});
@@ -5995,20 +5995,22 @@ describe('x402 — end-to-end payment flow', () => {
 	});
 
 	it('path A — keyless x402: X-Payment header → 200 with signed receipt (no key needed)', async () => {
-		// Demonstrates the per-request payment path: agent sends on-chain USDC tx, gets one receipt
-		const txHash  = '0x' + '4e2e'.repeat(16); // valid 64-char hex, unique to this test
-		const nowSec  = Math.floor(Date.now() / 1000);
-		const restore = mockBaseRpc(TEST_PAYMENT_ADDRESS, '1000', nowSec - 15);
-		const payment = JSON.stringify({
-			txHash,
-			network:        'base-mainnet',
-			amount:         '1000',
-			paymentAddress: TEST_PAYMENT_ADDRESS,
-			memo:           '',
-		});
+		// Demonstrates the per-request payment path: payment verified via CDP facilitator mock.
+		// X402_ENABLED defaults to !== 'false' so the facilitator path is active.
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			if (url.includes('cdp.coinbase.com/platform/v2/x402/settle')) {
+				return new Response(JSON.stringify({ success: true, txHash: '0xe2emainnetpayment' }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (url.includes('supabase.co')) return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			return originalFetch(input as RequestInfo, init);
+		};
 		try {
 			const res = await fetchWorker('/v5/status?mic=XNYS', {
-				headers: { 'X-Payment': payment },
+				headers: { 'X-Payment': 'mainnet-payment-header-value' },
 			});
 			expect(res.status).toBe(200);
 			const body = await res.json() as Record<string, unknown>;
@@ -6016,7 +6018,7 @@ describe('x402 — end-to-end payment flow', () => {
 			expect(body).toHaveProperty('signature');
 			expect(body).toHaveProperty('receipt_mode', 'live');
 		} finally {
-			restore();
+			globalThis.fetch = originalFetch;
 		}
 	});
 });
@@ -7183,43 +7185,38 @@ describe('GET /v5/showcase', () => {
 	});
 });
 
-// ── x402 testnet facilitator path ────────────────────────────────────────────
-// Gated behind X402_ENABLED=true + X402_TEST_WALLET. Uses Base Sepolia testnet
-// via the Coinbase-hosted facilitator at https://x402.org/facilitator/settle.
-// These tests mock globalThis.fetch to avoid real facilitator network calls.
+// ── x402 mainnet facilitator path ────────────────────────────────────────────
+// Uses CDP mainnet facilitator at https://api.cdp.coinbase.com/platform/v2/x402/settle.
+// Enabled by default (X402_ENABLED !== 'false'). Tests mock globalThis.fetch.
 
-describe('x402 testnet facilitator path (X402_ENABLED=true)', () => {
-	const TEST_WALLET = '0xTestSepoliaWallet000000000000000000000001';
-
+describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 	beforeEach(() => {
-		(env as unknown as Record<string, string>).X402_ENABLED    = 'true';
-		(env as unknown as Record<string, string>).X402_TEST_WALLET = TEST_WALLET;
+		(env as unknown as Record<string, string>).X402_ENABLED = 'true';
 	});
 
 	afterEach(() => {
 		delete (env as unknown as Record<string, string>).X402_ENABLED;
-		delete (env as unknown as Record<string, string>).X402_TEST_WALLET;
 	});
 
-	it('no X-Payment + X402_ENABLED=true → 402 with testnet x402 payload', async () => {
+	it('no X-Payment + X402_ENABLED=true → 402 with mainnet x402 payload', async () => {
 		const res = await fetchWorker('/v5/status?mic=XNYS');
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('x402Version', 1);
-		expect(body).toHaveProperty('network', 'testnet');
+		expect(body).toHaveProperty('network', 'mainnet');
 		const accepts = body.accepts as Array<Record<string, unknown>>;
-		expect(accepts[0]).toHaveProperty('network', 'eip155:84532');
-		expect(accepts[0]).toHaveProperty('payTo', TEST_WALLET);
-		expect(res.headers.get('X-X402-Network')).toBe('testnet');
+		expect(accepts[0]).toHaveProperty('network', 'eip155:8453');
+		expect(accepts[0]).toHaveProperty('payTo', TEST_PAYMENT_ADDRESS);
+		expect(res.headers.get('X-X402-Network')).toBe('mainnet');
 		expect(res.headers.get('X-Payment-Required')).toBe('true');
 	});
 
-	it('valid testnet payment via mocked facilitator → 200 signed receipt', async () => {
+	it('valid mainnet payment via mocked CDP facilitator → 200 signed receipt', async () => {
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-			if (url.includes('x402.org/facilitator/settle')) {
-				return new Response(JSON.stringify({ success: true, txHash: '0xmocktestnetpayment' }), {
+			if (url.includes('cdp.coinbase.com/platform/v2/x402/settle')) {
+				return new Response(JSON.stringify({ success: true, txHash: '0xmockmainnetpayment' }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
 			}
@@ -7229,7 +7226,7 @@ describe('x402 testnet facilitator path (X402_ENABLED=true)', () => {
 		};
 		try {
 			const res = await fetchWorker('/v5/status?mic=XNYS', {
-				headers: { 'X-Payment': 'testnet-payment-header-value' },
+				headers: { 'X-Payment': 'mainnet-payment-header-value' },
 			});
 			expect(res.status).toBe(200);
 			const body = await res.json() as Record<string, unknown>;
@@ -7241,11 +7238,11 @@ describe('x402 testnet facilitator path (X402_ENABLED=true)', () => {
 		}
 	});
 
-	it('invalid testnet payment → facilitator rejects → 402', async () => {
+	it('invalid mainnet payment → facilitator rejects → 402', async () => {
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-			if (url.includes('x402.org/facilitator/settle')) {
+			if (url.includes('cdp.coinbase.com/platform/v2/x402/settle')) {
 				return new Response(JSON.stringify({ success: false, error: 'INSUFFICIENT_FUNDS' }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
@@ -7259,7 +7256,7 @@ describe('x402 testnet facilitator path (X402_ENABLED=true)', () => {
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('x402Version', 1);
-			expect(body).toHaveProperty('network', 'testnet');
+			expect(body).toHaveProperty('network', 'mainnet');
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
