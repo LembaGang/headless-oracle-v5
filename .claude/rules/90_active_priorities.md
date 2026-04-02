@@ -4,7 +4,14 @@
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
 **Test suite**: 591 tests run (64 pre-existing failures — MASTER_API_KEY migration enforcement + Windows EBUSY, not regressions) + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 2 2026 — MIT license added (commit c9b3b25):
+**Last significant work**: Apr 2 2026 — security.txt + OpenAPI gap closed (commit 534aab2, worker 554e1896):
+  - GET /.well-known/security.txt live — RFC 9116, Contact/Expires/Preferred-Languages
+  - /.well-known/security.txt added to OpenAPI 3.1 spec (42 total paths) and LLMS_TXT endpoint table
+  - 3 tests: 2 for route, 1 OpenAPI paths assertion (606 total, 541 passing)
+  - MIT LICENSE + package.json "license": "MIT" added for Glama score (commit c9b3b25)
+  - HUMAN TASK: Check Glama score at https://glama.ai/mcp/servers/LembaGang/headless-oracle-v5 in ~24h
+
+**Previous significant work**: Apr 2 2026 — MIT license added (commit c9b3b25):
   - Added LICENSE (MIT) and "license": "MIT" to package.json
   - Required for Glama score — "license not found" was causing F grade on punkpeye/awesome-mcp-servers PR #4005
   - HUMAN TASK: Glama re-scans repos periodically; check https://glama.ai/mcp/servers/LembaGang/headless-oracle-v5 for updated score in ~24h
