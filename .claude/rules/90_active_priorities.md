@@ -3,15 +3,26 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 604/604 tests (worker — 65 pre-existing Miniflare EBUSY + isolated-storage failures on Windows, not introduced this session) + 24/24 tests passing (SDK) + 26/26 tests passing (LangGraph template)
-**Last significant work**: Apr 1 2026 (night) — Agent Zero Plugin Hub submission (commit 22e0206, worker c50b004c):
+**Test suite**: 591 tests run (64 pre-existing failures — MASTER_API_KEY migration enforcement + Windows EBUSY, not regressions) + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 2 2026 — x402 mainnet migration + Bazaar discovery (commit abd89c7, worker 086e72cf):
+  - x402 switched from Base Sepolia testnet to Base mainnet via CDP facilitator (https://api.cdp.coinbase.com/platform/v2/x402)
+  - Network updated: eip155:84532 → eip155:8453, USDC contract 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+  - X402_ENABLED now defaults true (opt-out via X402_ENABLED=false); was previously opt-in
+  - payTo: 0x26d4ffe98017d2f160e2daae9d119e3d8b860ad3, amount: 1000 units ($0.001 USDC)
+  - Bazaar discovery extension added to /v5/status receipts: discoverable:true, category:financial-data, 11 tags
+  - agent.json payment.network updated to eip155:8453
+  - UNSIGNED_WRAPPER_FIELDS updated to include 'extensions' (fix for verify_receipt signature verification)
+  - 3 mainnet facilitator tests pass; 64 pre-existing failures unchanged (527 passing)
+  - GAP: Bazaar extension is on /v5/status only. /v5/batch and /v5/demo receipts don't carry Bazaar metadata. Add when Bazaar aggregates multi-receipt responses.
+  - HUMAN TASK: Verify 402 response post-deploy: `curl -I https://headlessoracle.com/v5/status?mic=XNYS` should show HTTP 402 with X-X402-Network: mainnet and X-Payment-Required: true
+
+**Previous significant work**: Apr 2 2026 — Agent Zero Plugin Hub PR submitted and CI passing:
+  - PR: https://github.com/agent0ai/a0-plugins/pull/193 — open, green CI tick
+  - Fix applied: description field in index.yaml quoted to escape colons (YAML parse error caught by a0-bot)
+  - docs/agent-zero-plugin/index.yaml updated with fix (source file kept in sync)
   - plugin.yaml at repo root (name: headless_oracle, v1.0.0) — required by Agent Zero plugin system
   - skills/headless_oracle.md — Agent Zero skill file (auto-loaded when market context needed)
-  - docs/agent-zero-plugin/index.yaml — PR-ready submission for agent0ai/a0-plugins registry
-  - docs/agent-zero-plugin/SUBMISSION.md — exact PR title, description, and steps for human to complete
-  - /SKILL.md updated: YAML frontmatter added (name, description, triggers, allowed_tools, tags) for Agent Zero skill classification
-  - /SKILL.md Listings: Agent Zero Plugin Hub entry added
-  - HUMAN TASK: Submit PR to https://github.com/agent0ai/a0-plugins — see docs/agent-zero-plugin/SUBMISSION.md
+  - HUMAN TASK: Monitor PR for maintainer merge/feedback at https://github.com/agent0ai/a0-plugins/pull/193
   - Triggered by: Agent Zero instance AgentZero/19353 hit MCP endpoint unprompted tonight
   - GAP: plugin.yaml has no backend code — purely a skill+metadata plugin. If Agent Zero users want MCP auto-configuration on install, a Python backend extension would be needed (out of scope for initial listing)
   - Tests: 539/604 passing (65 pre-existing EBUSY, no regressions)
