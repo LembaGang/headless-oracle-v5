@@ -3930,6 +3930,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /.well-known/oracle-keys.json | GET | No | RFC 8615 key discovery | Key lifecycle metadata |
 | /.well-known/agent.json | GET | No | A2A Agent Card | A2A agent capabilities |
 | /.well-known/mcp/server-card.json | GET | No | MCP server card | Tool list, reliability, coverage |
+| /.well-known/security.txt | GET | No | RFC 9116 security contact | Contact, Expires, Preferred-Languages |
 | /v5/errors/{code} | GET | No | Machine-readable error definition | { message, resolution, http_status } |
 | /v5/changelog | GET | No | Versioned changelog feed | { version, updated, entries[] } |
 | /badge/:mic | GET | No | SVG status badge | image/svg+xml |
@@ -5600,6 +5601,15 @@ const OPENAPI_SPEC = {
 							},
 						} } },
 					},
+				},
+			},
+		},
+		'/.well-known/security.txt': {
+			get: {
+				summary:     'Security contact (RFC 9116)',
+				description: 'RFC 9116 security.txt — machine-readable security contact information. Lists responsible disclosure contact, expiry date, and preferred language.',
+				responses: {
+					'200': { description: 'security.txt content', content: { 'text/plain': { schema: { type: 'string' } } } },
 				},
 			},
 		},

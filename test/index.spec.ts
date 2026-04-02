@@ -988,6 +988,7 @@ describe('GET /openapi.json', () => {
 		expect(paths).toHaveProperty('/v5/keys');
 		expect(paths).toHaveProperty('/v5/schedule');
 		expect(paths).toHaveProperty('/v5/exchanges');
+		expect(paths).toHaveProperty('/.well-known/security.txt');
 	});
 
 	it('does not require authentication', async () => {
