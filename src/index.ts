@@ -7630,6 +7630,10 @@ export default {
 			if (url.pathname === '/robots.txt') {
 				return new Response(ROBOTS_TXT, { headers: { 'Content-Type': 'text/plain' } });
 			}
+			if (url.pathname === '/.well-known/security.txt') {
+				const body = `Contact: mailto:info@bytecraftresults.com\nExpires: 2027-04-02T00:00:00.000Z\nPreferred-Languages: en\n`;
+				return new Response(body, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+			}
 			if (url.pathname === '/llms.txt') {
 				return new Response(LLMS_TXT, { headers: { 'Content-Type': 'text/plain' } });
 			}

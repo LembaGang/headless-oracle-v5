@@ -1753,6 +1753,23 @@ describe('GET /robots.txt', () => {
 	});
 });
 
+// ─── GET /.well-known/security.txt ───────────────────────────────────────────
+
+describe('GET /.well-known/security.txt', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/.well-known/security.txt');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains required RFC 9116 fields', async () => {
+		const body = await fetchWorker('/.well-known/security.txt').then((r) => r.text());
+		expect(body).toContain('Contact: mailto:info@bytecraftresults.com');
+		expect(body).toContain('Expires: 2027-04-02T00:00:00.000Z');
+		expect(body).toContain('Preferred-Languages: en');
+	});
+});
+
 // ─── GET /llms.txt ────────────────────────────────────────────────────────────
 
 describe('GET /llms.txt', () => {
