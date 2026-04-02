@@ -27,17 +27,6 @@ server:
   protocol_version: "2024-11-05"
   transport: streamable-http
 
-startCommand:
-  type: http
-  configSchema:
-    type: object
-    required: []
-    properties:
-      apiKey:
-        type: string
-        title: "API Key (optional)"
-        description: "Your Headless Oracle API key for authenticated access to all 28 exchanges. Get one at headlessoracle.com/upgrade. Without a key, demo mode is available."
-
 categories:
   - finance
   - data

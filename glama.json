@@ -2,6 +2,7 @@
   "name": "Headless Oracle",
   "description": "Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.",
   "license": "MIT",
+  "type": "remote",
   "tools": [
     "get_market_status",
     "get_market_schedule",
