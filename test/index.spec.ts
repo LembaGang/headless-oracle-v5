@@ -1338,6 +1338,13 @@ describe('POST /mcp', () => {
 		expect(err).toHaveProperty('code', -32700);
 	});
 
+	it('POST /mcp ping → empty result (MCP liveness check)', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 98, method: 'ping' });
+		expect(body).toHaveProperty('jsonrpc', '2.0');
+		expect(body).not.toHaveProperty('error');
+		expect(body.result).toEqual({});
+	});
+
 	it('POST /mcp unknown method → -32601 method not found', async () => {
 		const body = await postMcpJSON({ jsonrpc: '2.0', id: 99, method: 'nonexistent/method' });
 		expect(body).toHaveProperty('jsonrpc', '2.0');
@@ -1367,6 +1374,20 @@ describe('POST /mcp', () => {
 		const result = body.result as Record<string, unknown>;
 		expect(typeof result.instructions).toBe('string');
 		expect((result.instructions as string).length).toBeGreaterThan(0);
+	});
+
+	it('POST /mcp initialize capabilities advertise tools, resources, and prompts', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 52, method: 'initialize', params: {} });
+		const result = body.result as Record<string, unknown>;
+		const caps = result.capabilities as Record<string, unknown>;
+		expect(caps).toHaveProperty('tools');
+		expect(caps).toHaveProperty('resources');
+		expect(caps).toHaveProperty('prompts');
+	});
+
+	it('POST /mcp CORS headers include Authorization', async () => {
+		const response = await postMcp({ jsonrpc: '2.0', id: 53, method: 'tools/list' });
+		expect(response.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
 	});
 
 	it('tools/list → no x-oracle-note on first use (request_count = 1)', async () => {

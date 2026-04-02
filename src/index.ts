@@ -4780,6 +4780,7 @@ const MCP_TOOLS = [
 					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN'],
 				},
 			},
+			additionalProperties: false,
 		},
 	},
 	{
@@ -4803,6 +4804,7 @@ const MCP_TOOLS = [
 					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN'],
 				},
 			},
+			additionalProperties: false,
 		},
 	},
 	{
@@ -4813,7 +4815,7 @@ const MCP_TOOLS = [
 			'Covers equities (XNYS/NYSE, XNAS/NASDAQ, XLON/London, XJPX/Tokyo, XPAR/Paris, XHKG/Hong Kong, XSES/Singapore, XASX/ASX, XBOM/BSE, XNSE/NSE, XSHG/Shanghai, XSHE/Shenzhen, XKRX/Korea, XJSE/Johannesburg, XBSP/Brazil, XSWX/Zurich, XMIL/Milan, XIST/Istanbul, XSAU/Riyadh, XDFM/Dubai, XNZE/Auckland, XHEL/Helsinki, XSTO/Stockholm), derivatives (XCBT/CME, XNYM/NYMEX, XCBO/Cboe), and 24/7 crypto (XCOI/Coinbase, XBIN/Binance). ' +
 			'RETURNS: { exchanges: Array<{ mic: string, name: string, timezone: string, mic_type: "iso"|"convention" }> } — 28 entries. ' +
 			'Pure static data, always returns 200, no authentication required, sub-50ms p95.',
-		inputSchema: { type: 'object', properties: {} },
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
 		name: 'verify_receipt',
@@ -4828,11 +4830,13 @@ const MCP_TOOLS = [
 			type: 'object',
 			properties: {
 				receipt: {
-					type:        'object',
-					description: 'The complete signed receipt object as returned by get_market_status or /v5/status. Must include the signature field (hex-encoded Ed25519).',
+					type:                 'object',
+					description:          'The complete signed receipt object as returned by get_market_status or /v5/status. Must include the signature field (hex-encoded Ed25519).',
+					additionalProperties: true,
 				},
 			},
-			required: ['receipt'],
+			required:             ['receipt'],
+			additionalProperties: false,
 		},
 	},
 ];
@@ -5998,8 +6002,8 @@ const MCP_RESPONSE_HEADERS = {
 	'Content-Type':                 'application/json',
 	'MCP-Version':                  MCP_PROTOCOL_VERSION,
 	'Access-Control-Allow-Origin':  '*',
-	'Access-Control-Allow-Methods': 'POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Content-Type',
+	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+	'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
 // ─── OAuth 2.0 Token Endpoint ────────────────────────────────────────────────
@@ -6246,7 +6250,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			return rpcResult({
 				protocolVersion: MCP_PROTOCOL_VERSION,
 				serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
-				capabilities:    { tools: {} },
+				capabilities:    { tools: {}, resources: {}, prompts: {} },
 				instructions:
 					'Headless Oracle provides cryptographically signed market-state attestations (SMA receipts) for 28 global exchanges — equities, derivatives, and 24/7 crypto. ' +
 					'These tools are a PRE-EXECUTION gate, not optional data. Call them before any financial transaction, trade execution, or capital commitment. ' +
@@ -6444,6 +6448,10 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 			return rpcError(-32601, `Method not found: tools/call/${name}`);
 		}
+
+		case 'ping':
+			// MCP 2024-11-05 utility method — liveness check, must respond with empty result.
+			return rpcResult({});
 
 		case 'resources/list':
 			return rpcResult({ resources: [] });
