@@ -2557,6 +2557,67 @@ describe('POST /mcp — verify_receipt tool', () => {
 		expect(result.valid).toBe(false);
 		expect(result.reason).toBe('MALFORMED_RECEIPT');
 	});
+
+	it('null receipt argument → valid: false, reason: MALFORMED_RECEIPT', async () => {
+		const result = await callVerify(null);
+		expect(result.valid).toBe(false);
+		expect(result.reason).toBe('MALFORMED_RECEIPT');
+	});
+
+	it('string receipt argument → valid: false, reason: MALFORMED_RECEIPT', async () => {
+		const result = await callVerify('not-an-object');
+		expect(result.valid).toBe(false);
+		expect(result.reason).toBe('MALFORMED_RECEIPT');
+	});
+
+	it('malformed hex signature (wrong length) → valid: false, reason: MALFORMED_RECEIPT', async () => {
+		// Ed25519 signatures must be exactly 64 bytes (128 hex chars). A shorter string will
+		// cause ed.verify() to throw, which the handler catches and maps to MALFORMED_RECEIPT.
+		const result = await callVerify({ mic: 'XNYS', status: 'OPEN', expires_at: new Date(Date.now() + 60000).toISOString(), signature: 'deadbeef' });
+		expect(result.valid).toBe(false);
+		expect(result.reason).toBe('MALFORMED_RECEIPT');
+	});
+});
+
+// ─── MCP protocol conformance — edge cases ───────────────────────────────────
+
+describe('POST /mcp — protocol conformance edge cases', () => {
+	const mcpPost = (body: unknown) =>
+		fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify(body),
+		});
+
+	it('tools/call with missing name → -32602 Invalid Params (not 500, not -32601)', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { arguments: {} } });
+		const body = await res.json() as { error?: { code: number; message: string } };
+		expect(res.status).toBe(200); // MCP always HTTP 200
+		expect(body.error?.code).toBe(-32602);
+	});
+
+	it('tools/call get_market_schedule with unknown MIC → isError: true, UNKNOWN_MIC', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_market_schedule', arguments: { mic: 'FAKE' } } });
+		const body = await res.json() as { result?: { isError?: boolean; content?: Array<{ text: string }> } };
+		expect(res.status).toBe(200);
+		expect(body.result?.isError).toBe(true);
+		const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+		expect(payload.error).toBe('UNKNOWN_MIC');
+	});
+
+	it('initialize response has all required MCP 2024-11-05 fields', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } });
+		const body = await res.json() as { result?: Record<string, unknown> };
+		expect(res.status).toBe(200);
+		const r = body.result!;
+		expect(r).toHaveProperty('protocolVersion', '2024-11-05');
+		expect(r).toHaveProperty('serverInfo');
+		expect(r).toHaveProperty('capabilities');
+		expect((r.capabilities as Record<string, unknown>)).toHaveProperty('tools');
+		expect((r.capabilities as Record<string, unknown>)).toHaveProperty('resources');
+		expect((r.capabilities as Record<string, unknown>)).toHaveProperty('prompts');
+		expect(r).toHaveProperty('instructions');
+	});
 });
 
 // ─── Billing: Auth hot path — paid keys via KV ───────────────────────────────

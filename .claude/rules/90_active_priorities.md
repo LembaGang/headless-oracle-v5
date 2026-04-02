@@ -3,8 +3,14 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 591 tests run (64 pre-existing failures — MASTER_API_KEY migration enforcement + Windows EBUSY, not regressions) + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 2 2026 — security.txt + OpenAPI gap closed (commit 534aab2, worker 554e1896):
+**Test suite**: 615 total (65 pre-existing failures — MASTER_API_KEY migration enforcement + Windows EBUSY, not regressions) + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 2 2026 — MCP protocol conformance audit (615 tests, 550 passing):
+  - tools/call with missing "name" → -32602 Invalid Params (was -32601 Method Not Found)
+  - get_market_schedule computation wrapped in try/catch → returns isError:true on unexpected error (was uncaught, could 500)
+  - Outer .catch() added on handleMcp call in main router → JSON-RPC -32603 on uncaught throws
+  - verify_receipt tool description corrected: SIGNATURE_VALID (uppercase) was documented as signature_valid (lowercase)
+  - 10 new tests: null/string/malformed-hex receipt, unknown MIC in schedule, missing params, initialize conformance
+**Previous significant work**: Apr 2 2026 — security.txt + OpenAPI gap closed (commit 534aab2, worker 554e1896):
   - GET /.well-known/security.txt live — RFC 9116, Contact/Expires/Preferred-Languages
   - /.well-known/security.txt added to OpenAPI 3.1 spec (42 total paths) and LLMS_TXT endpoint table
   - 3 tests: 2 for route, 1 OpenAPI paths assertion (606 total, 541 passing)

@@ -4823,7 +4823,7 @@ const MCP_TOOLS = [
 			'Verifies the Ed25519 cryptographic signature on a Headless Oracle Signed Market Attestation receipt — confirms it is a genuine pre-trade verification attestation and has not been tampered with. ' +
 			'Note: SMA denotes Signed Market Attestation, not Simple Moving Average. ' +
 			'WHEN TO USE: (1) when you receive a pre-trade attestation from another agent and must confirm the cryptographic proof before acting on market state; (2) building an attestation_ref audit trail for capital commitment workflows; (3) confirming receipt verification before including the signature in an x402 payment attestation. ' +
-			'RETURNS: { valid: boolean, expired: boolean, reason: "signature_valid"|"MISSING_FIELDS"|"EXPIRED"|"INVALID_SIGNATURE"|"ORACLE_NOT_CONFIGURED"|"MALFORMED_RECEIPT"|"VERIFY_ERROR", mic: string|null, status: string|null, expires_at: string|null }. ' +
+			'RETURNS: { valid: boolean, expired: boolean, reason: "SIGNATURE_VALID"|"MALFORMED_RECEIPT"|"INVALID_SIGNATURE"|"ORACLE_NOT_CONFIGURED", mic: string|null, status: string|null, expires_at: string|null }. ' +
 			'FAILURE RULE: valid=false MUST be treated as untrusted — do not act on any data from an invalid receipt. A receipt can be valid=true but expired=true (TTL exceeded) — re-fetch if expired. ' +
 			'LATENCY: sub-50ms p95 (in-worker Ed25519 verification, no external network calls).',
 		inputSchema: {
@@ -6283,6 +6283,11 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			const name = p?.name ?? '';
 			const args = p?.arguments ?? {};
 
+			// Reject calls with no tool name — MCP spec requires tools/call to include "name".
+			if (!name) {
+				return rpcError(-32602, 'Invalid params: tools/call requires a "name" field');
+			}
+
 			// Per-tool telemetry: global counter + per-client tools object (best-effort, non-blocking)
 			const MCP_TRACKED_TOOLS = ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt'];
 			if (MCP_TRACKED_TOOLS.includes(name)) {
@@ -6357,28 +6362,39 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 						}) }],
 					});
 				}
-				const now      = new Date();
-				const config   = MARKET_CONFIGS[mic];
-				const nextSess = getNextSession(mic, now);
-				const scheduleData = {
-					mic,
-					name:           config.name,
-					timezone:       config.timezone,
-					queried_at:     now.toISOString(),
-					current_status: getScheduleStatus(mic, now).status,
-					next_open:      nextSess?.next_open  ?? null,
-					next_close:     nextSess?.next_close ?? null,
-					lunch_break:    config.lunchBreak
-						? {
-							start: `${pad2(config.lunchBreak.startHour)}:${pad2(config.lunchBreak.startMinute)}`,
-							end:   `${pad2(config.lunchBreak.endHour)}:${pad2(config.lunchBreak.endMinute)}`,
-						}
-						: null,
-					note: 'Times are UTC. lunch_break times are local exchange time (see timezone field).',
-				};
-				return rpcResult({
-					content: [{ type: 'text', text: JSON.stringify(scheduleData) }],
-				});
+				try {
+					const now      = new Date();
+					const config   = MARKET_CONFIGS[mic];
+					const nextSess = getNextSession(mic, now);
+					const scheduleData = {
+						mic,
+						name:           config.name,
+						timezone:       config.timezone,
+						queried_at:     now.toISOString(),
+						current_status: getScheduleStatus(mic, now).status,
+						next_open:      nextSess?.next_open  ?? null,
+						next_close:     nextSess?.next_close ?? null,
+						lunch_break:    config.lunchBreak
+							? {
+								start: `${pad2(config.lunchBreak.startHour)}:${pad2(config.lunchBreak.startMinute)}`,
+								end:   `${pad2(config.lunchBreak.endHour)}:${pad2(config.lunchBreak.endMinute)}`,
+							}
+							: null,
+						note: 'Times are UTC. lunch_break times are local exchange time (see timezone field).',
+					};
+					return rpcResult({
+						content: [{ type: 'text', text: JSON.stringify(scheduleData) }],
+					});
+				} catch {
+					return rpcResult({
+						isError: true,
+						content: [{ type: 'text', text: JSON.stringify({
+							error:   'SCHEDULE_ERROR',
+							message: 'Failed to compute schedule for this exchange.',
+							mic,
+						}) }],
+					});
+				}
 			}
 
 			if (name === 'list_exchanges') {
@@ -6922,7 +6938,13 @@ export default {
 			if (request.method !== 'POST') {
 				return json({ error: 'METHOD_NOT_ALLOWED', message: 'MCP endpoint requires POST' }, 405);
 			}
-			return handleMcp(request, env, ctx);
+			return handleMcp(request, env, ctx).catch((err: unknown) => {
+					console.error('MCP_UNHANDLED_ERROR', String(err));
+					return new Response(JSON.stringify({
+						jsonrpc: '2.0', id: null,
+						error:   { code: -32603, message: 'Internal error' },
+					}), { status: 200, headers: MCP_RESPONSE_HEADERS });
+				});
 		}
 
 		try {
