@@ -98,6 +98,19 @@ tools:
       Use to discover supported markets before calling get_market_status.
     parameters: {}
 
+  - name: verify_receipt
+    description: |
+      Verifies an Ed25519-signed market receipt in-worker. Checks signature validity, TTL expiry,
+      and field completeness. Returns { valid, expired, reason, mic, status, expires_at }.
+      Use to confirm a receipt has not been tampered with before acting on its status.
+    inputSchema:
+      type: object
+      properties:
+        receipt:
+          type: object
+          description: "A signed market receipt object as returned by get_market_status."
+          required: true
+
 supported_exchanges:
   - mic: XNYS
     name: New York Stock Exchange
