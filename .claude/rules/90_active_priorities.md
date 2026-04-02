@@ -4,7 +4,12 @@
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
 **Test suite**: 591 tests run (64 pre-existing failures — MASTER_API_KEY migration enforcement + Windows EBUSY, not regressions) + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 2 2026 — x402 mainnet migration + Bazaar discovery (commit abd89c7, worker 086e72cf):
+**Last significant work**: Apr 2 2026 — MIT license added (commit c9b3b25):
+  - Added LICENSE (MIT) and "license": "MIT" to package.json
+  - Required for Glama score — "license not found" was causing F grade on punkpeye/awesome-mcp-servers PR #4005
+  - HUMAN TASK: Glama re-scans repos periodically; check https://glama.ai/mcp/servers/LembaGang/headless-oracle-v5 for updated score in ~24h
+
+**Previous significant work**: Apr 2 2026 — x402 mainnet migration + Bazaar discovery (commit abd89c7, worker 086e72cf):
   - x402 switched from Base Sepolia testnet to Base mainnet via CDP facilitator (https://api.cdp.coinbase.com/platform/v2/x402)
   - Network updated: eip155:84532 → eip155:8453, USDC contract 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
   - X402_ENABLED now defaults true (opt-out via X402_ENABLED=false); was previously opt-in
