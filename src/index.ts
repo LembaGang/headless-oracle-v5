@@ -3892,13 +3892,24 @@ These tools are a PRE-EXECUTION gate. Call \`get_market_status\` before any trad
 - [Go (headless-oracle-go)](https://headlessoracle.com/docs/sdks/go)
 
 ## Quick Start
-# Get a sandbox key (7 days, 200 calls) — email required:
+# Path A — email sandbox (human onboarding):
 POST https://api.headlessoracle.com/v5/sandbox
 Body: { "email": "you@example.com" }
+→ Returns sb_ key (7 days, 200 calls)
 
-# Use it immediately:
-GET https://api.headlessoracle.com/v5/status?mic=XNYS
-Header: X-Oracle-Key: {your_sandbox_key}
+# Path B — x402 agent onboarding (no email, no human):
+POST https://api.headlessoracle.com/v5/sandbox
+Header: X-Payment: {"txHash":"0x...","network":"base-mainnet","amount":"1000","paymentAddress":"0x26D4...","memo":""}
+→ Verifies $0.001 USDC payment on Base mainnet → Returns ho_crd_ credit key (10 credits, no expiry)
+
+# Path C — per-request x402 (no key ever needed):
+GET https://api.headlessoracle.com/v5/status?mic=XNYS → 402 with payment details
+GET https://api.headlessoracle.com/v5/status?mic=XNYS + X-Payment header → 200 signed receipt
+
+# Path D — mint persistent key (99 USDC builder / 299 USDC pro):
+POST https://api.headlessoracle.com/v5/x402/mint
+Body: { "tx_hash": "0x...", "tier": "builder" }
+→ Returns ho_live_ key (50,000 calls/day, no expiry)
 
 # Demo (signed receipt, no key needed):
 GET https://api.headlessoracle.com/v5/demo?mic=XNYS
@@ -3909,7 +3920,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/demo | GET | No | Signed receipt, demo mode | SMA receipt (receipt_mode=demo) |
 | /v5/status | GET | Yes | Signed receipt, live mode | SMA receipt (receipt_mode=live) |
 | /v5/batch | GET | Yes | Signed receipts for multiple MICs | { summary, receipts[] } |
-| /v5/sandbox | POST | No | Sandbox key (7 days, 200 calls) — email required | { api_key, tier, email_captured, expires_at } |
+| /v5/sandbox | POST | No | Sandbox key via email OR credit key via x402 payment ($0.001) | { api_key, tier, ...} |
 | /v5/schedule | GET | No | Next open/close times (not signed) | { next_open, next_close, lunch_break, settlement_window } |
 | /v5/exchanges | GET | No | All 28 supported exchanges | { exchanges: [{mic, name, timezone, mic_type}] } |
 | /v5/keys | GET | No | Public signing key + canonical spec | { keys: [{key_id, public_key, algorithm}] } |
@@ -5439,55 +5450,54 @@ const OPENAPI_SPEC = {
 		'/v5/sandbox': {
 			post: {
 				tags:        ['Authentication'],
-				summary:     'Email-gated 7-day sandbox API key',
-				description: 'Provisions a temporary API key valid for 7 days and 200 calls. Requires an email address. ' +
-					'One key per email address and per IP address (7-day window). ' +
-					'Sandbox keys are rejected by /v5/receipts and /v5/webhooks/subscribe (paid features). ' +
-					'A welcome email with the key and quickstart instructions is sent to the provided address.',
+				summary:     'Provision a sandbox or credit key for testing',
+				description: 'Two paths: (1) Email path — POST with { "email": "..." } to get a sb_ sandbox key (7 days, 200 calls). ' +
+					'One key per email/IP per 7-day window. ' +
+					'(2) x402 agent path — POST with X-Payment header containing a valid Base mainnet USDC payment ($0.001). ' +
+					'Skips email entirely; returns a ho_crd_ credit key with 10 credits. ' +
+					'Agent-native: no human in the loop. ' +
+					'Sandbox keys are rejected by /v5/receipts and /v5/webhooks/subscribe (paid features).',
 				requestBody: {
-					required: true,
+					required: false,
 					content: { 'application/json': { schema: {
 						type: 'object',
-						required: ['email'],
 						properties: {
-							email:    { type: 'string', format: 'email', example: 'developer@example.com' },
+							email:    { type: 'string', format: 'email', example: 'developer@example.com', description: 'Required for email path. Omit when using X-Payment header.' },
 							use_case: { type: 'string', maxLength: 500, description: "Brief description of what you're building (helps us prioritise)." },
 						},
 					} } },
 				},
+				parameters: [{
+					name:        'X-Payment',
+					in:          'header',
+					required:    false,
+					description: 'x402 payment proof (JSON). When present, skips email verification and issues a credit key. Format: { "txHash": "0x...", "network": "base-mainnet", "amount": "1000", "paymentAddress": "0x...", "memo": "" }',
+					schema:      { type: 'string' },
+				}],
 				responses: {
 					'200': {
-						description: 'Sandbox key issued',
+						description: 'Key issued (sandbox or credit)',
 						content: { 'application/json': { schema: {
 							type: 'object',
 							properties: {
 								api_key:         { type: 'string', example: 'sb_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4' },
-								tier:            { type: 'string', enum: ['sandbox'] },
-								email_captured:  { type: 'boolean', example: true },
+								tier:            { type: 'string', enum: ['sandbox', 'credits'] },
+								email_captured:  { type: 'boolean' },
 								expires_at:      { type: 'string', format: 'date-time' },
-								calls_remaining: { type: 'integer', example: 200 },
-								upgrade:         { type: 'string', example: 'https://headlessoracle.com/upgrade' },
-								follow_up:       { type: 'string' },
-								quickstart: {
-									type: 'object',
-									properties: {
-										curl:   { type: 'string' },
-										node:   { type: 'string' },
-										python: { type: 'string' },
-									},
-								},
+								calls_remaining: { type: 'integer' },
+								credits:         { type: 'integer', description: 'Credit balance (x402 path only).' },
+								upgrade_url:     { type: 'string' },
+								quickstart:      { type: 'object' },
 							},
 						} } },
 					},
 					'400': {
-						description: 'Email missing or invalid',
-						content: { 'application/json': { schema: {
-							type: 'object',
-							properties: {
-								error:   { type: 'string', example: 'EMAIL_REQUIRED' },
-								message: { type: 'string' },
-							},
-						} } },
+						description: 'Email missing or invalid (email path)',
+						content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } },
+					},
+					'402': {
+						description: 'X-Payment header invalid or payment verification failed (x402 path)',
+						content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } },
 					},
 					'429': {
 						description: 'Sandbox allocation already used for this IP or email',
@@ -5500,6 +5510,10 @@ const OPENAPI_SPEC = {
 								plans:       { type: 'object' },
 							},
 						} } },
+					},
+					'503': {
+						description: 'x402 payments not configured on this instance',
+						content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } },
 					},
 				},
 			},
@@ -9723,6 +9737,8 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 			}
 
 			// ── POST /v5/sandbox — email-gated sandbox key (7 days, 200 calls) ────────────────────
+			// Alternative agent-native path: X-Payment header with valid x402 payment → ho_crd_ key
+			// (10 credits, no email, no fingerprint blocking — payment proves intent).
 			if (url.pathname === '/v5/sandbox') {
 				if (request.method === 'GET') {
 					// Helpful error for callers using the old GET interface.
@@ -9730,6 +9746,50 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 				if (request.method !== 'POST') {
 					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
+				}
+
+				// ── x402 alternative path: agent pays $0.001 USDC, gets a credit key immediately ────
+				const sandboxPaymentHeader = request.headers.get('X-Payment');
+				if (sandboxPaymentHeader) {
+					if (!env.ORACLE_PAYMENT_ADDRESS) {
+						return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 payments are not configured on this instance. Use email-based provisioning.' }, 503);
+					}
+					let sbPayment: X402Payment;
+					try {
+						sbPayment = JSON.parse(sandboxPaymentHeader) as X402Payment;
+					} catch {
+						return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON with { txHash, network, amount, paymentAddress }' }, 402, X402_RESPONSE_HEADERS);
+					}
+					const sbVerify = await verifyX402Payment(sbPayment, env.ORACLE_PAYMENT_ADDRESS, env);
+					if (!sbVerify.valid) {
+						return json({ error: 'INVALID_PAYMENT', message: sbVerify.detail ?? 'Payment verification failed' }, 402, X402_RESPONSE_HEADERS);
+					}
+					// Payment verified — mint a ho_crd_ key with 10 credits (no email, no fingerprint)
+					const sbCrdBytes = crypto.getRandomValues(new Uint8Array(32));
+					const sbCrdKey   = 'ho_crd_' + toHex(sbCrdBytes);
+					const sbCrdHash  = await sha256Hex(sbCrdKey);
+					const sbCrdMeta  = JSON.stringify({
+						tier:       'credits',
+						status:     'active',
+						balance:    10,
+						created_at: now.toISOString(),
+						source:     'x402_sandbox',
+					});
+					if (env.ORACLE_API_KEYS) {
+						await env.ORACLE_API_KEYS.put(sbCrdHash, sbCrdMeta);
+					}
+					console.log(JSON.stringify({ event: 'SANDBOX_X402_KEY_MINTED', tx_hash: sbPayment.txHash }));
+					return json({
+						api_key:         sbCrdKey,
+						tier:            'credits',
+						credits:         10,
+						source:          'x402_sandbox',
+						note:            'Paid via x402. Credits do not expire. Buy more at /v5/credits/purchase.',
+						upgrade_url:     'https://headlessoracle.com/upgrade',
+						quickstart: {
+							curl:   `curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' -H 'X-Oracle-Key: ${sbCrdKey}'`,
+						},
+					});
 				}
 
 				// Email is required — no anonymous sandbox keys.

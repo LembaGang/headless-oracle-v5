@@ -5593,6 +5593,100 @@ describe('Tier-gated 402 responses (Task 7)', () => {
 	});
 });
 
+// ─── POST /v5/sandbox — x402 agent-native path ───────────────────────────────
+
+describe('POST /v5/sandbox — x402 alternative path', () => {
+	// Uses the existing mockBaseRpc helper (defined in the x402 payment section above)
+	// and the shared TEST_PAYMENT_ADDRESS constant.
+
+	it('invalid JSON in X-Payment → 402 INVALID_PAYMENT', async () => {
+		const res = await fetchWorker('/v5/sandbox', {
+			method:  'POST',
+			headers: { 'X-Payment': 'not-valid-json' },
+		});
+		expect(res.status).toBe(402);
+		const body = await res.json() as { error: string; message: string };
+		expect(body.error).toBe('INVALID_PAYMENT');
+	});
+
+	it('failed payment verification → 402 INVALID_PAYMENT', async () => {
+		// Replay a tx that is already marked used
+		const txHash = '0x' + '77'.repeat(32);
+		await env.ORACLE_TELEMETRY.put(`x402_used:${txHash}`, '1', { expirationTtl: 60 });
+		try {
+			const payment = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+			const res = await fetchWorker('/v5/sandbox', {
+				method:  'POST',
+				headers: { 'X-Payment': payment },
+			});
+			expect(res.status).toBe(402);
+			const body = await res.json() as { error: string };
+			expect(body.error).toBe('INVALID_PAYMENT');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`x402_used:${txHash}`);
+		}
+	});
+
+	it('valid x402 payment → 200 with ho_crd_ key and 10 credits', async () => {
+		const txHash  = '0x' + '88'.repeat(32);
+		const nowSec  = Math.floor(Date.now() / 1000);
+		const restore = mockBaseRpc(TEST_PAYMENT_ADDRESS, '1000', nowSec - 10);
+		try {
+			const payment = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+			const res = await fetchWorker('/v5/sandbox', {
+				method:  'POST',
+				headers: { 'X-Payment': payment },
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('api_key');
+			expect(typeof body.api_key).toBe('string');
+			expect((body.api_key as string).startsWith('ho_crd_')).toBe(true);
+			expect(body).toHaveProperty('tier', 'credits');
+			expect(body).toHaveProperty('credits', 10);
+			expect(body).toHaveProperty('source', 'x402_sandbox');
+			// Key must be stored in ORACLE_API_KEYS KV with balance=10
+			const encoder = new TextEncoder();
+			const hashBuf = await crypto.subtle.digest('SHA-256', encoder.encode(body.api_key as string));
+			const keyHash = Array.from(new Uint8Array(hashBuf), (b) => b.toString(16).padStart(2, '0')).join('');
+			const stored  = await env.ORACLE_API_KEYS.get(keyHash);
+			expect(stored).not.toBeNull();
+			const parsed  = JSON.parse(stored!) as Record<string, unknown>;
+			expect(parsed).toHaveProperty('tier', 'credits');
+			expect(parsed).toHaveProperty('balance', 10);
+			expect(parsed).toHaveProperty('source', 'x402_sandbox');
+		} finally {
+			restore();
+		}
+	});
+
+	it('x402-issued credit key authenticates /v5/status → 200', async () => {
+		const txHash  = '0x' + '99'.repeat(32);
+		const nowSec  = Math.floor(Date.now() / 1000);
+		const restore = mockBaseRpc(TEST_PAYMENT_ADDRESS, '1000', nowSec - 10);
+		try {
+			const payment = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+			const sandboxRes = await fetchWorker('/v5/sandbox', {
+				method:  'POST',
+				headers: { 'X-Payment': payment },
+			});
+			expect(sandboxRes.status).toBe(200);
+			const { api_key } = await sandboxRes.json() as { api_key: string };
+			expect(api_key.startsWith('ho_crd_')).toBe(true);
+
+			const statusRes = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': api_key },
+			});
+			expect(statusRes.status).toBe(200);
+			const statusBody = await statusRes.json() as Record<string, unknown>;
+			expect(['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN']).toContain(statusBody.status);
+			expect(statusBody).toHaveProperty('signature');
+		} finally {
+			restore();
+		}
+	});
+});
+
 // ─── FINDING-10: MCP initialize capabilities ──────────────────────────────────
 
 describe('MCP initialize capabilities (FINDING-10)', () => {
