@@ -1964,6 +1964,20 @@ async function verifyX402Payment(
 
 	// Mark as used — 600s TTL prevents replay across the boundary window
 	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 600 }).catch(() => {});
+	// Track payment stats for /v5/payment-proof — best-effort, non-blocking
+	void (async () => {
+		try {
+			const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
+			const count    = parseInt(countStr ?? '0', 10) || 0;
+			const nowIso   = new Date().toISOString();
+			if (count === 0) {
+				await env.ORACLE_TELEMETRY.put('x402_first_tx',         txHash.slice(-12)).catch(() => {});
+				await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
+			}
+			await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
+			await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
+		} catch { /* best-effort */ }
+	})();
 	console.log(JSON.stringify({ event: 'X402_PAYMENT_VERIFIED', tx_hash: txHash, amount_units: amountPaid.toString() }));
 	return { valid: true };
 }
@@ -2134,6 +2148,21 @@ async function verifyX402ViaFacilitator(
 			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_SETTLE_REJECTED: ${reason}` };
 		}
 		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleBody.txHash ?? 'n/a' }));
+		// Track payment stats for /v5/payment-proof — best-effort, non-blocking
+		const _facilTxHash = settleBody.txHash ?? '';
+		void (async () => {
+			try {
+				const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
+				const count    = parseInt(countStr ?? '0', 10) || 0;
+				const nowIso   = new Date().toISOString();
+				if (count === 0 && _facilTxHash) {
+					await env.ORACLE_TELEMETRY.put('x402_first_tx',         _facilTxHash.slice(-12)).catch(() => {});
+					await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
+				}
+				await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
+				await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
+			} catch { /* best-effort */ }
+		})();
 		return { valid: true, status: 'payment-accepted', txHash: settleBody.txHash };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'unknown';
@@ -3920,6 +3949,146 @@ bun run oracle-gate.ts
 - **Return \`422 Unprocessable Entity\` (not \`200\`) for rejected signals.** A 200 response with \`accepted: false\` in the body is ambiguous for agent callers. A 4xx status is deterministic.
 `;
 
+// ─── IDE Setup Docs ───────────────────────────────────────────────────────────
+// Served at /docs/cline and /docs/continue for VS Code extension users.
+
+const CLINE_CONFIG_MD = `# Headless Oracle — Cline Setup
+
+Cline (VS Code extension) supports MCP servers. Add Headless Oracle via the Cline MCP config.
+
+## Setup
+
+In VS Code with Cline installed, open the Cline sidebar → click the MCP icon → **Edit MCP Settings**.
+
+This opens \`cline_mcp_settings.json\`. Add the following entry inside \`mcpServers\`:
+
+**Demo mode (no API key — free):**
+\`\`\`json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://headlessoracle.com/mcp"]
+    }
+  }
+}
+\`\`\`
+
+**With API key (live mode):**
+\`\`\`json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://headlessoracle.com/mcp"],
+      "env": {
+        "HEADLESS_ORACLE_API_KEY": "YOUR_API_KEY_HERE"
+      }
+    }
+  }
+}
+\`\`\`
+
+Requires Node.js 18+. Restart VS Code after saving.
+
+## Config file location
+
+| Platform | Path |
+|----------|------|
+| macOS | \`~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json\` |
+| Windows | \`%APPDATA%\\Code\\User\\globalStorage\\saoudrizwan.claude-dev\\settings\\cline_mcp_settings.json\` |
+| Linux | \`~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json\` |
+
+## Available tools
+
+| Tool | Description |
+|------|-------------|
+| \`get_market_status\` | Signed receipt: OPEN/CLOSED/HALTED/UNKNOWN for any exchange |
+| \`get_market_schedule\` | Next open/close times in UTC for any exchange |
+| \`list_exchanges\` | All 28 supported exchanges with MIC codes and timezones |
+| \`verify_receipt\` | Ed25519 signature verification on any receipt |
+
+## Notes
+
+- UNKNOWN and HALTED receipts must be treated as CLOSED — do not execute trades
+- All market receipts are Ed25519 signed with a 60-second TTL
+- x402 per-request micropayments supported (0.001 USDC/req on Base mainnet)
+`;
+
+const CONTINUE_CONFIG_MD = `# Headless Oracle — Continue.dev Setup
+
+Continue.dev supports MCP servers via \`~/.continue/config.json\`.
+
+## Setup
+
+Add the following to your \`~/.continue/config.json\` under \`mcpServers\`:
+
+**Demo mode (no API key — free):**
+\`\`\`json
+{
+  "mcpServers": [
+    {
+      "name": "headless-oracle",
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://headlessoracle.com/mcp"]
+    }
+  ]
+}
+\`\`\`
+
+**With API key (live mode):**
+\`\`\`json
+{
+  "mcpServers": [
+    {
+      "name": "headless-oracle",
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://headlessoracle.com/mcp"],
+      "env": {
+        "X_ORACLE_KEY": "YOUR_API_KEY_HERE"
+      }
+    }
+  ]
+}
+\`\`\`
+
+For header-based auth (if your Continue version supports \`type: "http"\`):
+
+\`\`\`json
+{
+  "mcpServers": [
+    {
+      "name": "headless-oracle",
+      "transport": {
+        "type": "http",
+        "url": "https://headlessoracle.com/mcp",
+        "headers": {
+          "X-Oracle-Key": "YOUR_API_KEY_HERE"
+        }
+      }
+    }
+  ]
+}
+\`\`\`
+
+Requires Node.js 18+. Reload the VS Code window after saving \`config.json\`.
+
+## Available tools
+
+| Tool | Description |
+|------|-------------|
+| \`get_market_status\` | Signed receipt: OPEN/CLOSED/HALTED/UNKNOWN for any exchange |
+| \`get_market_schedule\` | Next open/close times in UTC for any exchange |
+| \`list_exchanges\` | All 28 supported exchanges with MIC codes and timezones |
+| \`verify_receipt\` | Ed25519 signature verification on any receipt |
+
+## Notes
+
+- UNKNOWN and HALTED receipts must be treated as CLOSED
+- All receipts are Ed25519 signed with a 60-second TTL
+- x402 per-request micropayments supported (0.001 USDC/req on Base mainnet)
+`;
+
 const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
@@ -3961,6 +4130,18 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
   <url>
     <loc>https://headlessoracle.com/docs/integrations/datacamp-workspace</loc>
     <lastmod>2026-03-26</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/docs/cline</loc>
+    <lastmod>2026-04-05</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/docs/continue</loc>
+    <lastmod>2026-04-05</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
@@ -4181,6 +4362,12 @@ Protocol: MCP-2024-11-05
 Endpoint: POST https://headlessoracle.com/mcp
 Tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt
 Auth: optional Bearer token (Oracle API key via POST /oauth/token)
+
+## IDE Setup Guides
+- [Cline (VS Code)](https://headlessoracle.com/docs/cline) — VS Code Cline extension setup
+- [Continue.dev](https://headlessoracle.com/docs/continue) — Continue.dev VS Code extension setup
+- [Cursor](https://headlessoracle.com/docs/cursor-setup) — Cursor IDE setup
+- [Windsurf](https://headlessoracle.com/docs/windsurf-config) — Windsurf IDE setup
 `
 
 // SKILL.md — step-by-step integration guide optimised for AI agents.
@@ -4935,6 +5122,15 @@ const MCP_TOOLS = [
 				},
 			},
 			additionalProperties: false,
+		},
+		_meta: {
+			x402: {
+				required_without_key: true,
+				amount_usdc:          '0.001',
+				network:              'base',
+				payment_header:       'X-Payment',
+				discovery:            '/.well-known/x402.json',
+			},
 		},
 	},
 	{
@@ -7049,7 +7245,7 @@ export default {
 			};
 			return new Response(JSON.stringify(responseBody), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...extraHeaders },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...(status === 402 ? { 'Link': '</v5/why-not-free>; rel="payment"' } : {}), ...extraHeaders },
 			});
 		};
 
@@ -7915,6 +8111,10 @@ export default {
 					return new Response(SMA_RFC_001_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
 					if (p === '/docs/mpas' || p === '/docs/mpas.md')
 						return new Response(MPAS_SPEC_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
+				if (p === '/docs/cline' || p === '/docs/cline.md')
+					return new Response(CLINE_CONFIG_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
+				if (p === '/docs/continue' || p === '/docs/continue.md')
+					return new Response(CONTINUE_CONFIG_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
 				// Unknown /docs/ path — fall through to 404 below
 			}
 
@@ -9511,6 +9711,61 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						spec_url:  'https://headlessoracle.com/docs/rfc',
 						submitted: '2026-03-17',
 					},
+				});
+			}
+
+			// ── GET /v5/payment-proof — public on-chain payment ledger ────
+			// Returns live stats of USDC payments received on Base mainnet.
+			// Counts are best-effort from ORACLE_TELEMETRY KV — fail-safe zeros.
+			if (url.pathname === '/v5/payment-proof') {
+				const [countStr, firstTx, firstAt, lastAt] = await Promise.all([
+					env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_first_tx').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_first_payment_at').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_last_payment_at').catch(() => null),
+				]);
+				return json({
+					payment_count:    parseInt(countStr ?? '0', 10) || 0,
+					first_payment_at: firstAt ?? null,
+					first_payment_tx: firstTx ?? null,
+					last_payment_at:  lastAt  ?? null,
+					network:          'base',
+					asset:            'USDC',
+					contract:         '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+					verify_at:        'https://basescan.org/address/0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3#tokentxns',
+				});
+			}
+
+			// ── GET /v5/why-not-free — machine-readable upgrade ladder ─────
+			// Structured upgrade path for agents that receive a 402.
+			// Linked from every 402 via: Link: </v5/why-not-free>; rel="payment"
+			if (url.pathname === '/v5/why-not-free') {
+				return json({
+					sandbox: {
+						calls:  200,
+						window: '7 days',
+						how:    'POST /v5/sandbox with { "email": "you@example.com" }',
+					},
+					x402_per_request: {
+						cost: '$0.001 USDC',
+						how:  'Add X-Payment header — see /.well-known/x402.json for payment spec',
+					},
+					x402_sandbox: {
+						cost:    '$0.001 USDC',
+						credits: 10,
+						how:     'POST /v5/sandbox with X-Payment header (no email required)',
+					},
+					credits: {
+						cost:  '$5',
+						calls: 1000,
+						how:   'GET /upgrade',
+					},
+					builder: {
+						cost:  '$99/mo',
+						calls: '50K/day',
+						how:   'GET /upgrade',
+					},
+					agent_native_path: 'No key, no signup. Send X-Payment with any request OR POST /v5/sandbox with X-Payment to get 10 credits instantly.',
 				});
 			}
 
