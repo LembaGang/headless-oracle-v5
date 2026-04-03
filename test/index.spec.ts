@@ -1166,17 +1166,18 @@ describe('POST /mcp', () => {
 		expect(text).toBe('');
 	});
 
-	it('tools/list → 4 tools with names, descriptions, and inputSchema', async () => {
+	it('tools/list → 5 tools with names, descriptions, and inputSchema', async () => {
 		const body = await postMcpJSON({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
 		const result = body.result as Record<string, unknown>;
 		const tools = result.tools as Array<Record<string, unknown>>;
-		expect(tools).toHaveLength(4);
+		expect(tools).toHaveLength(5);
 
 		const names = tools.map((t) => t.name as string);
 		expect(names).toContain('get_market_status');
 		expect(names).toContain('get_market_schedule');
 		expect(names).toContain('list_exchanges');
 		expect(names).toContain('verify_receipt');
+		expect(names).toContain('get_payment_options');
 
 		for (const tool of tools) {
 			expect(typeof tool.description).toBe('string');
@@ -7663,5 +7664,122 @@ describe('x402 mainnet facilitator path (x402.org, X402_ENABLED=true)', () => {
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
+	});
+});
+
+
+// ─── Weekend Sprint Tier 2 — Items 5, 6, 7 ───────────────────────────────────
+
+describe('MCP initialize _meta block (Item 5A)', () => {
+	it('initialize response includes _meta with x402_enabled and payment URLs', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+		const result = body.result as Record<string, unknown>;
+		expect(result).toHaveProperty('_meta');
+		const meta = result._meta as Record<string, unknown>;
+		expect(meta).toHaveProperty('x402_enabled', true);
+		expect(meta).toHaveProperty('payment_count_url', '/v5/payment-proof');
+		expect(meta).toHaveProperty('upgrade_path_url', '/v5/why-not-free');
+		expect(meta).toHaveProperty('sandbox_url', 'POST /v5/sandbox');
+		expect(meta).toHaveProperty('x402_discovery', '/.well-known/x402.json');
+	});
+});
+
+describe('MCP get_payment_options tool (Item 5B)', () => {
+	it('tools/list includes get_payment_options', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+		const result = body.result as Record<string, unknown>;
+		const tools  = result.tools as Array<Record<string, unknown>>;
+		const names  = tools.map((t) => t.name);
+		expect(names).toContain('get_payment_options');
+	});
+
+	it('calling get_payment_options returns sandbox/x402/builder fields', async () => {
+		const body   = await postMcpJSON({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_payment_options', arguments: {} } });
+		const result = body.result as Record<string, unknown>;
+		const content = result.content as Array<Record<string, unknown>>;
+		expect(content[0]).toHaveProperty('type', 'text');
+		const data = JSON.parse(content[0].text as string) as Record<string, unknown>;
+		expect(data).toHaveProperty('sandbox');
+		expect(data).toHaveProperty('x402_per_request');
+		expect(data).toHaveProperty('builder');
+		expect(data).toHaveProperty('agent_native_path');
+	});
+});
+
+describe('POST /v5/verify — REST receipt verification (Item 6)', () => {
+	it('valid receipt → valid:true', async () => {
+		// Fetch a real signed receipt from /v5/demo to use as test input
+		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
+		const receiptBody = await receiptRes.json() as Record<string, unknown>;
+		const receipt     = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
+
+		const res  = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ receipt }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('valid', true);
+		expect(body).toHaveProperty('reason', 'SIGNATURE_VALID');
+	});
+
+	it('tampered receipt → valid:false with INVALID_SIGNATURE', async () => {
+		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
+		const receiptBody = await receiptRes.json() as Record<string, unknown>;
+		const base        = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
+		// Tamper the status field — signature will no longer match
+		const tampered    = { ...base, status: 'OPEN_TAMPERED' };
+
+		const res  = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ receipt: tampered }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('valid', false);
+		expect(body).toHaveProperty('reason', 'INVALID_SIGNATURE');
+	});
+
+	it('expired receipt → expired:true', async () => {
+		// Build a receipt with expires_at in the past (but valid signature is not checked for expiry flag)
+		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
+		const receiptBody = await receiptRes.json() as Record<string, unknown>;
+		const base        = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
+		// Patch expires_at to the past without changing signature — expired:true, valid may be true or false
+		const expired = { ...base, expires_at: '2020-01-01T00:00:00.000Z' };
+
+		const res  = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ receipt: expired }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		// expired field must be true regardless of signature validity
+		expect(body).toHaveProperty('expired', true);
+	});
+});
+
+describe('GET /x402 — x402 Foundation alignment (Item 7)', () => {
+	it('returns x402_compatible:true with required fields', async () => {
+		const res  = await fetchWorker('/x402');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('x402_compatible', true);
+		expect(body).toHaveProperty('network', 'base');
+		expect(body).toHaveProperty('facilitator', 'cdp');
+		expect(body).toHaveProperty('payment_proof', '/v5/payment-proof');
+		expect(body).toHaveProperty('discovery', '/.well-known/x402.json');
+		expect(body).toHaveProperty('foundation', 'https://x402.org');
+		expect(body).toHaveProperty('awesome_x402', 'https://github.com/xpaysh/awesome-x402');
+	});
+
+	it('402 responses include X-X402-Foundation: compatible header', async () => {
+		// /v5/status without key → 402 (uses the json() helper which adds X-X402-Foundation)
+		const res = await fetchWorker('/v5/status?mic=XNYS');
+		expect(res.status).toBe(402);
+		expect(res.headers.get('X-X402-Foundation')).toBe('compatible');
 	});
 });

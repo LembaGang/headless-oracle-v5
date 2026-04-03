@@ -2297,6 +2297,81 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 	};
 }
 
+// Shared upgrade-ladder data — reused by /v5/why-not-free and get_payment_options MCP tool.
+function buildPaymentOptions(): Record<string, unknown> {
+	return {
+		sandbox: {
+			calls:  200,
+			window: '7 days',
+			how:    'POST /v5/sandbox with { "email": "you@example.com" }',
+		},
+		x402_per_request: {
+			cost: '$0.001 USDC',
+			how:  'Add X-Payment header — see /.well-known/x402.json for payment spec',
+		},
+		x402_sandbox: {
+			cost:    '$0.001 USDC',
+			credits: 10,
+			how:     'POST /v5/sandbox with X-Payment header (no email required)',
+		},
+		credits: {
+			cost:  '$5',
+			calls: 1000,
+			how:   'GET /upgrade',
+		},
+		builder: {
+			cost:  '$99/mo',
+			calls: '50K/day',
+			how:   'GET /upgrade',
+		},
+		agent_native_path: 'No key, no signup. Send X-Payment with any request OR POST /v5/sandbox with X-Payment to get 10 credits instantly.',
+	};
+}
+
+// Shared Ed25519 receipt verification logic — used by verify_receipt MCP tool and POST /v5/verify.
+async function verifyReceiptLogic(
+	receipt: Record<string, unknown> | undefined,
+	pubKeyHex: string | undefined,
+): Promise<{ valid: boolean; expired: boolean; reason: string; mic: string | null; status: string | null; expires_at: string | null }> {
+	const NULL_RESULT = { valid: false, expired: false, mic: null, status: null, expires_at: null };
+	if (!receipt || typeof receipt !== 'object' || typeof receipt.signature !== 'string' || !receipt.signature) {
+		return { ...NULL_RESULT, reason: 'MALFORMED_RECEIPT' };
+	}
+	if (!pubKeyHex) {
+		return { ...NULL_RESULT, reason: 'ORACLE_NOT_CONFIGURED' };
+	}
+	try {
+		const UNSIGNED_WRAPPER_FIELDS = new Set(['discovery_url', 'receipt', 'extensions']);
+		const { signature, ...rest } = receipt;
+		const payload: Record<string, string> = {};
+		for (const key of Object.keys(rest).sort()) {
+			if (UNSIGNED_WRAPPER_FIELDS.has(key)) continue;
+			payload[key] = String((rest as Record<string, unknown>)[key]);
+		}
+		const canonical = JSON.stringify(payload);
+		const msgBytes  = new TextEncoder().encode(canonical);
+		const sigBytes  = fromHex(signature as string);
+		const pubKey    = fromHex(pubKeyHex);
+		const valid     = await ed.verify(sigBytes, msgBytes, pubKey);
+		const expiresAt = typeof receipt.expires_at === 'string' ? receipt.expires_at : null;
+		const expired   = expiresAt ? new Date(expiresAt).getTime() < Date.now() : false;
+		let reason: string;
+		if (!valid)       reason = 'INVALID_SIGNATURE';
+		else if (expired) reason = 'RECEIPT_EXPIRED — re-fetch required';
+		else              reason = 'SIGNATURE_VALID';
+		return {
+			valid,
+			expired,
+			reason,
+			mic:        typeof receipt.mic    === 'string' ? receipt.mic    : null,
+			status:     typeof receipt.status === 'string' ? receipt.status : null,
+			expires_at: expiresAt,
+		};
+	} catch {
+		return { ...NULL_RESULT, reason: 'MALFORMED_RECEIPT' };
+	}
+}
+
 // Build the Payment-Required header value required by x402 index crawlers (e.g. 402index.io).
 // Crawlers read this header (base64 JSON) rather than parsing the response body.
 // Uses bare "base" network name and "amount" field (x402 v2 header convention).
@@ -5189,6 +5264,16 @@ const MCP_TOOLS = [
 			additionalProperties: false,
 		},
 	},
+	{
+		name: 'get_payment_options',
+		description:
+			'Returns available payment and authentication options for accessing live market data. ' +
+			'WHEN TO USE: when you need to understand how to authenticate or pay before making a request that requires a key or payment. ' +
+			'Returns upgrade ladder: sandbox (200 calls free), x402 per-request ($0.001 USDC), x402 sandbox (10 credits for $0.001), credit packs ($5 = 1000 calls), builder subscription ($99/mo = 50K/day). ' +
+			'RETURNS: { sandbox, x402_per_request, x402_sandbox, credits, builder, agent_native_path }. ' +
+			'No authentication required. Always returns 200.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
 ];
 
 // ─── OpenAPI 3.1 Specification ────────────────────────────────────────────────
@@ -6611,9 +6696,18 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 					'WHEN TO USE get_market_schedule: for planning trade execution windows, verifying exchange operating hours and trading hours, checking holiday calendars, scheduling market-dependent tasks. ' +
 					'WHEN TO USE list_exchanges: at agent startup to discover all 28 supported MIC codes before calling get_market_status. ' +
 					'WHEN TO USE verify_receipt: when you receive a pre-trade verification receipt from another agent and must confirm the Ed25519 signature before acting on it. ' +
+					'WHEN TO USE get_payment_options: when you need to understand available payment and authentication options before making a paid request. ' +
 					'MANDATORY SAFETY RULE: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately (fail-closed, non-negotiable). ' +
 					'Receipts expire after 60 seconds — always check expires_at before acting. ' +
 					'Public key for independent verification: /.well-known/oracle-keys.json',
+				_meta: {
+					x402_enabled:        true,
+					first_payment_received: true,
+					payment_count_url:   '/v5/payment-proof',
+					upgrade_path_url:    '/v5/why-not-free',
+					sandbox_url:         'POST /v5/sandbox',
+					x402_discovery:      '/.well-known/x402.json',
+				},
 			});
 
 		case 'notifications/initialized':
@@ -6642,7 +6736,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			}
 
 			// Per-tool telemetry: global counter + per-client tools object (best-effort, non-blocking)
-			const MCP_TRACKED_TOOLS = ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt'];
+			const MCP_TRACKED_TOOLS = ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt', 'get_payment_options'];
 			if (MCP_TRACKED_TOOLS.includes(name)) {
 				incrementKvCounter(`mcp_tool:${name}:${today}`, env, ctx);
 				// Per-client tool count: increment the tools object in the client's KV record
@@ -6773,61 +6867,17 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 			if (name === 'verify_receipt') {
 				const receipt = args.receipt as Record<string, unknown> | undefined;
+				const result  = await verifyReceiptLogic(receipt, env.ED25519_PUBLIC_KEY);
+				return rpcResult({
+					content: [{ type: 'text', text: JSON.stringify(result) }],
+				});
+			}
 
-				// Structural validation — must be an object with a signature field
-				if (!receipt || typeof receipt !== 'object' || typeof receipt.signature !== 'string' || !receipt.signature) {
-					return rpcResult({
-						content: [{ type: 'text', text: JSON.stringify({ valid: false, expired: false, reason: 'MALFORMED_RECEIPT', mic: null, status: null, expires_at: null }) }],
-					});
-				}
-
-				const pubKeyHex = env.ED25519_PUBLIC_KEY;
-				if (!pubKeyHex) {
-					return rpcResult({
-						content: [{ type: 'text', text: JSON.stringify({ valid: false, expired: false, reason: 'ORACLE_NOT_CONFIGURED', mic: null, status: null, expires_at: null }) }],
-					});
-				}
-
-				try {
-					// Reconstruct canonical payload: all fields except signature, sorted alphabetically.
-					// Exclude unsigned outer-wrapper fields added by the API response layer.
-					const UNSIGNED_WRAPPER_FIELDS = new Set(['discovery_url', 'receipt', 'extensions']);
-					const { signature, ...rest } = receipt as Record<string, unknown>;
-					const payload: Record<string, string> = {};
-					for (const key of Object.keys(rest).sort()) {
-						if (UNSIGNED_WRAPPER_FIELDS.has(key)) continue;
-						payload[key] = String(rest[key]);
-					}
-					const canonical = JSON.stringify(payload);
-					const msgBytes  = new TextEncoder().encode(canonical);
-					const sigBytes  = fromHex(signature as string);
-					const pubKey    = fromHex(pubKeyHex);
-
-					const valid = await ed.verify(sigBytes, msgBytes, pubKey);
-
-					const expiresAt = typeof receipt.expires_at === 'string' ? receipt.expires_at : null;
-					const expired   = expiresAt ? new Date(expiresAt).getTime() < Date.now() : false;
-
-					let reason: string;
-					if (!valid)        reason = 'INVALID_SIGNATURE';
-					else if (expired)  reason = 'RECEIPT_EXPIRED — re-fetch required';
-					else               reason = 'SIGNATURE_VALID';
-
-					return rpcResult({
-						content: [{ type: 'text', text: JSON.stringify({
-							valid,
-							expired,
-							reason,
-							mic:        typeof receipt.mic    === 'string' ? receipt.mic    : null,
-							status:     typeof receipt.status === 'string' ? receipt.status : null,
-							expires_at: expiresAt,
-						}) }],
-					});
-				} catch {
-					return rpcResult({
-						content: [{ type: 'text', text: JSON.stringify({ valid: false, expired: false, reason: 'MALFORMED_RECEIPT', mic: null, status: null, expires_at: null }) }],
-					});
-				}
+			if (name === 'get_payment_options') {
+				const options = buildPaymentOptions();
+				return rpcResult({
+					content: [{ type: 'text', text: JSON.stringify(options) }],
+				});
 			}
 
 			return rpcError(-32601, `Method not found: tools/call/${name}`);
@@ -7245,7 +7295,7 @@ export default {
 			};
 			return new Response(JSON.stringify(responseBody), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...(status === 402 ? { 'Link': '</v5/why-not-free>; rel="payment"' } : {}), ...extraHeaders },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...(status === 402 ? { 'Link': '</v5/why-not-free>; rel="payment"', 'X-X402-Foundation': 'compatible' } : {}), ...extraHeaders },
 			});
 		};
 
@@ -9736,37 +9786,49 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				});
 			}
 
+			// ── GET /x402 — x402 Foundation compatibility declaration ─────────
+			// Public, no auth. Declares x402 compatibility for the x402 Foundation
+			// ecosystem (https://x402.org). Includes first_payment_at from KV.
+			if (url.pathname === '/x402') {
+				const firstAt = await env.ORACLE_TELEMETRY.get('x402_first_payment_at').catch(() => null);
+				return json({
+					x402_compatible: true,
+					network:         'base',
+					facilitator:     'cdp',
+					first_payment_at: firstAt ?? null,
+					payment_proof:   '/v5/payment-proof',
+					discovery:       '/.well-known/x402.json',
+					awesome_x402:    'https://github.com/xpaysh/awesome-x402',
+					foundation:      'https://x402.org',
+				});
+			}
+
 			// ── GET /v5/why-not-free — machine-readable upgrade ladder ─────
 			// Structured upgrade path for agents that receive a 402.
 			// Linked from every 402 via: Link: </v5/why-not-free>; rel="payment"
 			if (url.pathname === '/v5/why-not-free') {
-				return json({
-					sandbox: {
-						calls:  200,
-						window: '7 days',
-						how:    'POST /v5/sandbox with { "email": "you@example.com" }',
-					},
-					x402_per_request: {
-						cost: '$0.001 USDC',
-						how:  'Add X-Payment header — see /.well-known/x402.json for payment spec',
-					},
-					x402_sandbox: {
-						cost:    '$0.001 USDC',
-						credits: 10,
-						how:     'POST /v5/sandbox with X-Payment header (no email required)',
-					},
-					credits: {
-						cost:  '$5',
-						calls: 1000,
-						how:   'GET /upgrade',
-					},
-					builder: {
-						cost:  '$99/mo',
-						calls: '50K/day',
-						how:   'GET /upgrade',
-					},
-					agent_native_path: 'No key, no signup. Send X-Payment with any request OR POST /v5/sandbox with X-Payment to get 10 credits instantly.',
-				});
+				return json(buildPaymentOptions());
+			}
+
+			// ── POST /v5/verify — REST Ed25519 receipt verification ─────────
+			// Public, no auth. Accepts a signed receipt, returns verification result.
+			// Shares verifyReceiptLogic() with the verify_receipt MCP tool.
+			if (url.pathname === '/v5/verify') {
+				if (request.method !== 'POST') {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
+				}
+				let body: Record<string, unknown>;
+				try {
+					body = await request.json() as Record<string, unknown>;
+				} catch {
+					return json({ error: 'INVALID_JSON', message: 'Request body must be valid JSON' }, 400);
+				}
+				const receipt = body.receipt as Record<string, unknown> | undefined;
+				if (!receipt || typeof receipt !== 'object') {
+					return json({ error: 'MISSING_RECEIPT', message: 'Body must include a "receipt" object field' }, 400);
+				}
+				const result = await verifyReceiptLogic(receipt, env.ED25519_PUBLIC_KEY);
+				return json(result);
 			}
 
 			// ── POST /v5/credits/purchase — buy prepaid credits via x402 ─
