@@ -4,6 +4,7 @@
 ![x402-payable](https://img.shields.io/badge/x402-payable-10b981?style=flat-square)
 ![Ed25519-signed](https://img.shields.io/badge/Ed25519-signed-f59e0b?style=flat-square)
 ![28 exchanges](https://img.shields.io/badge/exchanges-28-0ea5e9?style=flat-square)
+[![headless-oracle-v5 MCP server](https://glama.ai/mcp/servers/LembaGang/headless-oracle-v5/badges/card.svg)](https://glama.ai/mcp/servers/LembaGang/headless-oracle-v5)
 
 Headless Oracle provides cryptographically signed market status receipts for 28 global exchanges — equities, derivatives (CME, NYMEX, Cboe), and 24/7 crypto (Coinbase, Binance). Every response is Ed25519-signed with a 60-second TTL so autonomous agents can verify market state without trusting the operator. The architecture is fail-closed: `UNKNOWN` always means `CLOSED`. Handles DST transitions, exchange holidays, half-days, lunch breaks, and real-time circuit breaker overrides automatically.
 
