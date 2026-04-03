@@ -33,6 +33,9 @@ export interface Env {
 	// x402 testnet prototype — Base Sepolia testnet, facilitator-based verification
 	X402_ENABLED?:               string;  // Set to 'true' to enable testnet x402 via facilitator (default: off)
 	X402_TEST_WALLET?:           string;  // Base Sepolia test wallet address for testnet payments
+	// CDP API credentials for authenticating to the CDP x402 facilitator
+	CDP_API_KEY_NAME?:           string;  // CDP API key ID (e.g. organizations/xxx/apiKeys/yyy)
+	CDP_API_KEY_PRIVATE_KEY?:    string;  // CDP private key — base64 Ed25519 (64 bytes) or PEM EC PKCS8
 	// Real-time halt monitoring — optional Polygon.io API key for enhanced data
 	POLYGON_API_KEY?:            string;  // polygon.io API key — optional; public Alpaca feed used if absent
 	// Launch date for /v5/traction days_live counter — set via wrangler.toml [vars]
@@ -1783,7 +1786,7 @@ const SETTLEMENT_WINDOWS: Readonly<Record<string, SettlementWindow>> = {
 const X402_USDC_CONTRACT    = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 // USDC ERC-20 contract on Base Sepolia testnet (chain ID 84532).
 const X402_SEPOLIA_USDC_CONTRACT = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
-// x402 facilitator endpoint — Coinbase-hosted, verifies payments for both mainnet and testnet.
+// CDP mainnet facilitator — requires JWT auth via CDP_API_KEY_NAME + CDP_API_KEY_PRIVATE_KEY.
 const X402_FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402';
 // 0.001 USDC = 1000 units at 6 decimals. Minimum payment per request.
 const X402_MIN_AMOUNT_UNITS     = BigInt(1000);
@@ -1965,38 +1968,177 @@ async function verifyX402Payment(
 	return { valid: true };
 }
 
-// Verifies an x402 payment via the CDP facilitator (https://api.cdp.coinbase.com/platform/v2/x402).
-// Used when X402_ENABLED!=false (default: enabled). Posts the raw X-Payment header to /settle.
+// Generates a CDP API JWT for authenticating to api.cdp.coinbase.com.
+// Supports base64 Ed25519 keys (64 bytes: seed || pubkey) and PEM PKCS8 EC P-256 keys.
+// spec: https://docs.cdp.coinbase.com/api-keys/docs/api-key-authentication
+async function generateCdpJwt(
+	apiKeyId: string,
+	privateKeyStr: string,
+	method: string,
+	path: string,
+): Promise<string> {
+	const host = 'api.cdp.coinbase.com';
+	const now  = Math.floor(Date.now() / 1000);
+	const nonce = toHex(crypto.getRandomValues(new Uint8Array(16)));
+
+	const isPem = privateKeyStr.trim().startsWith('-----BEGIN');
+	const alg   = isPem ? 'ES256' : 'EdDSA';
+
+	const header = { alg, kid: apiKeyId, typ: 'JWT', nonce };
+	const claims = {
+		sub:  apiKeyId,
+		iss:  'cdp',
+		nbf:  now,
+		exp:  now + 120,
+		iat:  now,
+		uris: [`${method} ${host}${path}`],
+	};
+
+	const b64url = (bytes: Uint8Array): string => {
+		let bin = '';
+		for (const b of bytes) bin += String.fromCharCode(b);
+		return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+	};
+	const encodeStr = (s: string): string => b64url(new TextEncoder().encode(s));
+
+	const headerB64    = encodeStr(JSON.stringify(header));
+	const claimsB64    = encodeStr(JSON.stringify(claims));
+	const signingInput = `${headerB64}.${claimsB64}`;
+
+	let sigBytes: Uint8Array;
+
+	if (isPem) {
+		// PKCS8 PEM → Web Crypto ECDSA P-256
+		const pemBody = privateKeyStr.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+		const der = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
+		const key = await crypto.subtle.importKey(
+			'pkcs8', der, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'],
+		);
+		const sig = await crypto.subtle.sign(
+			{ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(signingInput),
+		);
+		sigBytes = new Uint8Array(sig);
+	} else {
+		// Base64 Ed25519 (64 bytes: seed || public key) — sign with @noble/ed25519
+		const rawKey = Uint8Array.from(atob(privateKeyStr), c => c.charCodeAt(0));
+		const seed   = rawKey.subarray(0, 32);
+		sigBytes = await ed.sign(new TextEncoder().encode(signingInput), seed);
+	}
+
+	return `${signingInput}.${b64url(sigBytes)}`;
+}
+
+// Verifies an x402 payment via the CDP mainnet facilitator (JWT-authenticated).
+// Calls /verify first to validate the signature, then /settle to finalize.
 // Does NOT perform direct on-chain RPC calls — the facilitator handles EVM verification.
 async function verifyX402ViaFacilitator(
 	paymentHeader: string,
 	paymentAddress: string,
-): Promise<{ valid: boolean; txHash?: string; detail?: string }> {
-	const paymentRequirements = [{
+	env: Env,
+	resource?: string,
+): Promise<{ valid: boolean; txHash?: string; detail?: string; status: 'payment-accepted' | 'payment-rejected' | 'facilitator-error' }> {
+	// paymentRequirements must be a single object (not an array).
+	// network must use the standard x402 name "base", not the CAIP-2 format "eip155:8453".
+	// extra carries the USDC EIP-712 domain params needed for signature verification.
+	const paymentRequirements: Record<string, unknown> = {
 		scheme:            'exact',
-		network:           'eip155:8453',   // Base mainnet
+		network:           'base',          // Standard x402 network name (not CAIP-2)
 		maxAmountRequired: '1000',          // 0.001 USDC at 6 decimals
 		asset:             X402_USDC_CONTRACT,
 		payTo:             paymentAddress,
 		maxTimeoutSeconds: 300,
-	}];
+		// description and mimeType are required by PaymentRequirementsSchema — omitting them
+		// causes the facilitator to return unexpected_error (zod validation failure).
+		description:       'Signed market-state receipt. Ed25519 signed, 60s TTL. $0.001 USDC on Base mainnet.',
+		mimeType:          'application/json',
+		extra:             { name: 'USD Coin', version: '2' },
+	};
+	if (resource) paymentRequirements.resource = resource;
+
+	// Decode base64 payment header to get the PaymentPayload object.
+	// The x402.org facilitator expects: { paymentPayload: <object>, paymentRequirements: <object> }
+	console.log('X-Payment header length:', paymentHeader.length);
+	console.log('X-Payment header first 100 chars:', paymentHeader.substring(0, 100));
+	let decodedPaymentPayload: Record<string, unknown>;
 	try {
-		const res = await fetch(`${X402_FACILITATOR_URL}/settle`, {
+		// Normalize URL-safe base64 (- → +, _ → /) before decoding.
+		// The x402 client may emit standard or URL-safe base64; atob() requires standard.
+		const normalized = paymentHeader.replace(/-/g, '+').replace(/_/g, '/');
+		decodedPaymentPayload = JSON.parse(atob(normalized));
+	} catch {
+		return { valid: false, status: 'payment-rejected', detail: 'INVALID_PAYMENT_HEADER: base64 decode failed' };
+	}
+	// CDP facilitator (api.cdp.coinbase.com) requires x402Version at the root level.
+	// Extract from inside paymentPayload (field added by x402 client library).
+	const x402Version = (decodedPaymentPayload.x402Version as number | undefined) ?? 1;
+	const payload = JSON.stringify({ x402Version, paymentPayload: decodedPaymentPayload, paymentRequirements });
+	console.log('FACILITATOR REQUEST BODY:', payload);
+
+	// Build CDP auth headers — generate a fresh JWT for each request (120s TTL).
+	const buildAuthHeaders = async (path: string): Promise<Record<string, string>> => {
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		if (env.CDP_API_KEY_NAME && env.CDP_API_KEY_PRIVATE_KEY) {
+			try {
+				const jwt = await generateCdpJwt(env.CDP_API_KEY_NAME, env.CDP_API_KEY_PRIVATE_KEY, 'POST', path);
+				headers['Authorization'] = `Bearer ${jwt}`;
+				console.log('CDP JWT generated for', path, 'key:', env.CDP_API_KEY_NAME.slice(0, 20) + '...');
+			} catch (jwtErr) {
+				console.error('CDP JWT generation failed:', jwtErr instanceof Error ? jwtErr.message : jwtErr);
+				// Proceed without auth — facilitator will return 401; logged below.
+			}
+		} else {
+			console.warn('CDP_API_KEY_NAME or CDP_API_KEY_PRIVATE_KEY not set — proceeding without auth');
+		}
+		return headers;
+	};
+
+	// Step 1: verify signature before consuming the settlement attempt
+	try {
+		const verifyHeaders = await buildAuthHeaders('/platform/v2/x402/verify');
+		const verifyRes = await fetch(`${X402_FACILITATOR_URL}/verify`, {
 			method:  'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body:    JSON.stringify({ x402Version: 1, payment: paymentHeader, paymentRequirements }),
+			headers: verifyHeaders,
+			body:    payload,
+			signal:  AbortSignal.timeout(5000),
 		});
-		if (!res.ok) {
-			return { valid: false, detail: `FACILITATOR_HTTP_ERROR: ${res.status}` };
+		const verifyText = await verifyRes.text();
+		console.log('FACILITATOR VERIFY STATUS:', verifyRes.status);
+		console.log('FACILITATOR VERIFY BODY:', verifyText);
+		const verifyBody = JSON.parse(verifyText) as { isValid?: boolean; valid?: boolean; error?: string; invalidReason?: string };
+		const isValid = verifyBody.isValid ?? verifyBody.valid;
+		if (!isValid) {
+			const reason = verifyBody.invalidReason ?? verifyBody.error ?? 'unknown';
+			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_VERIFY_FAILED: ${reason}` };
 		}
-		const data = await res.json() as { success?: boolean; error?: string; txHash?: string };
-		if (!data.success) {
-			return { valid: false, detail: `FACILITATOR_REJECTED: ${data.error ?? 'unknown'}` };
-		}
-		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: data.txHash ?? 'n/a' }));
-		return { valid: true, txHash: data.txHash };
 	} catch (err) {
-		return { valid: false, detail: `FACILITATOR_FETCH_FAILED: ${err instanceof Error ? err.message : 'unknown'}` };
+		const msg = err instanceof Error ? err.message : 'unknown';
+		console.error('x402 facilitator /verify error:', msg);
+		return { valid: false, status: 'facilitator-error', detail: `FACILITATOR_VERIFY_FETCH_FAILED: ${msg}` };
+	}
+
+	// Step 2: settle
+	try {
+		const settleHeaders = await buildAuthHeaders('/platform/v2/x402/settle');
+		const settleRes = await fetch(`${X402_FACILITATOR_URL}/settle`, {
+			method:  'POST',
+			headers: settleHeaders,
+			body:    payload,
+			signal:  AbortSignal.timeout(5000),
+		});
+		const settleText = await settleRes.text();
+		console.log('FACILITATOR SETTLE STATUS:', settleRes.status);
+		console.log('FACILITATOR SETTLE BODY:', settleText);
+		const settleBody = JSON.parse(settleText) as { success?: boolean; error?: string; txHash?: string };
+		if (!settleBody.success) {
+			const reason = settleBody.error ?? 'unknown';
+			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_SETTLE_REJECTED: ${reason}` };
+		}
+		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleBody.txHash ?? 'n/a' }));
+		return { valid: true, status: 'payment-accepted', txHash: settleBody.txHash };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : 'unknown';
+		console.error('x402 facilitator /settle error:', msg);
+		return { valid: false, status: 'facilitator-error', detail: `FACILITATOR_SETTLE_FETCH_FAILED: ${msg}` };
 	}
 }
 
@@ -2006,7 +2148,7 @@ function buildMainnetFacilitatorPayload(paymentAddress: string, resourceUrl: str
 		x402Version: 1,
 		accepts: [{
 			scheme:            'exact',
-			network:           'eip155:8453',
+			network:           'base',
 			maxAmountRequired: '1000',
 			asset:             X402_USDC_CONTRACT,
 			payTo:             paymentAddress,
@@ -2014,6 +2156,7 @@ function buildMainnetFacilitatorPayload(paymentAddress: string, resourceUrl: str
 			resource:          resourceUrl,
 			description:       'Signed market-state receipt. Ed25519 signed, 60s TTL. $0.001 USDC on Base mainnet.',
 			mimeType:          'application/json',
+			extra:             { name: 'USD Coin', version: '2' },
 			input: {
 				type:       'object',
 				properties: { mic: { type: 'string', description: 'ISO 10383 MIC code', example: 'XNYS' } },
@@ -6873,7 +7016,7 @@ export default {
 		const corsHeaders = {
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key',
+			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment',
 		};
 
 		if (request.method === 'OPTIONS') {
@@ -7115,20 +7258,21 @@ export default {
 				} else {
 					// No API key — x402 payment path (step 4) or 402 gate (step 5)
 					const paymentHeader = request.headers.get('X-Payment');
-					// ── Mainnet x402 facilitator path (CDP, enabled by default) ─────────────────
-					// Accepts Base mainnet USDC payments via CDP facilitator.
+					// ── Mainnet x402 facilitator path (x402.org, enabled by default) ─────────────
+					// Accepts Base mainnet USDC payments via x402.org community facilitator (no auth).
 					// Active unless X402_ENABLED is explicitly set to 'false'.
 					if (env.X402_ENABLED !== 'false' && env.ORACLE_PAYMENT_ADDRESS) {
 						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 						if (paymentHeader) {
-							const verified = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS);
+							const verified = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
 							if (!verified.valid) {
-								return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true' });
+								const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
+								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': verified.status });
 							}
 							// Valid mainnet facilitator payment — fall through to serve receipt
 						} else {
-							// No payment — return mainnet 402 with CDP facilitator payment requirements
-							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true' });
+							// No payment — return mainnet 402 with x402.org facilitator payment requirements
+							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header' });
 						}
 					} else if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 						// Keyless x402: verify on-chain payment, then serve receipt
@@ -7919,10 +8063,11 @@ export default {
 						},
 						accepts: [{
 							scheme:            'exact',
-							network:           'eip155:8453',
+							network:           'base',
 							maxAmountRequired: '1000',
 							asset:             X402_USDC_CONTRACT,
 							payTo,
+							extra:             { name: 'USD Coin', version: '2' },
 						}],
 					},
 					{
@@ -7936,10 +8081,11 @@ export default {
 						},
 						accepts: [{
 							scheme:            'exact',
-							network:           'eip155:8453',
+							network:           'base',
 							maxAmountRequired: '5000',
 							asset:             X402_USDC_CONTRACT,
 							payTo,
+							extra:             { name: 'USD Coin', version: '2' },
 						}],
 					},
 				{
@@ -7972,11 +8118,12 @@ export default {
 					facilitator: X402_FACILITATOR_URL,
 					accepts: [{
 						scheme:            'exact',
-						network:           'eip155:8453',
+						network:           'base',
 						maxAmountRequired: '1000',
 						asset:             X402_USDC_CONTRACT,
 						payTo:             env.ORACLE_PAYMENT_ADDRESS,
 						facilitator:       X402_FACILITATOR_URL,
+						extra:             { name: 'USD Coin', version: '2' },
 					}],
 				}] : [];
 				return json({ version: 1, resources: [...paidResources, ...facilitatorResources] });
