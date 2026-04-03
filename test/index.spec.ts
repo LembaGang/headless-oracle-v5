@@ -2618,6 +2618,59 @@ describe('POST /mcp — protocol conformance edge cases', () => {
 		expect((r.capabilities as Record<string, unknown>)).toHaveProperty('prompts');
 		expect(r).toHaveProperty('instructions');
 	});
+
+	// ── HEAD /mcp — uptime probe ──
+	it('HEAD /mcp → 200 (uptime probe)', async () => {
+		const res = await fetchWorker('/mcp', { method: 'HEAD' });
+		expect(res.status).toBe(200);
+	});
+
+	// ── GET /mcp — server info ──
+	it('GET /mcp → 200 with server info object', async () => {
+		const res  = await fetchWorker('/mcp', { method: 'GET' });
+		const body = await res.json() as Record<string, unknown>;
+		expect(res.status).toBe(200);
+		expect(body).toHaveProperty('name');
+		expect(body).toHaveProperty('protocol');
+	});
+
+	// ── ping ──
+	it('POST /mcp ping → result: {} (MCP liveness)', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'ping' });
+		const body = await res.json() as { result?: unknown };
+		expect(res.status).toBe(200);
+		expect(body.result).toEqual({});
+	});
+
+	// ── get_market_status mic validation ──
+	it('get_market_status with missing mic → -32602', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_market_status', arguments: {} } });
+		const body = await res.json() as { error?: { code: number } };
+		expect(res.status).toBe(200);
+		expect(body.error?.code).toBe(-32602);
+	});
+
+	it('get_market_status with mic as number → -32602', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_market_status', arguments: { mic: 1234 } } });
+		const body = await res.json() as { error?: { code: number } };
+		expect(res.status).toBe(200);
+		expect(body.error?.code).toBe(-32602);
+	});
+
+	// ── get_market_schedule mic validation ──
+	it('get_market_schedule with missing mic → -32602', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_market_schedule', arguments: {} } });
+		const body = await res.json() as { error?: { code: number } };
+		expect(res.status).toBe(200);
+		expect(body.error?.code).toBe(-32602);
+	});
+
+	it('get_market_schedule with mic as boolean → -32602', async () => {
+		const res  = await mcpPost({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_market_schedule', arguments: { mic: true } } });
+		const body = await res.json() as { error?: { code: number } };
+		expect(res.status).toBe(200);
+		expect(body.error?.code).toBe(-32602);
+	});
 });
 
 // ─── Billing: Auth hot path — paid keys via KV ───────────────────────────────

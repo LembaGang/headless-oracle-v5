@@ -6324,6 +6324,14 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			}
 
 			if (name === 'get_market_status') {
+				// Validate mic before any other logic — return -32602 for missing or wrong type.
+				if (args.mic === undefined || args.mic === null) {
+					return rpcError(-32602, 'Invalid params: mic is required');
+				}
+				if (typeof args.mic !== 'string') {
+					return rpcError(-32602, 'Invalid params: mic must be a string');
+				}
+
 				// ── Unauthenticated IP rate-limit: 10 get_market_status calls per IP per day ──
 				// Authenticated requests (_mcpKeyHash !== null) are already metered above.
 				if (_mcpKeyHash === null) {
@@ -6344,7 +6352,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 					if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(unauthPut);
 				}
 
-				const mic = (typeof args.mic === 'string' ? args.mic : 'XNYS').toUpperCase();
+				const mic = args.mic.toUpperCase();
 				if (!MARKET_CONFIGS[mic]) {
 					return rpcResult({
 						isError: true,
@@ -6365,7 +6373,14 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			}
 
 			if (name === 'get_market_schedule') {
-				const mic = (typeof args.mic === 'string' ? args.mic : 'XNYS').toUpperCase();
+				// Validate mic before any other logic — return -32602 for missing or wrong type.
+				if (args.mic === undefined || args.mic === null) {
+					return rpcError(-32602, 'Invalid params: mic is required');
+				}
+				if (typeof args.mic !== 'string') {
+					return rpcError(-32602, 'Invalid params: mic must be a string');
+				}
+				const mic = args.mic.toUpperCase();
 				if (!MARKET_CONFIGS[mic]) {
 					return rpcResult({
 						isError: true,
@@ -6913,6 +6928,11 @@ export default {
 		// GET returns machine-readable server metadata for MCP evaluation tools.
 		// POST is the actual MCP endpoint (outside main try/catch — isolated error handling).
 		if (url.pathname === '/mcp') {
+			// HEAD /mcp — uptime probes (e.g. MCPScoreboard) use HEAD to check reachability.
+			// Respond 200 with no body; same headers as GET so probes see a live server.
+			if (request.method === 'HEAD') {
+				return new Response(null, { status: 200, headers: MCP_RESPONSE_HEADERS });
+			}
 			if (request.method === 'GET') {
 				// SSE clients send GET /mcp with Accept: text/event-stream.
 				// We don't implement SSE transport — return 405 so the client
