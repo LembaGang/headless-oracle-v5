@@ -1964,20 +1964,18 @@ async function verifyX402Payment(
 
 	// Mark as used — 600s TTL prevents replay across the boundary window
 	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 600 }).catch(() => {});
-	// Track payment stats for /v5/payment-proof — best-effort, non-blocking
-	void (async () => {
-		try {
-			const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
-			const count    = parseInt(countStr ?? '0', 10) || 0;
-			const nowIso   = new Date().toISOString();
-			if (count === 0) {
-				await env.ORACLE_TELEMETRY.put('x402_first_tx',         txHash.slice(-12)).catch(() => {});
-				await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
-			}
-			await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
-			await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
-		} catch { /* best-effort */ }
-	})();
+	// Track payment stats for /v5/payment-proof — best-effort (errors swallowed)
+	try {
+		const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
+		const count    = parseInt(countStr ?? '0', 10) || 0;
+		const nowIso   = new Date().toISOString();
+		if (count === 0) {
+			await env.ORACLE_TELEMETRY.put('x402_first_tx',         txHash.slice(-12)).catch(() => {});
+			await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
+		}
+		await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
+		await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
+	} catch { /* best-effort */ }
 	console.log(JSON.stringify({ event: 'X402_PAYMENT_VERIFIED', tx_hash: txHash, amount_units: amountPaid.toString() }));
 	return { valid: true };
 }
@@ -2148,21 +2146,19 @@ async function verifyX402ViaFacilitator(
 			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_SETTLE_REJECTED: ${reason}` };
 		}
 		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleBody.txHash ?? 'n/a' }));
-		// Track payment stats for /v5/payment-proof — best-effort, non-blocking
-		const _facilTxHash = settleBody.txHash ?? '';
-		void (async () => {
-			try {
-				const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
-				const count    = parseInt(countStr ?? '0', 10) || 0;
-				const nowIso   = new Date().toISOString();
-				if (count === 0 && _facilTxHash) {
-					await env.ORACLE_TELEMETRY.put('x402_first_tx',         _facilTxHash.slice(-12)).catch(() => {});
-					await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
-				}
-				await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
-				await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
-			} catch { /* best-effort */ }
-		})();
+		// Track payment stats for /v5/payment-proof — best-effort (errors swallowed)
+		try {
+			const _facilTxHash = settleBody.txHash ?? '';
+			const countStr     = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
+			const count        = parseInt(countStr ?? '0', 10) || 0;
+			const nowIso       = new Date().toISOString();
+			if (count === 0 && _facilTxHash) {
+				await env.ORACLE_TELEMETRY.put('x402_first_tx',         _facilTxHash.slice(-12)).catch(() => {});
+				await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
+			}
+			await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
+			await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
+		} catch { /* best-effort */ }
 		return { valid: true, status: 'payment-accepted', txHash: settleBody.txHash };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'unknown';
@@ -4353,6 +4349,8 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/x402/mint | POST | No | Mint persistent API key via Base USDC tx | { api_key, tier, daily_limit } |
 | /v5/credits/purchase | POST | Yes | Add prepaid credits via x402 USDC payment | { credits_added, new_balance } |
 | /v5/credits/balance | GET | Yes | Check prepaid credit balance | { balance, estimated_requests_remaining } |
+| /v5/verify | POST | No | Ed25519 receipt verification (REST) | { valid, expired, reason, mic, status, expires_at } |
+| /x402 | GET | No | x402 Foundation compatibility declaration | { x402_compatible, network, facilitator, first_payment_at } |
 
 ## Receipt Schema (SMA = Signed Market Attestation, not Simple Moving Average)
 \`\`\`json
@@ -6327,6 +6325,65 @@ const OPENAPI_SPEC = {
 						content: { 'image/svg+xml': { schema: { type: 'string', format: 'binary' } } },
 					},
 					'400': { description: 'Unknown MIC code', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/x402': {
+			get: {
+				tags:        ['Discoverability'],
+				summary:     'x402 Foundation compatibility declaration',
+				description: 'Declares x402 protocol compatibility for the x402 Foundation ecosystem. Returns network, facilitator, first payment timestamp, and links to discovery and payment proof endpoints.',
+				responses: {
+					'200': {
+						description: 'x402 compatibility info',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								x402_compatible: { type: 'boolean' },
+								network:         { type: 'string', example: 'base' },
+								facilitator:     { type: 'string', example: 'cdp' },
+								first_payment_at: { type: 'string', format: 'date-time', nullable: true },
+								payment_proof:   { type: 'string' },
+								discovery:       { type: 'string' },
+								awesome_x402:    { type: 'string' },
+								foundation:      { type: 'string' },
+							},
+						} } },
+					},
+				},
+			},
+		},
+		'/v5/verify': {
+			post: {
+				tags:        ['Verification'],
+				summary:     'Verify Ed25519 receipt signature (REST)',
+				description: 'Public endpoint. Accepts a signed market receipt and verifies the Ed25519 signature in-worker. Returns validity, expiry status, and reason. Shares logic with the verify_receipt MCP tool.',
+				requestBody: {
+					required: true,
+					content: { 'application/json': { schema: {
+						type: 'object',
+						required: ['receipt'],
+						properties: {
+							receipt: { type: 'object', description: 'Complete signed receipt as returned by /v5/status or /v5/demo.', additionalProperties: true },
+						},
+					} } },
+				},
+				responses: {
+					'200': {
+						description: 'Verification result',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								valid:      { type: 'boolean' },
+								expired:    { type: 'boolean' },
+								reason:     { type: 'string', enum: ['SIGNATURE_VALID', 'INVALID_SIGNATURE', 'MALFORMED_RECEIPT', 'ORACLE_NOT_CONFIGURED', 'RECEIPT_EXPIRED — re-fetch required'] },
+								mic:        { type: 'string', nullable: true },
+								status:     { type: 'string', nullable: true },
+								expires_at: { type: 'string', format: 'date-time', nullable: true },
+							},
+						} } },
+					},
+					'400': { description: 'Missing or malformed body', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
 		},

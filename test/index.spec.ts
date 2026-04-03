@@ -6383,19 +6383,19 @@ describe('x402 — end-to-end payment flow', () => {
 	});
 
 	it('path A — keyless x402: X-Payment header → 200 with signed receipt (no key needed)', async () => {
-		// Demonstrates the per-request payment path: payment verified via x402.org facilitator mock.
+		// Demonstrates the per-request payment path: payment verified via CDP facilitator mock.
 		// X402_ENABLED defaults to !== 'false' so the facilitator path is active.
 		// X-Payment must be a base64-encoded JSON PaymentPayload object (decoded before forwarding to facilitator).
 		const mockPaymentHeader = btoa(JSON.stringify({ x402Version: 1, scheme: 'exact', network: 'base', payload: { signature: '0xmocksig' } }));
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-			if (url.includes('x402.org/facilitator/verify')) {
+			if (url.includes('cdp.coinbase.com') && url.includes('/verify')) {
 				return new Response(JSON.stringify({ isValid: true }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
 			}
-			if (url.includes('x402.org/facilitator/settle')) {
+			if (url.includes('cdp.coinbase.com') && url.includes('/settle')) {
 				return new Response(JSON.stringify({ success: true, txHash: '0xe2emainnetpayment' }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
@@ -7584,7 +7584,7 @@ describe('GET /v5/showcase', () => {
 // Uses x402.org community facilitator (no auth). Enabled by default (X402_ENABLED !== 'false').
 // Tests mock globalThis.fetch for both /verify and /settle endpoints.
 
-describe('x402 mainnet facilitator path (x402.org, X402_ENABLED=true)', () => {
+describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 	beforeEach(() => {
 		(env as unknown as Record<string, string>).X402_ENABLED = 'true';
 	});
@@ -7606,18 +7606,19 @@ describe('x402 mainnet facilitator path (x402.org, X402_ENABLED=true)', () => {
 		expect(res.headers.get('X-Payment-Required')).toBe('true');
 	});
 
-	it('valid mainnet payment via mocked x402.org facilitator → 200 signed receipt', async () => {
+	it('valid mainnet payment via mocked CDP facilitator → 200 signed receipt', async () => {
 		// X-Payment must be a base64-encoded JSON PaymentPayload object (decoded before forwarding to facilitator).
+		// Mocks api.cdp.coinbase.com (switched from x402.org on Apr 2 2026).
 		const mockPaymentHeader = btoa(JSON.stringify({ x402Version: 1, scheme: 'exact', network: 'base', payload: { signature: '0xmocksig' } }));
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-			if (url.includes('x402.org/facilitator/verify')) {
+			if (url.includes('cdp.coinbase.com') && url.includes('/verify')) {
 				return new Response(JSON.stringify({ isValid: true }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
 			}
-			if (url.includes('x402.org/facilitator/settle')) {
+			if (url.includes('cdp.coinbase.com') && url.includes('/settle')) {
 				return new Response(JSON.stringify({ success: true, txHash: '0xmockmainnetpayment' }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
