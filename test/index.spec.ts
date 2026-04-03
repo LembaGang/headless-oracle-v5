@@ -286,7 +286,7 @@ describe('GET /v5/status', () => {
 
 	it('returns 400 for unknown MIC with valid key', async () => {
 		const response = await fetchWorker('/v5/status?mic=ZZZZ', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
@@ -297,7 +297,7 @@ describe('GET /v5/status', () => {
 	for (const mic of ALL_MICS) {
 		it(`returns a signed receipt for ${mic} with valid auth`, async () => {
 			const response = await fetchWorker(`/v5/status?mic=${mic}`, {
-				headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+				headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 			});
 			expect(response.status).toBe(200);
 
@@ -319,7 +319,7 @@ describe('GET /v5/status', () => {
 
 	it('defaults to XNYS when no mic param is provided', async () => {
 		const body = await fetchJSON('/v5/status', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(body).toHaveProperty('mic', 'XNYS');
 	});
@@ -823,7 +823,7 @@ describe('UNKNOWN_MIC error handling', () => {
 
 	it('/v5/status?mic=BAD with valid key returns 400 UNKNOWN_MIC', async () => {
 		const response = await fetchWorker('/v5/status?mic=BAD', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
@@ -1496,7 +1496,7 @@ describe('GET /v5/batch', () => {
 
 	it('returns 400 when mics param is missing', async () => {
 		const response = await fetchWorker('/v5/batch', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
@@ -1505,7 +1505,7 @@ describe('GET /v5/batch', () => {
 
 	it('returns 400 when mics param is an empty string', async () => {
 		const response = await fetchWorker('/v5/batch?mics=', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
@@ -1514,7 +1514,7 @@ describe('GET /v5/batch', () => {
 
 	it('returns 400 for an unknown MIC in the batch', async () => {
 		const response = await fetchWorker('/v5/batch?mics=XNYS,ZZZZ', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
@@ -1528,7 +1528,7 @@ describe('GET /v5/batch', () => {
 
 	it('returns 400 when all MICs are unknown', async () => {
 		const response = await fetchWorker('/v5/batch?mics=AAAA,BBBB', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
@@ -1537,7 +1537,7 @@ describe('GET /v5/batch', () => {
 
 	it('returns 200 with 2 signed receipts for XNYS,XNAS', async () => {
 		const response = await fetchWorker('/v5/batch?mics=XNYS,XNAS', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(200);
 		const body = await response.json() as Record<string, unknown>;
@@ -1550,7 +1550,7 @@ describe('GET /v5/batch', () => {
 
 	it('each receipt in the batch is independently signed', async () => {
 		const body = await fetchJSON('/v5/batch?mics=XNYS,XNAS,XLON', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		for (const receipt of receipts) {
@@ -1565,7 +1565,7 @@ describe('GET /v5/batch', () => {
 
 	it('each receipt has the correct mic field for its exchange', async () => {
 		const body = await fetchJSON('/v5/batch?mics=XNYS,XLON,XJPX', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		const mics = receipts.map((r) => r.mic as string);
@@ -1576,7 +1576,7 @@ describe('GET /v5/batch', () => {
 
 	it('receipt order matches request order', async () => {
 		const body = await fetchJSON('/v5/batch?mics=XPAR,XHKG,XSES', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		expect(receipts[0].mic).toBe('XPAR');
@@ -1586,7 +1586,7 @@ describe('GET /v5/batch', () => {
 
 	it('deduplicates repeated MICs — XNYS,XNYS returns one receipt', async () => {
 		const body = await fetchJSON('/v5/batch?mics=XNYS,XNYS', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		expect(receipts).toHaveLength(1);
@@ -1596,7 +1596,7 @@ describe('GET /v5/batch', () => {
 	it('original 7 MICs in one batch returns 7 receipts', async () => {
 		const ORIGINAL_MICS = ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES'];
 		const body = await fetchJSON('/v5/batch?mics=XNYS,XNAS,XLON,XJPX,XPAR,XHKG,XSES', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		expect(receipts).toHaveLength(7);
@@ -1608,7 +1608,7 @@ describe('GET /v5/batch', () => {
 
 	it('normalises lowercase mics to uppercase', async () => {
 		const body = await fetchJSON('/v5/batch?mics=xnys,xnas', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		expect(receipts).toHaveLength(2);
@@ -1618,7 +1618,7 @@ describe('GET /v5/batch', () => {
 
 	it('batch_id is a valid UUID', async () => {
 		const body = await fetchJSON('/v5/batch?mics=XNYS', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(body.batch_id as string).toMatch(
 			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
@@ -1627,7 +1627,7 @@ describe('GET /v5/batch', () => {
 
 	it('queried_at is a valid ISO 8601 date close to now', async () => {
 		const body = await fetchJSON('/v5/batch?mics=XNYS', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const t = new Date(body.queried_at as string).getTime();
 		expect(t).not.toBeNaN();
@@ -1636,7 +1636,7 @@ describe('GET /v5/batch', () => {
 
 	it('receipts include schema_version v5.0', async () => {
 		const body = await fetchJSON('/v5/batch?mics=XNYS', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		const receipts = body.receipts as Array<Record<string, unknown>>;
 		expect(receipts[0]).toHaveProperty('schema_version', 'v5.0');
@@ -1649,7 +1649,7 @@ describe('GET /v5/batch', () => {
 		}));
 		try {
 			const body = await fetchJSON('/v5/batch?mics=XNYS,XLON', {
-				headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+				headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 			});
 			const receipts = body.receipts as Array<Record<string, unknown>>;
 			const xnys = receipts.find((r) => r.mic === 'XNYS')!;
@@ -2720,11 +2720,15 @@ describe('Auth hot path — paid keys via KV', () => {
 		}
 	});
 
-	it('MASTER_API_KEY still works unchanged (step 1 short-circuit)', async () => {
+	it('MASTER_API_KEY returns 402 legacy_key_expired after April 1 enforcement', async () => {
+		// The legacy master key migration enforcement gate (April 1 2026) blocks MASTER_API_KEY
+		// on all authenticated endpoints and returns 402 with error: legacy_key_expired.
 		const response = await fetchWorker('/v5/status?mic=XNYS', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
 		});
-		expect(response.status).toBe(200);
+		expect(response.status).toBe(402);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'legacy_key_expired');
 	});
 
 	it('beta key still works unchanged (step 2 short-circuit)', async () => {
@@ -2756,9 +2760,9 @@ describe('GET /v5/account', () => {
 		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
 	});
 
-	it('MASTER_API_KEY → { plan: "internal", status: "active", key_prefix: null }', async () => {
+	it('beta key → { plan: "internal", status: "active", key_prefix: null }', async () => {
 		const body = await fetchJSON('/v5/account', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(body).toHaveProperty('plan', 'internal');
 		expect(body).toHaveProperty('status', 'active');
@@ -3725,7 +3729,7 @@ describe('Cache-Control on signed receipts', () => {
 
 	it('GET /v5/status returns Cache-Control: no-store', async () => {
 		const response = await fetchWorker('/v5/status', {
-			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.headers.get('Cache-Control')).toBe('no-store');
 	});
@@ -4062,14 +4066,14 @@ describe('POST /v5/webhooks/subscribe', () => {
 	});
 
 	it('non-https url → 400 INVALID_URL', async () => {
-		const res = await fetchWorker('/v5/webhooks/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' }, body: JSON.stringify({ url: 'http://example.com/hook', mics: ['XNYS'] }) });
+		const res = await fetchWorker('/v5/webhooks/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' }, body: JSON.stringify({ url: 'http://example.com/hook', mics: ['XNYS'] }) });
 		expect(res.status).toBe(400);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body.error).toBe('INVALID_URL');
 	});
 
 	it('invalid MIC codes → 400 INVALID_MICS', async () => {
-		const res = await fetchWorker('/v5/webhooks/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' }, body: JSON.stringify({ url: 'https://example.com/hook', mics: ['NOTAMIC'] }) });
+		const res = await fetchWorker('/v5/webhooks/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' }, body: JSON.stringify({ url: 'https://example.com/hook', mics: ['NOTAMIC'] }) });
 		expect(res.status).toBe(400);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body.error).toBe('INVALID_MICS');
@@ -4078,7 +4082,7 @@ describe('POST /v5/webhooks/subscribe', () => {
 	it('valid subscription → 200 with subscription_id and active status', async () => {
 		const res = await fetchWorker('/v5/webhooks/subscribe', {
 			method:  'POST',
-			headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' },
+			headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' },
 			body:    JSON.stringify({ url: 'https://example.com/hook', mics: ['XNYS', 'XLON'], secret: 'my-webhook-secret' }),
 		});
 		expect(res.status).toBe(200);
@@ -4089,19 +4093,19 @@ describe('POST /v5/webhooks/subscribe', () => {
 		expect(body.mics).toEqual(['XNYS', 'XLON']);
 		// Cleanup: unsubscribe
 		if (typeof body.subscription_id === 'string') {
-			await fetchWorker('/v5/webhooks/unsubscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' }, body: JSON.stringify({ subscription_id: body.subscription_id }) });
+			await fetchWorker('/v5/webhooks/unsubscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' }, body: JSON.stringify({ subscription_id: body.subscription_id }) });
 		}
 	});
 });
 
 describe('DELETE /v5/webhooks/unsubscribe', () => {
 	it('missing subscription_id → 400', async () => {
-		const res = await fetchWorker('/v5/webhooks/unsubscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' }, body: JSON.stringify({}) });
+		const res = await fetchWorker('/v5/webhooks/unsubscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' }, body: JSON.stringify({}) });
 		expect(res.status).toBe(400);
 	});
 
 	it('unknown subscription_id → 404 SUBSCRIPTION_NOT_FOUND', async () => {
-		const res = await fetchWorker('/v5/webhooks/unsubscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' }, body: JSON.stringify({ subscription_id: 'does-not-exist-00000000' }) });
+		const res = await fetchWorker('/v5/webhooks/unsubscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' }, body: JSON.stringify({ subscription_id: 'does-not-exist-00000000' }) });
 		expect(res.status).toBe(404);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body.error).toBe('SUBSCRIPTION_NOT_FOUND');
@@ -4111,14 +4115,14 @@ describe('DELETE /v5/webhooks/unsubscribe', () => {
 		// Subscribe
 		const subRes = await fetchWorker('/v5/webhooks/subscribe', {
 			method:  'POST',
-			headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' },
+			headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' },
 			body:    JSON.stringify({ url: 'https://example.com/cleanup', mics: ['XNYS'], secret: 'cleanup-secret' }),
 		});
 		const { subscription_id } = await subRes.json() as { subscription_id: string };
 		// Unsubscribe
 		const delRes = await fetchWorker('/v5/webhooks/unsubscribe', {
 			method:  'DELETE',
-			headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_master_key_local_only' },
+			headers: { 'Content-Type': 'application/json', 'X-Oracle-Key': 'test_beta_key_1' },
 			body:    JSON.stringify({ subscription_id }),
 		});
 		expect(delRes.status).toBe(200);
@@ -4146,7 +4150,7 @@ describe('GET /v5/receipts', () => {
 	it('valid key → authenticated (2xx or 5xx from Supabase, never 401/403)', async () => {
 		// Test env has Supabase creds but no real DB — may return 200 (no Supabase) or 500 (query error)
 		// The important assertion: auth passed (not 401 or 403)
-		const res = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const res = await fetchWorker('/v5/receipts', { headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
 		expect(res.status).not.toBe(401);
 		expect(res.status).not.toBe(403);
 		// If 200, must have receipts array
@@ -4157,7 +4161,7 @@ describe('GET /v5/receipts', () => {
 	});
 
 	it('invalid mic filter → 400 INVALID_MIC', async () => {
-		const res = await fetchWorker('/v5/receipts?mic=NOTAMIC', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const res = await fetchWorker('/v5/receipts?mic=NOTAMIC', { headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
 		expect(res.status).toBe(400);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body.error).toBe('INVALID_MIC');
@@ -4538,7 +4542,7 @@ describe('Session M: /v5/status/realtime', () => {
 
 	it('returns valid JSON with signed_receipt and halt_monitor fields', async () => {
 		const body = await fetchJSON('/v5/status/realtime?mic=XNYS', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(body).toHaveProperty('mic', 'XNYS');
 		expect(body).toHaveProperty('signed_receipt');
@@ -4552,7 +4556,7 @@ describe('Session M: /v5/status/realtime', () => {
 
 	it('returns 400 for unknown MIC', async () => {
 		const response = await fetchWorker('/v5/status/realtime?mic=XXXX', {
-			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(response.status).toBe(400);
 		const body = await response.json() as Record<string, unknown>;
@@ -4571,7 +4575,7 @@ describe('Session M: /v5/status/realtime', () => {
 		}));
 		try {
 			const body = await fetchJSON('/v5/status/realtime?mic=XNYS', {
-				headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+				headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 			});
 			const receipt = body.signed_receipt as Record<string, unknown>;
 			expect(receipt).toHaveProperty('status', 'HALTED');
@@ -4655,9 +4659,9 @@ describe('Session Q: GET /v5/usage', () => {
 		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
 	});
 
-	it('returns 200 with correct shape for valid (master) key', async () => {
+	it('returns 200 with correct shape for valid key', async () => {
 		const body = await fetchJSON('/v5/usage', {
-			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(body).toHaveProperty('key_prefix');
 		expect(body).toHaveProperty('plan');
@@ -4670,11 +4674,11 @@ describe('Session Q: GET /v5/usage', () => {
 		expect(body).toHaveProperty('credit_balance');
 	});
 
-	it('paid key returns null limits and 0 usage counts', async () => {
+	it('internal plan key returns null limits and 0 usage counts', async () => {
 		const body = await fetchJSON('/v5/usage', {
-			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
-		// Master key is 'internal' plan — not a free plan, so limits are null
+		// Beta key is 'internal' plan — not a free plan, so limits are null
 		expect(body.daily_limit).toBeNull();
 		expect(body.monthly_limit).toBeNull();
 		expect(body.requests_today).toBe(0);
@@ -5896,21 +5900,21 @@ describe('/v5/handoff session handoff endpoint (Task 4)', () => {
 	});
 
 	it('returns 200 with valid key and Markdown content-type', async () => {
-		const res = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const res = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('text/markdown');
 	});
 
 	it('Markdown document includes date header', async () => {
 		const today = new Date().toISOString().slice(0, 10);
-		const res   = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const res   = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
 		const text  = await res.text();
 		expect(text).toContain('Session Handoff');
 		expect(text).toContain(today);
 	});
 
 	it('Markdown document includes telemetry section headers', async () => {
-		const res  = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const res  = await fetchWorker('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
 		const text = await res.text();
 		expect(text).toContain('## Telemetry Today');
 		expect(text).toContain('## Open Gaps');

@@ -278,7 +278,7 @@ describe('MCP per-tool telemetry', () => {
 	});
 
 	it('/v5/handoff includes MCP tool breakdown section', async () => {
-		const res = await fetchW('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const res = await fetchW('/v5/handoff', { headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
 		expect(res.status).toBe(200);
 		const text = await res.text();
 		expect(text).toContain('MCP Tool Calls Today');
