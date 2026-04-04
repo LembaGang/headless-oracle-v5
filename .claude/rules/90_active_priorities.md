@@ -3,8 +3,35 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 615 total (65 pre-existing failures — MASTER_API_KEY migration enforcement + Windows EBUSY, not regressions) + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 2 2026 — MCP protocol conformance audit (615 tests, 550 passing):
+**Test suite**: 647/647 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 4 2026 — stdio MCP package published:
+  - NEW: `packages/headless-oracle-mcp/` — local stdio MCP server, zero npm dependencies
+  - Proxies tools/list + tools/call to headlessoracle.com/mcp; handles initialize/ping locally
+  - Published to npm: `headless-oracle-mcp@1.0.1` (npmjs.com/package/headless-oracle-mcp)
+  - `npx headless-oracle-mcp` works — tested initialize + tools/list + tools/call
+  - Supports HEADLESS_ORACLE_API_KEY env var (X-Oracle-Key + Authorization: Bearer)
+  - README covers Claude Desktop, Cursor, Cline, Windsurf, Continue.dev configs
+  - PURPOSE: enables punkpeye/awesome-mcp-servers listing (requires GitHub-hosted server, not remote connector)
+  - HUMAN TASK: reopen PR on punkpeye/awesome-mcp-servers referencing this package
+**Previous significant work**: Apr 3 2026 — Weekend Sprint Tier 3 (641 → 647 tests, +6, worker 20d59abc):
+  - ITEM 8: Olas + AutoGPT integration docs served at /docs/integrations/olas and /docs/integrations/autogpt
+  - ITEM 9: /.well-known/security.txt updated — Expires 2027-04-03, Canonical field added
+  - ITEM 10: Blog post "Why Your Trading Agent Needs a Pre-Trade Gate" at /blog/why-your-trading-agent-needs-a-pre-trade-gate
+  - SITEMAP_XML: 3 new entries (Olas, AutoGPT, blog post)
+  - LLMS_TXT: "Agent Framework Integrations" + "Blog" sections added
+  - docs/blog/why-your-trading-agent-needs-a-pre-trade-gate.md created
+  - Existing security.txt test updated to match new Expires + Canonical fields
+**Previous significant work**: Apr 3 2026 — Weekend Sprint Tier 2 (633 → 641 tests, +8, worker 8c64aa40, commit df538f0):
+  - MCP initialize _meta block: x402_enabled, payment_count_url, upgrade_path_url, sandbox_url, x402_discovery
+  - New 5th MCP tool: get_payment_options — returns upgrade ladder, no auth, always 200
+  - verifyReceiptLogic() extracted as shared helper function
+  - POST /v5/verify — public REST receipt verification (reuses verifyReceiptLogic)
+  - GET /x402 — x402 Foundation compatibility declaration (first_payment_at from KV)
+  - X-X402-Foundation: compatible header on all 402 responses
+  - buildPaymentOptions() helper extracted — reused by /v5/why-not-free and get_payment_options MCP tool
+  - wrangler.toml: /x402 and /v5/verify routes added
+  - Pre-existing test updated: "4 tools" → "5 tools"
+**Previous significant work**: Apr 2 2026 — MCP protocol conformance audit (615 tests, 550 passing):
   - tools/call with missing "name" → -32602 Invalid Params (was -32601 Method Not Found)
   - get_market_schedule computation wrapped in try/catch → returns isError:true on unexpected error (was uncaught, could 500)
   - Outer .catch() added on handleMcp call in main router → JSON-RPC -32603 on uncaught throws

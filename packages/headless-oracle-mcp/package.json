@@ -1,0 +1,35 @@
+{
+  "name": "headless-oracle-mcp",
+  "version": "1.0.1",
+  "description": "Local MCP server for Headless Oracle — Ed25519-signed market-state receipts for 28 global exchanges",
+  "main": "bin/cli.js",
+  "bin": "./bin/cli.js",
+  "scripts": {
+    "start": "node bin/cli.js"
+  },
+  "keywords": [
+    "mcp",
+    "oracle",
+    "market-data",
+    "trading",
+    "ed25519",
+    "x402",
+    "market-status",
+    "exchange",
+    "ai-agent",
+    "signed-receipts"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LembaGang/headless-oracle-v5"
+  },
+  "homepage": "https://headlessoracle.com",
+  "bugs": {
+    "url": "https://github.com/LembaGang/headless-oracle-v5/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
