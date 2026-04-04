@@ -1924,8 +1924,9 @@ describe('GET /.well-known/security.txt', () => {
 	it('contains required RFC 9116 fields', async () => {
 		const body = await fetchWorker('/.well-known/security.txt').then((r) => r.text());
 		expect(body).toContain('Contact: mailto:info@bytecraftresults.com');
-		expect(body).toContain('Expires: 2027-04-02T00:00:00.000Z');
+		expect(body).toContain('Expires: 2027-04-03T00:00:00.000Z');
 		expect(body).toContain('Preferred-Languages: en');
+		expect(body).toContain('Canonical: https://headlessoracle.com/.well-known/security.txt');
 	});
 });
 
@@ -2713,6 +2714,17 @@ describe('POST /mcp — verify_receipt tool', () => {
 		const result = await callVerify({ mic: 'XNYS', status: 'OPEN', expires_at: new Date(Date.now() + 60000).toISOString(), signature: 'deadbeef' });
 		expect(result.valid).toBe(false);
 		expect(result.reason).toBe('MALFORMED_RECEIPT');
+	});
+
+	it('verify_receipt with missing receipt param → -32602', async () => {
+		const res  = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'verify_receipt', arguments: {} } }),
+		});
+		const body = await res.json() as { error?: { code: number; message: string } };
+		expect(res.status).toBe(200);
+		expect(body.error?.code).toBe(-32602);
 	});
 });
 
@@ -7782,5 +7794,235 @@ describe('GET /x402 — x402 Foundation alignment (Item 7)', () => {
 		const res = await fetchWorker('/v5/status?mic=XNYS');
 		expect(res.status).toBe(402);
 		expect(res.headers.get('X-X402-Foundation')).toBe('compatible');
+	});
+});
+
+// ─── GET /docs/integrations/olas ─────────────────────────────────────────────
+
+describe('GET /docs/integrations/olas', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/docs/integrations/olas');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains Olas integration content', async () => {
+		const body = await fetchWorker('/docs/integrations/olas').then((r) => r.text());
+		expect(body).toContain('Olas');
+		expect(body).toContain('pip install headless-oracle');
+		expect(body).toContain('act(self)');
+		expect(body).toContain('headlessoracle.com/mcp');
+	});
+});
+
+// ─── GET /v5/metrics/public ───────────────────────────────────────────────────
+
+describe('GET /v5/metrics/public', () => {
+	it('returns 200 with correct shape and static fields', async () => {
+		const body = await fetchJSON('/v5/metrics/public');
+		expect(body).toHaveProperty('exchanges', 28);
+		expect(body).toHaveProperty('mcp_tools', 5);
+		expect(body).toHaveProperty('signing_algorithm', 'Ed25519');
+		expect(body).toHaveProperty('receipt_ttl_seconds', 60);
+		expect(body).toHaveProperty('mcp_protocol_version', '2024-11-05');
+		expect(body).toHaveProperty('mcpscoreboard_preflight', 100);
+		expect(body).toHaveProperty('fail_closed', true);
+		expect(body).toHaveProperty('x402_network', 'base');
+		expect(body).toHaveProperty('tests_passing', 664);
+	});
+
+	it('returns uptime_days >= 35 and x402 KV fields', async () => {
+		const body = await fetchJSON('/v5/metrics/public');
+		// uptime from 2026-02-28; test runs well after that
+		expect(typeof body.uptime_days).toBe('number');
+		expect(body.uptime_days as number).toBeGreaterThanOrEqual(35);
+		// x402 fields present (default 0 / null in test env)
+		expect(typeof body.x402_payment_count).toBe('number');
+		expect(Object.prototype.hasOwnProperty.call(body, 'last_payment_at')).toBe(true);
+	});
+
+	it('returns registry-optimised fields: install, evaluator_platforms, response_time_ms, ecosystem_listings, mcp usage', async () => {
+		const body = await fetchJSON('/v5/metrics/public');
+		// daily MCP usage (0 in test env — no traction_cache KV key)
+		expect(typeof body.unique_mcp_clients_today).toBe('number');
+		expect(typeof body.mcp_requests_today).toBe('number');
+		// static install hint
+		expect(body.install).toBe('npx headless-oracle-mcp');
+		// evaluator platforms list
+		expect(Array.isArray(body.evaluator_platforms)).toBe(true);
+		expect((body.evaluator_platforms as string[]).length).toBeGreaterThan(0);
+		// response time object
+		const rt = body.response_time_ms as Record<string, unknown>;
+		expect(rt).toHaveProperty('connect', 0);
+		expect(rt).toHaveProperty('initialize');
+		expect(rt).toHaveProperty('tool_call');
+		// ecosystem listings
+		const el = body.ecosystem_listings as Record<string, unknown>;
+		expect(el.glama_connector).toBe(true);
+		expect(el.npm).toBe('headless-oracle-mcp');
+		expect(Array.isArray(el.pypi)).toBe(true);
+	});
+});
+
+// ─── GET /.well-known/mcp-servers.json ───────────────────────────────────────
+
+describe('GET /.well-known/mcp-servers.json', () => {
+	it('returns 200 with correct shape', async () => {
+		const body = await fetchJSON('/.well-known/mcp-servers.json');
+		expect(Array.isArray(body.servers)).toBe(true);
+		const server = (body.servers as Array<Record<string, unknown>>)[0];
+		expect(server.name).toBe('headless-oracle');
+		expect(server.mcp_endpoint).toBe('https://headlessoracle.com/mcp');
+		expect(server.fail_closed).toBe(true);
+		expect(Array.isArray(server.tools)).toBe(true);
+		expect((server.tools as Array<{name: string}>).length).toBe(5);
+	});
+
+	it('includes coverage with 28 exchanges and updated_at timestamp', async () => {
+		const body = await fetchJSON('/.well-known/mcp-servers.json');
+		const server = (body.servers as Array<Record<string, unknown>>)[0];
+		const coverage = server.coverage as Record<string, unknown>;
+		expect(coverage.exchanges).toBe(28);
+		expect(Array.isArray(coverage.mic_codes)).toBe(true);
+		expect(typeof server.updated_at).toBe('string');
+	});
+
+	it('includes registry install config and linked metric/health/demo URLs', async () => {
+		const body = await fetchJSON('/.well-known/mcp-servers.json');
+		const server = (body.servers as Array<Record<string, unknown>>)[0];
+		// install block
+		const install = server.install as Record<string, string>;
+		expect(install.npx).toBe('npx headless-oracle-mcp');
+		expect(install.npm).toBe('npm install -g headless-oracle-mcp');
+		// clients block — enables auto-generated config by registries
+		const clients = server.clients as Record<string, { command: string; args: string[] }>;
+		expect(clients.claude_desktop.command).toBe('npx');
+		expect(clients.cursor.command).toBe('npx');
+		// linked URLs
+		expect(server.metrics_url).toBe('https://headlessoracle.com/v5/metrics/public');
+		expect(server.health_url).toBe('https://headlessoracle.com/v5/health');
+		expect(server.demo_url).toBe('https://headlessoracle.com/v5/demo?mic=XNYS');
+	});
+});
+
+// ─── GET /blog/market-hours-api-vs-signed-attestation ────────────────────────
+
+describe('GET /blog/market-hours-api-vs-signed-attestation', () => {
+	it('returns 200 with text/plain', async () => {
+		const response = await fetchWorker('/blog/market-hours-api-vs-signed-attestation');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains signed attestation and fail-closed content', async () => {
+		const body = await fetchWorker('/blog/market-hours-api-vs-signed-attestation').then((r) => r.text());
+		expect(body).toContain('signed');
+		expect(body).toContain('UNKNOWN');
+		expect(body).toContain('Ed25519');
+	});
+});
+
+// ─── GET /docs/integrations/agno ─────────────────────────────────────────────
+
+describe('GET /docs/integrations/agno', () => {
+	it('returns 200 with text/plain', async () => {
+		const response = await fetchWorker('/docs/integrations/agno');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains MCPTools and fail-closed contract', async () => {
+		const body = await fetchWorker('/docs/integrations/agno').then((r) => r.text());
+		expect(body).toContain('MCPTools');
+		expect(body).toContain('headless-oracle-mcp');
+		expect(body).toContain('UNKNOWN');
+	});
+});
+
+// ─── GET /docs/integrations/strands ──────────────────────────────────────────
+
+describe('GET /docs/integrations/strands', () => {
+	it('returns 200 with text/plain', async () => {
+		const response = await fetchWorker('/docs/integrations/strands');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains Strands SDK and is_market_open pattern', async () => {
+		const body = await fetchWorker('/docs/integrations/strands').then((r) => r.text());
+		expect(body).toContain('headless-oracle-strands');
+		expect(body).toContain('is_market_open');
+		expect(body).toContain('UNKNOWN');
+	});
+});
+
+// ─── GET /docs/integrations/google-adk ───────────────────────────────────────
+
+describe('GET /docs/integrations/google-adk', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/docs/integrations/google-adk');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains ADK McpToolset content and fail-closed contract', async () => {
+		const body = await fetchWorker('/docs/integrations/google-adk').then((r) => r.text());
+		expect(body).toContain('McpToolset');
+		expect(body).toContain('StdioServerParameters');
+		expect(body).toContain('headless-oracle-mcp');
+		expect(body).toContain('UNKNOWN');
+	});
+});
+
+// ─── GET /docs/integrations/trading-agents ───────────────────────────────────
+
+describe('GET /docs/integrations/trading-agents', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/docs/integrations/trading-agents');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains TradingAgents integration content and pre-trade gate', async () => {
+		const body = await fetchWorker('/docs/integrations/trading-agents').then((r) => r.text());
+		expect(body).toContain('TradingAgents');
+		expect(body).toContain('pre_trade_gate');
+		expect(body).toContain('XNYS');
+		expect(body).toContain('UNKNOWN');
+	});
+});
+
+// ─── GET /docs/integrations/autogpt ──────────────────────────────────────────
+
+describe('GET /docs/integrations/autogpt', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/docs/integrations/autogpt');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains AutoGPT integration content', async () => {
+		const body = await fetchWorker('/docs/integrations/autogpt').then((r) => r.text());
+		expect(body).toContain('AutoGPT');
+		expect(body).toContain('can_handle_pre_command');
+		expect(body).toContain('headlessoracle.com/mcp');
+	});
+});
+
+// ─── GET /blog/why-your-trading-agent-needs-a-pre-trade-gate ─────────────────
+
+describe('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate', () => {
+	it('returns 200 with text/plain content-type', async () => {
+		const response = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('contains blog post content with fail-closed contract and code example', async () => {
+		const body = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate').then((r) => r.text());
+		expect(body).toContain('pre-trade gate');
+		expect(body).toContain('safe_to_execute');
+		expect(body).toContain('UNKNOWN');
+		expect(body).toContain('DST');
 	});
 });

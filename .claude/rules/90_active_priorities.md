@@ -3,8 +3,17 @@
 
 ## Current Status
 **Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 647/647 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 4 2026 — stdio MCP package published:
+**Test suite**: 664/664 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 4 2026 (session 2) — registry endpoint polish:
+  - `/v5/metrics/public`: added `unique_mcp_clients_today`, `mcp_requests_today` (live, not zero),
+    `install`, `evaluator_platforms`, `response_time_ms`, `ecosystem_listings`
+  - `/.well-known/mcp-servers.json`: added `install`, `clients`, `metrics_url`, `health_url`, `demo_url`
+  - Extracted `getMcpUsageToday()` helper — cache-first (traction_cache KV), live fallback (KV list scan).
+    Both `/v5/metrics/public` and `/v5/traction` now use it; the old live-compute duplication is gone.
+  - Gap closed: metrics/public now returns real client/request counts at any hour, not zeros pre-17:00.
+  - Worker: d509c8b7 → (post-housekeeping deploy)
+  - +2 tests (664 total)
+**Previous significant work**: Apr 4 2026 — stdio MCP package + distribution sprint:
   - NEW: `packages/headless-oracle-mcp/` — local stdio MCP server, zero npm dependencies
   - Proxies tools/list + tools/call to headlessoracle.com/mcp; handles initialize/ping locally
   - Published to npm: `headless-oracle-mcp@1.0.1` (npmjs.com/package/headless-oracle-mcp)
