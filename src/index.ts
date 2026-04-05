@@ -8321,6 +8321,26 @@ export default {
 			return new Response(null, { headers: corsHeaders });
 		}
 
+		// ── Best-effort referrer tracking ──────────────────────────────────────
+		// Increment referrer:{date}:{domain} counter for any request with a Referer
+		// header pointing to an external domain. Used by /v5/referrers to measure
+		// which channels are driving traffic.
+		const _referer = request.headers.get('Referer');
+		if (_referer && typeof ctx?.waitUntil === 'function') {
+			try {
+				const _refDomain = new URL(_referer).hostname;
+				if (_refDomain && _refDomain !== 'headlessoracle.com' && _refDomain !== 'www.headlessoracle.com') {
+					const _refKey = `referrer:${now.toISOString().slice(0, 10)}:${_refDomain}`;
+					ctx.waitUntil(
+						env.ORACLE_TELEMETRY.get(_refKey).then((val) => {
+							const next = (parseInt(val ?? '0', 10) || 0) + 1;
+							return env.ORACLE_TELEMETRY.put(_refKey, String(next), { expirationTtl: 8 * 24 * 3600 });
+						}).catch(() => {})
+					);
+				}
+			} catch { /* malformed Referer URL — ignore */ }
+		}
+
 		const json = (body: unknown, status = 200, extraHeaders: Record<string, string> = {}) => {
 			let responseBody = body;
 			// Auto-append docs link to 4xx error responses for agent-readable error recovery.
@@ -8345,6 +8365,10 @@ export default {
 				'X-RateLimit-Remaining': String(Math.max(0, _rlLimit - _rlUsed)),
 				'X-RateLimit-Reset':     rlMidnight.toISOString(),
 			};
+			// Best-effort daily status code counter — enables /v5/metrics/public status_codes_today.
+			if (typeof ctx?.waitUntil === 'function') {
+				incrementKvCounter(`status_code:${now.toISOString().slice(0, 10)}:${status}`, env, ctx, 25 * 3600);
+			}
 			return new Response(JSON.stringify(responseBody), {
 				status,
 				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...(status === 402 ? { 'Link': '</v5/why-not-free>; rel="payment"', 'X-X402-Foundation': 'compatible' } : {}), ...extraHeaders },
@@ -9217,7 +9241,12 @@ export default {
 
 			// ── /blog/* — blog posts served as plain text ───────────────────
 			if (url.pathname.startsWith('/blog/')) {
-				const blogHeaders = { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' };
+				const blogSlug    = url.pathname.slice('/blog/'.length);
+				const blogHeaders = {
+					'Content-Type':  'text/plain; charset=utf-8',
+					'Cache-Control': 'public, max-age=3600',
+					'Link':          `<https://headlessoracle.com/blog/${blogSlug}>; rel="canonical"`,
+				};
 				if (url.pathname === '/blog/why-your-trading-agent-needs-a-pre-trade-gate')
 					return new Response(BLOG_POST_WHY_PRE_TRADE_GATE, { headers: blogHeaders });
 				if (url.pathname === '/blog/market-hours-api-vs-signed-attestation')
@@ -10535,17 +10564,26 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				const uptimeDays = Math.floor((Date.now() - originMs) / 86400000);
 				const today = now.toISOString().slice(0, 10);
 
-				const [[paymentCountRaw, lastPaymentAtRaw], mcpUsage] = await Promise.all([
+				const [[paymentCountRaw, lastPaymentAtRaw], mcpUsage, scRaws] = await Promise.all([
 					Promise.all([
 						env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
 						env.ORACLE_TELEMETRY.get('x402_last_payment_at').catch(() => null),
 					]),
 					getMcpUsageToday(today, env),
+					// Status code counters — read the 6 common codes in one parallel batch
+					Promise.all([200, 401, 402, 403, 404, 429].map((c) =>
+						env.ORACLE_TELEMETRY.get(`status_code:${today}:${c}`).catch(() => null)
+					)),
 				]);
 				const x402PaymentCount    = parseInt(paymentCountRaw ?? '0', 10) || 0;
 				const lastPaymentAt       = lastPaymentAtRaw ?? null;
 				const uniqueMcpClientsToday = mcpUsage.unique_clients_today;
 				const mcpRequestsToday      = mcpUsage.total_requests_today;
+				const statusCodesToday: Record<string, number> = {};
+				[200, 401, 402, 403, 404, 429].forEach((code, i) => {
+					const n = parseInt(scRaws[i] ?? '0', 10) || 0;
+					if (n > 0) statusCodesToday[String(code)] = n;
+				});
 
 				return json({
 					exchanges:               SUPPORTED_EXCHANGES.length,
@@ -10563,6 +10601,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					fail_closed:             true,
 					unique_mcp_clients_today: uniqueMcpClientsToday,
 					mcp_requests_today:       mcpRequestsToday,
+					status_codes_today:       statusCodesToday,
 					install:                  'npx headless-oracle-mcp',
 					evaluator_platforms: [
 						'Chiark', 'MCPScoreboard', 'YellowMCP', 'CacheFly', 'DataCamp', 'Glama',
@@ -10580,6 +10619,24 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 						pypi:            ['headless-oracle', 'headless-oracle-langchain', 'headless-oracle-crewai', 'headless-oracle-strands'],
 					},
 				}, 200, { 'Cache-Control': 'public, max-age=60' });
+			}
+
+			// ── GET /v5/referrers — daily referrer traffic breakdown ──────────────
+			// Lists domains that linked to headlessoracle.com today (or a given date).
+			// Best-effort: populated by the referrer tracking in the main request handler.
+			if (url.pathname === '/v5/referrers') {
+				const date   = url.searchParams.get('date') || now.toISOString().slice(0, 10);
+				const prefix = `referrer:${date}:`;
+				const listResult = await env.ORACLE_TELEMETRY.list({ prefix }).catch(() => ({ keys: [] as KVNamespaceListKey<unknown>[] }));
+				const referrers: Record<string, number> = {};
+				await Promise.all(
+					listResult.keys.map(async (k) => {
+						const domain = (k.name as string).slice(prefix.length);
+						const val    = await env.ORACLE_TELEMETRY.get(k.name as string).catch(() => null);
+						referrers[domain] = parseInt(val ?? '0', 10) || 0;
+					})
+				);
+				return json({ date, referrers }, 200, { 'Cache-Control': 'public, max-age=60' });
 			}
 
 			// ── GET /v5/traction — public live metrics snapshot ──────────
@@ -10970,6 +11027,111 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 			// Linked from every 402 via: Link: </v5/why-not-free>; rel="payment"
 			if (url.pathname === '/v5/why-not-free') {
 				return json(buildPaymentOptions());
+			}
+
+			// ── GET /v5/pricing — machine-readable pricing tiers ──────────────────
+			// Public, no auth. Returns all tiers that exist in code — no invented tiers.
+			// Canonical source of truth for pricing. HTML page at /pricing (Pages).
+			if (url.pathname === '/v5/pricing') {
+				return json({
+					tiers: [
+						{
+							id:           'sandbox',
+							name:         'Sandbox',
+							price_usd:    0,
+							price_label:  'Free',
+							calls:        200,
+							duration:     '7 days',
+							key_prefix:   'sb_',
+							provision:    'POST /v5/sandbox',
+							description:  'Instant sandbox key via email. 200 calls over 7 days. IP-fingerprinted — one per IP.',
+							features:     ['200 calls total', '28 exchanges', 'Ed25519 signed receipts', 'MCP tools included', 'No credit card'],
+						},
+						{
+							id:           'free',
+							name:         'Free Tier',
+							price_usd:    0,
+							price_label:  'Free',
+							calls_per_day: FREE_TIER_DAILY_LIMIT,
+							key_prefix:   'ho_free_',
+							provision:    'POST /v5/keys/request',
+							description:  'Self-provision free API key via email. 500 calls/day.',
+							features:     ['500 calls/day', '28 exchanges', 'Ed25519 signed receipts', 'MCP tools included', 'No credit card'],
+						},
+						{
+							id:              'x402',
+							name:            'x402 Per-Request',
+							price_usdc:      '0.001',
+							price_label:     '$0.001 USDC / request',
+							calls_per_day:   null,
+							key_prefix:      null,
+							provision:       'X-Payment header on /v5/status',
+							description:     'No key, no signup. Pay $0.001 USDC per request on Base mainnet. Agent-native.',
+							network:         'base',
+							chain_id:        8453,
+							usdc_amount_units: String(X402_MIN_AMOUNT_UNITS),
+							usdc_contract:   X402_USDC_CONTRACT,
+							discovery:       '/.well-known/x402.json',
+							features:        ['No key required', 'No signup', 'Pay per call', 'Base mainnet USDC', 'Instant access'],
+						},
+						{
+							id:           'credits',
+							name:         'Credit Pack',
+							price_usd:    5,
+							price_label:  '$5 one-time',
+							calls:        1000,
+							key_prefix:   'ho_crd_',
+							provision:    'POST /v5/x402/mint',
+							description:  '1,000 prepaid calls. No expiry. Mint instantly with $5 USDC on Base mainnet.',
+							features:     ['1,000 calls', 'No expiry', 'No subscription', '28 exchanges', 'Instant provisioning'],
+						},
+						{
+							id:           'builder',
+							name:         'Builder',
+							price_usd:    99,
+							price_label:  '$99 / month',
+							calls_per_day: BUILDER_TIER_DAILY_LIMIT,
+							key_prefix:   'ho_live_',
+							provision:    'POST /v5/checkout',
+							description:  '50,000 calls/day. Paddle subscription. Webhook subscriptions. Receipt audit log.',
+							features:     ['50,000 calls/day', '5 webhook subs', 'Receipt audit log', '28 exchanges', 'Paddle billing'],
+						},
+						{
+							id:           'pro',
+							name:         'Pro',
+							price_usd:    299,
+							price_label:  '$299 / month',
+							calls_per_day: PRO_TIER_DAILY_LIMIT,
+							key_prefix:   'ho_live_',
+							provision:    'POST /v5/checkout',
+							description:  '200,000 calls/day. Paddle subscription. 25 webhook subscriptions.',
+							features:     ['200,000 calls/day', '25 webhook subs', 'Receipt audit log', '28 exchanges', 'Paddle billing'],
+						},
+						{
+							id:           'protocol',
+							name:         'Protocol',
+							price_usd:    500,
+							price_label:  '$500 / month',
+							calls_per_day: null,
+							key_prefix:   'ho_live_',
+							provision:    'POST /v5/checkout',
+							description:  'Unlimited calls/day. Unlimited webhooks. Enterprise SLA.',
+							features:     ['Unlimited calls/day', 'Unlimited webhooks', '28 exchanges', 'Enterprise SLA', 'Paddle billing'],
+						},
+					],
+					x402: {
+						amount_usdc:       '0.001',
+						amount_units:      String(X402_MIN_AMOUNT_UNITS),
+						network:           'base',
+						chain_id:          8453,
+						usdc_contract:     X402_USDC_CONTRACT,
+						payment_discovery: '/.well-known/x402.json',
+					},
+					checkout_url:     '/v5/checkout',
+					sandbox_url:      '/v5/sandbox',
+					free_key_url:     '/v5/keys/request',
+					pricing_page_url: 'https://headlessoracle.com/pricing',
+				});
 			}
 
 			// ── POST /v5/verify — REST Ed25519 receipt verification ─────────
@@ -12618,6 +12780,11 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				note:       'Using Headless Oracle in production? We\'d love to feature your project.',
 			});
 		}
+
+		// ── Convenience redirects ────────────────────────────────────────────────
+		if (url.pathname === '/npm')    return Response.redirect('https://npmjs.com/package/headless-oracle-mcp', 302);
+		if (url.pathname === '/pypi')   return Response.redirect('https://pypi.org/project/headless-oracle/', 302);
+		if (url.pathname === '/github') return Response.redirect('https://github.com/LembaGang/headless-oracle-v5', 302);
 
 		return json({ error: 'NOT_FOUND', message: 'Route not found' }, 404);
 

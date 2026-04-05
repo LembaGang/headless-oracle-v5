@@ -1,29 +1,40 @@
 # headless-oracle-mcp
 
-[![npm version](https://img.shields.io/npm/v/headless-oracle-mcp)](https://npmjs.com/package/headless-oracle-mcp)
+[![npm](https://img.shields.io/npm/v/headless-oracle-mcp)](https://npmjs.com/package/headless-oracle-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Local stdio MCP server for [Headless Oracle](https://headlessoracle.com) — Ed25519-signed market-state receipts for 28 global exchanges.
+
+---
+
+## What is this?
+
+Headless Oracle is a cryptographically signed market-state oracle for AI agents. It tells you whether a stock exchange is `OPEN`, `CLOSED`, `HALTED`, or `UNKNOWN` — and proves it with an Ed25519 signature.
+
+This package lets any MCP-compatible AI client (Claude Desktop, Cursor, Cline, Windsurf, Continue.dev) call Headless Oracle tools directly. It runs as a local stdio MCP server that proxies tool calls to the Headless Oracle remote endpoint.
+
+**Coverage:** NYSE, NASDAQ, London, Tokyo, Paris, Hong Kong, Singapore, Sydney, Mumbai (BSE + NSE), Shanghai, Shenzhen, Seoul, Johannesburg, São Paulo, Zurich, Milan, Istanbul, Riyadh, Dubai, Auckland, Helsinki, Stockholm — plus CME, NYMEX, Cboe, Coinbase, and Binance (28 total).
 
 **Critical safety rule for agents:** treat `UNKNOWN` and `HALTED` as `CLOSED` — halt all execution.
 
 ---
 
-## Quick start
+## Install
 
 ```bash
 npx headless-oracle-mcp
 ```
 
-No install required. Works with Claude Desktop, Cursor, Cline, Windsurf, and Continue.dev.
+No install required. Requires Node.js 18+.
 
 ---
 
-## MCP client setup
+## Client setup
 
 ### Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`  
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -35,6 +46,24 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   }
 }
 ```
+
+With API key:
+
+```json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "headless-oracle-mcp"],
+      "env": {
+        "HEADLESS_ORACLE_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+---
 
 ### Cursor
 
@@ -51,9 +80,27 @@ Edit `~/.cursor/mcp.json`:
 }
 ```
 
+With API key:
+
+```json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "headless-oracle-mcp"],
+      "env": {
+        "HEADLESS_ORACLE_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+---
+
 ### Cline
 
-Edit `cline_mcp_settings.json` (accessible via Cline settings → MCP Servers):
+Edit `cline_mcp_settings.json` (Cline settings → MCP Servers):
 
 ```json
 {
@@ -65,6 +112,24 @@ Edit `cline_mcp_settings.json` (accessible via Cline settings → MCP Servers):
   }
 }
 ```
+
+With API key:
+
+```json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "headless-oracle-mcp"],
+      "env": {
+        "HEADLESS_ORACLE_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+---
 
 ### Windsurf
 
@@ -80,6 +145,24 @@ Edit `~/.codeium/windsurf/mcp_config.json`:
   }
 }
 ```
+
+With API key:
+
+```json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["-y", "headless-oracle-mcp"],
+      "env": {
+        "HEADLESS_ORACLE_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+---
 
 ### Continue.dev
 
@@ -101,27 +184,26 @@ Edit `~/.continue/config.json`:
 }
 ```
 
----
-
-## With API key
-
-For authenticated access (higher rate limits, `/v5/status` endpoint):
+With API key:
 
 ```json
 {
-  "mcpServers": {
-    "headless-oracle": {
-      "command": "npx",
-      "args": ["-y", "headless-oracle-mcp"],
-      "env": {
-        "HEADLESS_ORACLE_API_KEY": "your-key-here"
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "stdio",
+          "command": "npx",
+          "args": ["-y", "headless-oracle-mcp"],
+          "env": {
+            "HEADLESS_ORACLE_API_KEY": "your-key-here"
+          }
+        }
       }
-    }
+    ]
   }
 }
 ```
-
-Get a free sandbox key at [headlessoracle.com](https://headlessoracle.com) or via the `/v5/sandbox` endpoint.
 
 ---
 
@@ -129,15 +211,15 @@ Get a free sandbox key at [headlessoracle.com](https://headlessoracle.com) or vi
 
 | Tool | Description |
 |------|-------------|
-| `get_market_status` | Returns an Ed25519-signed receipt: `OPEN`, `CLOSED`, `HALTED`, or `UNKNOWN`. Treat UNKNOWN/HALTED as CLOSED. |
-| `get_market_schedule` | Returns next open/close times in UTC for a given exchange. |
+| `get_market_status` | Returns an Ed25519-signed receipt: `OPEN`, `CLOSED`, `HALTED`, or `UNKNOWN`. Always treat `UNKNOWN`/`HALTED` as `CLOSED`. |
+| `get_market_schedule` | Returns next open/close times in UTC, including lunch break windows for XJPX, XHKG, XSHG, XSHE. |
 | `list_exchanges` | Lists all 28 supported exchanges with MIC codes, names, and timezones. |
-| `verify_receipt` | Verifies an Ed25519 receipt locally — checks signature, TTL, and fields. |
-| `get_payment_options` | Returns the upgrade ladder (sandbox → x402 → credits → Builder). |
+| `verify_receipt` | Verifies an Ed25519-signed receipt locally — checks signature, TTL expiry, and required fields. |
+| `get_payment_options` | Returns the upgrade ladder: sandbox → x402 per-request → credits → Builder subscription. |
 
-### Supported exchanges (28 total)
+### Supported MIC codes (28 total)
 
-XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XSHG, XSHE, XHKG, XJPX, XKRX, XBOM, XNSE, XSES, XASX, XNZE, XCBT, XNYM, XCBO, XCOI, XBIN
+`XNYS` `XNAS` `XBSP` `XLON` `XPAR` `XSWX` `XMIL` `XHEL` `XSTO` `XIST` `XSAU` `XDFM` `XJSE` `XSHG` `XSHE` `XHKG` `XJPX` `XKRX` `XBOM` `XNSE` `XSES` `XASX` `XNZE` `XCBT` `XNYM` `XCBO` `XCOI` `XBIN`
 
 ---
 
@@ -159,17 +241,18 @@ XNYS, XNAS, XBSP, XLON, XPAR, XSWX, XMIL, XHEL, XSTO, XIST, XSAU, XDFM, XJSE, XS
 }
 ```
 
-All receipts are signed with Ed25519. Verify with [`@headlessoracle/verify`](https://npmjs.com/package/@headlessoracle/verify).
+Receipts expire after 60 seconds (`expires_at`). Verify with [`@headlessoracle/verify`](https://npmjs.com/package/@headlessoracle/verify).
 
 ---
 
 ## How it works
 
-This package is a local stdio MCP server that proxies tool calls to the [Headless Oracle remote endpoint](https://headlessoracle.com/mcp). Your MCP client (Claude Desktop, Cursor, etc.) communicates with this process over stdin/stdout using JSON-RPC 2.0. The process forwards `tools/list` and `tools/call` requests to the remote endpoint and returns the results.
+Your MCP client communicates with this process over stdin/stdout (JSON-RPC 2.0). `initialize` and `ping` are handled locally; `tools/list` and `tools/call` are forwarded to `https://headlessoracle.com/mcp`.
 
 - Zero npm dependencies — uses Node.js built-ins only (`readline`, `https`)
 - Requires Node.js 18+
-- Errors are logged to stderr only; stdout is reserved for the MCP transport
+- Errors are written to stderr only; stdout is reserved for the MCP transport
+- Set `HEADLESS_ORACLE_API_KEY` for authenticated access and higher rate limits
 
 ---
 
@@ -177,8 +260,9 @@ This package is a local stdio MCP server that proxies tool calls to the [Headles
 
 - **Website**: [headlessoracle.com](https://headlessoracle.com)
 - **Docs**: [headlessoracle.com/docs](https://headlessoracle.com/docs)
-- **npm**: [npmjs.com/package/@headlessoracle/verify](https://npmjs.com/package/@headlessoracle/verify) (JS verification SDK)
-- **Remote MCP endpoint**: `https://headlessoracle.com/mcp` (MCP Streamable HTTP, protocol `2024-11-05`)
+- **Get a free key**: [headlessoracle.com/v5/sandbox](https://headlessoracle.com/v5/sandbox) (instant, no sign-up)
+- **Verify SDK (JS)**: [npmjs.com/package/@headlessoracle/verify](https://npmjs.com/package/@headlessoracle/verify)
+- **Remote MCP endpoint**: `https://headlessoracle.com/mcp` (protocol `2024-11-05`)
 - **GitHub**: [github.com/LembaGang/headless-oracle-v5](https://github.com/LembaGang/headless-oracle-v5)
 
 ---

@@ -1528,6 +1528,45 @@ describe('GET /v5/payment-proof', () => {
 	});
 });
 
+// ─── GET /v5/pricing ──────────────────────────────────────────────────────────
+
+describe('GET /v5/pricing', () => {
+	it('returns 200 with tiers array and x402 metadata', async () => {
+		const res = await fetchWorker('/v5/pricing');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(Array.isArray(body.tiers)).toBe(true);
+		const tiers = body.tiers as Record<string, unknown>[];
+		expect(tiers.length).toBeGreaterThanOrEqual(7);
+		const ids = tiers.map((t) => t.id);
+		expect(ids).toContain('sandbox');
+		expect(ids).toContain('free');
+		expect(ids).toContain('x402');
+		expect(ids).toContain('credits');
+		expect(ids).toContain('builder');
+		expect(ids).toContain('pro');
+		expect(ids).toContain('protocol');
+	});
+
+	it('x402 tier has correct Base mainnet fields', async () => {
+		const res = await fetchWorker('/v5/pricing');
+		const body = await res.json() as Record<string, unknown>;
+		const x402meta = body.x402 as Record<string, unknown>;
+		expect(x402meta).toHaveProperty('amount_usdc', '0.001');
+		expect(x402meta).toHaveProperty('network', 'base');
+		expect(x402meta).toHaveProperty('chain_id', 8453);
+		expect(x402meta).toHaveProperty('amount_units', '1000');
+	});
+
+	it('builder tier has correct daily limit', async () => {
+		const res = await fetchWorker('/v5/pricing');
+		const body = await res.json() as Record<string, unknown>;
+		const tiers = body.tiers as Record<string, unknown>[];
+		const builder = tiers.find((t) => t.id === 'builder')!;
+		expect(builder.calls_per_day).toBe(50_000);
+	});
+});
+
 // ─── GET /v5/why-not-free ─────────────────────────────────────────────────────
 
 describe('GET /v5/why-not-free', () => {
@@ -8024,5 +8063,69 @@ describe('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate', () => {
 		expect(body).toContain('safe_to_execute');
 		expect(body).toContain('UNKNOWN');
 		expect(body).toContain('DST');
+	});
+});
+
+// ─── Convenience redirects ────────────────────────────────────────────────────
+
+describe('Convenience redirects (/npm, /pypi, /github)', () => {
+	it('GET /npm → 302 to npmjs.com', async () => {
+		const response = await fetchWorker('/npm');
+		expect(response.status).toBe(302);
+		expect(response.headers.get('Location')).toContain('npmjs.com');
+	});
+
+	it('GET /pypi → 302 to pypi.org', async () => {
+		const response = await fetchWorker('/pypi');
+		expect(response.status).toBe(302);
+		expect(response.headers.get('Location')).toContain('pypi.org');
+	});
+
+	it('GET /github → 302 to github.com', async () => {
+		const response = await fetchWorker('/github');
+		expect(response.status).toBe(302);
+		expect(response.headers.get('Location')).toContain('github.com');
+	});
+});
+
+// ─── GET /v5/referrers ────────────────────────────────────────────────────────
+
+describe('GET /v5/referrers', () => {
+	it('returns 200 with date and referrers object (empty when no data)', async () => {
+		const response = await fetchWorker('/v5/referrers?date=2099-01-01');
+		expect(response.status).toBe(200);
+		const body = await response.json() as { date: string; referrers: Record<string, number> };
+		expect(body.date).toBe('2099-01-01');
+		expect(typeof body.referrers).toBe('object');
+	});
+
+	it('returns today as default date when no ?date param', async () => {
+		const response = await fetchWorker('/v5/referrers');
+		expect(response.status).toBe(200);
+		const body = await response.json() as { date: string; referrers: Record<string, number> };
+		expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+	});
+});
+
+// ─── GET /v5/metrics/public — status_codes_today ─────────────────────────────
+
+describe('GET /v5/metrics/public — status_codes_today', () => {
+	it('includes status_codes_today field in response', async () => {
+		const response = await fetchWorker('/v5/metrics/public');
+		expect(response.status).toBe(200);
+		const body = await response.json() as { status_codes_today: Record<string, number> };
+		expect(typeof body.status_codes_today).toBe('object');
+	});
+});
+
+// ─── Blog canonical Link header ───────────────────────────────────────────────
+
+describe('Blog canonical Link header', () => {
+	it('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate includes canonical Link header', async () => {
+		const response = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate');
+		expect(response.status).toBe(200);
+		const link = response.headers.get('Link');
+		expect(link).toContain('rel="canonical"');
+		expect(link).toContain('why-your-trading-agent-needs-a-pre-trade-gate');
 	});
 });

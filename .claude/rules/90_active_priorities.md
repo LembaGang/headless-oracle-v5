@@ -2,9 +2,42 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch (HN March 10). Developer gravity loop active. Conversion infrastructure live.
-**Test suite**: 664/664 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 4 2026 (session 2) — registry endpoint polish:
+**Phase**: Post-launch. Revenue infrastructure sprint active.
+**Test suite**: 674/674 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 5 2026 — Day 38 Revenue Infrastructure Sprint (671→674 tests, +3):
+- **docs/STATE_OF_PRODUCT.md** — comprehensive audit of all endpoints, pricing, auth, infra, what's wired vs. stubbed
+- **GET /v5/pricing** — JSON pricing tiers endpoint (sandbox/free/x402/credits/builder/pro/protocol). Public, no auth.
+- **3 new tests** for /v5/pricing (tiers array shape, x402 Base mainnet fields, builder daily limit)
+- **x402 price note**: current is $0.001 USDC (1000 units). Proposed increase to $0.01 pending founder approval.
+- **docs/outreach/**: twitter-thread-day38.md, linkedin-post-day38.md, github-dm-template.md, datacamp-cold-email.md
+- **docs/outreach/developer-targets.md**: 30 repos across 4 priority tiers with outreach templates
+- Worker not yet deployed — run `npm run deploy` after approval.
+
+**Previous:** Day 37 Distribution Sprint (664→671 tests, +7, worker 6e73cd5d):
+
+### Phase 1 — Telemetry (shipped)
+- **Referrer tracking**: every request with a non-self Referer increments `referrer:{date}:{domain}` KV counter
+- **GET /v5/referrers**: public endpoint — `{ date, referrers: { "github.com": 12, ... } }`, supports `?date=`
+- **Status code counters**: `json()` helper increments `status_code:{date}:{code}` best-effort on every response
+- **GET /v5/metrics/public**: now includes `status_codes_today: { "200": N, "402": N, ... }`
+- **Convenience redirects**: GET /npm → npmjs.com, /pypi → pypi.org, /github → github.com (all 302)
+- **Blog canonical headers**: `Link: <url>; rel="canonical"` on all /blog/* responses
+- Gap: referrer KV write hotspot at scale — no coalescing. Fix when a single domain exceeds ~100 req/day.
+
+### Phase 2 — Distribution content (ready to paste)
+All content generated in session output. Human tasks:
+- [ ] PR to georgezouq/awesome-ai-in-finance (Data Sources section)
+- [ ] PR to wilsonfreitas/awesome-quant (Calendars & Market Hours section)
+- [ ] PR to edarchimbaud/awesome-systematic-trading (Libraries and Packages table)
+- [ ] Issue on TauricResearch/TradingAgents (risk management market-state gap)
+- [ ] dev.to post #1: "Why Your Trading Agent Needs a Pre-Trade Gate"
+- [ ] dev.to post #2: "Market Hours APIs Are Not Enough for Autonomous Agents"
+- [ ] PulseMCP submission (npx headless-oracle-mcp, https://headlessoracle.com/mcp)
+- [ ] mcp.so submission (same details)
+- [ ] PR to google/adk-docs (docs/integrations/headless-oracle.md)
+- [ ] PR to agno-agi/agno (cookbook/tools/headless_oracle_market_gate.py)
+
+**Previous significant work**: Apr 4 2026 (session 2) — registry endpoint polish:
   - `/v5/metrics/public`: added `unique_mcp_clients_today`, `mcp_requests_today` (live, not zero),
     `install`, `evaluator_platforms`, `response_time_ms`, `ecosystem_listings`
   - `/.well-known/mcp-servers.json`: added `install`, `clients`, `metrics_url`, `health_url`, `demo_url`

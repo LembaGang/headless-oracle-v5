@@ -28,9 +28,9 @@ Three tools available to Cascade:
 
 - **get_market_status** — Is this exchange open right now? Returns signed receipt.
 - **get_market_schedule** — When does this exchange next open/close?
-- **list_exchanges** — All 23 supported exchanges.
+- **list_exchanges** — All 28 supported exchanges (equities, derivatives, 24/7 crypto).
 
-Supported exchanges: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), Paris (XPAR), Hong Kong (XHKG), Singapore (XSES).
+Supported exchanges include: NYSE (XNYS), NASDAQ (XNAS), London (XLON), Tokyo (XJPX), Paris (XPAR), Hong Kong (XHKG), Singapore (XSES), Sydney (XASX), Seoul (XKRX), Mumbai (XBOM/XNSE), Shanghai (XSHG/XSHE), Zurich (XSWX), Johannesburg (XJSE), Dubai (XDFM), Riyadh (XSAU), CME Futures (XCBT), NYMEX (XNYM), Cboe (XCBO), Coinbase 24/7 (XCOI), Binance 24/7 (XBIN), and more. Call `list_exchanges` for the full directory.
 
 ## Why This Matters
 

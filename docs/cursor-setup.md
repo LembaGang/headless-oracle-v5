@@ -46,7 +46,7 @@ Once connected, Cursor's AI can use these tools:
 |------|-------------|
 | `get_market_status` | Current open/closed status for an exchange (signed receipt) |
 | `get_market_schedule` | Next open and close times for an exchange |
-| `list_exchanges` | All 23 supported exchanges |
+| `list_exchanges` | All 28 supported exchanges (equities, derivatives, 24/7 crypto) |
 
 ---
 
@@ -58,7 +58,7 @@ After setup, ask Cursor:
 - "What time does the London Stock Exchange close today?"
 - "Check if both XNYS and XNAS are open before running my trading backtest."
 - "Get the signed market receipt for XJPX and include the receipt_id in my log."
-- "What markets are open right now across all 23 exchanges?"
+- "What markets are open right now across all 28 exchanges?"
 
 ---
 
@@ -77,15 +77,38 @@ The signed receipt (with `receipt_id`) is included in the generated code as an a
 
 ## Supported exchanges
 
+28 global exchanges. Use `list_exchanges` for the live directory with timezones and mic_type.
+
 | MIC | Exchange | Timezone |
 |-----|----------|----------|
 | XNYS | New York Stock Exchange | America/New_York |
 | XNAS | NASDAQ | America/New_York |
+| XBSP | B3 (São Paulo) | America/Sao_Paulo |
 | XLON | London Stock Exchange | Europe/London |
-| XJPX | Japan Exchange Group (Tokyo) | Asia/Tokyo |
 | XPAR | Euronext Paris | Europe/Paris |
+| XSWX | SIX Swiss Exchange | Europe/Zurich |
+| XMIL | Borsa Italiana (Milan) | Europe/Rome |
+| XHEL | Nasdaq Helsinki | Europe/Helsinki |
+| XSTO | Nasdaq Stockholm | Europe/Stockholm |
+| XIST | Borsa Istanbul | Europe/Istanbul |
+| XSAU | Saudi Exchange (Tadawul) | Asia/Riyadh |
+| XDFM | Dubai Financial Market | Asia/Dubai |
+| XJSE | Johannesburg Stock Exchange | Africa/Johannesburg |
 | XHKG | Hong Kong Exchanges | Asia/Hong_Kong |
+| XJPX | Japan Exchange Group (Tokyo) | Asia/Tokyo |
+| XKRX | Korea Exchange (Seoul) | Asia/Seoul |
+| XSHG | Shanghai Stock Exchange | Asia/Shanghai |
+| XSHE | Shenzhen Stock Exchange | Asia/Shanghai |
+| XBOM | BSE Ltd (Mumbai) | Asia/Kolkata |
+| XNSE | National Stock Exchange of India | Asia/Kolkata |
 | XSES | Singapore Exchange | Asia/Singapore |
+| XASX | Australian Securities Exchange | Australia/Sydney |
+| XNZE | New Zealand Exchange | Pacific/Auckland |
+| XCBT | CME Futures (overnight) | America/Chicago |
+| XNYM | NYMEX (overnight) | America/Chicago |
+| XCBO | Cboe Options Exchange | America/Chicago |
+| XCOI | Coinbase Exchange (24/7) | UTC |
+| XBIN | Binance (24/7) | UTC |
 
 ---
 

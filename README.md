@@ -1,174 +1,153 @@
-# Headless Oracle
+# MCP Registry
 
-![MCP-native](https://img.shields.io/badge/MCP-native-6366f1?style=flat-square)
-![x402-payable](https://img.shields.io/badge/x402-payable-10b981?style=flat-square)
-![Ed25519-signed](https://img.shields.io/badge/Ed25519-signed-f59e0b?style=flat-square)
-![28 exchanges](https://img.shields.io/badge/exchanges-28-0ea5e9?style=flat-square)
-[![headless-oracle-v5 MCP server](https://glama.ai/mcp/servers/LembaGang/headless-oracle-v5/badges/card.svg)](https://glama.ai/mcp/servers/LembaGang/headless-oracle-v5)
+The MCP registry provides MCP clients with a list of MCP servers, like an app store for MCP servers.
 
-Headless Oracle provides cryptographically signed market status receipts for 28 global exchanges — equities, derivatives (CME, NYMEX, Cboe), and 24/7 crypto (Coinbase, Binance). Every response is Ed25519-signed with a 60-second TTL so autonomous agents can verify market state without trusting the operator. The architecture is fail-closed: `UNKNOWN` always means `CLOSED`. Handles DST transitions, exchange holidays, half-days, lunch breaks, and real-time circuit breaker overrides automatically.
+[**📤 Publish my MCP server**](docs/modelcontextprotocol-io/quickstart.mdx) | [**⚡️ Live API docs**](https://registry.modelcontextprotocol.io/docs) | [**👀 Ecosystem vision**](docs/design/ecosystem-vision.md) | 📖 **[Full documentation](./docs)**
 
----
+## Development Status
 
-## MCP Endpoint
+**2025-10-24 update**: The Registry API has entered an **API freeze (v0.1)** 🎉. For the next month or more, the API will remain stable with no breaking changes, allowing integrators to confidently implement support. This freeze applies to v0.1 while development continues on v0. We'll use this period to validate the API in real-world integrations and gather feedback to shape v1 for general availability. Thank you to everyone for your contributions and patience—your involvement has been key to getting us here!
 
-```
-https://headlessoracle.com/mcp
-```
+**2025-09-08 update**: The registry has launched in preview 🎉 ([announcement blog post](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)). While the system is now more stable, this is still a preview release and breaking changes or data resets may occur. A general availability (GA) release will follow later. We'd love your feedback in [GitHub discussions](https://github.com/modelcontextprotocol/registry/discussions/new?category=ideas) or in the [#registry-dev Discord](https://discord.com/channels/1358869848138059966/1369487942862504016) ([joining details here](https://modelcontextprotocol.io/community/communication)).
 
-Protocol: MCP `2024-11-05` over Streamable HTTP (POST). No auth required for MCP tools.
+Current key maintainers:
+- **Adam Jones** (Anthropic) [@domdomegg](https://github.com/domdomegg)  
+- **Tadas Antanavicius** (PulseMCP) [@tadasant](https://github.com/tadasant)
+- **Toby Padilla** (GitHub) [@toby](https://github.com/toby)
+- **Radoslav (Rado) Dimitrov** (Stacklok) [@rdimitrov](https://github.com/rdimitrov)
 
-### Configure in Claude Desktop / Cursor / Windsurf
+## Contributing
 
-```json
-{
-  "mcpServers": {
-    "headless-oracle": {
-      "url": "https://headlessoracle.com/mcp"
-    }
-  }
-}
-```
+We use multiple channels for collaboration - see [modelcontextprotocol.io/community/communication](https://modelcontextprotocol.io/community/communication).
 
----
+Often (but not always) ideas flow through this pipeline:
 
-## MCP Tools
+- **[Discord](https://modelcontextprotocol.io/community/communication)** - Real-time community discussions
+- **[Discussions](https://github.com/modelcontextprotocol/registry/discussions)** - Propose and discuss product/technical requirements
+- **[Issues](https://github.com/modelcontextprotocol/registry/issues)** - Track well-scoped technical work  
+- **[Pull Requests](https://github.com/modelcontextprotocol/registry/pulls)** - Contribute work towards issues
 
-| Tool | Description |
-|---|---|
-| `list_exchanges` | List all 28 supported exchanges with MIC codes, names, timezones, and `mic_type` |
-| `get_market_status` | Returns a signed receipt: `OPEN`, `CLOSED`, `HALTED`, or `UNKNOWN` for a given MIC |
-| `get_market_schedule` | Next open/close times in UTC, holiday flags, half-day details, lunch break windows |
-| `verify_receipt` | Verify an Ed25519-signed receipt in-worker — returns `{ valid, reason, expired }` |
+### Quick start:
 
-**Batch execution gate**: `GET /v5/batch?mics=XNYS,XLON,XJPX` returns per-exchange signed receipts plus a `summary.safe_to_execute` boolean — `true` only when all exchanges are `OPEN` and none are `HALTED` or `UNKNOWN`.
+#### Pre-requisites
 
----
+- **Docker**
+- **Go 1.24.x**
+- **ko** - Container image builder for Go ([installation instructions](https://ko.build/install/))
+- **golangci-lint v2.4.0**
 
-## Quick Start
+#### Running the server
 
-**MCP (ask your AI):**
-```
-Is NYSE open right now?
-```
-
-**curl (public demo — no key):**
 ```bash
-curl "https://headlessoracle.com/v5/demo?mic=XNYS"
+# Start full development environment
+make dev-compose
 ```
 
-**curl (schedule):**
+This starts the registry at [`localhost:8080`](http://localhost:8080) with PostgreSQL. The database uses ephemeral storage and is reset each time you restart the containers, ensuring a clean state for development and testing.
+
+**Note:** The registry uses [ko](https://ko.build) to build container images. The `make dev-compose` command automatically builds the registry image with ko and loads it into your local Docker daemon before starting the services.
+
+By default, the registry seeds from the production API with a filtered subset of servers (to keep startup fast). This ensures your local environment mirrors production behavior and all seed data passes validation. For offline development you can seed from a file without validation with `MCP_REGISTRY_SEED_FROM=data/seed.json MCP_REGISTRY_ENABLE_REGISTRY_VALIDATION=false make dev-compose`.
+
+The setup can be configured with environment variables in [docker-compose.yml](./docker-compose.yml) - see [.env.example](./.env.example) for a reference.
+
+<details>
+<summary>Alternative: Running a pre-built Docker image</summary>
+
+Pre-built Docker images are automatically published to GitHub Container Registry:
+
 ```bash
-curl "https://headlessoracle.com/v5/schedule?mic=XLON"
+# Run latest stable release
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:latest
+
+# Run latest from main branch (continuous deployment)
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main
+
+# Run specific release version
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:v1.0.0
+
+# Run development build from main branch
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main-20250906-abc123d
 ```
 
-**JavaScript (verify a receipt):**
+**Available tags:** 
+- **Releases**: `latest`, `v1.0.0`, `v1.1.0`, etc.
+- **Continuous**: `main` (latest main branch build)
+- **Development**: `main-<date>-<sha>` (specific commit builds)
+
+</details>
+
+#### Publishing a server
+
+To publish a server, we've built a simple CLI. You can use it with:
+
 ```bash
-npm install @headlessoracle/verify
-```
-```javascript
-import { verify } from '@headlessoracle/verify';
+# Build the latest CLI
+make publisher
 
-const res = await fetch('https://headlessoracle.com/v5/demo?mic=XNYS');
-const receipt = await res.json();
-
-const result = await verify(receipt);
-if (!result.valid || receipt.status !== 'OPEN') {
-  throw new Error('Market not open or receipt invalid — halting');
-}
+# Use it!
+./bin/mcp-publisher --help
 ```
 
-**Python:**
+See [the publisher guide](./docs/modelcontextprotocol-io/quickstart.mdx) for more details.
+
+#### Other commands
+
 ```bash
-pip install headless-oracle
-```
-```python
-from headless_oracle import OracleClient, verify
-
-client = OracleClient()
-receipt = client.get_status('XNYS')
-
-if not verify(receipt) or receipt['status'] != 'OPEN':
-    raise RuntimeError('Market not open — halting execution')
+# Run lint, unit tests and integration tests
+make check
 ```
 
----
+There are also a few more helpful commands for development. Run `make help` to learn more, or look in [Makefile](./Makefile).
 
-## Fail-Closed Contract
+<!--
+For Claude and other AI tools: Always prefer make targets over custom commands where possible.
+-->
 
-| Status | Agent action |
-|---|---|
-| `OPEN` | Safe to proceed |
-| `CLOSED` | Halt — normal schedule |
-| `HALTED` | Halt — circuit breaker active |
-| `UNKNOWN` | Halt — treat as CLOSED, do not proceed |
+## Architecture
 
-Every receipt expires after 60 seconds (`expires_at`). Re-fetch before acting on a cached receipt.
-
----
-
-## Supported Exchanges (28)
-
-| Region | MICs |
-|---|---|
-| Americas | `XNYS` `XNAS` `XBSP` |
-| Europe | `XLON` `XPAR` `XSWX` `XMIL` `XHEL` `XSTO` `XIST` |
-| Middle East / Africa | `XSAU` `XDFM` `XJSE` |
-| Asia | `XSHG` `XSHE` `XHKG` `XJPX` `XKRX` `XBOM` `XNSE` `XSES` `XASX` `XNZE` |
-| Derivatives (CME/Cboe) | `XCBT` `XNYM` `XCBO` |
-| Crypto (24/7) | `XCOI` `XBIN` |
-
-MIC codes follow ISO 10383. `XCOI` (Coinbase) and `XBIN` (Binance) are community convention identifiers.
-
----
-
-## All Endpoints
-
-| Endpoint | Auth | Description |
-|---|---|---|
-| `GET /v5/demo?mic=` | None | Signed receipt (demo mode) |
-| `GET /v5/status?mic=` | API key | Signed receipt (live mode) |
-| `GET /v5/batch?mics=` | API key | Parallel signed receipts + `safe_to_execute` summary |
-| `GET /v5/schedule?mic=` | None | Next open/close, holidays, lunch breaks |
-| `GET /v5/exchanges` | None | Full exchange directory |
-| `GET /v5/sandbox` | None | Instant sandbox key (24h, 100 calls) |
-| `GET /v5/health` | None | Signed liveness probe |
-| `POST /mcp` | None | MCP Streamable HTTP |
-| `GET /openapi.json` | None | OpenAPI 3.1 spec |
-| `GET /.well-known/oracle-keys.json` | None | Ed25519 public key + lifecycle |
-| `GET /.well-known/agent.json` | None | A2A Agent Card |
-
-Full API reference: **[headlessoracle.com/docs](https://headlessoracle.com/docs)**
-
----
-
-## x402 Autonomous Payments
-
-Agents can pay for API access autonomously using USDC on Base mainnet — no human in the loop.
+### Project Structure
 
 ```
-POST /v5/x402/mint
+├── cmd/                     # Application entry points
+│   └── publisher/           # Server publishing tool
+├── data/                    # Seed data
+├── deploy/                  # Deployment configuration (Pulumi)
+├── docs/                    # Documentation
+├── internal/                # Private application code
+│   ├── api/                 # HTTP handlers and routing
+│   ├── auth/                # Authentication (GitHub OAuth, JWT, namespace blocking)
+│   ├── config/              # Configuration management
+│   ├── database/            # Data persistence (PostgreSQL)
+│   ├── service/             # Business logic
+│   ├── telemetry/           # Metrics and monitoring
+│   └── validators/          # Input validation
+├── pkg/                     # Public packages
+│   ├── api/                 # API types and structures
+│   │   └── v0/              # Version 0 API types
+│   └── model/               # Data models for server.json
+├── scripts/                 # Development and testing scripts
+├── tests/                   # Integration tests
+└── tools/                   # CLI tools and utilities
+    └── validate-*.sh        # Schema validation tools
 ```
 
-Send a Base mainnet USDC transaction hash to mint a persistent API key. Pricing: $99 USDC → `builder` plan (50K calls/day), $299 USDC → `pro` plan (200K calls/day).
+### Authentication
 
-Discovery document: `/.well-known/x402.json`
+Publishing supports multiple authentication methods:
+- **GitHub OAuth** - For publishing by logging into GitHub
+- **GitHub OIDC** - For publishing from GitHub Actions
+- **DNS verification** - For proving ownership of a domain and its subdomains
+- **HTTP verification** - For proving ownership of a domain
 
----
+The registry validates namespace ownership when publishing. E.g. to publish...:
+- `io.github.domdomegg/my-cool-mcp` you must login to GitHub as `domdomegg`, or be in a GitHub Action on domdomegg's repos
+- `me.adamjones/my-cool-mcp` you must prove ownership of `adamjones.me` via DNS or HTTP challenge
 
-## Verification SDKs
+## Community Projects
 
-| Language | Package | Source |
-|---|---|---|
-| JavaScript / TypeScript | `npm install @headlessoracle/verify` | [github.com/LembaGang/headless-oracle-verify](https://github.com/LembaGang/headless-oracle-verify) |
-| Python | `pip install headless-oracle` | [github.com/LembaGang/headless-oracle-python](https://github.com/LembaGang/headless-oracle-python) |
-| Go | `go get github.com/LembaGang/headless-oracle-go` | [github.com/LembaGang/headless-oracle-go](https://github.com/LembaGang/headless-oracle-go) |
+Check out [community projects](docs/community-projects.md) to explore notable registry-related work created by the community.
 
-All SDKs use the public key from `/.well-known/oracle-keys.json` and verify Ed25519 signatures locally — no trust in the operator required.
+## More documentation
 
----
-
-## Standards
-
-- **SMA Protocol v1.0** — [github.com/LembaGang/sma-protocol](https://github.com/LembaGang/sma-protocol)
-- **Agent Pre-Trade Safety Standard** — [github.com/LembaGang/agent-pretrade-safety-standard](https://github.com/LembaGang/agent-pretrade-safety-standard)
+See the [documentation](./docs) for more details if your question has not been answered here!

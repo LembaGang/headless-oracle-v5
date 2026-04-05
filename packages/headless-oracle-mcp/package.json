@@ -1,6 +1,7 @@
 {
   "name": "headless-oracle-mcp",
-  "version": "1.0.1",
+  "mcpName": "io.github.LembaGang/headless-oracle-mcp",
+  "version": "1.0.3",
   "description": "Local MCP server for Headless Oracle — Ed25519-signed market-state receipts for 28 global exchanges",
   "main": "bin/cli.js",
   "bin": "./bin/cli.js",
