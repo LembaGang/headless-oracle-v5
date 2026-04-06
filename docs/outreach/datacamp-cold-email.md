@@ -8,7 +8,7 @@ Hi Filip,
 
 I sent you a note a few weeks ago about the DataCamp integration guide we published at headlessoracle.com/docs/integrations/datacamp-workspace. Wanted to follow up with something concrete.
 
-I noticed DataCamp runs 12-day evaluation programs for data science tools. I'd like to offer something similar for Headless Oracle: a 30-day Pro trial for DataCamp learners who are building autonomous trading systems or working through the algo-trading curriculum.
+I'd like to offer a 30-day Pro trial for DataCamp learners who are building autonomous trading systems or working through the algo-trading curriculum.
 
 The oracle solves a specific problem that comes up when students move from notebook-based backtesting to live agent systems: market hours verification. Timezone libraries answer the wrong question. The oracle returns a cryptographically signed attestation that a specific exchange is open, with a 60-second TTL. The pattern is:
 
@@ -32,8 +32,8 @@ What I'm proposing:
 
 The integration guide is already live. I just want to make sure the students who find it have a meaningful evaluation path, not a 500 req/day cap that runs out mid-project.
 
-Reply here or book 20 minutes: [calendar link]
+Reply here and we'll find 20 minutes.
 
 Mike
 headlessoracle.com
-mike@headlessoracle.com
+info@bytecraftresults.com

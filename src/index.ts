@@ -2211,29 +2211,64 @@ async function verifyX402ViaFacilitator(
 	}
 }
 
+// Unified agent action guide — included in every 402 response so any agent knows
+// exactly what to do next without reading documentation.
+function buildAgentActions(paymentAddress: string): Record<string, unknown> {
+	return {
+		pay_per_request: {
+			description:     'Send X-Payment header (base64-encoded JSON) to pay $0.001 USDC and get this receipt immediately',
+			header_name:     'X-Payment',
+			header_encoding: 'base64-json',
+			payment_spec:    '/.well-known/x402.json',
+			example_flow:    '1. Build payment JSON per /.well-known/x402.json → 2. base64-encode it → 3. Add as X-Payment header → 4. Resend request',
+		},
+		get_credits_instantly: {
+			description:     'POST /v5/sandbox with X-Payment header — get 10 credits immediately, no email required',
+			endpoint:        'POST /v5/sandbox',
+			body_with_email: '{ "email": "you@example.com" }',
+			body_x402:       'omit body — use X-Payment header instead (same $0.001 USDC)',
+			credits_issued:  10,
+		},
+		mint_persistent_key: {
+			description: 'POST /v5/x402/mint with tx_hash of Base mainnet USDC payment — get a persistent API key',
+			endpoint:    'POST /v5/x402/mint',
+			body:        '{ "tx_hash": "0x...", "tier": "builder" }',
+			tiers:       { builder: '$99 USDC → 50K req/day', pro: '$299 USDC → 200K req/day' },
+		},
+		buy_subscription: {
+			description: 'Human-driven checkout — get a permanent key with monthly billing',
+			url:         'https://headlessoracle.com/upgrade',
+		},
+		payment_address: paymentAddress,
+	};
+}
+
 // Build x402-compatible 402 payload for Base mainnet via CDP facilitator.
 function buildMainnetFacilitatorPayload(paymentAddress: string, resourceUrl: string): Record<string, unknown> {
 	return {
 		x402Version: 1,
 		accepts: [{
-			scheme:            'exact',
-			network:           'base',
-			maxAmountRequired: '1000',
-			asset:             X402_USDC_CONTRACT,
-			payTo:             paymentAddress,
-			maxTimeoutSeconds: 300,
-			resource:          resourceUrl,
-			description:       'Signed market-state receipt. Ed25519 signed, 60s TTL. $0.001 USDC on Base mainnet.',
-			mimeType:          'application/json',
-			extra:             { name: 'USD Coin', version: '2' },
+			scheme:              'exact',
+			network:             'base',
+			maxAmountRequired:   '1000',
+			asset:               X402_USDC_CONTRACT,
+			payTo:               paymentAddress,
+			maxTimeoutSeconds:   300,
+			resource:            resourceUrl,
+			description:         'Signed market-state receipt. Ed25519 signed, 60s TTL. $0.001 USDC on Base mainnet.',
+			mimeType:            'application/json',
+			paymentHeaderName:   'X-Payment',
+			paymentHeaderEncoding: 'base64-json',
+			extra:               { name: 'USD Coin', version: '2' },
 			input: {
 				type:       'object',
 				properties: { mic: { type: 'string', description: 'ISO 10383 MIC code', example: 'XNYS' } },
 				required:   ['mic'],
 			},
 		}],
-		error:   'Payment Required',
-		network: 'mainnet',
+		error:          'Payment Required',
+		network:        'mainnet',
+		agent_actions:  buildAgentActions(paymentAddress),
 	};
 }
 
@@ -2324,15 +2359,18 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 			currency:            'USDC',
 			decimals:            6,
 			paymentAddress,
+			paymentHeaderName:   'X-Payment',
+			paymentHeaderEncoding: 'base64-json',
 			usdcContractAddress: X402_USDC_CONTRACT,
 			memo:                `${keyHash}:${new Date().toISOString().slice(0, 10)}:${crypto.randomUUID()}`,
 			maxAge:              300,
 		},
 		alternatives: {
-			monthly:  'https://headlessoracle.com/upgrade',
-			free_key: 'https://headlessoracle.com/v5/keys/request',
-			prepaid:  'https://headlessoracle.com/v5/credits/purchase',
+			monthly:        'https://headlessoracle.com/upgrade',
+			sandbox_x402:   'POST /v5/sandbox with X-Payment header — 10 credits, no email',
+			mint_key:       'POST /v5/x402/mint with tx_hash — get persistent API key',
 		},
+		agent_actions:  buildAgentActions(paymentAddress),
 		founder_note: "You're hitting our limits — that means you're building something real. Reply to hello@headlessoracle.com and I'll set you up with a proper production key. — Mike",
 	};
 }
@@ -2446,17 +2484,19 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 		x402Version: 1,
 		accepts: [
 			{
-				scheme:            'exact',
-				network:           'eip155:8453',
-				maxAmountRequired: isStatus ? '1000' : '5000',
-				resource:          resourceUrl,
-				description:       isStatus
+				scheme:              'exact',
+				network:             'eip155:8453',
+				maxAmountRequired:   isStatus ? '1000' : '5000',
+				resource:            resourceUrl,
+				description:         isStatus
 					? 'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN — Ed25519 signed, 60s TTL.'
 					: 'Signed market-state receipts for multiple exchanges in one request. Each receipt Ed25519 signed, 60s TTL.',
-				mimeType:          'application/json',
-				payTo:             paymentAddress,
-				maxTimeoutSeconds: 60,
-				asset:             X402_USDC_CONTRACT,
+				mimeType:            'application/json',
+				payTo:               paymentAddress,
+				maxTimeoutSeconds:   60,
+				asset:               X402_USDC_CONTRACT,
+				paymentHeaderName:   'X-Payment',
+				paymentHeaderEncoding: 'base64-json',
 				input: isStatus
 					? {
 						type:       'object',
@@ -2486,7 +2526,8 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 				},
 			},
 		],
-		error: 'Payment Required',
+		error:         'Payment Required',
+		agent_actions: buildAgentActions(paymentAddress),
 	};
 }
 
@@ -8580,6 +8621,7 @@ export default {
 								}
 								const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
 								if (!verify.valid) {
+									incrementKvCounter(`funnel_402:payment_failed:${now.toISOString().slice(0, 10)}`, env, ctx);
 									return json({
 										error:   'PAYMENT_VERIFICATION_FAILED',
 										message: `Payment verification failed: ${verify.detail ?? 'unknown'}`,
@@ -8592,6 +8634,7 @@ export default {
 								if (credits.balance > 0) {
 									consumeCredit(keyHash, credits, env, ctx);
 								} else if (env.ORACLE_PAYMENT_ADDRESS) {
+									incrementKvCounter(`funnel_402:free_tier_gate:${now.toISOString().slice(0, 10)}`, env, ctx);
 									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, X402_RESPONSE_HEADERS);
 								} else {
 									return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/upgrade' }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
@@ -8631,12 +8674,14 @@ export default {
 						if (paymentHeader) {
 							const verified = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
 							if (!verified.valid) {
+								incrementKvCounter(`funnel_402:facilitator_rejected:${now.toISOString().slice(0, 10)}`, env, ctx);
 								const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
 								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': verified.status });
 							}
 							// Valid mainnet facilitator payment — fall through to serve receipt
 						} else {
 							// No payment — return mainnet 402 with x402.org facilitator payment requirements
+							incrementKvCounter(`funnel_402:keyless_no_payment:${now.toISOString().slice(0, 10)}`, env, ctx);
 							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header' });
 						}
 					} else if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
@@ -8647,12 +8692,14 @@ export default {
 						}
 						const verified = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
 						if (!verified.valid) {
+							incrementKvCounter(`funnel_402:direct_payment_failed:${now.toISOString().slice(0, 10)}`, env, ctx);
 							const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 							return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 						}
 						// Valid keyless x402 payment — fall through to serve receipt (no rate limit applied)
 					} else if (env.ORACLE_PAYMENT_ADDRESS) {
 						// No key, no payment — return x402scan-compatible 402 so crawlers can register this endpoint
+						incrementKvCounter(`funnel_402:keyless_no_payment:${now.toISOString().slice(0, 10)}`, env, ctx);
 						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 					} else {
@@ -10624,7 +10671,8 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				const uptimeDays = Math.floor((Date.now() - originMs) / 86400000);
 				const today = now.toISOString().slice(0, 10);
 
-				const [[paymentCountRaw, lastPaymentAtRaw], mcpUsage, scRaws] = await Promise.all([
+				const FUNNEL_KEYS = ['free_tier_gate', 'payment_failed', 'facilitator_rejected', 'keyless_no_payment', 'direct_payment_failed'] as const;
+				const [[paymentCountRaw, lastPaymentAtRaw], mcpUsage, scRaws, funnelRaws] = await Promise.all([
 					Promise.all([
 						env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
 						env.ORACLE_TELEMETRY.get('x402_last_payment_at').catch(() => null),
@@ -10633,6 +10681,10 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					// Status code counters — read the 6 common codes in one parallel batch
 					Promise.all([200, 401, 402, 403, 404, 429].map((c) =>
 						env.ORACLE_TELEMETRY.get(`status_code:${today}:${c}`).catch(() => null)
+					)),
+					// Payment funnel counters
+					Promise.all(FUNNEL_KEYS.map((k) =>
+						env.ORACLE_TELEMETRY.get(`funnel_402:${k}:${today}`).catch(() => null)
 					)),
 				]);
 				const x402PaymentCount    = parseInt(paymentCountRaw ?? '0', 10) || 0;
@@ -10644,12 +10696,17 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					const n = parseInt(scRaws[i] ?? '0', 10) || 0;
 					if (n > 0) statusCodesToday[String(code)] = n;
 				});
+				const funnel402Today: Record<string, number> = {};
+				FUNNEL_KEYS.forEach((key, i) => {
+					const n = parseInt(funnelRaws[i] ?? '0', 10) || 0;
+					if (n > 0) funnel402Today[key] = n;
+				});
 
 				return json({
 					exchanges:               SUPPORTED_EXCHANGES.length,
 					mcp_tools:               5,
 					uptime_days:             uptimeDays,
-					tests_passing:           664,
+					tests_passing:           687,
 					signing_algorithm:       'Ed25519',
 					receipt_ttl_seconds:     RECEIPT_TTL_SECONDS,
 					x402_enabled:            !!env.ORACLE_PAYMENT_ADDRESS,
@@ -10662,6 +10719,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					unique_mcp_clients_today: uniqueMcpClientsToday,
 					mcp_requests_today:       mcpRequestsToday,
 					status_codes_today:       statusCodesToday,
+					funnel_402_today:         funnel402Today,
 					install:                  'npx headless-oracle-mcp',
 					evaluator_platforms: [
 						'Chiark', 'MCPScoreboard', 'YellowMCP', 'CacheFly', 'DataCamp', 'Glama',

@@ -7941,7 +7941,7 @@ describe('GET /v5/metrics/public', () => {
 		expect(body).toHaveProperty('mcpscoreboard_preflight', 100);
 		expect(body).toHaveProperty('fail_closed', true);
 		expect(body).toHaveProperty('x402_network', 'base');
-		expect(body).toHaveProperty('tests_passing', 664);
+		expect(body).toHaveProperty('tests_passing', 687);
 	});
 
 	it('returns uptime_days >= 35 and x402 KV fields', async () => {
@@ -8226,5 +8226,110 @@ describe('Ed25519 cold-start warm-up', () => {
 		// Signatures are hex strings of 128 chars (64 bytes)
 		expect(b1.receipt.signature).toMatch(/^[0-9a-f]{128}$/);
 		expect(b2.receipt.signature).toMatch(/^[0-9a-f]{128}$/);
+	});
+});
+
+// ─── Payment friction — agent_actions in 402 responses ───────────────────────
+// Every 402 path must include agent_actions so agents know exactly what to do next.
+
+describe('402 responses include agent_actions (friction reduction)', () => {
+	it('build402Payload path (free tier exhausted) includes agent_actions', async () => {
+		const key  = 'ho_free_' + 'z'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('agent_actions');
+		const actions = body.agent_actions as Record<string, unknown>;
+		expect(actions).toHaveProperty('pay_per_request');
+		expect(actions).toHaveProperty('get_credits_instantly');
+		expect(actions).toHaveProperty('mint_persistent_key');
+		expect(actions).toHaveProperty('buy_subscription');
+		expect(actions).toHaveProperty('payment_address');
+	});
+
+	it('build402Payload x402 object includes paymentHeaderName and paymentHeaderEncoding', async () => {
+		const key  = 'ho_free_' + 'y'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const body = await fetchJSON('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		const x402 = body.x402 as Record<string, unknown>;
+		expect(x402).toHaveProperty('paymentHeaderName', 'X-Payment');
+		expect(x402).toHaveProperty('paymentHeaderEncoding', 'base64-json');
+	});
+
+	it('alternatives block no longer has prepaid dead-end (mint_key and sandbox_x402 instead)', async () => {
+		const key  = 'ho_free_' + 'x'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const body = await fetchJSON('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		const alts = body.alternatives as Record<string, unknown>;
+		expect(alts).not.toHaveProperty('prepaid');
+		expect(alts).toHaveProperty('sandbox_x402');
+		expect(alts).toHaveProperty('mint_key');
+	});
+
+	it('buildMainnetFacilitatorPayload (keyless, X402_ENABLED=true) includes agent_actions', async () => {
+		(env as unknown as Record<string, string>).X402_ENABLED = 'true';
+		try {
+			const res  = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('agent_actions');
+			const actions = body.agent_actions as Record<string, unknown>;
+			expect(actions).toHaveProperty('pay_per_request');
+			expect(actions).toHaveProperty('mint_persistent_key');
+			// paymentHeaderName / paymentHeaderEncoding in accepts[0]
+			const accepts = body.accepts as Array<Record<string, unknown>>;
+			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
+			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
+		} finally {
+			delete (env as unknown as Record<string, string>).X402_ENABLED;
+		}
+	});
+
+	it('buildX402ScanPayload (keyless, X402_ENABLED=false fallback) includes agent_actions', async () => {
+		(env as unknown as Record<string, string>).X402_ENABLED = 'false';
+		try {
+			const res  = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('agent_actions');
+			const actions = body.agent_actions as Record<string, unknown>;
+			expect(actions).toHaveProperty('pay_per_request');
+			// paymentHeaderName / paymentHeaderEncoding in accepts[0]
+			const accepts = body.accepts as Array<Record<string, unknown>>;
+			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
+			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
+		} finally {
+			delete (env as unknown as Record<string, string>).X402_ENABLED;
+		}
+	});
+});
+
+describe('funnel_402_today in /v5/metrics/public', () => {
+	it('returns funnel_402_today field (empty object when no 402s yet)', async () => {
+		const res  = await fetchWorker('/v5/metrics/public');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('funnel_402_today');
+		expect(typeof body.funnel_402_today).toBe('object');
+	});
+
+	it('reflects seeded funnel counters', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_TELEMETRY.put(`funnel_402:free_tier_gate:${today}`, '7');
+		await env.ORACLE_TELEMETRY.put(`funnel_402:keyless_no_payment:${today}`, '15');
+		try {
+			const body = await fetchJSON('/v5/metrics/public');
+			const funnel = body.funnel_402_today as Record<string, number>;
+			expect(funnel.free_tier_gate).toBe(7);
+			expect(funnel.keyless_no_payment).toBe(15);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`funnel_402:free_tier_gate:${today}`);
+			await env.ORACLE_TELEMETRY.delete(`funnel_402:keyless_no_payment:${today}`);
+		}
 	});
 });
