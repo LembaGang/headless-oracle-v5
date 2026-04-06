@@ -3,8 +3,28 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue infrastructure sprint active.
-**Test suite**: 674/674 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 5 2026 — Day 38 Revenue Infrastructure Sprint (671→674 tests, +3):
+**Test suite**: 687/687 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 6 2026 — Day 40b Unified Payment Parsing (687 tests, worker aa6bfe5c):
+- **CRITICAL FIX: verifyPaymentAnyFormat()** — all 6 X-Payment entry points now accept BOTH raw JSON (direct on-chain) AND base64-encoded JSON (x402 standard/CDP facilitator). Previously 5 of 6 paths only accepted raw JSON while 402 responses told agents to use base64-json. An agent following the instructions would get rejected.
+- **paymentHeaderEncoding** changed from `'base64-json'` to `['base64-json', 'json']` in `build402Payload` and `buildX402ScanPayload` (facilitator path keeps `'base64-json'` since that's all CDP accepts)
+- **agent_actions.pay_per_request** now documents both `accepted_formats` with example flows for each
+- **Fixed sandbox crash** — `sbPayment is not defined` error when minting credit key via x402 sandbox path
+- **Funnel metrics live** — `/v5/metrics/public.funnel_402_today` tracking 5 distinct exit points (already seeing data: 43 402s today, 5 keyless_no_payment)
+- CDP credentials confirmed working in production (CDP_API_KEY_NAME + CDP_API_KEY_PRIVATE_KEY set)
+
+**Previous**: Apr 6 2026 — Day 40 Payment Friction Removal (680→687 tests, +7, worker f74521de):
+- **buildAgentActions()** helper — unified `agent_actions` block in every 402 response (pay per request, get credits instantly, mint key, buy subscription)
+- **paymentHeaderName/paymentHeaderEncoding** in `accepts[0]` for all three 402 builders
+- **alternatives dead-end fixed** in `build402Payload` — `prepaid` circular URL → `sandbox_x402` + `mint_key`
+- **Funnel observability** — `incrementKvCounter` at 5 distinct 402 exit points; exposed in `/v5/metrics/public.funnel_402_today`
+- **7 new tests** covering agent_actions on all three 402 paths + funnel counter seeding
+
+**Previous**: Apr 6 2026 — Day 39 Performance Sprint (674→680 tests, +6, worker e85ece2c):
+- Ed25519 Gpows pre-warm at module init (`void ed.getPublicKeyAsync`)
+- Private key bytes cached across requests (module-level `_cachedPrivKeyBytes`)
+- MCP tools/call KV bottleneck removed: telemetry deferred to `ctx.waitUntil`, ORACLE_OVERRIDES cached in module memory (10s TTL, `clearOverrideCache()` for tests)
+
+**Previous**: Apr 5 2026 — Day 38 Revenue Infrastructure Sprint (671→674 tests, +3):
 - **docs/STATE_OF_PRODUCT.md** — comprehensive audit of all endpoints, pricing, auth, infra, what's wired vs. stubbed
 - **GET /v5/pricing** — JSON pricing tiers endpoint (sandbox/free/x402/credits/builder/pro/protocol). Public, no auth.
 - **3 new tests** for /v5/pricing (tiers array shape, x402 Base mainnet fields, builder daily limit)
