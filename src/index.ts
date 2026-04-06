@@ -2261,8 +2261,8 @@ async function verifyPaymentAnyFormat(
 function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 	return {
 		pay_per_request: {
-			description:        'Send X-Payment header to pay $0.001 USDC and get this receipt immediately',
-			header_name:        'X-Payment',
+			description:        'Send Payment-Signature (x402 v2) or X-Payment (v1) header to pay $0.001 USDC and get this receipt immediately',
+			header_names:       ['Payment-Signature', 'X-Payment'],
 			accepted_formats:   ['base64-json (x402 standard — use x402 client library)', 'raw JSON { txHash, network, amount, paymentAddress, memo } (direct on-chain)'],
 			payment_spec:       '/.well-known/x402.json',
 			example_flow_x402:  '1. Use x402 client to create payment → 2. Library sets X-Payment header automatically → 3. Send request',
@@ -6146,6 +6146,7 @@ const AGENT_JSON = {
 		currency:              'USDC',
 		amount_per_request:    '0.001 USDC',
 		amount_units:          '1000',        // 0.001 USDC at 6 decimals
+		batch_amount_units:    '5000',        // 0.005 USDC for /v5/batch (up to 28 MICs)
 		asset:                 '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
 		payment_endpoint:      'https://headlessoracle.com/v5/status',       // returns 402 with x402 details
 		subscription_endpoint: 'https://headlessoracle.com/v5/checkout',     // Paddle — persistent key
@@ -6444,13 +6445,18 @@ const OPENAPI_SPEC = {
 		'/v5/status': {
 			get: {
 				summary:     'Authenticated signed receipt',
-				description: 'Returns a signed market-state receipt. Requires X-Oracle-Key header. Primary production endpoint.',
+				description: 'Returns a signed market-state receipt. Requires X-Oracle-Key header OR x402 payment via Payment-Signature/X-Payment header. Primary production endpoint.',
 				security:    [{ ApiKeyAuth: [] }],
-				parameters:  [{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' }, description: 'Market Identifier Code (MIC).' }],
+				parameters:  [
+					{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' }, description: 'Market Identifier Code (MIC).' },
+					{ name: 'Payment-Signature', in: 'header', schema: { type: 'string' }, description: 'x402 v2 payment header — base64-encoded JSON PaymentPayload with EIP-712 TransferWithAuthorization signature. Alternative to X-Oracle-Key for keyless per-request payment ($0.001 USDC on Base mainnet).' },
+					{ name: 'X-Payment', in: 'header', schema: { type: 'string' }, description: 'x402 v1 payment header — base64-encoded JSON OR raw JSON { txHash, network, amount, paymentAddress, memo }. Alternative to Payment-Signature.' },
+				],
 				responses: {
 					'200': { description: 'Signed receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/SignedReceipt' } } } },
 					'400': { description: 'Unknown MIC', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'401': { description: 'Missing API key' },
+					'402': { description: 'Payment required — free tier exhausted or no API key. Body includes x402 payment requirements (accepts[], payTo, amount). Send Payment-Signature or X-Payment header to pay $0.001 USDC per request.' },
 					'403': { description: 'Invalid API key' },
 				},
 			},
@@ -6586,15 +6592,19 @@ const OPENAPI_SPEC = {
 				summary:     'Authenticated batch receipt query',
 				description: 'Returns independently signed receipts for multiple exchanges in one request. ' +
 					'Each receipt goes through the same 4-tier fail-closed architecture as /v5/status. ' +
-					'Receipts are built in parallel. Requires X-Oracle-Key header.',
+					'Receipts are built in parallel. Requires X-Oracle-Key header or x402 payment ($0.005 USDC for batch).',
 				security:    [{ ApiKeyAuth: [] }],
-				parameters:  [{
-					name:        'mics',
-					in:          'query',
-					required:    true,
-					schema:      { type: 'string' },
-					description: 'Comma-separated MIC codes. Duplicates are deduplicated. Example: XNYS,XNAS,XLON.',
-				}],
+				parameters:  [
+					{
+						name:        'mics',
+						in:          'query',
+						required:    true,
+						schema:      { type: 'string' },
+						description: 'Comma-separated MIC codes. Duplicates are deduplicated. Example: XNYS,XNAS,XLON.',
+					},
+					{ name: 'Payment-Signature', in: 'header', schema: { type: 'string' }, description: 'x402 v2 payment header — base64-encoded JSON PaymentPayload ($0.005 USDC on Base mainnet for batch).' },
+					{ name: 'X-Payment', in: 'header', schema: { type: 'string' }, description: 'x402 v1 payment header — base64-encoded JSON or raw JSON.' },
+				],
 				responses: {
 					'200': {
 						description: 'Batch of signed receipts',

@@ -3,8 +3,18 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue infrastructure sprint active.
-**Test suite**: 687/687 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 6 2026 — Day 40b Unified Payment Parsing (687 tests, worker aa6bfe5c):
+**Test suite**: 691/691 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 6 2026 — Day 40c x402 Spec Compliance + E2E Audit (691 tests):
+- **scripts/test-x402-mainnet-minimum.ts** — real EIP-712 transferWithAuthorization E2E payment script. Uses viem. Dry-run by default, `--send` to spend $0.001 USDC. Ready for Mike to run with funded wallet.
+- **docs/ampersend-sdk-compatibility.md** — full x402 SDK format comparison (header names, EIP-712 domain, payload structure, v1 vs v2). Confirmed: Headless Oracle is fully compatible with @coinbase/x402 and Ampersend SDK. No blocking mismatches.
+- **CORS audit: CLEAN** — all 5 payment endpoints (status, batch, sandbox, credits/purchase, x402/mint) return correct preflight with Payment-Signature in Allow-Headers and Payment-Required in Expose-Headers.
+- **OpenAPI spec fixes**: Payment-Signature + X-Payment header params added to /v5/status and /v5/batch; 402 response documented on /v5/status; batch description updated to mention x402 payment option.
+- **agent.json**: batch_amount_units field added (0.005 USDC) to clarify batch vs single pricing.
+- **agent_actions.pay_per_request**: header_names now lists both ['Payment-Signature', 'X-Payment'] (was only X-Payment).
+- **Discovery consistency**: x402.json uses "base" (x402 v1), agent.json uses "eip155:8453" (CAIP-2) — both valid, no code change needed (verifyX402Payment accepts all three forms).
+- Gap: Payment-Response header not returned on successful settlement (spec polish, not a blocker — x402 SDK checks HTTP 200).
+
+**Previous**: Apr 6 2026 — Day 40b Unified Payment Parsing (687→691 tests, worker aa6bfe5c):
 - **CRITICAL FIX: verifyPaymentAnyFormat()** — all 6 X-Payment entry points now accept BOTH raw JSON (direct on-chain) AND base64-encoded JSON (x402 standard/CDP facilitator). Previously 5 of 6 paths only accepted raw JSON while 402 responses told agents to use base64-json. An agent following the instructions would get rejected.
 - **paymentHeaderEncoding** changed from `'base64-json'` to `['base64-json', 'json']` in `build402Payload` and `buildX402ScanPayload` (facilitator path keeps `'base64-json'` since that's all CDP accepts)
 - **agent_actions.pay_per_request** now documents both `accepted_formats` with example flows for each
