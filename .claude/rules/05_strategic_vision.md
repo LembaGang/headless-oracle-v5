@@ -130,7 +130,7 @@ If closer: do it. If further: name the tradeoff explicitly before proceeding.
 ## The Extended Definition of Done
 
 A change is done when ALL of the following are true:
-1. All 66 tests pass (`npm test`)
+1. All tests pass (`npm test` — currently 691)
 2. The change does not introduce human-first assumptions into any interface
 3. The change does not make future federation or key rotation harder
 4. An agent consuming the output has zero ambiguity about what it means

@@ -1,7 +1,7 @@
 /**
  * Multi-Exchange Monitor Template
  *
- * Polls all 7 Headless Oracle exchanges on a configurable interval and
+ * Polls all 28 Headless Oracle exchanges on a configurable interval and
  * emits structured events when status changes. Production-ready template
  * for autonomous trading agents that need continuous market state awareness.
  *

@@ -10746,7 +10746,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					exchanges:               SUPPORTED_EXCHANGES.length,
 					mcp_tools:               5,
 					uptime_days:             uptimeDays,
-					tests_passing:           687,
+					tests_passing:           691,
 					signing_algorithm:       'Ed25519',
 					receipt_ttl_seconds:     RECEIPT_TTL_SECONDS,
 					x402_enabled:            !!env.ORACLE_PAYMENT_ADDRESS,

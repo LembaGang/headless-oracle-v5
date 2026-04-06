@@ -1,6 +1,6 @@
 # Headless Oracle V5 — State of Product
-**Generated: April 5, 2026 (Day 38)**  
-**Tests: 671/671 passing** | **Exchanges: 28** | **MCP tools: 5**
+**Updated: April 6, 2026 (Day 40)**  
+**Tests: 691/691 passing** | **Exchanges: 28** | **MCP tools: 5**
 
 ---
 
@@ -281,7 +281,7 @@ Current per-request x402 price is $0.001 USDC. Research suggests $0.01 USDC is t
 
 ## 9. Test Coverage
 
-**Total: 671 tests in test/index.spec.ts** (+ 24 SDK + 26 LangGraph template + 16 payer-agent in separate repos)
+**Total: 691 tests in test/index.spec.ts** (+ 24 SDK + 26 LangGraph template + 16 payer-agent in separate repos)
 
 **Coverage by area:**
 - Schedule engine: All 28 exchanges, OPEN/CLOSED, holiday, half-day, lunch break, weekend, DST boundary, year boundary (UNKNOWN for missing data)

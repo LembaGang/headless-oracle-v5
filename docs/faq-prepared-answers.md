@@ -45,7 +45,7 @@ Here's the spec: return OPEN/CLOSED/HALTED/UNKNOWN for 23 exchanges. Handle DST 
 US, UK/EU, and Japan (no DST). Handle 67 exchange-specific holidays for 2026 and 2027. Handle
 early close days. Handle lunch breaks. Sign every response with Ed25519. Expire every receipt in
 60 seconds. Fail closed on any error — UNKNOWN, not OPEN. Make it discoverable by AI agents via
-MCP, llms.txt, and OpenAPI. Have 160+ tests covering all of this.
+MCP, llms.txt, and OpenAPI. Have 691 tests covering all of this.
 
 We have all of that. Happy to compare implementations.
 

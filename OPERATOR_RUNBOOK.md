@@ -114,7 +114,7 @@ npm run deploy
 |-----------------|---------------------|--------------------------------------|
 | `index.html`    | `/`                 | Homepage + live demo                 |
 | `docs.html`     | `/docs`             | Full API documentation               |
-| `status.html`   | `/status`           | Live status dashboard (all 7 MICs)   |
+| `status.html`   | `/status`           | Live status dashboard (all 28 MICs)  |
 | `verify.html`   | `/verify`           | Client-side Ed25519 receipt verifier |
 | `terms.html`    | `/terms`            | Terms of Service                     |
 | `privacy.html`  | `/privacy`          | Privacy Policy                       |
@@ -296,8 +296,8 @@ Old receipts signed with the old key remain verifiable as long as the old public
 ```bash
 cd C:/Users/User/headless-oracle-v5
 npm test
-# Runs 66 tests in Miniflare (real Cloudflare Workers runtime)
-# All 66 must pass before deploying
+# Runs 691 tests in Miniflare (real Cloudflare Workers runtime)
+# All tests must pass before deploying
 ```
 
 ### Test environment setup
@@ -313,7 +313,7 @@ BETA_API_KEYS=test_beta_key_1,test_beta_key_2
 **These are test-only keys. The production private key is in Cloudflare Secrets and never in the repo.**
 
 ### What the tests cover
-- All 7 MIC codes return valid receipts with correct structure
+- All 28 MIC codes return valid receipts with correct structure
 - `/v5/demo` returns signed receipt without auth
 - `/v5/status` returns 401 without valid API key
 - `/v5/status` returns 200 with valid master or beta key

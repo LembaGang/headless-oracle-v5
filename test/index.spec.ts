@@ -297,7 +297,7 @@ describe('GET /v5/status', () => {
 		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
 	});
 
-	// Test all 7 MICs with valid auth
+	// Test all MICs with valid auth
 	for (const mic of ALL_MICS) {
 		it(`returns a signed receipt for ${mic} with valid auth`, async () => {
 			const response = await fetchWorker(`/v5/status?mic=${mic}`, {
@@ -527,7 +527,7 @@ describe('Lunch break in /v5/schedule', () => {
 		expect(years).toEqual(sorted);
 	});
 
-	it('all 7 MICs include data_coverage_years in schedule response', async () => {
+	it('all MICs include data_coverage_years in schedule response', async () => {
 		for (const mic of ALL_MICS) {
 			const body = await fetchJSON(`/v5/schedule?mic=${mic}`);
 			expect(body).toHaveProperty('data_coverage_years');
@@ -818,7 +818,7 @@ describe('UNKNOWN_MIC error handling', () => {
 			const supported = body.supported as string[];
 			expect(Array.isArray(supported)).toBe(true);
 			expect(supported.length).toBe(28);
-			// Verify all 7 MICs are in the supported list
+			// Verify all 28 MICs are in the supported list
 			for (const mic of ALL_MICS) {
 				expect(supported).toContain(mic);
 			}
@@ -1023,7 +1023,7 @@ describe('Holiday coverage guard (fail-closed)', () => {
 		}
 	});
 
-	it('guard fires for all 7 MICs in an uncovered year', async () => {
+	it('guard fires for all MICs in an uncovered year', async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date('2028-06-01T10:00:00Z'));
 		try {
@@ -7982,7 +7982,7 @@ describe('GET /v5/metrics/public', () => {
 		expect(body).toHaveProperty('mcpscoreboard_preflight', 100);
 		expect(body).toHaveProperty('fail_closed', true);
 		expect(body).toHaveProperty('x402_network', 'base');
-		expect(body).toHaveProperty('tests_passing', 687);
+		expect(body).toHaveProperty('tests_passing', 691);
 	});
 
 	it('returns uptime_days >= 35 and x402 KV fields', async () => {

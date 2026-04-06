@@ -20,12 +20,12 @@ Still requires explicit confirmation in the message:
 - **Runtime**: Cloudflare Workers (TypeScript)
 - **Build/Deploy**: Wrangler (`wrangler.toml`)
 - **Crypto**: Ed25519 signing via `@noble/ed25519` + `@noble/hashes`
-- **Testing**: Vitest 112-test suite with `@cloudflare/vitest-pool-workers`
+- **Testing**: Vitest 691-test suite with `@cloudflare/vitest-pool-workers`
 - **KV**: Three Cloudflare KV namespaces — `ORACLE_OVERRIDES` (circuit-breaker halts), `ORACLE_API_KEYS` (paid key cache), `ORACLE_TELEMETRY` (MCP client analytics)
 
 ## Project Structure
-- `src/index.ts` — Main worker (all routes, 7-exchange config, signing, fail-closed logic)
-- `test/index.spec.ts` — 184 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks, health endpoint, MCP tools, billing, MCP client telemetry
+- `src/index.ts` — Main worker (all routes, 28-exchange config, signing, fail-closed logic)
+- `test/index.spec.ts` — 691 Vitest unit tests covering all routes, all MICs, KV overrides, holiday guard, lunch breaks, health endpoint, MCP tools, billing, x402 payments, webhooks, MCP client telemetry
 - `vitest.config.mts` — Points to `wrangler.toml` (NOT wrangler.jsonc — that file is deleted)
 - `wrangler.toml` — Worker config + KV namespace bindings (`ORACLE_OVERRIDES`, `ORACLE_API_KEYS`, `ORACLE_TELEMETRY`)
 - `.dev.vars` — Local dev/test secrets (test-only keypair, NOT production keys)
@@ -65,7 +65,7 @@ Middle Eastern exchanges (XSAU, XDFM) use `weekends: ['Fri', 'Sat']` — Sunday 
 - `GET /v5/demo?mic=<MIC>` — Public signed receipt (no auth). Default MIC: XNYS.
 - `GET /v5/status?mic=<MIC>` — Authenticated signed receipt. Requires `X-Oracle-Key` header.
 - `GET /v5/schedule?mic=<MIC>` — Next open/close times in UTC (no auth). Default MIC: XNYS.
-- `GET /v5/exchanges` — Directory of all 7 supported exchanges (no auth).
+- `GET /v5/exchanges` — Directory of all 28 supported exchanges (no auth).
 - `GET /v5/keys` — Public key registry in hex format + canonical signing spec (no auth).
 - `GET /v5/batch?mics=<MIC,MIC,...>` — Authenticated batch: signed receipts for multiple MICs in one request. Requires `X-Oracle-Key`. Deduplicates, validates all MICs up front, runs in parallel.
 - `GET /v5/health` — Signed liveness probe (no auth). Distinguishes Oracle-down from market-UNKNOWN.
@@ -129,7 +129,7 @@ Set via Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES:
 - `BETA_API_KEYS=test_beta_key_1,test_beta_key_2`
 
 ## Commands
-- `npm test` — Run 184-test suite with Vitest (requires `.dev.vars` to be populated)
+- `npm test` — Run 691-test suite with Vitest (requires `.dev.vars` to be populated)
 - `npm run dev` — Local development server
 - `npm run deploy` — Deploy to Cloudflare Workers (`wrangler deploy`)
 

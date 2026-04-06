@@ -46,7 +46,7 @@ Returns next open/close times for a given exchange. Use for planning execution w
 
 ### GET /v5/exchanges — Exchange Discovery
 
-Returns all 7 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
+Returns all 28 supported exchanges with MIC codes, full names, and IANA timezone identifiers. Use to discover available markets or resolve exchange names to MIC codes.
 
 ### GET /v5/demo — Try It Live
 

@@ -40,7 +40,7 @@ No AI generation. Pure deterministic attestation.
 37 days in:
 
 → 65 unique API clients last week
-→ 671 unit tests (0 flaky)
+→ 691 unit tests (0 flaky)
 → Official MCP Registry listed
 → x402 micropayments live — agents pay $0.001 USDC per call. No signup.
 → 28 exchanges across 6 continents

@@ -1,7 +1,7 @@
 # Headless Oracle V5 — Engineering Standards
 
 ## Hard Rules (Never Break)
-- All 66 tests must pass before any change is considered complete — run `npm test` to verify
+- All tests must pass before any change is considered complete — run `npm test` to verify (currently 691)
 - Fail-closed behavior must be preserved at all tiers: UNKNOWN always means CLOSED to consumers
 - No hardcoded UTC offsets — DST is handled exclusively via IANA timezone names in `Intl.DateTimeFormat`
 - KV override expiry MUST be checked before returning HALTED — expired overrides are silently ignored
@@ -27,7 +27,7 @@ Routes that require auth: `/v5/status` only
 - Tests live in `test/index.spec.ts`
 - Mock time via `vi.setSystemTime()` — never test against real wall clock
 - KV overrides are tested via `ORACLE_OVERRIDES.put()` in test setup
-- All 7 MICs must be covered; do not add partial-exchange tests
+- All 28 MICs must be covered; do not add partial-exchange tests
 
 ## What Must Not Change Without Explicit Discussion
 - The 4-tier fail-closed architecture (Tier 0-3)
