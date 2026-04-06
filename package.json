@@ -9,6 +9,7 @@
 		"start": "wrangler dev",
 		"build": "vite build",
 		"test": "vitest",
+		"test:sync-count": "bash scripts/sync-test-count.sh",
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {

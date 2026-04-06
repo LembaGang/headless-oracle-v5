@@ -84,6 +84,8 @@ export interface Env {
 	POLYGON_API_KEY?:            string;  // polygon.io API key — optional; public Alpaca feed used if absent
 	// Launch date for /v5/traction days_live counter — set via wrangler.toml [vars]
 	LAUNCH_DATE?:                string;  // ISO 8601 UTC timestamp of go-live; defaults to 2026-03-10T08:00:00Z
+	// Test count — auto-updated by scripts/sync-test-count.sh; read by /v5/metrics/public
+	TEST_COUNT?:                 string;  // String integer, e.g. "691"
 	// Beta key sunset — when set, new-key emails include a notice that old keys stop working on this date
 	BETA_KEY_SUNSET_DATE?:       string;  // Human-readable date string, e.g. "March 31, 2026"
 	STREAM_COORDINATOR:          DurableObjectNamespace;  // SSE stream coordinator — one DO per MIC
@@ -10746,7 +10748,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					exchanges:               SUPPORTED_EXCHANGES.length,
 					mcp_tools:               5,
 					uptime_days:             uptimeDays,
-					tests_passing:           691,
+					tests_passing:           parseInt(env.TEST_COUNT ?? '691', 10),
 					signing_algorithm:       'Ed25519',
 					receipt_ttl_seconds:     RECEIPT_TTL_SECONDS,
 					x402_enabled:            !!env.ORACLE_PAYMENT_ADDRESS,

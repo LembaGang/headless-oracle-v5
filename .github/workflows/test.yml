@@ -47,6 +47,15 @@ jobs:
       - name: Run tests
         run: npx vitest run
 
+      - name: Verify test count matches wrangler.toml
+        run: |
+          COUNT=$(npx vitest run 2>&1 | grep -oP '\d+(?= passed)' | head -1)
+          TOML_COUNT=$(grep '^TEST_COUNT' wrangler.toml | grep -oP '\d+')
+          echo "Vitest count: $COUNT | wrangler.toml TEST_COUNT: $TOML_COUNT"
+          if [ "$COUNT" != "$TOML_COUNT" ]; then
+            echo "::warning::TEST_COUNT in wrangler.toml ($TOML_COUNT) does not match actual test count ($COUNT). Run 'npm run test:sync-count' locally and commit."
+          fi
+
       - name: Report
         if: always()
         run: echo "Test run complete"

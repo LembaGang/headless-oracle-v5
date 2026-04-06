@@ -7982,7 +7982,8 @@ describe('GET /v5/metrics/public', () => {
 		expect(body).toHaveProperty('mcpscoreboard_preflight', 100);
 		expect(body).toHaveProperty('fail_closed', true);
 		expect(body).toHaveProperty('x402_network', 'base');
-		expect(body).toHaveProperty('tests_passing', 691);
+		expect(typeof body.tests_passing).toBe('number');
+		expect(body.tests_passing).toBeGreaterThan(0);
 	});
 
 	it('returns uptime_days >= 35 and x402 KV fields', async () => {
