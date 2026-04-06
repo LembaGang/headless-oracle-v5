@@ -11883,8 +11883,9 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					const { data, error } = await query;
 					if (error) return json({ error: 'QUERY_ERROR', message: error.message }, 500);
 					return await withMigrationNotice(json({ receipts: data ?? [], count: (data ?? []).length, limit }));
-				} catch (e) {
-					return json({ error: 'QUERY_ERROR', message: e instanceof Error ? e.message : 'Unknown error' }, 500);
+				} catch {
+					// Supabase unreachable or misconfigured — degrade gracefully (same as unconfigured)
+					return json({ receipts: [], note: 'Audit log temporarily unavailable' });
 				}
 			}
 
