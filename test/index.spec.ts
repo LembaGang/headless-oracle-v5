@@ -4293,14 +4293,14 @@ describe('x402 — payment verification', () => {
 		expect((body.message as string)).toContain('WRONG_NETWORK');
 	});
 
-	it('rejects invalid JSON in X-Payment', async () => {
+	it('rejects invalid X-Payment (neither raw JSON nor base64)', async () => {
 		const key  = 'ho_free_' + 'j'.repeat(64);
 		const hash = await setupFreeKey(key);
 		await exhaustDailyUsage(hash);
 		const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': 'not-json' } });
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('error', 'INVALID_PAYMENT');
+		expect(body).toHaveProperty('error', 'PAYMENT_VERIFICATION_FAILED');
 	});
 });
 
@@ -8256,7 +8256,7 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 		const body = await fetchJSON('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
 		const x402 = body.x402 as Record<string, unknown>;
 		expect(x402).toHaveProperty('paymentHeaderName', 'X-Payment');
-		expect(x402).toHaveProperty('paymentHeaderEncoding', 'base64-json');
+		expect(x402.paymentHeaderEncoding).toEqual(['base64-json', 'json']);
 	});
 
 	it('alternatives block no longer has prepaid dead-end (mint_key and sandbox_x402 instead)', async () => {
@@ -8302,7 +8302,7 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			// paymentHeaderName / paymentHeaderEncoding in accepts[0]
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
-			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
+			expect(accepts[0].paymentHeaderEncoding).toEqual(['base64-json', 'json']);
 		} finally {
 			delete (env as unknown as Record<string, string>).X402_ENABLED;
 		}

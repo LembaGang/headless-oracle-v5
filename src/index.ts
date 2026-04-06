@@ -2211,16 +2211,48 @@ async function verifyX402ViaFacilitator(
 	}
 }
 
+// Smart payment header parser — accepts both formats so agents never get stuck:
+//   1. Raw JSON: { txHash, network, amount, paymentAddress, memo } — direct on-chain verification
+//   2. Base64-encoded JSON — x402 standard format, verified via CDP facilitator
+// Tries raw JSON first (cheaper: no network call if format is wrong), then base64 → facilitator.
+async function verifyPaymentAnyFormat(
+	header: string,
+	paymentAddress: string,
+	env: Env,
+	resourceUrl: string,
+): Promise<{ valid: boolean; detail?: string; txHash?: string }> {
+	// Path 1: try raw JSON (direct on-chain)
+	try {
+		const parsed = JSON.parse(header);
+		if (parsed && typeof parsed === 'object' && parsed.txHash && parsed.network) {
+			const result = await verifyX402Payment(parsed as X402Payment, paymentAddress, env);
+			return { ...result, txHash: parsed.txHash };
+		}
+		// Parsed as JSON but not an X402Payment — fall through to base64
+	} catch { /* not raw JSON — try base64 x402 format */ }
+
+	// Path 2: try base64 x402 standard → CDP facilitator
+	try {
+		const normalized = header.replace(/-/g, '+').replace(/_/g, '/');
+		JSON.parse(atob(normalized)); // validate it's decodable before network call
+	} catch {
+		return { valid: false, detail: 'X-Payment must be JSON (direct on-chain) or base64-encoded JSON (x402 standard)' };
+	}
+	const result = await verifyX402ViaFacilitator(header, paymentAddress, env, resourceUrl);
+	return { valid: result.valid, detail: result.detail, txHash: result.txHash };
+}
+
 // Unified agent action guide — included in every 402 response so any agent knows
 // exactly what to do next without reading documentation.
 function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 	return {
 		pay_per_request: {
-			description:     'Send X-Payment header (base64-encoded JSON) to pay $0.001 USDC and get this receipt immediately',
-			header_name:     'X-Payment',
-			header_encoding: 'base64-json',
-			payment_spec:    '/.well-known/x402.json',
-			example_flow:    '1. Build payment JSON per /.well-known/x402.json → 2. base64-encode it → 3. Add as X-Payment header → 4. Resend request',
+			description:        'Send X-Payment header to pay $0.001 USDC and get this receipt immediately',
+			header_name:        'X-Payment',
+			accepted_formats:   ['base64-json (x402 standard — use x402 client library)', 'raw JSON { txHash, network, amount, paymentAddress, memo } (direct on-chain)'],
+			payment_spec:       '/.well-known/x402.json',
+			example_flow_x402:  '1. Use x402 client to create payment → 2. Library sets X-Payment header automatically → 3. Send request',
+			example_flow_direct: '1. Send 1000 units USDC to paymentAddress on Base mainnet → 2. Get txHash → 3. Set X-Payment: {"txHash":"0x...","network":"base-mainnet","amount":"1000","paymentAddress":"<addr>","memo":"..."} → 4. Send request',
 		},
 		get_credits_instantly: {
 			description:     'POST /v5/sandbox with X-Payment header — get 10 credits immediately, no email required',
@@ -2359,11 +2391,11 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 			currency:            'USDC',
 			decimals:            6,
 			paymentAddress,
-			paymentHeaderName:   'X-Payment',
-			paymentHeaderEncoding: 'base64-json',
-			usdcContractAddress: X402_USDC_CONTRACT,
-			memo:                `${keyHash}:${new Date().toISOString().slice(0, 10)}:${crypto.randomUUID()}`,
-			maxAge:              300,
+			paymentHeaderName:      'X-Payment',
+			paymentHeaderEncoding:  ['base64-json', 'json'],
+			usdcContractAddress:    X402_USDC_CONTRACT,
+			memo:                   `${keyHash}:${new Date().toISOString().slice(0, 10)}:${crypto.randomUUID()}`,
+			maxAge:                 300,
 		},
 		alternatives: {
 			monthly:        'https://headlessoracle.com/upgrade',
@@ -2495,8 +2527,8 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 				payTo:               paymentAddress,
 				maxTimeoutSeconds:   60,
 				asset:               X402_USDC_CONTRACT,
-				paymentHeaderName:   'X-Payment',
-				paymentHeaderEncoding: 'base64-json',
+				paymentHeaderName:     'X-Payment',
+				paymentHeaderEncoding: ['base64-json', 'json'],
 				input: isStatus
 					? {
 						type:       'object',
@@ -8615,11 +8647,8 @@ export default {
 						if (usage >= FREE_TIER_DAILY_LIMIT) {
 							const paymentHeader = request.headers.get('X-Payment');
 							if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
-								let payment: X402Payment;
-								try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
-									return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
-								}
-								const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+								const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
+								const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
 								if (!verify.valid) {
 									incrementKvCounter(`funnel_402:payment_failed:${now.toISOString().slice(0, 10)}`, env, ctx);
 									return json({
@@ -8685,15 +8714,11 @@ export default {
 							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header' });
 						}
 					} else if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
-						// Keyless x402: verify on-chain payment, then serve receipt
-						let payment: X402Payment;
-						try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
-							return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
-						}
-						const verified = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+						// Keyless x402: verify payment (accepts both raw JSON and base64 x402 format)
+						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
+						const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
 						if (!verified.valid) {
 							incrementKvCounter(`funnel_402:direct_payment_failed:${now.toISOString().slice(0, 10)}`, env, ctx);
-							const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 							return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 						}
 						// Valid keyless x402 payment — fall through to serve receipt (no rate limit applied)
@@ -8933,11 +8958,8 @@ export default {
 					if (batchUsage >= FREE_TIER_DAILY_LIMIT) {
 						const paymentHeader = request.headers.get('X-Payment');
 						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
-							let payment: X402Payment;
-							try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
-								return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
-							}
-							const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+							const batchResource = 'https://headlessoracle.com/v5/batch';
+							const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, batchResource);
 							if (!verify.valid) {
 								return json({
 									error:   'PAYMENT_VERIFICATION_FAILED',
@@ -11494,16 +11516,29 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				if (!paymentHeader) {
 					return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, await sha256Hex(apiKey)), 402, X402_RESPONSE_HEADERS);
 				}
-				let payment: X402Payment;
-				try { payment = JSON.parse(paymentHeader) as X402Payment; } catch {
-					return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON' }, 402, X402_RESPONSE_HEADERS);
+				// Accept both raw JSON (direct on-chain) and base64 (x402 facilitator)
+				let payment: X402Payment | null = null;
+				try {
+					const parsed = JSON.parse(paymentHeader);
+					if (parsed && typeof parsed === 'object' && parsed.txHash && parsed.network) {
+						payment = parsed as X402Payment;
+					}
+				} catch { /* not raw JSON — fall through to facilitator */ }
+				if (payment) {
+					const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+					if (!verify.valid) {
+						return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${verify.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
+					}
+				} else {
+					// Try base64 x402 facilitator
+					const resource = 'https://headlessoracle.com/v5/credits/purchase';
+					const facResult = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
+					if (!facResult.valid) {
+						return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${facResult.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
+					}
 				}
-				const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
-				if (!verify.valid) {
-					return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${verify.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
-				}
-				// Determine credit grant based on amount paid
-				const amountPaid = BigInt(payment.amount || '0');
+				// Determine credit grant: direct on-chain can pay variable amounts; facilitator = 1 credit
+				const amountPaid = payment ? BigInt(payment.amount || '0') : BigInt(1000);
 				let creditsToAdd = 1; // default: 1 credit per 0.001 USDC
 				if (amountPaid >= BigInt(800000)) creditsToAdd = 1000;       // 0.80 USDC → 1000 credits
 				else if (amountPaid >= BigInt(90000)) creditsToAdd = 100;    // 0.09 USDC → 100 credits
@@ -11853,13 +11888,8 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					if (!env.ORACLE_PAYMENT_ADDRESS) {
 						return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 payments are not configured on this instance. Use email-based provisioning.' }, 503);
 					}
-					let sbPayment: X402Payment;
-					try {
-						sbPayment = JSON.parse(sandboxPaymentHeader) as X402Payment;
-					} catch {
-						return json({ error: 'INVALID_PAYMENT', message: 'X-Payment must be valid JSON with { txHash, network, amount, paymentAddress }' }, 402, X402_RESPONSE_HEADERS);
-					}
-					const sbVerify = await verifyX402Payment(sbPayment, env.ORACLE_PAYMENT_ADDRESS, env);
+					const sbResource = 'https://headlessoracle.com/v5/sandbox';
+					const sbVerify = await verifyPaymentAnyFormat(sandboxPaymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, sbResource);
 					if (!sbVerify.valid) {
 						return json({ error: 'INVALID_PAYMENT', message: sbVerify.detail ?? 'Payment verification failed' }, 402, X402_RESPONSE_HEADERS);
 					}
@@ -11877,7 +11907,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					if (env.ORACLE_API_KEYS) {
 						await env.ORACLE_API_KEYS.put(sbCrdHash, sbCrdMeta);
 					}
-					console.log(JSON.stringify({ event: 'SANDBOX_X402_KEY_MINTED', tx_hash: sbPayment.txHash }));
+					console.log(JSON.stringify({ event: 'SANDBOX_X402_KEY_MINTED', tx_hash: sbVerify.txHash ?? 'facilitator' }));
 					return json({
 						api_key:         sbCrdKey,
 						tier:            'credits',
