@@ -23,6 +23,31 @@ void ed.getPublicKeyAsync(new Uint8Array(32).fill(1)).catch(() => {});
 let _cachedPrivKeyHex:   string     | null = null;
 let _cachedPrivKeyBytes: Uint8Array | null = null;
 
+// ─── ORACLE_OVERRIDES module-level cache ─────────────────────────────────────
+// Circuit-breaker overrides are set manually and are almost always null.
+// Caching in isolate memory eliminates the KV read (~100ms from remote regions)
+// on every signing call for warm isolates. A 10s stale window is acceptable:
+// the operator runbook documents that overrides take effect "within a minute."
+// Cache is per-MIC so a halt on XNYS doesn't cache a null for XLON.
+interface OverrideCacheEntry { value: string | null; expires: number; }
+const overrideCache = new Map<string, OverrideCacheEntry>();
+const OVERRIDE_CACHE_TTL_MS = 10_000; // 10 seconds
+
+async function getCachedOverride(mic: string, env: Env): Promise<string | null> {
+	const now = Date.now();
+	const hit = overrideCache.get(mic);
+	if (hit && hit.expires > now) return hit.value;
+	const value = await env.ORACLE_OVERRIDES.get(mic);
+	overrideCache.set(mic, { value, expires: now + OVERRIDE_CACHE_TTL_MS });
+	return value;
+}
+
+// Exported for use in tests — allows test setup/teardown to clear stale
+// cache entries that would otherwise cause override tests to see null.
+export function clearOverrideCache(): void {
+	overrideCache.clear();
+}
+
 // ─── Environment ─────────────────────────────────────────────────────────────
 
 export interface Env {
@@ -7420,7 +7445,7 @@ async function buildSignedReceipt(
 	try {
 		// ─ TIER 0: Manual Override (circuit breakers, emergency halts) ─
 		if (env.ORACLE_OVERRIDES) {
-			const overrideRaw = await env.ORACLE_OVERRIDES.get(mic);
+			const overrideRaw = await getCachedOverride(mic, env);
 			if (overrideRaw) {
 				const override = JSON.parse(overrideRaw) as {
 					status: string;
@@ -7709,45 +7734,44 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		content_length: contentLen,
 	}));
 
-	// Read current daily aggregate, increment, write back non-blocking.
-	// Telemetry is best-effort — a KV failure must never affect the MCP response.
-	// ctx.waitUntil() silently drops rejected promises, so we attach .then()/.catch()
-	// to surface both success and failure in Workers Logs.
-	// Fallback: if ctx.waitUntil is unavailable (observed on some Workers Routes
-	// configurations when requests arrive via a custom domain rather than workers.dev),
-	// we await the put directly — adds minor latency but guarantees the write completes.
-	let requestCount = 1; // default if KV read fails
+	// Telemetry: read current daily record, increment, write back — all deferred
+	// to ctx.waitUntil so it never blocks the MCP response.
+	// Previously the GET was awaited inline, adding ~100ms to every tools/call
+	// from remote regions (India, Asia) where KV round-trip latency is high.
+	// The count is only needed for the tools/list conversion nudge, which reads
+	// requestCount from the same deferred chain below.
 	const kvKey = `mcp_clients:${today}:${ipHash}`;
-	try {
-		const stored = await env.ORACLE_TELEMETRY.get(kvKey);
-		const prev   = stored ? JSON.parse(stored) as McpClientRecord : null;
-		requestCount = (prev?.request_count ?? 0) + 1;
-		const updated: McpClientRecord = {
-			first_seen:    prev?.first_seen ?? timestamp,
-			last_seen:     timestamp,
-			request_count: requestCount,
-			user_agent:    userAgent,
-			asn_org:       asnOrg,
-			country,
-			city,
-		};
-		// 8-day TTL so daily records expire automatically — KV stays clean.
-		// .then()/.catch() make both success and failure visible in Workers Logs —
-		// ctx.waitUntil() itself swallows rejections silently.
-		const putPromise = env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 })
-			.then(() => console.log(JSON.stringify({ event: 'TELEMETRY_PUT_OK', kvKey })))
-			.catch((err: unknown) => console.error('TELEMETRY_PUT_FAILED', String(err)));
-		if (typeof ctx?.waitUntil === 'function') {
-			ctx.waitUntil(putPromise);
-		} else {
-			// ctx.waitUntil unavailable — await directly so the write is not lost.
-			console.error('TELEMETRY_CTX_NO_WAITUNTIL — awaiting put directly');
-			await putPromise;
+	// Promise resolves to requestCount after GET+parse — awaited lazily in tools/list.
+	const telemetryCountPromise: Promise<number> = (async () => {
+		try {
+			const stored = await env.ORACLE_TELEMETRY.get(kvKey);
+			const prev   = stored ? JSON.parse(stored) as McpClientRecord : null;
+			const count  = (prev?.request_count ?? 0) + 1;
+			const updated: McpClientRecord = {
+				first_seen:    prev?.first_seen ?? timestamp,
+				last_seen:     timestamp,
+				request_count: count,
+				user_agent:    userAgent,
+				asn_org:       asnOrg,
+				country,
+				city,
+			};
+			await env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 });
+			console.log(JSON.stringify({ event: 'TELEMETRY_PUT_OK', kvKey }));
+			return count;
+		} catch (err) {
+			console.error('TELEMETRY_FAILED', String(err));
+			return 1;
 		}
-	} catch (err) {
-		console.error('TELEMETRY_GET_FAILED', String(err));
+	})();
+	// Defer telemetry to run after response is sent. For tools/list we also
+	// await the promise inline to get requestCount for the conversion nudge.
+	if (typeof ctx?.waitUntil === 'function') {
+		ctx.waitUntil(telemetryCountPromise);
+	} else {
+		// ctx.waitUntil unavailable — fire-and-forget (telemetry is best-effort).
+		console.error('TELEMETRY_CTX_NO_WAITUNTIL');
 	}
-
 	// ── Soft OAuth auth — completely additive, never blocks unauthenticated access ──
 	// If a valid Bearer token is present, mcpKeyHash/mcpPlan are populated for
 	// rate-limit accounting. Any failure (missing token, KV miss, parse error,
@@ -7803,6 +7827,9 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		case 'tools/list': {
 			// Conversion nudge: anonymous clients with > 50 requests see a non-breaking hint.
 			// Only in tools/list — not in tool call responses — so agent behaviour is unaffected.
+			// Await the telemetry promise here (it was deferred above). tools/list is called
+			// infrequently (once per session) so the extra wait is acceptable.
+			const requestCount = await telemetryCountPromise;
 			const toolsResult: Record<string, unknown> = { tools: MCP_TOOLS };
 			if (requestCount > 50) {
 				toolsResult['x-oracle-note'] =

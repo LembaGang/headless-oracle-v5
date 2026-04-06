@@ -1,6 +1,10 @@
 import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { edgeCaseCount } from '../src';
+import worker, { edgeCaseCount, clearOverrideCache } from '../src';
+
+// Clear the module-level override cache before every test so that tests which
+// set ORACLE_OVERRIDES.put() always read from KV rather than a stale null.
+beforeEach(() => clearOverrideCache());
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
