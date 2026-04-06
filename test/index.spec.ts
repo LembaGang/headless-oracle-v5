@@ -4205,7 +4205,7 @@ describe('x402 — free tier daily limit gate', () => {
 		const body = await fetchJSON('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
 		const x402 = body.x402 as Record<string, unknown>;
 		expect(x402).toBeDefined();
-		expect(x402.network).toBe('base-mainnet');
+		expect(x402.network).toBe('base');
 		expect(x402.chainId).toBe(8453);
 		expect(x402.currency).toBe('USDC');
 		expect(x402.amount).toBe('1000');
@@ -4219,7 +4219,7 @@ describe('x402 — free tier daily limit gate', () => {
 		await exhaustDailyUsage(hash);
 		const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
 		expect(res.headers.get('X-Payment-Required')).toBe('true');
-		expect(res.headers.get('X-Payment-Network')).toBe('base-mainnet');
+		expect(res.headers.get('X-Payment-Network')).toBe('base');
 		expect(res.headers.get('X-Payment-Chain-ID')).toBe('8453');
 	});
 });
@@ -4301,6 +4301,47 @@ describe('x402 — payment verification', () => {
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('error', 'PAYMENT_VERIFICATION_FAILED');
+	});
+	it('accepts Payment-Signature header (x402 v2) in addition to X-Payment', async () => {
+		const key  = 'ho_free_' + 'n2'.repeat(32);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		// Send with Payment-Signature header (v2 name) — should still be read
+		const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'Payment-Signature': 'not-valid-but-should-be-read' } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		// Proves Payment-Signature was read (it tried to verify and failed)
+		expect(body).toHaveProperty('error', 'PAYMENT_VERIFICATION_FAILED');
+	});
+
+	it('keyless 402 includes Payment-Required header (x402 v2)', async () => {
+		const res = await fetchWorker('/v5/status?mic=XNYS');
+		expect(res.status).toBe(402);
+		const prHeader = res.headers.get('Payment-Required');
+		expect(prHeader).toBeTruthy();
+		const decoded = JSON.parse(atob(prHeader!));
+		expect(decoded.x402Version).toBe(1);
+		expect(decoded.accepts).toBeInstanceOf(Array);
+		expect(decoded.accepts[0].network).toBe('base');
+		expect(decoded.accepts[0].asset).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+	});
+
+	it('CORS includes Payment-Signature in Access-Control-Allow-Headers', async () => {
+		const res = await fetchWorker('/v5/status?mic=XNYS', { method: 'OPTIONS' });
+		const allowed = res.headers.get('Access-Control-Allow-Headers') ?? '';
+		expect(allowed).toContain('Payment-Signature');
+		const exposed = res.headers.get('Access-Control-Expose-Headers') ?? '';
+		expect(exposed).toContain('Payment-Required');
+	});
+
+	it('buildX402ScanPayload uses USDC EIP-712 extra (not Headless Oracle)', async () => {
+		// Batch keyless 402 uses buildX402ScanPayload
+		const res = await fetchWorker('/v5/batch');
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		const accepts = (body.accepts as Array<Record<string, unknown>>);
+		expect(accepts[0].extra).toEqual({ name: 'USD Coin', version: '2' });
+		expect(accepts[0].network).toBe('base');
 	});
 });
 

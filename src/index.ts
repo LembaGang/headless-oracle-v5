@@ -1894,13 +1894,21 @@ async function computeHmacSignature(secret: string, payload: string): Promise<st
 }
 
 // Response headers signalling to HTTP clients that a payment is required.
+// Includes both legacy X-Payment-* headers and the x402 v2 standard Payment-Required header.
 const X402_RESPONSE_HEADERS: Record<string, string> = {
 	'X-Payment-Required': 'true',
 	'X-Payment-Scheme':   'x402',
-	'X-Payment-Network':  'base-mainnet',
+	'X-Payment-Network':  'base',
 	'X-Payment-Chain-ID': '8453',
 	'X-Payment-Amount':   '0.001 USDC',
 };
+
+// Read the payment header from the request, checking both x402 v2 (Payment-Signature)
+// and v1 (X-Payment) header names. HTTP headers are case-insensitive, but we check
+// the canonical v2 name first for forward compatibility.
+function getPaymentHeader(request: Request): string | null {
+	return request.headers.get('Payment-Signature') ?? request.headers.get('X-Payment');
+}
 
 interface X402Payment {
 	txHash:         string;
@@ -1935,8 +1943,12 @@ async function verifyX402Payment(
 	paymentAddress: string,
 	env: Env,
 ): Promise<{ valid: boolean; detail?: string }> {
-	if (payment.network !== 'base-mainnet') {
-		return { valid: false, detail: 'WRONG_NETWORK: expected base-mainnet' };
+	// Accept all common Base mainnet network identifiers: 'base-mainnet' (legacy),
+	// 'base' (x402 v1/v2 standard), 'eip155:8453' (CAIP-2). Agents construct payments
+	// using whatever network name the 402 response told them — we must accept all.
+	const VALID_BASE_NETWORKS = new Set(['base-mainnet', 'base', 'eip155:8453']);
+	if (!VALID_BASE_NETWORKS.has(payment.network)) {
+		return { valid: false, detail: 'WRONG_NETWORK: expected base, base-mainnet, or eip155:8453' };
 	}
 	const txHash = payment.txHash.toLowerCase();
 	if (!/^0x[0-9a-f]{64}$/.test(txHash)) {
@@ -2254,7 +2266,7 @@ function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 			accepted_formats:   ['base64-json (x402 standard — use x402 client library)', 'raw JSON { txHash, network, amount, paymentAddress, memo } (direct on-chain)'],
 			payment_spec:       '/.well-known/x402.json',
 			example_flow_x402:  '1. Use x402 client to create payment → 2. Library sets X-Payment header automatically → 3. Send request',
-			example_flow_direct: '1. Send 1000 units USDC to paymentAddress on Base mainnet → 2. Get txHash → 3. Set X-Payment: {"txHash":"0x...","network":"base-mainnet","amount":"1000","paymentAddress":"<addr>","memo":"..."} → 4. Send request',
+			example_flow_direct: '1. Send 1000 units USDC to paymentAddress on Base mainnet → 2. Get txHash → 3. Set X-Payment: {"txHash":"0x...","network":"base","amount":"1000","paymentAddress":"<addr>","memo":"..."} → 4. Send request',
 		},
 		get_credits_instantly: {
 			description:     'POST /v5/sandbox with X-Payment header — get 10 credits immediately, no email required',
@@ -2387,7 +2399,7 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 		x402: {
 			version:             '1',
 			scheme:              'exact',
-			network:             'base-mainnet',
+			network:             'base',
 			chainId:             8453,
 			amount:              '1000',
 			currency:            'USDC',
@@ -2519,7 +2531,7 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 		accepts: [
 			{
 				scheme:              'exact',
-				network:             'eip155:8453',
+				network:             'base',
 				maxAmountRequired:   isStatus ? '1000' : '5000',
 				resource:            resourceUrl,
 				description:         isStatus
@@ -2527,7 +2539,7 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 					: 'Signed market-state receipts for multiple exchanges in one request. Each receipt Ed25519 signed, 60s TTL.',
 				mimeType:            'application/json',
 				payTo:               paymentAddress,
-				maxTimeoutSeconds:   60,
+				maxTimeoutSeconds:   300,
 				asset:               X402_USDC_CONTRACT,
 				paymentHeaderName:     'X-Payment',
 				paymentHeaderEncoding: ['base64-json', 'json'],
@@ -2554,10 +2566,9 @@ function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpo
 						},
 						required: ['mics'],
 					},
-				extra: {
-					name:    'Headless Oracle',
-					version: 'v5.0',
-				},
+				// EIP-712 domain params for USDC on Base — required by x402 clients to
+				// construct valid transferWithAuthorization signatures.
+				extra: { name: 'USD Coin', version: '2' },
 			},
 		],
 		error:         'Payment Required',
@@ -3828,7 +3839,7 @@ Free tier keys (ho_free_*) have a 500 requests/day limit. After the limit:
   "x402": {
     "version": "1",
     "scheme": "exact",
-    "network": "base-mainnet",
+    "network": "base",
     "chainId": 8453,
     "amount": "1000",
     "currency": "USDC",
@@ -3846,7 +3857,7 @@ Free tier keys (ho_free_*) have a 500 requests/day limit. After the limit:
 2. Retry the request with X-Payment header:
 
 \`\`\`
-X-Payment: {"txHash":"0x...","network":"base-mainnet","amount":"1000","paymentAddress":"0x26D4...","memo":""}
+X-Payment: {"txHash":"0x...","network":"base","amount":"1000","paymentAddress":"0x26D4...","memo":""}
 \`\`\`
 
 ## Prepaid Credits
@@ -5360,7 +5371,7 @@ Body: { "email": "you@example.com" }
 
 # Path B — x402 agent onboarding (no email, no human):
 POST https://api.headlessoracle.com/v5/sandbox
-Header: X-Payment: {"txHash":"0x...","network":"base-mainnet","amount":"1000","paymentAddress":"0x26D4...","memo":""}
+Header: X-Payment: {"txHash":"0x...","network":"base","amount":"1000","paymentAddress":"0x26D4...","memo":""}
 → Verifies $0.001 USDC payment on Base mainnet → Returns ho_crd_ credit key (10 credits, no expiry)
 
 # Path C — per-request x402 (no key ever needed):
@@ -7009,7 +7020,7 @@ const OPENAPI_SPEC = {
 					name:        'X-Payment',
 					in:          'header',
 					required:    false,
-					description: 'x402 payment proof (JSON). When present, skips email verification and issues a credit key. Format: { "txHash": "0x...", "network": "base-mainnet", "amount": "1000", "paymentAddress": "0x...", "memo": "" }',
+					description: 'x402 payment proof (JSON). When present, skips email verification and issues a credit key. Format: { "txHash": "0x...", "network": "base", "amount": "1000", "paymentAddress": "0x...", "memo": "" }',
 					schema:      { type: 'string' },
 				}],
 				responses: {
@@ -8449,7 +8460,8 @@ export default {
 		const corsHeaders = {
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment',
+			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment, Payment-Signature',
+			'Access-Control-Expose-Headers': 'Payment-Required, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset',
 		};
 
 		if (request.method === 'OPTIONS') {
@@ -8504,9 +8516,14 @@ export default {
 			if (typeof ctx?.waitUntil === 'function') {
 				incrementKvCounter(`status_code:${now.toISOString().slice(0, 10)}:${status}`, env, ctx, 25 * 3600);
 			}
+			// x402 v2: set Payment-Required header (base64-encoded JSON) on 402 responses
+			// so x402 client libraries can parse payment requirements from the header.
+			const x402Headers: Record<string, string> = status === 402
+				? { 'Link': '</v5/why-not-free>; rel="payment"', 'X-X402-Foundation': 'compatible' }
+				: {};
 			return new Response(JSON.stringify(responseBody), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...(status === 402 ? { 'Link': '</v5/why-not-free>; rel="payment"', 'X-X402-Foundation': 'compatible' } : {}), ...extraHeaders },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...x402Headers, ...extraHeaders },
 			});
 		};
 
@@ -8647,7 +8664,7 @@ export default {
 						}
 
 						if (usage >= FREE_TIER_DAILY_LIMIT) {
-							const paymentHeader = request.headers.get('X-Payment');
+							const paymentHeader = getPaymentHeader(request);
 							if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 								const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 								const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
@@ -8696,7 +8713,7 @@ export default {
 					}
 				} else {
 					// No API key — x402 payment path (step 4) or 402 gate (step 5)
-					const paymentHeader = request.headers.get('X-Payment');
+					const paymentHeader = getPaymentHeader(request);
 					// ── Mainnet x402 facilitator path (x402.org, enabled by default) ─────────────
 					// Accepts Base mainnet USDC payments via x402.org community facilitator (no auth).
 					// Active unless X402_ENABLED is explicitly set to 'false'.
@@ -8708,13 +8725,14 @@ export default {
 							if (!verified.valid) {
 								incrementKvCounter(`funnel_402:facilitator_rejected:${now.toISOString().slice(0, 10)}`, env, ctx);
 								const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
-								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected' });
+								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 							}
 							// Valid payment (either format) — fall through to serve receipt
 						} else {
 							// No payment — return facilitator-compatible 402 with payment requirements
 							incrementKvCounter(`funnel_402:keyless_no_payment:${now.toISOString().slice(0, 10)}`, env, ctx);
-							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header' });
+							const x402IdxHdrs = buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status');
+							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header', ...x402IdxHdrs });
 						}
 					} else {
 						// ORACLE_PAYMENT_ADDRESS not configured — fall back to 401 (dev/test environments)
@@ -8945,7 +8963,7 @@ export default {
 					const batchUsage   = await getDailyUsage(batchKeyHash, env);
 					freeTierPercentUsed = Math.round((batchUsage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
 					if (batchUsage >= FREE_TIER_DAILY_LIMIT) {
-						const paymentHeader = request.headers.get('X-Payment');
+						const paymentHeader = getPaymentHeader(request);
 						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 							const batchResource = 'https://headlessoracle.com/v5/batch';
 							const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, batchResource);
@@ -9614,7 +9632,7 @@ export default {
 						type:       'object',
 						properties: {
 							tx_hash: { type: 'string', description: 'Base mainnet transaction hash of the USDC payment' },
-							network: { type: 'string', description: 'Must be "base-mainnet"' },
+							network: { type: 'string', description: 'Base mainnet network identifier. Accepts: "base", "base-mainnet", or "eip155:8453"' },
 							tier:    { type: 'string', enum: ['builder', 'pro'], description: 'builder=99 USDC, pro=299 USDC' },
 							email:   { type: 'string', description: 'Optional — key will also be sent by email if provided' },
 						},
@@ -9675,8 +9693,9 @@ export default {
 				const email   = typeof mintBody.email    === 'string' ? mintBody.email.trim()    : null;
 
 				if (!txHash)  return json({ error: 'BAD_REQUEST', message: 'tx_hash is required' }, 400);
-				if (network && network !== 'base-mainnet') {
-					return json({ error: 'BAD_REQUEST', message: 'network must be "base-mainnet"' }, 400);
+				const validMintNetworks = new Set(['base-mainnet', 'base', 'eip155:8453']);
+				if (network && !validMintNetworks.has(network)) {
+					return json({ error: 'BAD_REQUEST', message: 'network must be "base", "base-mainnet", or "eip155:8453"' }, 400);
 				}
 				if (tier !== 'builder' && tier !== 'pro') {
 					return json({
@@ -9710,7 +9729,7 @@ export default {
 							required_usdc:     tier === 'pro' ? '299' : '99',
 							required_units:    minAmountUnits.toString(),
 							detail:            verification.detail,
-							network:           'base-mainnet',
+							network:           'base',
 							payment_address:   env.ORACLE_PAYMENT_ADDRESS,
 						}, 402);
 					}
@@ -11501,7 +11520,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				if (!creditAuth.allowed) {
 					return json({ error: creditAuth.error, message: creditAuth.message }, creditAuth.status);
 				}
-				const paymentHeader = request.headers.get('X-Payment');
+				const paymentHeader = getPaymentHeader(request);
 				if (!paymentHeader) {
 					return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, await sha256Hex(apiKey)), 402, X402_RESPONSE_HEADERS);
 				}
@@ -11872,7 +11891,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 
 				// ── x402 alternative path: agent pays $0.001 USDC, gets a credit key immediately ────
-				const sandboxPaymentHeader = request.headers.get('X-Payment');
+				const sandboxPaymentHeader = getPaymentHeader(request);
 				if (sandboxPaymentHeader) {
 					if (!env.ORACLE_PAYMENT_ADDRESS) {
 						return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 payments are not configured on this instance. Use email-based provisioning.' }, 503);
