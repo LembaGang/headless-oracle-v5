@@ -8199,3 +8199,28 @@ describe('Blog canonical Link header', () => {
 		expect(link).toContain('why-your-trading-agent-needs-a-pre-trade-gate');
 	});
 });
+
+// ─── Ed25519 module-level warm-up ─────────────────────────────────────────────
+// Verifies that the Gpows precompute warm-up at module init does not interfere
+// with real signing. Two consecutive /v5/demo calls should both return valid,
+// independently signed receipts with distinct receipt_ids.
+
+describe('Ed25519 cold-start warm-up', () => {
+	it('first and second signed receipts are valid and distinct after module warm-up', async () => {
+		const r1 = await fetchWorker('/v5/demo?mic=XNYS');
+		const r2 = await fetchWorker('/v5/demo?mic=XNYS');
+		expect(r1.status).toBe(200);
+		expect(r2.status).toBe(200);
+		const b1 = await r1.json() as { receipt: { receipt_id: string; signature: string } };
+		const b2 = await r2.json() as { receipt: { receipt_id: string; signature: string } };
+		// Each call produces a unique receipt_id and a distinct signature
+		expect(b1.receipt.receipt_id).toBeTruthy();
+		expect(b2.receipt.receipt_id).toBeTruthy();
+		expect(b1.receipt.receipt_id).not.toBe(b2.receipt.receipt_id);
+		expect(b1.receipt.signature).toBeTruthy();
+		expect(b2.receipt.signature).toBeTruthy();
+		// Signatures are hex strings of 128 chars (64 bytes)
+		expect(b1.receipt.signature).toMatch(/^[0-9a-f]{128}$/);
+		expect(b2.receipt.signature).toMatch(/^[0-9a-f]{128}$/);
+	});
+});

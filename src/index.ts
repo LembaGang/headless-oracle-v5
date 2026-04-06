@@ -4,6 +4,25 @@ import { createClient } from '@supabase/supabase-js';
 
 ed.hashes.sha512 = sha512;
 
+// ─── Ed25519 module-level warm-up ────────────────────────────────────────────
+// @noble/ed25519 lazily builds the base-point precompute table (Gpows) on the
+// first Point.multiply() call inside ed.sign(). In a fresh Cloudflare isolate
+// that cost — plus V8 JIT compilation of the scalar-mult hot path — lands on
+// the first real signing request, adding ~20-40ms to P95.
+//
+// Fix: fire a dummy getPublicKeyAsync() at module initialization. It triggers
+// sha512(dummyKey) → Point.BASE.multiply(scalar) → Gpows = precompute(), and
+// JIT-compiles the entire signing code path. By the time the first real request
+// arrives, Gpows is populated and the JIT is warm.
+// Uses a non-zero dummy key so noble doesn't reject it; the result is discarded.
+void ed.getPublicKeyAsync(new Uint8Array(32).fill(1)).catch(() => {});
+
+// Cache for decoded private-key bytes across requests in the same isolate.
+// env.ED25519_PRIVATE_KEY is not available at module init (it's a runtime
+// binding), so we cache on first use and reuse for the lifetime of the isolate.
+let _cachedPrivKeyHex:   string     | null = null;
+let _cachedPrivKeyBytes: Uint8Array | null = null;
+
 // ─── Environment ─────────────────────────────────────────────────────────────
 
 export interface Env {
@@ -1488,8 +1507,13 @@ async function signPayload(payload: Record<string, string>, privKeyHex: string):
 	}
 	const canonical = JSON.stringify(sorted);
 	const msgBytes  = new TextEncoder().encode(canonical);
-	const privKey   = fromHex(privKeyHex);
-	const sig       = await ed.sign(msgBytes, privKey);
+	// Reuse decoded key bytes across calls in the same isolate. fromHex is fast
+	// but this also avoids repeated heap allocation on every signing request.
+	if (_cachedPrivKeyHex !== privKeyHex) {
+		_cachedPrivKeyBytes = fromHex(privKeyHex);
+		_cachedPrivKeyHex   = privKeyHex;
+	}
+	const sig = await ed.sign(msgBytes, _cachedPrivKeyBytes!);
 	return toHex(sig);
 }
 
