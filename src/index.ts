@@ -2161,10 +2161,11 @@ async function verifyX402ViaFacilitator(
 		});
 		const verifyText = await verifyRes.text();
 		if (!verifyRes.ok) console.error(JSON.stringify({ event: 'FACILITATOR_VERIFY_NON_OK', status: verifyRes.status }));
-		const verifyBody = JSON.parse(verifyText) as { isValid?: boolean; valid?: boolean; error?: string; invalidReason?: string };
-		const isValid = verifyBody.isValid ?? verifyBody.valid;
+		const verifyBody = JSON.parse(verifyText) as Record<string, unknown>;
+		const isValid = (verifyBody.isValid ?? verifyBody.valid) as boolean | undefined;
 		if (!isValid) {
-			const reason = verifyBody.invalidReason ?? verifyBody.error ?? 'unknown';
+			const reason = (verifyBody.invalidReason ?? verifyBody.error ?? verifyBody.message ?? 'unknown') as string;
+			console.error(JSON.stringify({ event: 'FACILITATOR_VERIFY_REJECTED', status: verifyRes.status, reason, body_keys: Object.keys(verifyBody) }));
 			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_VERIFY_FAILED: ${reason}` };
 		}
 	} catch (err) {
@@ -2183,10 +2184,11 @@ async function verifyX402ViaFacilitator(
 			signal:  AbortSignal.timeout(5000),
 		});
 		const settleText = await settleRes.text();
-		if (!settleRes.ok) console.error(JSON.stringify({ event: 'FACILITATOR_SETTLE_NON_OK', status: settleRes.status }));
-		const settleBody = JSON.parse(settleText) as { success?: boolean; error?: string; txHash?: string };
+		if (!settleRes.ok) console.error(JSON.stringify({ event: 'FACILITATOR_SETTLE_NON_OK', status: settleRes.status, body_preview: settleText.slice(0, 200) }));
+		const settleBody = JSON.parse(settleText) as Record<string, unknown>;
 		if (!settleBody.success) {
-			const reason = settleBody.error ?? 'unknown';
+			const reason = (settleBody.error ?? settleBody.message ?? 'unknown') as string;
+			console.error(JSON.stringify({ event: 'FACILITATOR_SETTLE_REJECTED', status: settleRes.status, reason, body_keys: Object.keys(settleBody) }));
 			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_SETTLE_REJECTED: ${reason}` };
 		}
 		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleBody.txHash ?? 'n/a' }));
@@ -8698,35 +8700,22 @@ export default {
 					// ── Mainnet x402 facilitator path (x402.org, enabled by default) ─────────────
 					// Accepts Base mainnet USDC payments via x402.org community facilitator (no auth).
 					// Active unless X402_ENABLED is explicitly set to 'false'.
-					if (env.X402_ENABLED !== 'false' && env.ORACLE_PAYMENT_ADDRESS) {
+					if (env.ORACLE_PAYMENT_ADDRESS) {
 						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 						if (paymentHeader) {
-							const verified = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
+							// Accept BOTH formats: base64 (x402 standard) AND raw JSON (direct on-chain)
+							const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
 							if (!verified.valid) {
 								incrementKvCounter(`funnel_402:facilitator_rejected:${now.toISOString().slice(0, 10)}`, env, ctx);
 								const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
-								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': verified.status });
+								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected' });
 							}
-							// Valid mainnet facilitator payment — fall through to serve receipt
+							// Valid payment (either format) — fall through to serve receipt
 						} else {
-							// No payment — return mainnet 402 with x402.org facilitator payment requirements
+							// No payment — return facilitator-compatible 402 with payment requirements
 							incrementKvCounter(`funnel_402:keyless_no_payment:${now.toISOString().slice(0, 10)}`, env, ctx);
 							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header' });
 						}
-					} else if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
-						// Keyless x402: verify payment (accepts both raw JSON and base64 x402 format)
-						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-						const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
-						if (!verified.valid) {
-							incrementKvCounter(`funnel_402:direct_payment_failed:${now.toISOString().slice(0, 10)}`, env, ctx);
-							return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
-						}
-						// Valid keyless x402 payment — fall through to serve receipt (no rate limit applied)
-					} else if (env.ORACLE_PAYMENT_ADDRESS) {
-						// No key, no payment — return x402scan-compatible 402 so crawlers can register this endpoint
-						incrementKvCounter(`funnel_402:keyless_no_payment:${now.toISOString().slice(0, 10)}`, env, ctx);
-						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 					} else {
 						// ORACLE_PAYMENT_ADDRESS not configured — fall back to 401 (dev/test environments)
 						return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });

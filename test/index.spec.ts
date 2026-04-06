@@ -8289,7 +8289,9 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 		}
 	});
 
-	it('buildX402ScanPayload (keyless, X402_ENABLED=false fallback) includes agent_actions', async () => {
+	it('keyless 402 always returns agent_actions regardless of X402_ENABLED', async () => {
+		// X402_ENABLED no longer changes the keyless 402 format — all keyless paths
+		// return the same facilitator-compatible response with agent_actions.
 		(env as unknown as Record<string, string>).X402_ENABLED = 'false';
 		try {
 			const res  = await fetchWorker('/v5/status?mic=XNYS');
@@ -8299,10 +8301,11 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			expect(body).toHaveProperty('agent_actions');
 			const actions = body.agent_actions as Record<string, unknown>;
 			expect(actions).toHaveProperty('pay_per_request');
-			// paymentHeaderName / paymentHeaderEncoding in accepts[0]
+			expect(actions).toHaveProperty('mint_persistent_key');
+			// Facilitator format: paymentHeaderEncoding is a string (base64-json only)
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
-			expect(accepts[0].paymentHeaderEncoding).toEqual(['base64-json', 'json']);
+			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
 		} finally {
 			delete (env as unknown as Record<string, string>).X402_ENABLED;
 		}
