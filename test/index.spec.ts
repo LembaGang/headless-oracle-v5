@@ -1567,6 +1567,80 @@ describe('GET /v5/pricing', () => {
 	});
 });
 
+// ─── GET /pricing — HTML pricing page ────────────────────────────────────────
+
+describe('GET /pricing', () => {
+	it('returns 200 with text/html content-type', async () => {
+		const res = await fetchWorker('/pricing');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/html');
+	});
+
+	it('includes all tier names in HTML', async () => {
+		const res = await fetchWorker('/pricing');
+		const html = await res.text();
+		expect(html).toContain('Sandbox');
+		expect(html).toContain('x402');
+		expect(html).toContain('Builder');
+		expect(html).toContain('Pro');
+	});
+});
+
+// ─── MCP fast path — no telemetry KV for protocol handshake methods ──────────
+
+describe('MCP fast path — no ORACLE_TELEMETRY write for handshake methods', () => {
+	it('initialize does not write to ORACLE_TELEMETRY KV', async () => {
+		const testIp = '192.0.2.50';
+		const ipHash = await sha256Hex(testIp);
+		const today  = new Date().toISOString().slice(0, 10);
+		const kvKey  = `mcp_clients:${today}:${ipHash}`;
+		await env.ORACLE_TELEMETRY.delete(kvKey);
+
+		await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': testIp },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', clientInfo: { name: 'test', version: '1.0' }, capabilities: {} } }),
+		});
+
+		const raw = await env.ORACLE_TELEMETRY.get(kvKey);
+		expect(raw).toBeNull(); // fast path — no KV write for initialize
+	});
+
+	it('ping does not write to ORACLE_TELEMETRY KV', async () => {
+		const testIp = '192.0.2.51';
+		const ipHash = await sha256Hex(testIp);
+		const today  = new Date().toISOString().slice(0, 10);
+		const kvKey  = `mcp_clients:${today}:${ipHash}`;
+		await env.ORACLE_TELEMETRY.delete(kvKey);
+
+		await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': testIp },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' }),
+		});
+
+		const raw = await env.ORACLE_TELEMETRY.get(kvKey);
+		expect(raw).toBeNull(); // fast path — no KV write for ping
+	});
+
+	it('tools/list still writes to ORACLE_TELEMETRY KV (telemetry preserved)', async () => {
+		const testIp = '192.0.2.52';
+		const ipHash = await sha256Hex(testIp);
+		const today  = new Date().toISOString().slice(0, 10);
+		const kvKey  = `mcp_clients:${today}:${ipHash}`;
+		await env.ORACLE_TELEMETRY.delete(kvKey);
+
+		await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': testIp },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }),
+		});
+
+		const raw = await env.ORACLE_TELEMETRY.get(kvKey);
+		expect(raw).not.toBeNull(); // tools/list still tracks telemetry
+	});
+});
+
 // ─── GET /v5/why-not-free ─────────────────────────────────────────────────────
 
 describe('GET /v5/why-not-free', () => {
@@ -2400,10 +2474,8 @@ describe('POST /mcp — OAuth rate limiting', () => {
 		await env.ORACLE_API_KEYS.put(`oauth:${tokenHash}`, JSON.stringify({ keyHash, plan, status: 'active' }), { expirationTtl: 3600 });
 	}
 
-	const mcpInit = JSON.stringify({
-		jsonrpc: '2.0', id: 1, method: 'initialize',
-		params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
-	});
+	// tools/list goes through the full telemetry + rate-limit path (initialize is now a fast path).
+	const mcpInit = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 
 	it('free-tier OAuth token at daily limit → JSON-RPC -32000 RATE_LIMITED', async () => {
 		const token   = 'mcp_ratelimit_test_free_token_' + 'a'.repeat(34);
@@ -2492,7 +2564,7 @@ describe('POST /mcp — OAuth rate limiting', () => {
 	});
 
 	it('unauthenticated MCP ignores usage counter — always succeeds for non-status tools', async () => {
-		// Even if a counter key existed for some hash, unauthenticated MCP skips metering for initialize
+		// Even if a counter key existed for some hash, unauthenticated MCP skips per-IP metering for tools/list
 		const res = await fetchWorker('/mcp', {
 			method:  'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -2604,10 +2676,8 @@ describe('POST /mcp — auth_calls / unauth_calls telemetry', () => {
 		await env.ORACLE_API_KEYS.put(`oauth:${tokenHash}`, JSON.stringify({ keyHash, plan, status: 'active' }), { expirationTtl: 3600 });
 	}
 
-	const mcpInit = JSON.stringify({
-		jsonrpc: '2.0', id: 1, method: 'initialize',
-		params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
-	});
+	// tools/list goes through the full telemetry path (initialize is now a fast path with no KV ops).
+	const mcpInit = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 
 	it('authenticated MCP request increments auth_calls counter', async () => {
 		const token   = 'mcp_telemetry_auth_token_' + 'x'.repeat(39);

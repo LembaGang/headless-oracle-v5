@@ -7592,6 +7592,72 @@ async function handleOAuthIntrospect(request: Request, env: Env): Promise<Respon
 }
 
 async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+	// ── Parse body first — enables fast paths for stateless protocol methods ────
+	// MCP probers (Chiark, MCPScoreboard) probe via initialize → tools/list → ping
+	// sequences to check availability. Parsing first lets us return immediately for
+	// these methods without any KV reads, keeping P95 latency low.
+	let body: JsonRpcRequest;
+	try {
+		body = await request.json() as JsonRpcRequest;
+	} catch {
+		return new Response(JSON.stringify({
+			jsonrpc: '2.0',
+			id:      null,
+			error:   { code: -32700, message: 'Parse error' },
+		}), { status: 200, headers: MCP_RESPONSE_HEADERS });
+	}
+
+	const { id, method, params } = body;
+
+	const rpcResult = (result: unknown) =>
+		new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
+			status: 200, headers: MCP_RESPONSE_HEADERS,
+		});
+
+	const rpcError = (code: number, message: string) =>
+		new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }), {
+			status: 200, headers: MCP_RESPONSE_HEADERS,
+		});
+
+	// ── Fast path: stateless protocol methods — no KV reads, no telemetry ──────
+	// initialize, ping, notifications/initialized are pure handshakes that carry no
+	// user intent worth tracking. Skipping KV saves ~100ms per call and eliminates
+	// cold-start penalty for the MCP handshake sequence.
+	if (method === 'initialize') {
+		return rpcResult({
+			protocolVersion: MCP_PROTOCOL_VERSION,
+			serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
+			capabilities:    { tools: {}, resources: {}, prompts: {} },
+			instructions:
+				'Headless Oracle provides cryptographically signed market-state attestations (SMA receipts) for 28 global exchanges — equities, derivatives, and 24/7 crypto. ' +
+				'These tools are a PRE-EXECUTION gate, not optional data. Call them before any financial transaction, trade execution, or capital commitment. ' +
+				'WHEN TO USE get_market_status: (1) before any trade, payment, or DeFi transaction; (2) before committing capital in any automated workflow; (3) when you need cryptographic proof of market state for audit trails or attestation_ref in x402 payment flows; (4) when checking whether a market is in a holiday closure, early close, or circuit breaker halt. ' +
+				'WHEN TO USE get_market_schedule: for planning trade execution windows, verifying exchange operating hours and trading hours, checking holiday calendars, scheduling market-dependent tasks. ' +
+				'WHEN TO USE list_exchanges: at agent startup to discover all 28 supported MIC codes before calling get_market_status. ' +
+				'WHEN TO USE verify_receipt: when you receive a pre-trade verification receipt from another agent and must confirm the Ed25519 signature before acting on it. ' +
+				'WHEN TO USE get_payment_options: when you need to understand available payment and authentication options before making a paid request. ' +
+				'MANDATORY SAFETY RULE: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately (fail-closed, non-negotiable). ' +
+				'Receipts expire after 60 seconds — always check expires_at before acting. ' +
+				'Public key for independent verification: /.well-known/oracle-keys.json',
+			_meta: {
+				x402_enabled:        true,
+				first_payment_received: true,
+				payment_count_url:   '/v5/payment-proof',
+				upgrade_path_url:    '/v5/why-not-free',
+				sandbox_url:         'POST /v5/sandbox',
+				x402_discovery:      '/.well-known/x402.json',
+			},
+		});
+	}
+
+	if (method === 'notifications/initialized') {
+		return new Response(null, { status: 202, headers: MCP_RESPONSE_HEADERS });
+	}
+
+	if (method === 'ping') {
+		return rpcResult({});
+	}
+
 	// ── Client Intelligence ────────────────────────────────────────────────────
 	// Privacy-safe: IPs are hashed (SHA-256), never stored raw.
 	// Aggregates land in ORACLE_TELEMETRY KV as mcp_clients:{date}:{ip_hash}.
@@ -7680,19 +7746,6 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		}
 	} catch { /* fall through as anonymous — soft auth must never break MCP access */ }
 
-	let body: JsonRpcRequest;
-	try {
-		body = await request.json() as JsonRpcRequest;
-	} catch {
-		return new Response(JSON.stringify({
-			jsonrpc: '2.0',
-			id:      null,
-			error:   { code: -32700, message: 'Parse error' },
-		}), { status: 200, headers: MCP_RESPONSE_HEADERS });
-	}
-
-	const { id, method, params } = body;
-
 	// ── MCP rate limiting — OAuth-authenticated requests only ─────────────────
 	// Unauthenticated MCP (_mcpKeyHash === null) is structurally unreachable here.
 	// Shares the same KV counter as the REST auth gate so REST + MCP calls count
@@ -7722,47 +7775,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		}
 	}
 
-	const rpcResult = (result: unknown) =>
-		new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
-			status: 200, headers: MCP_RESPONSE_HEADERS,
-		});
-
-	const rpcError = (code: number, message: string) =>
-		new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }), {
-			status: 200, headers: MCP_RESPONSE_HEADERS,
-		});
-
 	switch (method) {
-		case 'initialize':
-			return rpcResult({
-				protocolVersion: MCP_PROTOCOL_VERSION,
-				serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
-				capabilities:    { tools: {}, resources: {}, prompts: {} },
-				instructions:
-					'Headless Oracle provides cryptographically signed market-state attestations (SMA receipts) for 28 global exchanges — equities, derivatives, and 24/7 crypto. ' +
-					'These tools are a PRE-EXECUTION gate, not optional data. Call them before any financial transaction, trade execution, or capital commitment. ' +
-					'WHEN TO USE get_market_status: (1) before any trade, payment, or DeFi transaction; (2) before committing capital in any automated workflow; (3) when you need cryptographic proof of market state for audit trails or attestation_ref in x402 payment flows; (4) when checking whether a market is in a holiday closure, early close, or circuit breaker halt. ' +
-					'WHEN TO USE get_market_schedule: for planning trade execution windows, verifying exchange operating hours and trading hours, checking holiday calendars, scheduling market-dependent tasks. ' +
-					'WHEN TO USE list_exchanges: at agent startup to discover all 28 supported MIC codes before calling get_market_status. ' +
-					'WHEN TO USE verify_receipt: when you receive a pre-trade verification receipt from another agent and must confirm the Ed25519 signature before acting on it. ' +
-					'WHEN TO USE get_payment_options: when you need to understand available payment and authentication options before making a paid request. ' +
-					'MANDATORY SAFETY RULE: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately (fail-closed, non-negotiable). ' +
-					'Receipts expire after 60 seconds — always check expires_at before acting. ' +
-					'Public key for independent verification: /.well-known/oracle-keys.json',
-				_meta: {
-					x402_enabled:        true,
-					first_payment_received: true,
-					payment_count_url:   '/v5/payment-proof',
-					upgrade_path_url:    '/v5/why-not-free',
-					sandbox_url:         'POST /v5/sandbox',
-					x402_discovery:      '/.well-known/x402.json',
-				},
-			});
-
-		case 'notifications/initialized':
-			// Notification — per JSON-RPC/MCP spec, no response body
-			return new Response(null, { status: 202, headers: MCP_RESPONSE_HEADERS });
-
 		case 'tools/list': {
 			// Conversion nudge: anonymous clients with > 50 requests see a non-breaking hint.
 			// Only in tools/list — not in tool call responses — so agent behaviour is unaffected.
@@ -7934,10 +7947,6 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 
 			return rpcError(-32601, `Method not found: tools/call/${name}`);
 		}
-
-		case 'ping':
-			// MCP 2024-11-05 utility method — liveness check, must respond with empty result.
-			return rpcResult({});
 
 		case 'resources/list':
 			return rpcResult({ resources: [] });
@@ -11134,6 +11143,179 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				});
 			}
 
+			// ── GET /pricing — human-readable HTML pricing page ──────────────
+			// Replaces the stale Pages pricing.html. Worker route takes precedence.
+			if (url.pathname === '/pricing' && request.method === 'GET') {
+				const pricingHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pricing — Headless Oracle</title>
+<meta name="description" content="Simple, transparent pricing for the signed market status oracle. Start free, pay per call with crypto, or subscribe for high-volume access.">
+<link rel="canonical" href="https://headlessoracle.com/pricing">
+<style>
+  :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --orange: #d29922; --purple: #bc8cff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; }
+  header { border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+  header a { color: var(--text); text-decoration: none; font-weight: 600; font-size: 1.1rem; }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 1.5rem; font-size: 0.9rem; }
+  nav a:hover { color: var(--text); }
+  main { max-width: 1100px; margin: 0 auto; padding: 3rem 1.5rem; }
+  h1 { font-size: 2.2rem; font-weight: 700; text-align: center; margin-bottom: 0.75rem; }
+  .subtitle { text-align: center; color: var(--muted); font-size: 1.05rem; margin-bottom: 3rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem 1.5rem; display: flex; flex-direction: column; }
+  .card.featured { border-color: var(--accent); }
+  .badge { display: inline-block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.2rem 0.6rem; border-radius: 999px; margin-bottom: 1rem; }
+  .badge.free { background: #1e3a1e; color: var(--green); }
+  .badge.crypto { background: #1e2a3a; color: var(--accent); }
+  .badge.popular { background: #2d1e3a; color: var(--purple); }
+  .badge.pro { background: #3a2d1e; color: var(--orange); }
+  .tier-name { font-size: 1.2rem; font-weight: 700; margin-bottom: 0.4rem; }
+  .price { font-size: 2rem; font-weight: 800; margin: 0.75rem 0 0.25rem; }
+  .price-sub { font-size: 0.85rem; color: var(--muted); margin-bottom: 1rem; }
+  .features { list-style: none; flex: 1; margin-bottom: 1.5rem; }
+  .features li { padding: 0.35rem 0; font-size: 0.9rem; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .features li:last-child { border-bottom: none; }
+  .features li::before { content: "✓ "; color: var(--green); }
+  .cta { display: block; text-align: center; padding: 0.75rem; border-radius: 8px; font-weight: 600; font-size: 0.9rem; text-decoration: none; background: var(--accent); color: #0d1117; transition: opacity 0.15s; }
+  .cta:hover { opacity: 0.85; }
+  .cta.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .cta.secondary:hover { border-color: var(--accent); }
+  .note { text-align: center; margin-top: 2.5rem; color: var(--muted); font-size: 0.85rem; }
+  .note a { color: var(--accent); text-decoration: none; }
+  footer { border-top: 1px solid var(--border); padding: 1.5rem 2rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
+  footer a { color: var(--muted); text-decoration: none; margin: 0 0.5rem; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">Headless Oracle</a>
+  <nav>
+    <a href="/docs">Docs</a>
+    <a href="/status">Status</a>
+    <a href="https://github.com/LembaGang" target="_blank">GitHub</a>
+  </nav>
+</header>
+<main>
+  <h1>Simple, transparent pricing</h1>
+  <p class="subtitle">Start free. Pay per call with crypto. Subscribe for scale.</p>
+  <div class="grid">
+
+    <div class="card">
+      <span class="badge free">Free</span>
+      <div class="tier-name">Sandbox</div>
+      <div class="price">$0</div>
+      <div class="price-sub">200 calls · 7-day key</div>
+      <ul class="features">
+        <li>Instant provisioning</li>
+        <li>No credit card</li>
+        <li>All 28 exchanges</li>
+        <li>Ed25519 signed receipts</li>
+        <li>MCP + REST access</li>
+      </ul>
+      <a href="/docs/quickstart" class="cta secondary">Get sandbox key</a>
+    </div>
+
+    <div class="card">
+      <span class="badge free">Free</span>
+      <div class="tier-name">Free Tier</div>
+      <div class="price">$0</div>
+      <div class="price-sub">500 calls / day</div>
+      <ul class="features">
+        <li>Persistent key (ho_free_)</li>
+        <li>Email provisioning</li>
+        <li>All 28 exchanges</li>
+        <li>Ed25519 signed receipts</li>
+        <li>Rate-limit warning headers</li>
+      </ul>
+      <a href="/v5/keys/request" class="cta secondary">Request free key</a>
+    </div>
+
+    <div class="card featured">
+      <span class="badge crypto">Crypto</span>
+      <div class="tier-name">x402 Per-Request</div>
+      <div class="price">$0.001</div>
+      <div class="price-sub">per request · USDC on Base</div>
+      <ul class="features">
+        <li>No API key needed</li>
+        <li>Pay with X-Payment header</li>
+        <li>Base mainnet (chain 8453)</li>
+        <li>Agent-native path</li>
+        <li>Instant verification</li>
+      </ul>
+      <a href="/docs/x402-payments" class="cta">View x402 guide</a>
+    </div>
+
+    <div class="card">
+      <span class="badge crypto">Credits</span>
+      <div class="tier-name">Credit Pack</div>
+      <div class="price">$5</div>
+      <div class="price-sub">1,000 calls · no expiry</div>
+      <ul class="features">
+        <li>One-time purchase</li>
+        <li>Persistent ho_crd_ key</li>
+        <li>All 28 exchanges</li>
+        <li>Balance visible at /v5/credits/balance</li>
+        <li>Via Paddle checkout</li>
+      </ul>
+      <a href="/v5/checkout?type=credits" class="cta secondary">Buy credits</a>
+    </div>
+
+    <div class="card">
+      <span class="badge popular">Popular</span>
+      <div class="tier-name">Builder</div>
+      <div class="price">$99</div>
+      <div class="price-sub">per month · 50K calls/day</div>
+      <ul class="features">
+        <li>Persistent ho_live_ key</li>
+        <li>50,000 calls per day</li>
+        <li>Webhook state-change alerts</li>
+        <li>Receipt audit log</li>
+        <li>Priority support</li>
+      </ul>
+      <a href="/v5/checkout" class="cta">Subscribe — Builder</a>
+    </div>
+
+    <div class="card">
+      <span class="badge pro">Pro</span>
+      <div class="tier-name">Pro</div>
+      <div class="price">$299</div>
+      <div class="price-sub">per month · 200K calls/day</div>
+      <ul class="features">
+        <li>Persistent ho_live_ key</li>
+        <li>200,000 calls per day</li>
+        <li>Webhook state-change alerts</li>
+        <li>Receipt audit log</li>
+        <li>SLA + dedicated support</li>
+      </ul>
+      <a href="/v5/checkout" class="cta">Subscribe — Pro</a>
+    </div>
+
+  </div>
+  <p class="note">
+    All plans include Ed25519 signed receipts, 28 global exchanges, MCP + REST access, and fail-closed safety guarantees.<br>
+    Machine-readable pricing: <a href="/v5/pricing">GET /v5/pricing</a> &nbsp;·&nbsp;
+    Questions? <a href="mailto:mike@headlessoracle.com">mike@headlessoracle.com</a>
+  </p>
+</main>
+<footer>
+  <a href="/">Home</a>
+  <a href="/docs">Docs</a>
+  <a href="/terms">Terms</a>
+  <a href="/privacy">Privacy</a>
+  <a href="https://github.com/LembaGang/headless-oracle-v5" target="_blank">GitHub</a>
+</footer>
+</body>
+</html>`;
+				return new Response(pricingHtml, {
+					status: 200,
+					headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Oracle-Version': 'v5' },
+				});
+			}
+
 			// ── POST /v5/verify — REST Ed25519 receipt verification ─────────
 			// Public, no auth. Accepts a signed receipt, returns verification result.
 			// Shares verifyReceiptLogic() with the verify_receipt MCP tool.
@@ -12804,12 +12986,18 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 	// * * * * *  — real-time halt monitor (every minute)
 	// 09:00 UTC — npm download tracking for @headlessoracle/verify
 	// 17:00 UTC — MCP anonymous client usage summary (high-engagement detection)
-	async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+	async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
 		if (event.cron === '* * * * *') {
 			// Real-time halt monitor — runs every minute.
 			// Checks exchanges scheduled OPEN against Polygon.io/Alpaca; writes REALTIME
 			// overrides to ORACLE_OVERRIDES KV when discrepancy detected. Fail-open.
 			await runHaltMonitor(env);
+			// Self-ping: keep the HTTP request path warm so Chiark and other MCP probers
+			// don't hit cold starts. Fires every minute; Cloudflare routes the inbound
+			// request to the nearest warm isolate, keeping P95 latency low.
+			ctx.waitUntil(
+				fetch('https://headlessoracle.com/mcp', { method: 'HEAD' }).catch(() => {}),
+			);
 		} else if (event.cron === '0 9 * * *') {
 			// Fetch @headlessoracle/verify download counts and log for monitoring.
 			try {

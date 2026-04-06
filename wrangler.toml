@@ -40,6 +40,7 @@ routes = [
   { pattern = "headlessoracle.com/v5/stream", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/x402", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v5/verify", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/pricing", zone_name = "headlessoracle.com" },
 ]
 
 [vars]
