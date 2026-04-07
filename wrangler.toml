@@ -49,7 +49,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "703"
+TEST_COUNT = "706"
 
 # ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
 # Used for circuit breaker halts and emergency market status overrides.

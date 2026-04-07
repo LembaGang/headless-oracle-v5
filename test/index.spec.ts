@@ -8638,3 +8638,57 @@ describe('GET /v5/briefing', () => {
 		expect(body).toBeTruthy();
 	});
 });
+
+// ─── /AGENTS.md — agent discovery file ─────────────────────────────────────────
+
+describe('/AGENTS.md agent discovery', () => {
+	it('returns 200 with text/markdown content type', async () => {
+		const res = await fetchWorker('/AGENTS.md');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains MCP config snippet and exchange list', async () => {
+		const res = await fetchWorker('/AGENTS.md');
+		const text = await res.text();
+		expect(text).toContain('headless-oracle-mcp');
+		expect(text).toContain('XNYS');
+		expect(text).toContain('Ed25519');
+		expect(text).toContain('fail-closed');
+		expect(text).toContain('/v5/status');
+	});
+});
+
+// ─── 402 trial exhaustion includes agent_upgrade_paths ──────────────────────────
+
+describe('402 trial exhaustion agent_upgrade_paths', () => {
+	afterEach(async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+	});
+
+	it('402 after trial exhaustion includes agent_upgrade_paths with all three methods', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		const res = await fetchWorker('/v5/status?mic=XNYS');
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('agent_upgrade_paths');
+		const paths = body.agent_upgrade_paths as Record<string, unknown>;
+		expect(paths).toHaveProperty('instant_no_signup');
+		expect(paths).toHaveProperty('free_unlimited');
+		expect(paths).toHaveProperty('try_now');
+		const x402 = paths.instant_no_signup as Record<string, unknown>;
+		expect(x402).toHaveProperty('method', 'x402');
+		expect(x402).toHaveProperty('network', 'base');
+		const apiKey = paths.free_unlimited as Record<string, unknown>;
+		expect(apiKey).toHaveProperty('method', 'api_key');
+		expect(apiKey).toHaveProperty('steps');
+		expect(Array.isArray(apiKey.steps)).toBe(true);
+		const demo = paths.try_now as Record<string, unknown>;
+		expect(demo).toHaveProperty('method', 'demo');
+		expect(demo).toHaveProperty('url');
+	});
+});

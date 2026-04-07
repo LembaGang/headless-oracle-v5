@@ -1851,6 +1851,30 @@ const BASE_RPC_URL          = 'https://mainnet.base.org';
 // Free tier: daily request cap before x402 micropayment is required.
 const FREE_TIER_DAILY_LIMIT    = 500;
 const FREE_TRIAL_DAILY_LIMIT   = 3;     // Keyless trial: 3 real signed receipts/day per IP before 402
+
+// Machine-readable upgrade paths for agents hitting 402 after trial exhaustion.
+// Structured so an agent can read this and autonomously choose a path forward.
+const AGENT_UPGRADE_PATHS = {
+	instant_no_signup: {
+		method:      'x402',
+		cost:        '$0.001 USDC per call',
+		network:     'base',
+		instruction: 'Include X-Payment header with USDC payment',
+	},
+	free_unlimited: {
+		method: 'api_key',
+		steps:  [
+			'POST /v5/keys/request with email in body',
+			'Check email for API key',
+			'Include X-Oracle-Key header',
+		],
+	},
+	try_now: {
+		method: 'demo',
+		url:    'https://headlessoracle.com/v5/demo?mic=XNYS',
+		note:   'Unsigned demo data, always free, no limits',
+	},
+};
 const SANDBOX_DAILY_LIMIT      = 200;   // Sandbox keys: 200 calls per 7-day key lifetime — enough to evaluate without replacing credit pack
 const UNAUTH_MCP_STATUS_LIMIT  = 10;   // Unauthenticated get_market_status calls per IP per day via /mcp
 const BUILDER_TIER_DAILY_LIMIT = 50_000;
@@ -5966,48 +5990,60 @@ const DEPLOY_DATE       = new Date().toISOString().slice(0, 10); // YYYY-MM-DD f
 // is a pre-execution gate, not optional data.
 const AGENTS_MD = `# Headless Oracle — Agent Instructions
 
-## Purpose
-Headless Oracle provides cryptographically signed market-state attestations
-for 28 global exchanges. It is a PRE-EXECUTION gate — agents MUST verify
-market state before committing capital or executing financial operations.
+## What this service does
+Provides cryptographically signed (Ed25519) market-state attestations for
+28 global exchanges. Returns OPEN, CLOSED, HALTED, or UNKNOWN with a
+60-second TTL receipt. UNKNOWN must be treated as CLOSED (fail-closed).
 
-## When to Use
-- Before ANY financial transaction, trade execution, or capital commitment
-- When verifying whether a market/exchange is currently in session
-- When checking for holiday closures, early closes, or lunch breaks that
-  affect settlement or execution windows
-- When generating audit-trail evidence of pre-trade due diligence
-- When building x402 payment flows that require attestation_ref
+## When to use this
+Before executing any trade, placing any order, or making any capital
+allocation decision on a traditional exchange. This is a pre-trade
+verification gate.
 
-## Critical Rules
+## How to use (MCP)
+\`\`\`json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["headless-oracle-mcp"]
+    }
+  }
+}
+\`\`\`
+
+Tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt
+
+## How to use (REST)
+GET https://headlessoracle.com/v5/status?mic=XNYS
+- Free trial: 3 signed receipts/day, no key needed
+- x402: $0.001 USDC per call on Base, no signup
+- API key: unlimited calls on free tier
+
+## Critical rules
 - UNKNOWN status MUST be treated as CLOSED (fail-closed, non-negotiable)
 - HALTED status MUST be treated as CLOSED
 - Receipts expire after 60 seconds — do not cache or reuse stale receipts
-- The Ed25519 signature in each receipt is a cryptographic proof — include
-  the attestation_ref in any downstream payment or audit records
+- The Ed25519 signature in each receipt is a cryptographic proof
 - Always call verify_receipt to confirm signature before acting on receipt
   contents in high-stakes workflows
 
-## Available Tools
-- get_market_status: Single exchange market state with signed receipt
-- get_market_schedule: Next open/close times, holiday flags, lunch windows
-- list_exchanges: All 28 supported exchanges with MIC codes and timezones
-- verify_receipt: Verify an existing receipt's Ed25519 signature
+## Exchanges covered
+XNYS, XNAS, XLON, XPAR, XJPX, XHKG, XASX, XBOM, XNSE, XSES, XKRX,
+XSHG, XSHE, XJSE, XIST, XMIL, XSTO, XHEL, XNZE, XBSP, XCBO, XCBT,
+XNYM, XBIN, XSWX, XDFM, XSAU, XCOI
 
-## Integration with x402 Payment Flows
-Include the attestation_ref from the receipt in the x402 payment attestation
-field. This creates an auditable chain:
-market verification → payment authorization → execution → settlement receipt
+## Trust model
+Every response includes an Ed25519 signature. Verify with the public key
+at /v5/keys. Receipts expire after 60 seconds. Do not cache or reuse
+expired receipts.
 
-## Authentication
-No auth required for sandbox (200 calls). API keys via headlessoracle.com/upgrade.
-MCP endpoint: https://headlessoracle.com/mcp
-REST endpoint: https://api.headlessoracle.com/v5/status?mic={MIC}
-
-## Supported Exchanges (Sample)
-XNYS (NYSE), XNAS (NASDAQ), XLON (London), XJPX (Japan), XHKG (Hong Kong),
-XCBT (CME overnight), XCOI (Coinbase 24/7), XBIN (Binance 24/7) + 20 more.
-Full list: get_market_status with list_exchanges tool.
+## Discovery endpoints
+- MCP: https://headlessoracle.com/mcp
+- REST: https://api.headlessoracle.com/v5/status?mic={MIC}
+- OpenAPI: https://headlessoracle.com/openapi.json
+- Public key: https://headlessoracle.com/.well-known/oracle-keys.json
+- Agent card: https://headlessoracle.com/.well-known/agent.json
 `;
 
 // Canonical issuer identifier — included in every signed payload so receipts are self-describing.
@@ -8770,6 +8806,7 @@ export default {
 									...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource),
 									trial_used: FREE_TRIAL_DAILY_LIMIT,
 									message: `You verified ${FREE_TRIAL_DAILY_LIMIT} receipts today. Get unlimited access: x402 ($0.001/call), API key (free tier), or sandbox (200 calls, no card).`,
+									agent_upgrade_paths: AGENT_UPGRADE_PATHS,
 								};
 								return json(payload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header', ...x402IdxHdrs });
 							} else {
@@ -8778,6 +8815,7 @@ export default {
 									trial_used: FREE_TRIAL_DAILY_LIMIT,
 									message: `You verified ${FREE_TRIAL_DAILY_LIMIT} receipts today. Get unlimited access: API key (free tier) or sandbox (200 calls, no card).`,
 									upgrade_url: 'https://headlessoracle.com/upgrade',
+									agent_upgrade_paths: AGENT_UPGRADE_PATHS,
 								}, 402);
 							}
 						}
