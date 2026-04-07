@@ -8683,12 +8683,12 @@ describe('402 trial exhaustion agent_upgrade_paths', () => {
 		expect(body).toHaveProperty('agent_upgrade_paths');
 		const paths = body.agent_upgrade_paths as Record<string, unknown>;
 		expect(paths).toHaveProperty('instant_no_signup');
-		expect(paths).toHaveProperty('free_unlimited');
+		expect(paths).toHaveProperty('free_500_daily');
 		expect(paths).toHaveProperty('try_now');
 		const x402 = paths.instant_no_signup as Record<string, unknown>;
 		expect(x402).toHaveProperty('method', 'x402');
 		expect(x402).toHaveProperty('network', 'base');
-		const apiKey = paths.free_unlimited as Record<string, unknown>;
+		const apiKey = paths.free_500_daily as Record<string, unknown>;
 		expect(apiKey).toHaveProperty('method', 'api_key');
 		expect(apiKey).toHaveProperty('steps');
 		expect(Array.isArray(apiKey.steps)).toBe(true);

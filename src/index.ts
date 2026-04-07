@@ -1861,8 +1861,9 @@ const AGENT_UPGRADE_PATHS = {
 		network:     'base',
 		instruction: 'Include X-Payment header with USDC payment',
 	},
-	free_unlimited: {
+	free_500_daily: {
 		method: 'api_key',
+		note:   '500 calls/day on free tier',
 		steps:  [
 			'POST /v5/keys/request with email in body',
 			'Check email for API key',
