@@ -178,6 +178,39 @@ if __name__ == "__main__":
     print(result)
 ```
 
+## Alternative: MCP via MCPServerStdio
+
+CrewAI supports MCP servers directly via `MCPServerStdio`. This gives the agent access to all 4 oracle tools without writing any Python wrapper code:
+
+```python
+from crewai import Agent, Task, Crew
+from crewai.mcp import MCPServerStdio
+
+market_oracle = MCPServerStdio(
+    command="npx",
+    args=["headless-oracle-mcp"],
+)
+
+compliance_agent = Agent(
+    role="Pre-Trade Compliance Officer",
+    goal="Verify all target exchanges are open before any trade execution",
+    backstory="You are a compliance officer who ensures trading only happens during market hours.",
+    mcps=[market_oracle],
+)
+
+verify_task = Task(
+    description="Check if XNYS (NYSE) and XLON (London) are currently open. Report the status of each.",
+    agent=compliance_agent,
+    expected_output="Market status report with OPEN/CLOSED for each exchange",
+)
+
+crew = Crew(agents=[compliance_agent], tasks=[verify_task])
+result = crew.kickoff()
+print(result)
+```
+
+The MCP approach gives the agent natural-language access to `get_market_status`, `get_market_schedule`, `list_exchanges`, and `verify_receipt` — the agent decides which tool to call based on the task description.
+
 ## Important
 
 - **`safe_to_trade` is the only field agents should act on.** The raw `status` string from an unverified receipt has no meaning — `verify()` must run first. Both tools encapsulate this so the agent always receives a pre-verified result.
