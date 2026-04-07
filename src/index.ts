@@ -6305,6 +6305,7 @@ interface McpClientRecord {
 	country:       string;
 	city:          string;
 	tools?:        Record<string, number>; // per-client tool call counts
+	client_info?:  { name: string; version: string }; // from MCP initialize params.clientInfo
 }
 
 const MCP_TOOLS = [
@@ -7808,6 +7809,34 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 	// user intent worth tracking. Skipping KV saves ~100ms per call and eliminates
 	// cold-start penalty for the MCP handshake sequence.
 	if (method === 'initialize') {
+		// Capture clientInfo from initialize params — deferred KV write so it
+		// never blocks the handshake response. Tells us which MCP clients
+		// (Claude Desktop, Cursor, Windsurf, custom agents) are connecting.
+		const clientInfo = (params as Record<string, unknown> | undefined)?.clientInfo as
+			{ name?: string; version?: string } | undefined;
+		if (clientInfo) {
+			const initRawIp  = request.headers.get('X-Original-IP') || request.headers.get('CF-Connecting-IP') || '';
+			const initIpHash = sha256Hex(initRawIp).then(hash => {
+				const initToday = new Date().toISOString().slice(0, 10);
+				const kvKey     = `mcp_clients:${initToday}:${hash}`;
+				return env.ORACLE_TELEMETRY.get(kvKey).then(stored => {
+					const prev = stored ? JSON.parse(stored) as McpClientRecord : null;
+					const updated: McpClientRecord = {
+						first_seen:    prev?.first_seen ?? new Date().toISOString(),
+						last_seen:     new Date().toISOString(),
+						request_count: prev?.request_count ?? 0,
+						user_agent:    request.headers.get('User-Agent') ?? '',
+						asn_org:       request.headers.get('X-Original-ASN-Org') || '',
+						country:       request.headers.get('X-Original-Country') || '',
+						city:          request.headers.get('X-Original-City') || '',
+						tools:         prev?.tools,
+						client_info:   { name: clientInfo.name ?? '', version: clientInfo.version ?? '' },
+					};
+					return env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 });
+				});
+			}).catch(err => console.error('INIT_TELEMETRY_FAILED', String(err)));
+			if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(initIpHash);
+		}
 		return rpcResult({
 			protocolVersion: MCP_PROTOCOL_VERSION,
 			serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
@@ -7890,6 +7919,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 				asn_org:       asnOrg,
 				country,
 				city,
+				...(prev?.client_info ? { client_info: prev.client_info } : {}),
 			};
 			await env.ORACLE_TELEMETRY.put(kvKey, JSON.stringify(updated), { expirationTtl: 8 * 24 * 3600 });
 			console.log(JSON.stringify({ event: 'TELEMETRY_PUT_OK', kvKey }));

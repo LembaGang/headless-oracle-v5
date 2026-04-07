@@ -1600,7 +1600,7 @@ describe('GET /pricing', () => {
 // ─── MCP fast path — no telemetry KV for protocol handshake methods ──────────
 
 describe('MCP fast path — no ORACLE_TELEMETRY write for handshake methods', () => {
-	it('initialize does not write to ORACLE_TELEMETRY KV', async () => {
+	it('initialize writes clientInfo to ORACLE_TELEMETRY KV when present', async () => {
 		const testIp = '192.0.2.50';
 		const ipHash = await sha256Hex(testIp);
 		const today  = new Date().toISOString().slice(0, 10);
@@ -1613,8 +1613,13 @@ describe('MCP fast path — no ORACLE_TELEMETRY write for handshake methods', ()
 			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', clientInfo: { name: 'test', version: '1.0' }, capabilities: {} } }),
 		});
 
+		// clientInfo is captured via deferred KV write
+		await new Promise(r => setTimeout(r, 200));
 		const raw = await env.ORACLE_TELEMETRY.get(kvKey);
-		expect(raw).toBeNull(); // fast path — no KV write for initialize
+		expect(raw).toBeTruthy();
+		const record = JSON.parse(raw!) as { client_info?: { name: string; version: string } };
+		expect(record.client_info).toEqual({ name: 'test', version: '1.0' });
+		await env.ORACLE_TELEMETRY.delete(kvKey);
 	});
 
 	it('ping does not write to ORACLE_TELEMETRY KV', async () => {
@@ -8690,5 +8695,39 @@ describe('402 trial exhaustion agent_upgrade_paths', () => {
 		const demo = paths.try_now as Record<string, unknown>;
 		expect(demo).toHaveProperty('method', 'demo');
 		expect(demo).toHaveProperty('url');
+	});
+});
+
+// ─── MCP initialize clientInfo capture ─────────────────────────────────────────
+
+describe('MCP initialize clientInfo capture', () => {
+	it('captures clientInfo.name and version from initialize params into KV telemetry', async () => {
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({
+				jsonrpc: '2.0', id: 1, method: 'initialize',
+				params: {
+					protocolVersion: '2024-11-05',
+					capabilities: {},
+					clientInfo: { name: 'claude-desktop', version: '1.2.3' },
+				},
+			}),
+		});
+		expect(res.status).toBe(200);
+		// Wait for deferred KV write to complete
+		await new Promise(r => setTimeout(r, 200));
+		// Check KV for the client_info field
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		const kvKey = `mcp_clients:${today}:${ipHash}`;
+		const stored = await env.ORACLE_TELEMETRY.get(kvKey);
+		expect(stored).toBeTruthy();
+		const record = JSON.parse(stored!) as { client_info?: { name: string; version: string } };
+		expect(record.client_info).toBeDefined();
+		expect(record.client_info!.name).toBe('claude-desktop');
+		expect(record.client_info!.version).toBe('1.2.3');
+		// Cleanup
+		await env.ORACLE_TELEMETRY.delete(kvKey);
 	});
 });
