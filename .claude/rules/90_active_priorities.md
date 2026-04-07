@@ -2,9 +2,18 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue infrastructure sprint active.
-**Test suite**: 707/707 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 7 2026 — Day 41 evening: Discovery + Conversion + Distribution Sprint (707 tests):
+**Phase**: Post-launch. Performance + distribution sprint active.
+**Test suite**: 714/714 passing + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 7 2026 — Day 41 late: Performance + Discovery + Distribution Sprint (714 tests):
+- **In-memory API key cache** (commit 9489888): Module-scope Map with 60s TTL for ORACLE_API_KEYS reads. Eliminates ~5ms KV round-trip on warm isolates. Credits-tier excluded (balance mutates per-request). HMAC CryptoKey cached across calls.
+- **llms.txt spec-compliant index** (commit e28618b): GET /llms.txt returns concise llmstxt.org index with blockquote summary, section links. GET /llms-full.txt returns complete docs (exchange hours, curl examples, verification code, MCP configs, compliance mapping). All JSON responses include `Link: </llms.txt>; rel="llms-txt"` header.
+- **ai-hedge-fund PR** (commit 6680f9a): virattt/ai-hedge-fund#564 — market_state_verification_agent between risk and portfolio managers. 17 tests, zero deps, fail-closed. MIC deduplication. Uses /v5/demo (free).
+- **dev.to launch post**: docs/blog/devto-launch-post.md — ~2,000 word Show Dev post draft.
+- **Integration docs**: CrewAI MCPServerStdio pattern added to existing guide. New Agno guide (Streamable HTTP + stdio). New ai-hedge-fund architecture guide.
+- **TEST_COUNT**: 707 → 714 (+3 cache tests, +4 llms.txt tests). Worker deployed: Version 192b0ce6. All pushed to main.
+- Gap: In-memory API key cache has no eviction policy beyond TTL. At extreme scale (>10K unique keys per isolate), the Map could grow unbounded. Add LRU eviction or max-size cap when key count warrants it.
+
+**Previous**: Apr 7 2026 — Day 41 evening: Discovery + Conversion + Distribution Sprint (707 tests):
 - **AGENTS.md rewrite** (commit b96477d): Rewrote for agent discovery — MCP config snippet, exchange list, REST usage, trust model. ClaudeBot already crawling this endpoint.
 - **agent_upgrade_paths on 402** (commit b96477d): Trial-exhausted 402 responses now include structured agent_upgrade_paths with 3 methods (x402/api_key/demo). Agents can autonomously choose upgrade path.
 - **MCP registry submissions** (commit 150b939): docs/distribution/registry-submissions.md tracking 8 registries. Already on 5 (Official, Smithery, Glama, npm, PulseMCP). PR submitted to TensorBlock/awesome-mcp-servers. Manual instructions for mcp.so and mcpserverfinder.com.
