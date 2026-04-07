@@ -11883,7 +11883,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					if (micParam)  query = query.eq('mic', micParam);
 					if (fromParam) query = query.gte('issued_at', fromParam);
 					const { data, error } = await query;
-					if (error) return json({ error: 'QUERY_ERROR', message: error.message }, 500);
+					if (error) return json({ receipts: [], note: 'Audit log temporarily unavailable' });
 					return await withMigrationNotice(json({ receipts: data ?? [], count: (data ?? []).length, limit }));
 				} catch {
 					// Supabase unreachable or misconfigured — degrade gracefully (same as unconfigured)
