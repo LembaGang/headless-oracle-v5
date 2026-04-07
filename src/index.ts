@@ -10834,6 +10834,103 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				return json({ date, referrers }, 200, { 'Cache-Control': 'public, max-age=60' });
 			}
 
+			// ── GET /v5/briefing — daily market intelligence for agent startup ──
+			// Snapshot of all 28 exchanges: which are open/closed/in lunch break,
+			// upcoming opens and closes with minutes-until, holidays today.
+			// Public, no auth. Cached in KV for 60 seconds.
+			if (url.pathname === '/v5/briefing') {
+				const today = now.toISOString().slice(0, 10);
+				const cacheKey = `briefing_cache:${Math.floor(now.getTime() / 60000)}`; // 1-min granularity
+				const cached = await env.ORACLE_TELEMETRY.get(cacheKey).catch(() => null);
+				if (cached) {
+					return json(JSON.parse(cached), 200, { 'Cache-Control': 'public, max-age=60' });
+				}
+
+				const marketsOpenNow: string[] = [];
+				const marketsClosedNow: string[] = [];
+				const marketsInLunchBreak: string[] = [];
+				const upcomingOpens: Array<{ mic: string; opens_at: string; in_minutes: number }> = [];
+				const upcomingCloses: Array<{ mic: string; closes_at: string; in_minutes: number }> = [];
+				const holidaysToday: string[] = [];
+
+				for (const [mic, cfg] of Object.entries(MARKET_CONFIGS)) {
+					const schedResult = getScheduleStatus(mic, now);
+
+					// Check holidays
+					const { dateStr, year } = getLocalTimeParts(cfg.timezone, now);
+					const yearHolidays = cfg.holidays[year];
+					if (yearHolidays && yearHolidays.includes(dateStr)) {
+						holidaysToday.push(mic);
+					}
+
+					// Check lunch break
+					if (schedResult.status === 'OPEN' && cfg.lunchBreak) {
+						const { hour, minute } = getLocalTimeParts(cfg.timezone, now);
+						const timeMin = hour * 60 + minute;
+						const lunchStart = cfg.lunchBreak.startHour * 60 + cfg.lunchBreak.startMinute;
+						const lunchEnd = cfg.lunchBreak.endHour * 60 + cfg.lunchBreak.endMinute;
+						if (timeMin >= lunchStart && timeMin < lunchEnd) {
+							marketsInLunchBreak.push(mic);
+							marketsClosedNow.push(mic);
+							continue;
+						}
+					}
+
+					if (schedResult.status === 'OPEN') {
+						marketsOpenNow.push(mic);
+					} else {
+						marketsClosedNow.push(mic);
+					}
+
+					// Compute upcoming opens/closes
+					const nextSess = getNextSession(mic, now);
+					if (nextSess) {
+						if (schedResult.status !== 'OPEN') {
+							const opensAt = new Date(nextSess.next_open);
+							if (opensAt > now) {
+								upcomingOpens.push({
+									mic,
+									opens_at: nextSess.next_open,
+									in_minutes: Math.round((opensAt.getTime() - now.getTime()) / 60000),
+								});
+							}
+						}
+						if (schedResult.status === 'OPEN') {
+							const closesAt = new Date(nextSess.next_close);
+							upcomingCloses.push({
+								mic,
+								closes_at: nextSess.next_close,
+								in_minutes: Math.round((closesAt.getTime() - now.getTime()) / 60000),
+							});
+						}
+					}
+				}
+
+				// Sort by time
+				upcomingOpens.sort((a, b) => a.in_minutes - b.in_minutes);
+				upcomingCloses.sort((a, b) => a.in_minutes - b.in_minutes);
+
+				const briefing = {
+					briefing_date: today,
+					briefing_time_utc: now.toISOString(),
+					markets_open_now: marketsOpenNow,
+					markets_closed_now: marketsClosedNow,
+					markets_in_lunch_break: marketsInLunchBreak,
+					upcoming_opens: upcomingOpens,
+					upcoming_closes: upcomingCloses,
+					holidays_today: holidaysToday,
+					note: 'For signed verification of any market, use GET /v5/status?mic={MIC}',
+					coverage: Object.keys(MARKET_CONFIGS).length,
+					ttl_seconds: 60,
+				};
+
+				// Cache for 60 seconds (non-blocking)
+				const putP = env.ORACLE_TELEMETRY.put(cacheKey, JSON.stringify(briefing), { expirationTtl: 120 }).catch(() => {});
+				if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
+
+				return json(briefing, 200, { 'Cache-Control': 'public, max-age=60' });
+			}
+
 			// ── GET /v5/traction — public live metrics snapshot ──────────
 			// Shows exchanges covered, uptime, MCP usage, and stack positioning.
 			// No auth required. Suitable for investor / partner check-ins.

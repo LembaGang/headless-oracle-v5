@@ -8578,3 +8578,63 @@ describe('Free trial receipts on /v5/status', () => {
 		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${otherIpHash}`);
 	});
 });
+
+// ─── GET /v5/briefing — daily market intelligence ─────────────────────────────
+
+describe('GET /v5/briefing', () => {
+	it('returns 200 with all required fields', async () => {
+		const res = await fetchWorker('/v5/briefing');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('briefing_date');
+		expect(body).toHaveProperty('briefing_time_utc');
+		expect(body).toHaveProperty('markets_open_now');
+		expect(body).toHaveProperty('markets_closed_now');
+		expect(body).toHaveProperty('markets_in_lunch_break');
+		expect(body).toHaveProperty('upcoming_opens');
+		expect(body).toHaveProperty('upcoming_closes');
+		expect(body).toHaveProperty('holidays_today');
+		expect(body).toHaveProperty('note');
+		expect(body).toHaveProperty('coverage', 28);
+		expect(body).toHaveProperty('ttl_seconds', 60);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('markets_open_now + markets_closed_now covers all 28 exchanges', async () => {
+		const body = await fetchJSON('/v5/briefing');
+		const open = body.markets_open_now as string[];
+		const closed = body.markets_closed_now as string[];
+		const lunchBreak = body.markets_in_lunch_break as string[];
+		// All exchanges must appear exactly once across open + closed
+		// (lunch break markets are also in closed)
+		const allMics = [...new Set([...open, ...closed])];
+		expect(allMics.length).toBe(28);
+	});
+
+	it('upcoming_opens contains only currently-closed markets', async () => {
+		const body = await fetchJSON('/v5/briefing');
+		const open = new Set(body.markets_open_now as string[]);
+		const upcoming = body.upcoming_opens as Array<{ mic: string }>;
+		for (const entry of upcoming) {
+			expect(open.has(entry.mic)).toBe(false);
+		}
+	});
+
+	it('upcoming_closes contains only currently-open markets', async () => {
+		const body = await fetchJSON('/v5/briefing');
+		const open = new Set(body.markets_open_now as string[]);
+		const upcoming = body.upcoming_closes as Array<{ mic: string }>;
+		for (const entry of upcoming) {
+			expect(open.has(entry.mic)).toBe(true);
+		}
+	});
+
+	it('response is valid JSON with correct content-type', async () => {
+		const res = await fetchWorker('/v5/briefing');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+		// Should not throw
+		const body = await res.json();
+		expect(body).toBeTruthy();
+	});
+});
