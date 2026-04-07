@@ -1850,6 +1850,7 @@ const ERC20_TRANSFER_TOPIC  = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11
 const BASE_RPC_URL          = 'https://mainnet.base.org';
 // Free tier: daily request cap before x402 micropayment is required.
 const FREE_TIER_DAILY_LIMIT    = 500;
+const FREE_TRIAL_DAILY_LIMIT   = 3;     // Keyless trial: 3 real signed receipts/day per IP before 402
 const SANDBOX_DAILY_LIMIT      = 200;   // Sandbox keys: 200 calls per 7-day key lifetime — enough to evaluate without replacing credit pack
 const UNAUTH_MCP_STATUS_LIMIT  = 10;   // Unauthenticated get_market_status calls per IP per day via /mcp
 const BUILDER_TIER_DAILY_LIMIT = 50_000;
@@ -8463,6 +8464,10 @@ export default {
 		// Used to add soft-limit warning headers to authenticated responses.
 		let freeTierPercentUsed = 0;
 
+		// Free trial tracking — set in the keyless /v5/status path when trial receipt is granted.
+		let _trialUsed = false;
+		let _trialRemaining = 0;
+
 		// Rate-limit context for the current request — updated during auth processing.
 		// Applied to responses via withRateLimitWarning or explicit extraHeaders.
 		let _rlPlan  = 'free';
@@ -8473,7 +8478,7 @@ export default {
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment, Payment-Signature',
-			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset',
+			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Trial-Remaining',
 		};
 
 		if (request.method === 'OPTIONS') {
@@ -8726,32 +8731,56 @@ export default {
 						incrementDailyUsage(paidKeyHash, env, ctx, paidUsage);
 					}
 				} else {
-					// No API key — x402 payment path (step 4) or 402 gate (step 5)
+					// No API key — trial path → x402 payment path → 402 gate
 					const paymentHeader = getPaymentHeader(request);
-					// ── Mainnet x402 facilitator path (x402.org, enabled by default) ─────────────
-					// Accepts Base mainnet USDC payments via x402.org community facilitator (no auth).
-					// Active unless X402_ENABLED is explicitly set to 'false'.
-					if (env.ORACLE_PAYMENT_ADDRESS) {
+
+					// ── x402 payment takes priority if header is present ─────────────
+					if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-						if (paymentHeader) {
-							// Accept BOTH formats: base64 (x402 standard) AND raw JSON (direct on-chain)
-							const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
-							if (!verified.valid) {
-								incrementKvCounter(`funnel_402:facilitator_rejected:${now.toISOString().slice(0, 10)}`, env, ctx);
-								const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
-								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
-							}
-							// Valid payment (either format) — fall through to serve receipt
-							_x402PaymentUsed = true;
-						} else {
-							// No payment — return facilitator-compatible 402 with payment requirements
-							incrementKvCounter(`funnel_402:keyless_no_payment:${now.toISOString().slice(0, 10)}`, env, ctx);
-							const x402IdxHdrs = buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status');
-							return json(buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header', ...x402IdxHdrs });
+						const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
+						if (!verified.valid) {
+							incrementKvCounter(`funnel_402:facilitator_rejected:${now.toISOString().slice(0, 10)}`, env, ctx);
+							const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
+							return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 						}
+						_x402PaymentUsed = true;
 					} else {
-						// ORACLE_PAYMENT_ADDRESS not configured — fall back to 401 (dev/test environments)
-						return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
+						// ── Free trial: 3 signed receipts/day per IP, no key needed ──
+						const trialRawIp  = request.headers.get('X-Original-IP') || request.headers.get('CF-Connecting-IP') || '';
+						const trialIpHash = await sha256Hex(trialRawIp);
+						const trialDate   = now.toISOString().slice(0, 10);
+						const trialKvKey  = `trial_usage:${trialDate}:${trialIpHash}`;
+						const trialStored = await env.ORACLE_TELEMETRY.get(trialKvKey).catch(() => null);
+						const trialCount  = trialStored ? parseInt(trialStored, 10) : 0;
+
+						if (trialCount < FREE_TRIAL_DAILY_LIMIT) {
+							// Grant trial receipt — increment counter (non-blocking)
+							_trialUsed = true;
+							_trialRemaining = FREE_TRIAL_DAILY_LIMIT - trialCount - 1;
+							const putP = env.ORACLE_TELEMETRY.put(trialKvKey, String(trialCount + 1), { expirationTtl: 25 * 3600 }).catch(() => {});
+							if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
+							incrementKvCounter(`trial_usage_served:${trialDate}`, env, ctx);
+						} else {
+							// Trial exhausted — return 402 with trial_used info
+							incrementKvCounter(`funnel_402:trial_exhausted:${trialDate}`, env, ctx);
+							if (env.ORACLE_PAYMENT_ADDRESS) {
+								const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
+								const x402IdxHdrs = buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status');
+								const payload = {
+									...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource),
+									trial_used: FREE_TRIAL_DAILY_LIMIT,
+									message: `You verified ${FREE_TRIAL_DAILY_LIMIT} receipts today. Get unlimited access: x402 ($0.001/call), API key (free tier), or sandbox (200 calls, no card).`,
+								};
+								return json(payload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header', ...x402IdxHdrs });
+							} else {
+								return json({
+									error: 'TRIAL_EXHAUSTED',
+									trial_used: FREE_TRIAL_DAILY_LIMIT,
+									message: `You verified ${FREE_TRIAL_DAILY_LIMIT} receipts today. Get unlimited access: API key (free tier) or sandbox (200 calls, no card).`,
+									upgrade_url: 'https://headlessoracle.com/upgrade',
+								}, 402);
+							}
+						}
 					}
 				}
 			}
@@ -8945,6 +8974,7 @@ export default {
 				const receiptWithDiscovery = { ...receipt, receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json', extensions: { bazaar: { discoverable: true, category: 'financial-data', tags: ['market-state', 'exchange-status', 'pre-trade', 'attestation', 'Ed25519', 'trading-hours', 'holiday-calendar', 'fail-closed', '28-exchanges', 'signed-receipt', 'MIC'], description: 'Ed25519-signed market-state receipt for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED. Real-time session status, holiday-aware calendar, 60-second TTL.' } } };
 				const statusHeaders: Record<string, string> = { 'Cache-Control': 'no-store' };
 				if (_x402PaymentUsed) statusHeaders['Payment-Response'] = JSON.stringify({ status: 'payment-accepted', network: 'base' });
+				if (_trialUsed) statusHeaders['X-Trial-Remaining'] = String(_trialRemaining);
 				return withRateLimitWarning(await withMigrationNotice(json(receiptWithDiscovery, status, statusHeaders)));
 			}
 

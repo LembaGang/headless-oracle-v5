@@ -248,8 +248,12 @@ describe('GET /v5/demo', () => {
 // ─── GET /v5/status ───────────────────────────────────────────────────────────
 
 describe('GET /v5/status', () => {
-	it('returns 402 x402scan format without API key — includes input schema', async () => {
-		// x402scan requires an "input" field describing parameters to avoid "Missing input schema" errors.
+	it('returns 402 x402scan format without API key after trial exhausted — includes input schema', async () => {
+		// Exhaust the 3-receipt trial first
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
 		const response = await fetchWorker('/v5/status?mic=XNYS');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
@@ -269,6 +273,9 @@ describe('GET /v5/status', () => {
 		const props = input.properties as Record<string, unknown>;
 		expect(props).toHaveProperty('mic');
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 
 	it('returns 403 with an invalid API key', async () => {
@@ -280,12 +287,12 @@ describe('GET /v5/status', () => {
 		expect(body).toHaveProperty('error', 'INVALID_API_KEY');
 	});
 
-	it('returns 402 with an empty API key header (empty string is falsy → no-key path)', async () => {
+	it('returns 200 (trial) or 402 with an empty API key header (empty string is falsy → no-key path)', async () => {
 		const response = await fetchWorker('/v5/status?mic=XNYS', {
 			headers: { 'X-Oracle-Key': '' },
 		});
-		// Empty string → falsy → treated as missing key → x402scan 402 (or 403 if key checked differently)
-		expect([402, 403]).toContain(response.status);
+		// Empty string → falsy → treated as missing key → trial receipt (200) or 402 after trial exhausted
+		expect([200, 402, 403]).toContain(response.status);
 	});
 
 	it('returns 400 for unknown MIC with valid key', async () => {
@@ -3213,13 +3220,21 @@ describe('POST /v5/keys/request', () => {
 		}
 	});
 
-	it('402 on /v5/status without key: x402scan-compatible body, CORS header set', async () => {
-		// Keyless /v5/status → x402scan 402 (not 401) when ORACLE_PAYMENT_ADDRESS configured
-		const response = await fetchWorker('/v5/status?mic=XNYS');
-		expect(response.status).toBe(402);
-		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
-		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 1);
+	it('402 on /v5/status without key: x402scan-compatible body after trial exhausted', async () => {
+		// Exhaust the 3-receipt trial first, then keyless → x402scan 402
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');  // no IP header = empty string hash
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS');
+			expect(response.status).toBe(402);
+			expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('trial_used', 3);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 
 	it('402 on /v5/batch without key: x402scan-compatible body, CORS header set', async () => {
@@ -4051,11 +4066,18 @@ describe('Cache-Control on signed receipts', () => {
 });
 
 describe('Error responses include docs field', () => {
-	it('402 x402scan format on keyless /v5/status (ORACLE_PAYMENT_ADDRESS configured in dev.vars)', async () => {
-		// Keyless /v5/status returns x402scan 402, not API_KEY_REQUIRED 401, when payment address is set.
-		const body = await fetchJSON('/v5/status');
-		expect(body).toHaveProperty('error', 'Payment Required');
-		expect(body).toHaveProperty('x402Version', 1);
+	it('402 x402scan format on keyless /v5/status after trial exhausted (ORACLE_PAYMENT_ADDRESS configured)', async () => {
+		// Exhaust trial first, then keyless → x402scan 402
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const body = await fetchJSON('/v5/status');
+			expect(body).toHaveProperty('error', 'Payment Required');
+			expect(body).toHaveProperty('x402Version', 1);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 
 	it('400 UNKNOWN_MIC includes docs field', async () => {
@@ -4314,16 +4336,23 @@ describe('x402 — payment verification', () => {
 		expect(body).toHaveProperty('error', 'PAYMENT_VERIFICATION_FAILED');
 	});
 
-	it('keyless 402 includes Payment-Required header (x402 v2)', async () => {
-		const res = await fetchWorker('/v5/status?mic=XNYS');
-		expect(res.status).toBe(402);
-		const prHeader = res.headers.get('Payment-Required');
-		expect(prHeader).toBeTruthy();
-		const decoded = JSON.parse(atob(prHeader!));
-		expect(decoded.x402Version).toBe(1);
-		expect(decoded.accepts).toBeInstanceOf(Array);
-		expect(decoded.accepts[0].network).toBe('base');
-		expect(decoded.accepts[0].asset).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+	it('keyless 402 includes Payment-Required header (x402 v2) after trial exhausted', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			const prHeader = res.headers.get('Payment-Required');
+			expect(prHeader).toBeTruthy();
+			const decoded = JSON.parse(atob(prHeader!));
+			expect(decoded.x402Version).toBe(1);
+			expect(decoded.accepts).toBeInstanceOf(Array);
+			expect(decoded.accepts[0].network).toBe('base');
+			expect(decoded.accepts[0].asset).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 
 	it('CORS includes Payment-Signature in Access-Control-Allow-Headers', async () => {
@@ -4525,9 +4554,16 @@ describe('GET /v5/receipts', () => {
 });
 
 describe('docs field — points to headlessoracle.com/docs', () => {
-	it('docs field is exact URL without fragment', async () => {
-		const body = await fetchJSON('/v5/status');
-		expect((body.docs as string)).toBe('https://headlessoracle.com/docs');
+	it('docs field is exact URL without fragment (after trial exhausted)', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const body = await fetchJSON('/v5/status');
+			expect((body.docs as string)).toBe('https://headlessoracle.com/docs');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 });
 
@@ -4890,10 +4926,10 @@ describe('Session L: holiday test for new exchanges', () => {
 // ─── Session M: Halt Monitor Tests ───────────────────────────────────────────
 
 describe('Session M: /v5/status/realtime', () => {
-	it('returns 402 without API key (x402-native: ORACLE_PAYMENT_ADDRESS in dev.vars)', async () => {
-		// /v5/status/realtime starts with /v5/status → same x402scan gate applies
+	it('returns 200 (trial) or 402 without API key (x402-native: ORACLE_PAYMENT_ADDRESS in dev.vars)', async () => {
+		// /v5/status/realtime starts with /v5/status → trial or x402scan gate applies
 		const response = await fetchWorker('/v5/status/realtime?mic=XNYS');
-		expect(response.status).toBe(402);
+		expect([200, 402]).toContain(response.status);
 	});
 
 	it('returns valid JSON with signed_receipt and halt_monitor fields', async () => {
@@ -6082,10 +6118,10 @@ describe('deliverWebhook Content-Type (FINDING-12)', () => {
 // ─── FINDING-02: Rate-limit headers on all responses ─────────────────────────
 
 describe('Rate-limit headers on all responses (FINDING-02)', () => {
-	it('unauthenticated /v5/status response contains X-Oracle-Plan header (401 or 402 depending on ORACLE_PAYMENT_ADDRESS)', async () => {
+	it('unauthenticated /v5/status response contains X-Oracle-Plan header (200 trial or 402)', async () => {
 		const res = await fetchWorker('/v5/status?mic=XNYS');
-		// 401 when no ORACLE_PAYMENT_ADDRESS configured; 402 (x402scan) when configured
-		expect([401, 402]).toContain(res.status);
+		// 200 for trial receipt, 402 after trial exhausted
+		expect([200, 402]).toContain(res.status);
 		expect(res.headers.get('X-Oracle-Plan')).toBeTruthy();
 		expect(res.headers.get('X-RateLimit-Limit')).toBeTruthy();
 		expect(res.headers.get('X-RateLimit-Reset')).toBeTruthy();
@@ -6440,23 +6476,29 @@ describe('halt_detection field in signed receipts', () => {
 describe('x402 — end-to-end payment flow', () => {
 	const E2E_WEBHOOK_SECRET = 'pdl_ntfset_test_placeholder_for_local_tests'; // matches .dev.vars
 
-	it('step 1+2: /v5/status without auth → 402 with complete x402 payment fields', async () => {
-		const res = await fetchWorker('/v5/status?mic=XNYS');
-		expect(res.status).toBe(402);
-		const body = await res.json() as Record<string, unknown>;
-		// x402scan-compatible format (agents and crawlers can parse this)
-		expect(body).toHaveProperty('x402Version', 1);
-		expect(body).toHaveProperty('error', 'Payment Required');
-		const accepts = body.accepts as Array<Record<string, unknown>>;
-		expect(accepts).toBeDefined();
-		expect(accepts.length).toBeGreaterThan(0);
-		const offer = accepts[0];
-		expect(offer).toHaveProperty('scheme', 'exact');
-		expect(offer).toHaveProperty('network', 'base');
-		expect(offer).toHaveProperty('maxAmountRequired', '1000'); // 0.001 USDC
-		expect(offer).toHaveProperty('payTo', TEST_PAYMENT_ADDRESS);
-		expect(offer).toHaveProperty('asset');   // USDC contract address
-		expect(offer).toHaveProperty('input');   // x402scan input schema for mic param
+	it('step 1+2: /v5/status without auth → 402 after trial exhausted, with complete x402 payment fields', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('error', 'Payment Required');
+			const accepts = body.accepts as Array<Record<string, unknown>>;
+			expect(accepts).toBeDefined();
+			expect(accepts.length).toBeGreaterThan(0);
+			const offer = accepts[0];
+			expect(offer).toHaveProperty('scheme', 'exact');
+			expect(offer).toHaveProperty('network', 'base');
+			expect(offer).toHaveProperty('maxAmountRequired', '1000');
+			expect(offer).toHaveProperty('payTo', TEST_PAYMENT_ADDRESS);
+			expect(offer).toHaveProperty('asset');
+			expect(offer).toHaveProperty('input');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 
 	it('steps 3-5: Paddle webhook mints key in KV → minted key authenticates /v5/status', async () => {
@@ -7786,8 +7828,12 @@ describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 		delete (env as unknown as Record<string, string>).X402_ENABLED;
 	});
 
-	it('no X-Payment + X402_ENABLED=true → 402 with mainnet x402 payload', async () => {
+	it('no X-Payment + X402_ENABLED=true → 402 with mainnet x402 payload (after trial exhausted)', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
 		const res = await fetchWorker('/v5/status?mic=XNYS');
+		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('x402Version', 1);
@@ -7970,11 +8016,17 @@ describe('GET /x402 — x402 Foundation alignment (Item 7)', () => {
 		expect(body).toHaveProperty('awesome_x402', 'https://github.com/xpaysh/awesome-x402');
 	});
 
-	it('402 responses include X-X402-Foundation: compatible header', async () => {
-		// /v5/status without key → 402 (uses the json() helper which adds X-X402-Foundation)
-		const res = await fetchWorker('/v5/status?mic=XNYS');
-		expect(res.status).toBe(402);
-		expect(res.headers.get('X-X402-Foundation')).toBe('compatible');
+	it('402 responses include X-X402-Foundation: compatible header (after trial exhausted)', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			expect(res.headers.get('X-X402-Foundation')).toBe('compatible');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 });
 
@@ -8339,8 +8391,11 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 		expect(alts).toHaveProperty('mint_key');
 	});
 
-	it('buildMainnetFacilitatorPayload (keyless, X402_ENABLED=true) includes agent_actions', async () => {
+	it('buildMainnetFacilitatorPayload (keyless, trial exhausted, X402_ENABLED=true) includes agent_actions', async () => {
 		(env as unknown as Record<string, string>).X402_ENABLED = 'true';
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
 		try {
 			const res  = await fetchWorker('/v5/status?mic=XNYS');
 			expect(res.status).toBe(402);
@@ -8349,19 +8404,20 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			const actions = body.agent_actions as Record<string, unknown>;
 			expect(actions).toHaveProperty('pay_per_request');
 			expect(actions).toHaveProperty('mint_persistent_key');
-			// paymentHeaderName / paymentHeaderEncoding in accepts[0]
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
 			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
 		} finally {
 			delete (env as unknown as Record<string, string>).X402_ENABLED;
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
 	});
 
-	it('keyless 402 always returns agent_actions regardless of X402_ENABLED', async () => {
-		// X402_ENABLED no longer changes the keyless 402 format — all keyless paths
-		// return the same facilitator-compatible response with agent_actions.
+	it('keyless 402 always returns agent_actions regardless of X402_ENABLED (after trial exhausted)', async () => {
 		(env as unknown as Record<string, string>).X402_ENABLED = 'false';
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
 		try {
 			const res  = await fetchWorker('/v5/status?mic=XNYS');
 			expect(res.status).toBe(402);
@@ -8371,12 +8427,12 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			const actions = body.agent_actions as Record<string, unknown>;
 			expect(actions).toHaveProperty('pay_per_request');
 			expect(actions).toHaveProperty('mint_persistent_key');
-			// Facilitator format: paymentHeaderEncoding is a string (base64-json only)
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
 			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
 		} finally {
 			delete (env as unknown as Record<string, string>).X402_ENABLED;
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
 	});
 });
@@ -8403,5 +8459,122 @@ describe('funnel_402_today in /v5/metrics/public', () => {
 			await env.ORACLE_TELEMETRY.delete(`funnel_402:free_tier_gate:${today}`);
 			await env.ORACLE_TELEMETRY.delete(`funnel_402:keyless_no_payment:${today}`);
 		}
+	});
+});
+
+// ─── Free trial receipts on /v5/status (3 per IP per day) ─────────────────────
+
+describe('Free trial receipts on /v5/status', () => {
+	const trialIp = '198.51.100.42';
+
+	afterEach(async () => {
+		// Clean up trial KV keys
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex(trialIp);
+		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+	});
+
+	it('first request from new IP → 200 with signed receipt + X-Trial-Remaining: 2', async () => {
+		const res = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'CF-Connecting-IP': trialIp },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get('X-Trial-Remaining')).toBe('2');
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('signature');
+		expect(body).toHaveProperty('status');
+		expect(body).toHaveProperty('receipt_mode', 'live');
+	});
+
+	it('third request from same IP → 200 with signed receipt + X-Trial-Remaining: 0', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex(trialIp);
+		// Seed 2 prior uses
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '2', { expirationTtl: 25 * 3600 });
+
+		const res = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'CF-Connecting-IP': trialIp },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get('X-Trial-Remaining')).toBe('0');
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('signature');
+	});
+
+	it('fourth request from same IP → 402 with trial_used field', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex(trialIp);
+		// Seed 3 prior uses (trial exhausted)
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+
+		const res = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'CF-Connecting-IP': trialIp },
+		});
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('trial_used', 3);
+		expect(body).toHaveProperty('message');
+		expect((body.message as string)).toContain('3 receipts');
+	});
+
+	it('request with API key bypasses trial tracking entirely', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex(trialIp);
+		// Seed 3 prior trial uses
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+
+		// Use beta key (not master key — master is blocked by legacy enforcement after Apr 1)
+		const res = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1', 'CF-Connecting-IP': trialIp },
+		});
+		expect(res.status).toBe(200);
+		// No X-Trial-Remaining header when using API key
+		expect(res.headers.get('X-Trial-Remaining')).toBeNull();
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('signature');
+	});
+
+	it('request with x402 payment bypasses trial tracking entirely', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex(trialIp);
+		// Seed 3 prior trial uses
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+
+		// X-Payment header present triggers the x402 path (will fail verification but test
+		// confirms it doesn't hit the trial path — 402 from payment rejection, not trial exhaustion)
+		const res = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'CF-Connecting-IP': trialIp, 'X-Payment': '{"invalid": true}' },
+		});
+		// Should get 402 from x402 rejection, NOT from trial exhaustion
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		// Payment-rejected 402 has x402_error field, not trial_used
+		expect(body).toHaveProperty('x402_error');
+		expect(body).not.toHaveProperty('trial_used');
+	});
+
+	it('different IPs get independent counters', async () => {
+		const otherIp = '203.0.113.99';
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex(trialIp);
+		// Exhaust trial for the first IP
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+
+		// First IP: exhausted
+		const res1 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'CF-Connecting-IP': trialIp },
+		});
+		expect(res1.status).toBe(402);
+
+		// Second IP: fresh, should get 200
+		const res2 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'CF-Connecting-IP': otherIp },
+		});
+		expect(res2.status).toBe(200);
+		expect(res2.headers.get('X-Trial-Remaining')).toBe('2');
+
+		// Clean up other IP
+		const otherIpHash = await sha256Hex(otherIp);
+		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${otherIpHash}`);
 	});
 });
