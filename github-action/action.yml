@@ -1,0 +1,28 @@
+name: 'Headless Oracle Market Gate'
+description: 'Check if a stock exchange is open before proceeding. Gate CI/CD pipelines on real market state.'
+author: 'LembaGang'
+
+inputs:
+  mic:
+    description: 'ISO 10383 Market Identifier Code (e.g. XNYS, XNAS, XLON)'
+    required: true
+  fail_on_closed:
+    description: 'Fail the step if the market is not OPEN'
+    required: false
+    default: 'true'
+
+outputs:
+  status:
+    description: 'Market status: OPEN, CLOSED, HALTED, or UNKNOWN'
+  mic:
+    description: 'The MIC code that was checked'
+  checked_at:
+    description: 'ISO 8601 timestamp of the check'
+
+runs:
+  using: 'node20'
+  main: 'index.js'
+
+branding:
+  icon: 'activity'
+  color: 'green'

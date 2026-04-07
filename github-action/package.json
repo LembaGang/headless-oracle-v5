@@ -1,0 +1,10 @@
+{
+  "name": "headless-oracle-market-gate",
+  "version": "1.0.0",
+  "description": "GitHub Action to check market state before allowing a workflow to proceed",
+  "main": "index.js",
+  "dependencies": {
+    "@actions/core": "^1.10.0"
+  },
+  "license": "MIT"
+}
