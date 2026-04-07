@@ -5384,6 +5384,7 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 
 const ROBOTS_TXT = `User-agent: *
 Allow: /llms.txt
+Allow: /llms-full.txt
 Allow: /SKILL.md
 Allow: /skill.md
 Allow: /AGENTS.md
@@ -5398,7 +5399,64 @@ Allow: /mics.json
 Disallow:
 `;
 
-const LLMS_TXT = `# Headless Oracle
+// ─── llms.txt (spec-compliant index) ─────────────────────────────────────────
+// Follows the llmstxt.org convention: title, blockquote summary, brief
+// description, then sections with markdown links. Concise — the index file
+// points to /llms-full.txt for comprehensive documentation.
+const LLMS_TXT_INDEX = `# Headless Oracle
+
+> Ed25519-signed market-state attestations for 28 global exchanges.
+> Pre-trade verification gate for autonomous financial agents.
+> MCP server + REST API + x402 micropayments.
+
+Headless Oracle returns cryptographically signed receipts confirming whether an exchange is OPEN, CLOSED, HALTED, or UNKNOWN. Every receipt includes an Ed25519 signature with a 60-second TTL. UNKNOWN must be treated as CLOSED (fail-closed). Used as a pre-trade verification gate by autonomous trading agents.
+
+- [Full Documentation](https://headlessoracle.com/llms-full.txt): Complete API reference, schemas, and integration guides in one file.
+
+## MCP Tools
+
+- [get_market_status](https://headlessoracle.com/mcp): Check if an exchange is open with signed Ed25519 receipt
+- [get_market_schedule](https://headlessoracle.com/mcp): Next open/close times, holidays, lunch breaks
+- [list_exchanges](https://headlessoracle.com/mcp): All 28 supported exchanges with MIC codes
+- [verify_receipt](https://headlessoracle.com/mcp): Verify an existing receipt's Ed25519 signature
+
+## API Endpoints
+
+- [GET /v5/status](https://headlessoracle.com/docs): Signed market-state receipt (auth required)
+- [GET /v5/batch](https://headlessoracle.com/docs): Multi-exchange batch check (auth required)
+- [GET /v5/briefing](https://headlessoracle.com/docs): Daily market intelligence summary
+- [GET /v5/demo](https://headlessoracle.com/docs): Free signed demo receipt (no auth)
+- [GET /v5/schedule](https://headlessoracle.com/docs): Next open/close times with lunch breaks
+- [GET /v5/exchanges](https://headlessoracle.com/docs): All 28 supported exchanges directory
+- [GET /v5/health](https://headlessoracle.com/docs): Signed liveness probe
+
+## Integration
+
+- [MCP Setup](https://headlessoracle.com/docs/quickstart): npx headless-oracle-mcp for Claude Desktop, Cursor, Windsurf
+- [Python SDK](https://pypi.org/project/headless-oracle/): pip install headless-oracle
+- [JavaScript SDK](https://www.npmjs.com/package/@headlessoracle/verify): npm install @headlessoracle/verify
+- [Go SDK](https://github.com/LembaGang/headless-oracle-go): go get github.com/LembaGang/headless-oracle-go
+- [LangChain](https://pypi.org/project/headless-oracle-langchain/): headless-oracle-langchain tool
+- [CrewAI](https://headlessoracle.com/docs/integrations/crewai): MCPServerStdio configuration
+- [x402 Payment](https://headlessoracle.com/docs/integrations/x402): Pay-per-call $0.001 USDC on Base
+
+## Standards
+
+- [SMA Protocol](https://github.com/LembaGang/sma-protocol): Signed Market Attestation specification
+- [MPAS](https://github.com/LembaGang/mpas-spec): Multi-Party Attestation Specification
+- [Agent Pre-Trade Safety](https://github.com/LembaGang/agent-pretrade-safety-standard): 6-check safety standard
+
+## Optional
+
+- [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API definition
+- [Compliance](https://headlessoracle.com/docs/compliance): ESMA, NIST, Singapore MAS alignment
+- [Conformance Vectors](https://headlessoracle.com/v5/conformance-vectors): 5 live-signed test vectors for SDK authors
+- [Receipt Schema](https://headlessoracle.com/v5/keys): Full canonical payload specification
+`;
+
+// ─── llms-full.txt (comprehensive documentation) ────────────────────────────
+// Complete reference for LLM crawlers — all sections fully expanded.
+const LLMS_FULL_TXT = `# Headless Oracle
 
 > Cryptographically signed market state verification for autonomous financial agents. Ed25519-signed receipts ("SMA receipts") for 28 global exchanges — equities, derivatives, and 24/7 crypto. MCP-native, A2A-discoverable, x402-payable, fail-closed. UNKNOWN always means CLOSED.
 
@@ -5624,6 +5682,130 @@ Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 
 ## Blog
 - [Why Your Trading Agent Needs a Pre-Trade Gate](https://headlessoracle.com/blog/why-your-trading-agent-needs-a-pre-trade-gate) — DST bug post-mortem and fail-closed contract
+
+## MCP Client Configuration
+
+Claude Desktop (~/.config/claude/claude_desktop_config.json):
+\`\`\`json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["headless-oracle-mcp"]
+    }
+  }
+}
+\`\`\`
+
+Cursor (.cursor/mcp.json):
+\`\`\`json
+{
+  "mcpServers": {
+    "headless-oracle": {
+      "command": "npx",
+      "args": ["headless-oracle-mcp"]
+    }
+  }
+}
+\`\`\`
+
+## Exchange Session Hours
+
+| MIC | Exchange | Timezone | Open | Close | Lunch Break | Weekends |
+|-----|----------|----------|------|-------|-------------|----------|
+| XNYS | NYSE | America/New_York | 09:30 | 16:00 | — | Sat/Sun |
+| XNAS | NASDAQ | America/New_York | 09:30 | 16:00 | — | Sat/Sun |
+| XLON | London SE | Europe/London | 08:00 | 16:30 | — | Sat/Sun |
+| XJPX | Tokyo SE | Asia/Tokyo | 09:00 | 15:00 | 11:30–12:30 | Sat/Sun |
+| XPAR | Euronext Paris | Europe/Paris | 09:00 | 17:30 | — | Sat/Sun |
+| XHKG | Hong Kong | Asia/Hong_Kong | 09:30 | 16:00 | 12:00–13:00 | Sat/Sun |
+| XSES | Singapore | Asia/Singapore | 09:00 | 17:00 | — | Sat/Sun |
+| XASX | ASX | Australia/Sydney | 10:00 | 16:00 | — | Sat/Sun |
+| XBOM | BSE India | Asia/Kolkata | 09:15 | 15:30 | — | Sat/Sun |
+| XNSE | NSE India | Asia/Kolkata | 09:15 | 15:30 | — | Sat/Sun |
+| XSHG | Shanghai | Asia/Shanghai | 09:30 | 15:00 | 11:30–13:00 | Sat/Sun |
+| XSHE | Shenzhen | Asia/Shanghai | 09:30 | 15:00 | 11:30–13:00 | Sat/Sun |
+| XKRX | Korea Exchange | Asia/Seoul | 09:00 | 15:30 | — | Sat/Sun |
+| XJSE | Johannesburg | Africa/Johannesburg | 09:00 | 17:00 | — | Sat/Sun |
+| XBSP | B3 Brazil | America/Sao_Paulo | 10:00 | 17:00 | — | Sat/Sun |
+| XSWX | SIX Swiss | Europe/Zurich | 09:00 | 17:30 | — | Sat/Sun |
+| XMIL | Borsa Italiana | Europe/Rome | 09:00 | 17:30 | — | Sat/Sun |
+| XIST | Borsa Istanbul | Europe/Istanbul | 10:00 | 18:00 | — | Sat/Sun |
+| XSAU | Saudi Tadawul | Asia/Riyadh | 10:00 | 15:00 | — | Fri/Sat |
+| XDFM | Dubai DFM | Asia/Dubai | 10:00 | 14:00 | — | Fri/Sat |
+| XNZE | NZX | Pacific/Auckland | 10:00 | 16:45 | — | Sat/Sun |
+| XHEL | Helsinki | Europe/Helsinki | 10:00 | 18:30 | — | Sat/Sun |
+| XSTO | Stockholm | Europe/Stockholm | 09:00 | 17:30 | — | Sat/Sun |
+| XCBT | CME Futures | America/Chicago | 17:00 | 16:00 | — | Sat/Sun |
+| XNYM | NYMEX | America/Chicago | 17:00 | 16:00 | — | Sat/Sun |
+| XCBO | Cboe Options | America/Chicago | 09:30 | 16:15 | — | Sat/Sun |
+| XCOI | Coinbase | UTC | 00:00 | 24:00 | — | None |
+| XBIN | Binance | UTC | 00:00 | 24:00 | — | None |
+
+## curl Examples
+
+\`\`\`bash
+# Free demo receipt (no auth)
+curl https://headlessoracle.com/v5/demo?mic=XNYS
+
+# Authenticated live receipt
+curl -H "X-Oracle-Key: YOUR_KEY" https://headlessoracle.com/v5/status?mic=XNYS
+
+# Multi-exchange batch
+curl -H "X-Oracle-Key: YOUR_KEY" "https://headlessoracle.com/v5/batch?mics=XNYS,XNAS,XLON"
+
+# Next session schedule
+curl https://headlessoracle.com/v5/schedule?mic=XJPX
+
+# Daily briefing
+curl https://headlessoracle.com/v5/briefing
+\`\`\`
+
+## Receipt Verification (JavaScript)
+
+\`\`\`javascript
+import { verify } from '@headlessoracle/verify';
+
+const res = await fetch('https://headlessoracle.com/v5/demo?mic=XNYS');
+const { receipt } = await res.json();
+
+const result = await verify(receipt);
+if (!result.ok) throw new Error(result.reason);
+if (receipt.status !== 'OPEN') throw new Error('Market not open — halt execution');
+\`\`\`
+
+## Receipt Verification (Python)
+
+\`\`\`python
+from headless_oracle import OracleClient
+
+client = OracleClient()
+receipt = client.get_status("XNYS")
+if not client.verify(receipt):
+    raise Exception("Signature verification failed")
+if receipt["status"] != "OPEN":
+    raise Exception("Market not open — halt execution")
+\`\`\`
+
+## x402 Payment Flow
+
+1. Agent calls GET /v5/status?mic=XNYS without auth → receives 402 with payment details
+2. 402 body contains: payTo address, amount (1000 = $0.001 USDC), network (base), chainId (8453)
+3. Agent signs USDC transfer on Base mainnet
+4. Agent retries GET /v5/status?mic=XNYS with X-Payment header containing tx proof
+5. Oracle verifies on-chain: receipt status, Transfer event, amount, recipient, block age (<300s)
+6. Returns signed receipt on success
+
+No API key needed. No signup. No human in the loop.
+
+## Compliance Alignment
+
+| Framework | Requirement | Headless Oracle Feature |
+|-----------|------------|------------------------|
+| ESMA MiFID II | Pre-trade transparency | Signed receipts with Ed25519 |
+| NIST AI RMF | Reliable AI systems | Fail-closed architecture |
+| Singapore MAS | Technology risk management | 60s TTL, UNKNOWN = CLOSED |
+| SOC 2 | Audit trail | Receipt audit log (/v5/receipts) |
 `
 
 // SKILL.md — step-by-step integration guide optimised for AI agents.
@@ -6802,10 +6984,19 @@ const OPENAPI_SPEC = {
 		},
 		'/llms.txt': {
 			get: {
-				summary:     'llms.txt — machine-readable API summary for LLMs',
-				description: 'Structured plain-text summary of the Oracle API following the llmstxt.org convention. Covers all endpoints, receipt schema, fail-closed contract, code examples, and DST event calendar.',
+				summary:     'llms.txt — spec-compliant index for LLM crawlers',
+				description: 'Concise index following llmstxt.org convention. Links to /llms-full.txt for complete documentation. Returned as text/markdown.',
 				responses: {
-					'200': { description: 'llms.txt content', content: { 'text/plain': { schema: { type: 'string' } } } },
+					'200': { description: 'llms.txt index', content: { 'text/markdown': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/llms-full.txt': {
+			get: {
+				summary:     'llms-full.txt — complete API documentation for LLMs',
+				description: 'Full documentation in one file: all endpoints, receipt schema, exchange hours, MCP config, code examples, x402 payment flow, compliance mapping. Linked from /llms.txt.',
+				responses: {
+					'200': { description: 'Complete documentation', content: { 'text/markdown': { schema: { type: 'string' } } } },
 				},
 			},
 		},
@@ -8659,14 +8850,14 @@ export default {
 			if (typeof ctx?.waitUntil === 'function') {
 				incrementKvCounter(`status_code:${now.toISOString().slice(0, 10)}:${status}`, env, ctx, 25 * 3600);
 			}
-			// x402 v2: set Payment-Required header (base64-encoded JSON) on 402 responses
-			// so x402 client libraries can parse payment requirements from the header.
-			const x402Headers: Record<string, string> = status === 402
-				? { 'Link': '</v5/why-not-free>; rel="payment"', 'X-X402-Foundation': 'compatible' }
-				: {};
+			// Link header for llms.txt discovery (llmstxt.org convention).
+			// 402 responses get payment Link instead; both are additive.
+			const llmsLink = status === 402
+				? { 'Link': '</v5/why-not-free>; rel="payment", </llms.txt>; rel="llms-txt"', 'X-X402-Foundation': 'compatible' }
+				: { 'Link': '</llms.txt>; rel="llms-txt"' };
 			return new Response(JSON.stringify(responseBody), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...x402Headers, ...extraHeaders },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...llmsLink, ...extraHeaders },
 			});
 		};
 
@@ -9469,7 +9660,10 @@ export default {
 				return new Response(body, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
 			}
 			if (url.pathname === '/llms.txt') {
-				return new Response(LLMS_TXT, { headers: { 'Content-Type': 'text/plain' } });
+				return new Response(LLMS_TXT_INDEX, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Link': '</llms-full.txt>; rel="alternate"' } });
+			}
+			if (url.pathname === '/llms-full.txt') {
+				return new Response(LLMS_FULL_TXT, { headers: { 'Content-Type': 'text/markdown; charset=utf-8' } });
 			}
 			if (url.pathname === '/SKILL.md') {
 				return new Response(SKILL_MD, {

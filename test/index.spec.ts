@@ -2062,19 +2062,18 @@ describe('GET /.well-known/security.txt', () => {
 // ─── GET /llms.txt ────────────────────────────────────────────────────────────
 
 describe('GET /llms.txt', () => {
-	it('returns 200 with text/plain content-type', async () => {
+	it('returns 200 with text/markdown content-type (llmstxt.org spec)', async () => {
 		const response = await fetchWorker('/llms.txt');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
 	});
 
-	it('contains fail-closed mandate and supported exchange MIC codes', async () => {
+	it('contains spec-compliant structure with sections and MCP tools', async () => {
 		const body = await fetchWorker('/llms.txt').then((r) => r.text());
-		expect(body).toContain('UNKNOWN');
-		expect(body).toContain('XNYS');
-		expect(body).toContain('XJPX');
-		expect(body).toContain('XHKG');
-		expect(body).toContain('expires_at');
+		expect(body).toContain('## MCP Tools');
+		expect(body).toContain('get_market_status');
+		expect(body).toContain('## API Endpoints');
+		expect(body).toContain('/v5/status');
 	});
 });
 
@@ -8795,5 +8794,63 @@ describe('In-memory API key cache (P95 latency fix)', () => {
 		});
 		expect(res2.status).toBe(402);
 		clearApiKeyCache();
+	});
+});
+
+// ─── llms.txt + llms-full.txt ────────────────────────────────────────────────
+
+describe('llms.txt and llms-full.txt (AI-discoverable documentation)', () => {
+	it('GET /llms.txt returns spec-compliant index with text/markdown', async () => {
+		const res = await fetchWorker('/llms.txt');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/markdown');
+		const body = await res.text();
+		// Spec format: starts with # Title
+		expect(body).toMatch(/^# Headless Oracle/);
+		// Has blockquote summary
+		expect(body).toContain('> Ed25519-signed market-state attestations');
+		// Links to full doc
+		expect(body).toContain('/llms-full.txt');
+		// Has MCP Tools section
+		expect(body).toContain('## MCP Tools');
+		// Has API Endpoints section
+		expect(body).toContain('## API Endpoints');
+		// Has Integration section
+		expect(body).toContain('## Integration');
+	});
+
+	it('GET /llms-full.txt returns comprehensive documentation', async () => {
+		const res = await fetchWorker('/llms-full.txt');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/markdown');
+		const body = await res.text();
+		expect(body).toMatch(/^# Headless Oracle/);
+		// Has exchange session hours table
+		expect(body).toContain('XNYS');
+		expect(body).toContain('XJPX');
+		// Has receipt schema
+		expect(body).toContain('receipt_id');
+		// Has curl examples
+		expect(body).toContain('curl');
+		// Has verification code
+		expect(body).toContain('@headlessoracle/verify');
+		// Has MCP config
+		expect(body).toContain('headless-oracle-mcp');
+		// Has compliance table
+		expect(body).toContain('ESMA');
+	});
+
+	it('JSON responses include Link header for llms.txt discovery', async () => {
+		vi.setSystemTime(new Date('2026-04-07T15:00:00Z'));
+		const res = await fetchWorker('/v5/demo?mic=XNYS');
+		expect(res.status).toBe(200);
+		const link = res.headers.get('Link');
+		expect(link).toContain('</llms.txt>; rel="llms-txt"');
+	});
+
+	it('llms.txt index links to /llms-full.txt via Link header', async () => {
+		const res = await fetchWorker('/llms.txt');
+		const link = res.headers.get('Link');
+		expect(link).toContain('/llms-full.txt');
 	});
 });
