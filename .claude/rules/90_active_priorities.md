@@ -3,8 +3,17 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue infrastructure sprint active.
-**Test suite**: 692/692 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 7 2026 — Day 41 Payment Pipeline Verification + Ampersend PR (692 tests):
+**Test suite**: 703/703 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 7 2026 — Day 41 continued: Free Trial + Briefing + GitHub Action + TradingAgents PR (703 tests):
+- **FREE TRIAL** (commit 1c9bf9d): 3 signed receipts/day per IP on /v5/status without API key. IP tracking via ORACLE_TELEMETRY KV. 4th request → 402. Live-verified: 3x 200 then 402.
+- **GET /v5/briefing** (commit 2d733b6): Daily market intelligence endpoint — markets_open_now, markets_closed_now, markets_in_lunch_break, upcoming_opens/closes, dst_transitions, holidays_today. Public, no auth.
+- **GitHub Action** (commit f2a9e64): .github/actions/market-gate reusable action for CI/CD pipelines. Checks exchange status before deploy/trade steps.
+- **TradingAgents PR**: TauricResearch/TradingAgents#523 — Market Gate node in risk management pipeline. 12 tests, zero new deps, fail-closed. Uses /v5/demo (free). Optional via `use_market_gate` config flag. Resolves #514.
+- **TEST_COUNT**: 692 → 703. viem devDependency added.
+- Worker deployed: Version dc13d22d. All pushed to main (commit dec8b70).
+- Gap: Free trial IP tracking trusts X-Original-IP headers which can be spoofed by direct callers bypassing Cloudflare proxy. X-Proxy-Token shared secret validation needed at scale.
+
+**Previous**: Apr 7 2026 — Day 41 Payment Pipeline Verification + Ampersend PR (692 tests):
 - **CI FIX**: /v5/receipts Supabase query error now degrades gracefully (returns empty receipts, not 500). Root cause: Supabase JS client returns { data, error } on network failure — catch block never fired. CI green on Node.js 22 LTS.
 - **CI UPDATE**: GitHub Actions upgraded: actions/checkout@v5, actions/setup-node@v5, Node.js 22 (was deprecated Node.js 20).
 - **LIVE 402 VERIFICATION**: All x402 spec fields verified against live production response. extra.name="USD Coin", extra.version="2", network="base", maxAmountRequired="1000", payTo checksummed, resource exact URL — all correct.
