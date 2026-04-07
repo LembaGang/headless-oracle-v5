@@ -1,10 +1,10 @@
 import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { edgeCaseCount, clearOverrideCache } from '../src';
+import worker, { edgeCaseCount, clearOverrideCache, clearApiKeyCache } from '../src';
 
-// Clear the module-level override cache before every test so that tests which
-// set ORACLE_OVERRIDES.put() always read from KV rather than a stale null.
-beforeEach(() => clearOverrideCache());
+// Clear module-level caches before every test so that tests which
+// set KV values always read from KV rather than stale in-memory entries.
+beforeEach(() => { clearOverrideCache(); clearApiKeyCache(); });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -8729,5 +8729,71 @@ describe('MCP initialize clientInfo capture', () => {
 		expect(record.client_info!.version).toBe('1.2.3');
 		// Cleanup
 		await env.ORACLE_TELEMETRY.delete(kvKey);
+	});
+});
+
+// ─── In-memory API key cache ─────────────────────────────────────────────────
+
+describe('In-memory API key cache (P95 latency fix)', () => {
+	it('second auth call uses in-memory cache — same result as KV', async () => {
+		vi.setSystemTime(new Date('2026-04-07T15:00:00Z'));
+		const testKey = 'ho_live_cache_test_key_abcdef1234567890';
+		const keyHash = await sha256Hex(testKey);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		// First call — populates in-memory cache from KV
+		const res1 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': testKey },
+		});
+		expect(res1.status).toBe(200);
+		// Delete from KV — second call should still succeed from memory cache
+		await env.ORACLE_API_KEYS.delete(keyHash);
+		const res2 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': testKey },
+		});
+		expect(res2.status).toBe(200);
+		clearApiKeyCache();
+	});
+
+	it('credits-tier keys are NOT in-memory cached (balance is mutable)', async () => {
+		vi.setSystemTime(new Date('2026-04-07T15:00:00Z'));
+		const testKey = 'ho_crd_credits_cache_test_key_abc12345';
+		const keyHash = await sha256Hex(testKey);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ tier: 'credits', status: 'active', balance: 2 }));
+		// First call — balance decremented to 1 in KV
+		const res1 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': testKey },
+		});
+		expect(res1.status).toBe(200);
+		// Second call — balance decremented to 0 in KV (not served from stale memory cache)
+		const res2 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': testKey },
+		});
+		expect(res2.status).toBe(200);
+		// Third call — balance 0, should be rejected
+		const res3 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': testKey },
+		});
+		expect(res3.status).toBe(402);
+		const body = await res3.json() as { error: string };
+		expect(body.error).toBe('CREDITS_EXHAUSTED');
+		clearApiKeyCache();
+	});
+
+	it('suspended key in memory cache returns 402', async () => {
+		vi.setSystemTime(new Date('2026-04-07T15:00:00Z'));
+		const testKey = 'ho_live_suspended_cache_test_key_abc12';
+		const keyHash = await sha256Hex(testKey);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'builder', status: 'suspended' }));
+		// First call — populates in-memory cache
+		const res1 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': testKey },
+		});
+		expect(res1.status).toBe(402);
+		// Second call — served from memory, still 402
+		const res2 = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': testKey },
+		});
+		expect(res2.status).toBe(402);
+		clearApiKeyCache();
 	});
 });

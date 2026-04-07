@@ -48,6 +48,50 @@ export function clearOverrideCache(): void {
 	overrideCache.clear();
 }
 
+// ─── API key in-memory cache ─────────────────────────────────────────────────
+// Eliminates KV round-trips (~5ms P50, ~50ms P95) for repeated auth lookups
+// on the same V8 isolate. 60s TTL matches receipt expiry and is safe for key
+// status changes (suspended keys may serve for up to 60s after suspension —
+// acceptable tradeoff vs. latency). Credits-tier keys are NOT cached because
+// their balance changes on every request.
+interface ApiKeyCacheEntry { value: string; expires: number; }
+const apiKeyCache = new Map<string, ApiKeyCacheEntry>();
+const API_KEY_CACHE_TTL_MS = 60_000; // 60 seconds
+
+function getCachedApiKey(keyHash: string): string | null {
+	const hit = apiKeyCache.get(keyHash);
+	if (hit && hit.expires > Date.now()) return hit.value;
+	if (hit) apiKeyCache.delete(keyHash); // expired — evict
+	return null;
+}
+
+function setCachedApiKey(keyHash: string, value: string): void {
+	apiKeyCache.set(keyHash, { value, expires: Date.now() + API_KEY_CACHE_TTL_MS });
+}
+
+export function clearApiKeyCache(): void {
+	apiKeyCache.clear();
+}
+
+// ─── HMAC CryptoKey cache ────────────────────────────────────────────────────
+// crypto.subtle.importKey for HMAC costs 0.5-2ms per call. Since the webhook
+// signing secret doesn't change within an isolate lifetime, cache the CryptoKey.
+let _hmacKeyCache = new Map<string, CryptoKey>();
+
+async function getCachedHmacKey(secret: string): Promise<CryptoKey> {
+	const cached = _hmacKeyCache.get(secret);
+	if (cached) return cached;
+	const key = await crypto.subtle.importKey(
+		'raw',
+		new TextEncoder().encode(secret),
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign'],
+	);
+	_hmacKeyCache.set(secret, key);
+	return key;
+}
+
 // ─── Environment ─────────────────────────────────────────────────────────────
 
 export interface Env {
@@ -1570,6 +1614,29 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	// Steps 3–5: paid key — hash once, use for KV and Supabase
 	const keyHash = await sha256Hex(key);
 
+	// Step 2.5: in-memory cache — sub-microsecond, eliminates KV round-trip on warm isolates.
+	// Credits-tier keys are never memory-cached (balance changes per request).
+	const memCached = getCachedApiKey(keyHash);
+	if (memCached) {
+		const parsed = JSON.parse(memCached) as { plan?: string; tier?: string; status: string; expires_at?: string; balance?: number };
+		// Credits must always go to KV (balance is mutable per-request)
+		if (parsed.tier !== 'credits') {
+			if (parsed.tier === 'sandbox' || parsed.plan === 'sandbox') {
+				if (parsed.status !== 'active') {
+					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
+				}
+				if (parsed.expires_at && new Date(parsed.expires_at) <= new Date()) {
+					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
+				}
+				return { allowed: true, plan: 'sandbox', keyHash };
+			}
+			const plan   = parsed.plan ?? 'free';
+			const status = parsed.status;
+			if (status === 'active') return { allowed: true, plan, keyHash };
+			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
+		}
+	}
+
 	// Step 3: KV cache
 	if (env.ORACLE_API_KEYS) {
 		const cached = await env.ORACLE_API_KEYS.get(keyHash);
@@ -1583,9 +1650,12 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 				if (parsed.expires_at && new Date(parsed.expires_at) <= new Date()) {
 					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
 				}
+				// Populate in-memory cache for sandbox (non-credits)
+				setCachedApiKey(keyHash, cached);
 				return { allowed: true, plan: 'sandbox', keyHash };
 			}
 			// Credits pack — balance-based access, no subscription expiry
+			// NOT memory-cached — balance changes on every request
 			if (parsed.tier === 'credits') {
 				if (parsed.status !== 'active' || !parsed.balance || parsed.balance <= 0) {
 					return {
@@ -1610,6 +1680,8 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 			}
 			const plan   = parsed.plan ?? 'free';
 			const status = parsed.status;
+			// Populate in-memory cache for subscription keys
+			setCachedApiKey(keyHash, cached);
 			if (status === 'active') return { allowed: true, plan, keyHash };
 			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
@@ -1626,14 +1698,13 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 			.single();
 
 		if (data) {
+			const kvValue = JSON.stringify({ plan: data.plan, status: data.status });
 			// Warm the KV cache for subsequent requests
 			if (env.ORACLE_API_KEYS) {
-				await env.ORACLE_API_KEYS.put(
-					keyHash,
-					JSON.stringify({ plan: data.plan, status: data.status }),
-					{ expirationTtl: 300 },
-				);
+				await env.ORACLE_API_KEYS.put(keyHash, kvValue, { expirationTtl: 300 });
 			}
+			// Warm the in-memory cache too
+			setCachedApiKey(keyHash, kvValue);
 			if (data.status === 'active') return { allowed: true, plan: data.plan, keyHash };
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
@@ -1716,13 +1787,7 @@ async function verifyPaddleSignature(
 	if (ageSec > 300) return false;
 
 	const signedContent = `${timestamp}:${rawBody}`;
-	const key = await crypto.subtle.importKey(
-		'raw',
-		new TextEncoder().encode(secret),
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign'],
-	);
+	const key = await getCachedHmacKey(secret);
 	const sig      = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedContent));
 	const expected = toHex(new Uint8Array(sig));
 	return expected === h1;
@@ -1910,13 +1975,7 @@ function getPlanWebhookLimit(plan: string): number | null {
 // Computes HMAC-SHA256 over a payload string using a shared secret.
 // Returns "sha256=<hex>" for use in the X-Oracle-Signature header.
 async function computeHmacSignature(secret: string, payload: string): Promise<string> {
-	const key = await crypto.subtle.importKey(
-		'raw',
-		new TextEncoder().encode(secret),
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign'],
-	);
+	const key = await getCachedHmacKey(secret);
 	const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
 	return 'sha256=' + toHex(new Uint8Array(sig));
 }
