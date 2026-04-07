@@ -3,8 +3,17 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue infrastructure sprint active.
-**Test suite**: 703/703 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 7 2026 — Day 41 continued: Free Trial + Briefing + GitHub Action + TradingAgents PR (703 tests):
+**Test suite**: 707/707 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 7 2026 — Day 41 evening: Discovery + Conversion + Distribution Sprint (707 tests):
+- **AGENTS.md rewrite** (commit b96477d): Rewrote for agent discovery — MCP config snippet, exchange list, REST usage, trust model. ClaudeBot already crawling this endpoint.
+- **agent_upgrade_paths on 402** (commit b96477d): Trial-exhausted 402 responses now include structured agent_upgrade_paths with 3 methods (x402/api_key/demo). Agents can autonomously choose upgrade path.
+- **MCP registry submissions** (commit 150b939): docs/distribution/registry-submissions.md tracking 8 registries. Already on 5 (Official, Smithery, Glama, npm, PulseMCP). PR submitted to TensorBlock/awesome-mcp-servers. Manual instructions for mcp.so and mcpserverfinder.com.
+- **Compliance docs** (commit 28d2c3b): docs/compliance.md mapping ESMA/NIST/Singapore MAS requirements to HO features. Audit trail pattern, regulatory alignment table.
+- **MCP clientInfo capture** (commit 9f1d70e): Initialize handler extracts clientInfo.name/version from params, writes to ORACLE_TELEMETRY KV. Tells us which MCP clients are connecting (Claude Desktop, Cursor, etc.).
+- **TEST_COUNT**: 703 → 707. Worker deployed: Version 645d074e. All pushed to main.
+- Gap: clientInfo capture is best-effort (deferred KV write). If initialize is sent without clientInfo (some probers omit it), no client_info is recorded. Could add User-Agent parsing as fallback at scale.
+
+**Previous**: Apr 7 2026 — Day 41 continued: Free Trial + Briefing + GitHub Action + TradingAgents PR (703 tests):
 - **FREE TRIAL** (commit 1c9bf9d): 3 signed receipts/day per IP on /v5/status without API key. IP tracking via ORACLE_TELEMETRY KV. 4th request → 402. Live-verified: 3x 200 then 402.
 - **GET /v5/briefing** (commit 2d733b6): Daily market intelligence endpoint — markets_open_now, markets_closed_now, markets_in_lunch_break, upcoming_opens/closes, dst_transitions, holidays_today. Public, no auth.
 - **GitHub Action** (commit f2a9e64): .github/actions/market-gate reusable action for CI/CD pipelines. Checks exchange status before deploy/trade steps.
