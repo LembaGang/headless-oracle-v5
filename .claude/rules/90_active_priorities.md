@@ -3,8 +3,20 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue infrastructure sprint active.
-**Test suite**: 691/691 passing + 24/24 (SDK) + 26/26 (LangGraph template)
-**Last significant work**: Apr 6 2026 — Day 40c x402 Spec Compliance + E2E Audit (691 tests):
+**Test suite**: 692/692 passing + 24/24 (SDK) + 26/26 (LangGraph template)
+**Last significant work**: Apr 7 2026 — Day 41 Payment Pipeline Verification + Ampersend PR (692 tests):
+- **CI FIX**: /v5/receipts Supabase query error now degrades gracefully (returns empty receipts, not 500). Root cause: Supabase JS client returns { data, error } on network failure — catch block never fired. CI green on Node.js 22 LTS.
+- **CI UPDATE**: GitHub Actions upgraded: actions/checkout@v5, actions/setup-node@v5, Node.js 22 (was deprecated Node.js 20).
+- **LIVE 402 VERIFICATION**: All x402 spec fields verified against live production response. extra.name="USD Coin", extra.version="2", network="base", maxAmountRequired="1000", payTo checksummed, resource exact URL — all correct.
+- **DRY RUN COMPLETE**: scripts/test-x402-mainnet-minimum.ts dry-run successful. EIP-712 TransferWithAuthorization payload constructed and signed. Waiting for Mike to fund wallet and confirm --send.
+- **Payment-Response header ADDED**: Successful x402 settlement now returns `Payment-Response: {"status":"payment-accepted","network":"base"}`. This closes the last x402 spec gap from the Day 40c audit. CORS Expose-Headers updated.
+- **Ampersend PR**: edgeandnode/ampersend-examples#11 — working TypeScript example showing ampersend-governed agent consuming Headless Oracle via x402. Demonstrates market-state attestation as policy pre-condition.
+- **Ampersend discovery**: app.ampersend.ai/discover has no public registration mechanism. No API or form found. Documented for future reference.
+- **viem installed**: Added as devDependency for E2E payment script.
+- Worker deployed: Version b7c3d86e. All pushed to main (commit a2fd424).
+- Gap: No real x402 payment processed yet — waiting for Mike to fund wallet and run with --send.
+
+**Previous**: Apr 6 2026 — Day 40c x402 Spec Compliance + E2E Audit (691 tests):
 - **scripts/test-x402-mainnet-minimum.ts** — real EIP-712 transferWithAuthorization E2E payment script. Uses viem. Dry-run by default, `--send` to spend $0.001 USDC. Ready for Mike to run with funded wallet.
 - **docs/ampersend-sdk-compatibility.md** — full x402 SDK format comparison (header names, EIP-712 domain, payload structure, v1 vs v2). Confirmed: Headless Oracle is fully compatible with @coinbase/x402 and Ampersend SDK. No blocking mismatches.
 - **CORS audit: CLEAN** — all 5 payment endpoints (status, batch, sandbox, credits/purchase, x402/mint) return correct preflight with Payment-Signature in Allow-Headers and Payment-Required in Expose-Headers.
@@ -12,7 +24,6 @@
 - **agent.json**: batch_amount_units field added (0.005 USDC) to clarify batch vs single pricing.
 - **agent_actions.pay_per_request**: header_names now lists both ['Payment-Signature', 'X-Payment'] (was only X-Payment).
 - **Discovery consistency**: x402.json uses "base" (x402 v1), agent.json uses "eip155:8453" (CAIP-2) — both valid, no code change needed (verifyX402Payment accepts all three forms).
-- Gap: Payment-Response header not returned on successful settlement (spec polish, not a blocker — x402 SDK checks HTTP 200).
 
 **Previous**: Apr 6 2026 — Day 40b Unified Payment Parsing (687→691 tests, worker aa6bfe5c):
 - **CRITICAL FIX: verifyPaymentAnyFormat()** — all 6 X-Payment entry points now accept BOTH raw JSON (direct on-chain) AND base64-encoded JSON (x402 standard/CDP facilitator). Previously 5 of 6 paths only accepted raw JSON while 402 responses told agents to use base64-json. An agent following the instructions would get rejected.
