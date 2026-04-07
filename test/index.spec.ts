@@ -6582,6 +6582,33 @@ describe('x402 — end-to-end payment flow', () => {
 			globalThis.fetch = originalFetch;
 		}
 	});
+
+	it('successful x402 payment returns Payment-Response header', async () => {
+		const mockPaymentHeader = btoa(JSON.stringify({ x402Version: 1, scheme: 'exact', network: 'base', payload: { signature: '0xmocksig_pr' } }));
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			if (url.includes('cdp.coinbase.com') && url.includes('/verify')) {
+				return new Response(JSON.stringify({ isValid: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('cdp.coinbase.com') && url.includes('/settle')) {
+				return new Response(JSON.stringify({ success: true, txHash: '0xe2e_pr_test' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('supabase.co')) return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			return originalFetch(input as RequestInfo, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Payment': mockPaymentHeader } });
+			expect(res.status).toBe(200);
+			const prHeader = res.headers.get('Payment-Response');
+			expect(prHeader).toBeTruthy();
+			const pr = JSON.parse(prHeader!);
+			expect(pr.status).toBe('payment-accepted');
+			expect(pr.network).toBe('base');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
 });
 
 // ─── GET /.well-known/ai-plugin.json ─────────────────────────────────────────

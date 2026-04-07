@@ -8473,7 +8473,7 @@ export default {
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment, Payment-Signature',
-			'Access-Control-Expose-Headers': 'Payment-Required, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset',
+			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset',
 		};
 
 		if (request.method === 'OPTIONS') {
@@ -8632,6 +8632,7 @@ export default {
 			}
 
 			// ── Auth gate — /v5/status requires X-Oracle-Key or x402 payment ─────
+			let _x402PaymentUsed = false; // Set true when x402 payment settles successfully
 			if (url.pathname.startsWith('/v5/status')) {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (apiKey) {
@@ -8689,6 +8690,7 @@ export default {
 									}, 402, X402_RESPONSE_HEADERS);
 								}
 								// Valid x402 payment — proceed without counting against daily usage
+								_x402PaymentUsed = true;
 							} else {
 								const credits = await getCreditBalance(keyHash, env);
 								if (credits.balance > 0) {
@@ -8740,6 +8742,7 @@ export default {
 								return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 							}
 							// Valid payment (either format) — fall through to serve receipt
+							_x402PaymentUsed = true;
 						} else {
 							// No payment — return facilitator-compatible 402 with payment requirements
 							incrementKvCounter(`funnel_402:keyless_no_payment:${now.toISOString().slice(0, 10)}`, env, ctx);
@@ -8940,7 +8943,9 @@ export default {
 				// Receipts must not be cached — they expire in 60s and contain real-time status.
 				// discovery_url lets agents that receive this receipt discover full oracle capabilities.
 				const receiptWithDiscovery = { ...receipt, receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json', extensions: { bazaar: { discoverable: true, category: 'financial-data', tags: ['market-state', 'exchange-status', 'pre-trade', 'attestation', 'Ed25519', 'trading-hours', 'holiday-calendar', 'fail-closed', '28-exchanges', 'signed-receipt', 'MIC'], description: 'Ed25519-signed market-state receipt for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED. Real-time session status, holiday-aware calendar, 60-second TTL.' } } };
-				return withRateLimitWarning(await withMigrationNotice(json(receiptWithDiscovery, status, { 'Cache-Control': 'no-store' })));
+				const statusHeaders: Record<string, string> = { 'Cache-Control': 'no-store' };
+				if (_x402PaymentUsed) statusHeaders['Payment-Response'] = JSON.stringify({ status: 'payment-accepted', network: 'base' });
+				return withRateLimitWarning(await withMigrationNotice(json(receiptWithDiscovery, status, statusHeaders)));
 			}
 
 			// ── GET /v5/batch — authenticated batch receipt query ─────────────────────
