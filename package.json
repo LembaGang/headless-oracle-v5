@@ -22,7 +22,7 @@
 		"wrangler": "^4.64.0"
 	},
 	"dependencies": {
-		"@noble/ed25519": "^3.0.0",
+		"@noble/ed25519": "^3.0.1",
 		"@noble/hashes": "^2.0.1",
 		"@supabase/supabase-js": "^2.95.3"
 	}
