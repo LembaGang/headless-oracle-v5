@@ -4,7 +4,18 @@
 ## Current Status
 **Phase**: Post-launch. Acquisition readiness sprint.
 **Test suite**: 725/725 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 8 2026 — Day 43: Acquisition Readiness Sprint (714→725 tests):
+**Last significant work**: Apr 8 2026 — Day 43: Acquisition Readiness Sprint Part 2 (725 tests, docs only):
+- **Documentation reorganization**: docs/ restructured into architecture/, api/, operations/, legal/, business/, security/, integrations/, distribution/, blog/. Master index at docs/README.md. ADRs moved to docs/architecture/adr/ via git mv (history preserved).
+- **Architecture docs**: docs/architecture/overview.md (system summary, 4-tier fail-closed, signing model, auth model), docs/architecture/data-flow.md (3 request lifecycle paths + MCP path).
+- **API reference**: docs/api/rest-reference.md (all endpoints, error format, rate limits), docs/api/mcp-reference.md (5 tools, config examples, auth model).
+- **Legal documents** (all DRAFT pending counsel): Terms of Service (assignment clause for M&A, 12-month liability cap, SA governing law), Privacy Policy (GDPR rights, sub-processor list, no cookies), Acceptable Use Policy, IP Ownership (sole-author attestation, AI-tooling disclosure), Data Processing Addendum (EU SCCs Module 2).
+- **Operational docs**: Deployment guide (pre/post checklists), Rollback procedure, Incident Response (P1-P4 severity, post-mortem template), Monitoring (alert thresholds, weekly review), SLA (99.9% target, credit policy for Builder+).
+- **Business docs**: Pricing strategy (tier rationale, unit economics, revenue projections), Competitive analysis (zero direct competitors, moat analysis), Metrics dashboard (data sources, current values, weekly template).
+- **README.md overhaul**: Professional README replacing stale MCP Registry content. Quick start, architecture summary, exchange list, testing, security, documentation index.
+- **CHANGELOG.md**: Keep a Changelog format covering major milestones from coverage sprint through acquisition readiness.
+- Gap: Legal documents are DRAFT — require legal counsel review before production publication. No published ToS or privacy policy on headlessoracle.com yet.
+
+**Previous**: Apr 8 2026 — Day 43: Acquisition Readiness Sprint Part 1 (714→725 tests):
 - **Security headers** (commit 7bd73aa, deployed b9655d6e): HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP on ALL responses. `Content-Type: application/json; charset=utf-8`. `X-Attestation-Mode` header (demo/trial/live). Module-level `SECURITY_HEADERS` constant shared by json(), MCP, OAuth, and static paths. 11 new tests.
 - **SECURITY.md** (commit e36996b): Responsible disclosure policy. security@headlessoracle.com. 48h acknowledgment, 90-day fix target. Safe harbor. Scope includes MCP package + verify SDK.
 - **security.txt updated**: Contact → security@headlessoracle.com, Expires → 2027-04-08, Policy → SECURITY.md link.

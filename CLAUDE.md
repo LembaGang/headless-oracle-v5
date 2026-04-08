@@ -57,7 +57,8 @@ Still requires explicit confirmation in the message:
 | `.dev.vars` | Local dev/test secrets (test-only keypair, NOT production) |
 | `vitest.config.mts` | Points to `wrangler.toml` (NOT wrangler.jsonc) |
 | `.claude/rules/` | Persistent rules that survive context compaction |
-| `docs/` | Compliance, integrations, distribution, blog drafts, outreach |
+| `docs/` | Organized: architecture/, api/, operations/, legal/, business/, security/, integrations/, distribution/, blog/ |
+| `CHANGELOG.md` | Keep a Changelog format — major milestones |
 | `.github/actions/market-gate/` | Reusable GitHub Action for CI/CD market checks |
 | `scripts/` | Deployment helpers, test sync, payment testing |
 | `packages/headless-oracle-mcp/` | npm stdio MCP package |
