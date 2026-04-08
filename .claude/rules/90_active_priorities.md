@@ -2,17 +2,26 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Next-model readiness meta-sprint complete.
-**Test suite**: 714/714 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 8 2026 — Day 42: Next-Model Readiness Meta-Sprint (714 tests + 11 smoke):
+**Phase**: Post-launch. Acquisition readiness sprint.
+**Test suite**: 725/725 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 8 2026 — Day 43: Acquisition Readiness Sprint (714→725 tests):
+- **Security headers** (commit 7bd73aa, deployed b9655d6e): HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP on ALL responses. `Content-Type: application/json; charset=utf-8`. `X-Attestation-Mode` header (demo/trial/live). Module-level `SECURITY_HEADERS` constant shared by json(), MCP, OAuth, and static paths. 11 new tests.
+- **SECURITY.md** (commit e36996b): Responsible disclosure policy. security@headlessoracle.com. 48h acknowledgment, 90-day fix target. Safe harbor. Scope includes MCP package + verify SDK.
+- **security.txt updated**: Contact → security@headlessoracle.com, Expires → 2027-04-08, Policy → SECURITY.md link.
+- **CI/CD pipeline** (commit da40e07): `.github/workflows/ci.yml` — test + npm audit + license check on push/PR, smoke tests on main only. dependabot.yml (weekly npm updates). CODEOWNERS (@MBeenz). PR template. `.nvmrc` (Node 22).
+- **Dependency audit** (commit 40eb990): `npm audit fix` resolved 3/7 high (picomatch, rollup, vite). Remaining 4 are devDependencies only (undici/miniflare/wrangler). All production deps MIT/0BSD. CycloneDX SBOM. Secret scan: clean. `docs/security/` index.
+- **Repository hygiene** (commit 21d1285): LICENSE corrected to MIT (was MCP template). CONTRIBUTING.md. `.env.example` with all vars. 6 ADRs (Cloudflare Workers, Ed25519, fail-closed, 60s TTL, x402, MCP).
+- **Task 0 BLOCKED**: Cloudflare API token failed authentication — email routing requires manual setup via Dashboard or new token with Email Routing Edit permission.
+- Gap: Email routing for headlessoracle.com not yet configured (blocked on API token). Manual setup required via Cloudflare Dashboard.
+
+**Previous**: Apr 8 2026 — Day 42: Next-Model Readiness Meta-Sprint (714 tests + 11 smoke):
 - **CLAUDE.md rewrite**: Restructured as definitive onboarding doc — architecture, invariants, routes, update protocol, file layout
 - **01_business_context.md**: Market position (only signed market-state MCP), revenue model, distribution surfaces, regulatory tailwinds, key metrics
 - **02_architecture_map.md**: Route map with line ranges, 20+ key functions with signatures, 3 data flow traces, constants reference, DO classes, cron triggers
 - **03_sprint_playbook.md**: Sprint structure, 10 failure modes with mitigations, external PR checklist, session closing checklist, test/deploy patterns
 - **04_telemetry_guide.md**: All KV key patterns, 15 evaluator fingerprints, traffic indicators, conversion signals
-- **Smoke test suite**: 11 tests hitting live production (demo, invalid MIC, briefing, exchanges, health, AGENTS.md, llms.txt, llms-full.txt, openapi.json, trial/402, MCP initialize). Separate vitest config. All passing.
-- **vitest.config.mts**: Added exclude for integration tests and node_modules
-- Gap: Living document update discipline is documented but not enforced. A pre-commit hook or session-start check could verify that .claude/rules/ files were updated when src/index.ts changed.
+- **Smoke test suite**: 11 tests hitting live production. Separate vitest config. All passing.
+- Gap: Living document update discipline is documented but not enforced.
 
 **Previous**: Apr 7 2026 — Day 41 late: Performance + Discovery + Distribution Sprint (714 tests):
 - **In-memory API key cache** (commit 9489888): Module-scope Map with 60s TTL for ORACLE_API_KEYS reads. Eliminates ~5ms KV round-trip on warm isolates. Credits-tier excluded (balance mutates per-request). HMAC CryptoKey cached across calls.
