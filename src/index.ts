@@ -2844,6 +2844,95 @@ async function getCreditBalance(keyHash: string, env: Env): Promise<CreditRecord
 	return stored ? JSON.parse(stored) as CreditRecord : { balance: 0, last_purchased: '' };
 }
 
+// ── Daily Attestation Digest — Merkle root chain ────────────────────────────
+// Tracks receipt IDs per day, computes SHA-256 Merkle root, chains via previous_day_merkle_root.
+// Stored in ORACLE_TELEMETRY as attestation_digest:{date} (90-day TTL).
+
+// Append a receipt ID to the daily tracking list (non-blocking, best-effort).
+function trackReceiptId(receiptId: string, date: string, mic: string, env: Env, ctx: ExecutionContext): void {
+	if (typeof ctx?.waitUntil !== 'function' || !env.ORACLE_TELEMETRY) return;
+	const key = `digest_receipt_ids:${date}`;
+	ctx.waitUntil(
+		env.ORACLE_TELEMETRY.get(key).then((raw) => {
+			const existing: { ids: string[]; mics: string[] } = raw
+				? JSON.parse(raw) as { ids: string[]; mics: string[] }
+				: { ids: [], mics: [] };
+			existing.ids.push(receiptId);
+			if (!existing.mics.includes(mic)) existing.mics.push(mic);
+			return env.ORACLE_TELEMETRY.put(key, JSON.stringify(existing), { expirationTtl: 90 * 86400 });
+		}).catch(() => {}),
+	);
+}
+
+// Compute SHA-256 Merkle root from ordered receipt IDs.
+// Leaf = sha256(receipt_id). Pairs hashed upward. Odd node promoted.
+async function computeMerkleRoot(receiptIds: string[]): Promise<string> {
+	if (receiptIds.length === 0) return '0'.repeat(64);
+	let level = await Promise.all(receiptIds.map((id) => sha256Hex(id)));
+	while (level.length > 1) {
+		const next: Promise<string>[] = [];
+		for (let i = 0; i < level.length; i += 2) {
+			if (i + 1 < level.length) {
+				next.push(sha256Hex(level[i] + level[i + 1]));
+			} else {
+				next.push(Promise.resolve(level[i]));
+			}
+		}
+		level = await Promise.all(next);
+	}
+	return level[0];
+}
+
+// Build or retrieve the daily attestation digest. Lazy — computed on first request after midnight.
+async function getOrBuildDigest(date: string, env: Env): Promise<Record<string, unknown> | null> {
+	if (!env.ORACLE_TELEMETRY) return null;
+	// Check if digest already computed and stored
+	const stored = await env.ORACLE_TELEMETRY.get(`attestation_digest:${date}`).catch(() => null);
+	if (stored) {
+		try { return JSON.parse(stored) as Record<string, unknown>; } catch { return null; }
+	}
+	// Read raw receipt IDs for this date
+	const raw = await env.ORACLE_TELEMETRY.get(`digest_receipt_ids:${date}`).catch(() => null);
+	if (!raw) return null;
+	const data = JSON.parse(raw) as { ids: string[]; mics: string[] };
+	// Compute Merkle root
+	const merkleRoot = await computeMerkleRoot(data.ids);
+	// Get previous day's digest for chaining
+	const prevDate = new Date(date + 'T00:00:00Z');
+	prevDate.setUTCDate(prevDate.getUTCDate() - 1);
+	const prevDateStr = prevDate.toISOString().slice(0, 10);
+	const prevDigestRaw = await env.ORACLE_TELEMETRY.get(`attestation_digest:${prevDateStr}`).catch(() => null);
+	let previousDayMerkleRoot: string | null = null;
+	let chainLength = 1;
+	if (prevDigestRaw) {
+		try {
+			const prev = JSON.parse(prevDigestRaw) as Record<string, unknown>;
+			previousDayMerkleRoot = (prev.merkle_root as string) ?? null;
+			chainLength = ((prev.chain_length as number) ?? 0) + 1;
+		} catch { /* first day in chain */ }
+	}
+	const digest = {
+		date,
+		total_receipts_issued: data.ids.length,
+		exchanges_attested:    [...data.mics].sort(),
+		receipt_ids:           data.ids,
+		merkle_root:           merkleRoot,
+		previous_day_merkle_root: previousDayMerkleRoot,
+		chain_length:          chainLength,
+		computed_at:           new Date().toISOString(),
+	};
+	// Store — but only if this date is in the past (complete day)
+	const today = new Date().toISOString().slice(0, 10);
+	if (date < today) {
+		await env.ORACLE_TELEMETRY.put(
+			`attestation_digest:${date}`,
+			JSON.stringify(digest),
+			{ expirationTtl: 90 * 86400 },
+		).catch(() => {});
+	}
+	return digest;
+}
+
 // Cache-first MCP usage for a given date.
 // Fast path: reads the traction_cache:{date} key written by the 17:00 cron.
 // Fallback: live KV list over mcp_clients:{date}: prefix — accurate at any hour of the day.
@@ -5555,6 +5644,11 @@ Headless Oracle returns cryptographically signed receipts confirming whether an 
 - [MPAS](https://github.com/LembaGang/mpas-spec): Multi-Party Attestation Specification
 - [Agent Pre-Trade Safety](https://github.com/LembaGang/agent-pretrade-safety-standard): 6-check safety standard
 
+## Audit & Transparency
+
+- [Daily Digest](https://headlessoracle.com/v5/audit/digest): Merkle root of all daily attestations
+- [Hash Chain](https://headlessoracle.com/v5/audit/chain): Tamper-evident chain of daily digests
+
 ## Optional
 
 - [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API definition
@@ -5661,6 +5755,8 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/webhooks/subscribe | POST | Yes | Subscribe to state-change webhooks | { subscription_id } |
 | /v5/webhooks/unsubscribe | DELETE | Yes | Remove webhook subscription | { ok: true } |
 | /v5/archive | GET | Optional | Historical receipt archive | { mic, date, count, receipts[] } |
+| /v5/audit/digest | GET | No | Daily attestation digest with Merkle root | { date, total_receipts_issued, merkle_root, chain_length } |
+| /v5/audit/chain | GET | No | Hash chain of last 7 daily digests | { chain_length, chain_intact, digests[] } |
 | /v5/stream | GET | Yes | SSE stream of signed market_status events every 30s | text/event-stream |
 | /v5/conformance-vectors | GET | No | 5 live-signed canonical test vectors | { vectors: [{name, receipt, canonical_payload, public_key}] } |
 | /mcp | POST | No (optional Bearer) | MCP Streamable HTTP (JSON-RPC 2.0) | JSON-RPC response |
@@ -6308,6 +6404,12 @@ Available tools:
 - \`get_market_schedule\` — next open/close times in UTC
 - \`list_exchanges\` — directory of all 28 supported exchanges
 - \`verify_receipt\` — Ed25519 signature verification in-worker
+
+## Audit & Transparency
+
+- **Daily digest**: \`GET /v5/audit/digest?date=YYYY-MM-DD\` — Merkle root of all receipt IDs issued that day
+- **Hash chain**: \`GET /v5/audit/chain\` — last 7 days of digests, each chaining to previous via previous_day_merkle_root
+- Verify: re-hash receipt IDs → compare to merkle_root. Tampering with any day breaks the chain forward.
 
 ## Discovery
 
@@ -7502,6 +7604,64 @@ const OPENAPI_SPEC = {
 					},
 					'401': { description: 'Missing API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'403': { description: 'Invalid API key or tier restriction', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/audit/digest': {
+			get: {
+				tags:        ['Audit'],
+				summary:     'Daily attestation digest with Merkle root',
+				description: 'Returns a tamper-proof summary of all attestations issued on a given date. ' +
+					'Merkle root is SHA-256 of ordered receipt IDs. Each day chains to the previous via previous_day_merkle_root. ' +
+					'Public, no auth. If date is today, returns partial (in-progress) digest.',
+				parameters:  [
+					{ name: 'date', in: 'query', required: false, schema: { type: 'string', example: '2026-04-07' }, description: 'Date in YYYY-MM-DD. Defaults to today.' },
+				],
+				responses: {
+					'200': {
+						description: 'Daily attestation digest',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								date:                    { type: 'string', example: '2026-04-07' },
+								total_receipts_issued:   { type: 'integer', example: 47 },
+								exchanges_attested:      { type: 'array', items: { type: 'string' }, example: ['XLON', 'XNYS'] },
+								receipt_ids:             { type: 'array', items: { type: 'string', format: 'uuid' } },
+								merkle_root:             { type: 'string', description: 'SHA-256 Merkle tree root of ordered receipt_ids' },
+								previous_day_merkle_root: { type: 'string', nullable: true },
+								chain_length:            { type: 'integer' },
+								computed_at:             { type: 'string', format: 'date-time' },
+								partial:                 { type: 'boolean', description: 'true if date is today (in-progress)' },
+							},
+						} } },
+					},
+					'400': { description: 'Invalid date', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/audit/chain': {
+			get: {
+				tags:        ['Audit'],
+				summary:     'Hash chain of daily attestation digests',
+				description: 'Returns the last N daily digests showing the Merkle chain. Each day references the previous day\'s merkle_root. ' +
+					'Tampering with any day breaks the chain forward. chain_intact indicates verification result.',
+				parameters:  [
+					{ name: 'days', in: 'query', required: false, schema: { type: 'integer', default: 7, maximum: 30 }, description: 'Number of days to include (default 7, max 30).' },
+				],
+				responses: {
+					'200': {
+						description: 'Chain of daily digests',
+						content: { 'application/json': { schema: {
+							type: 'object',
+							properties: {
+								chain_length: { type: 'integer' },
+								chain_intact: { type: 'boolean', description: 'true if all previous_day_merkle_root values match' },
+								latest_date:  { type: 'string' },
+								oldest_date:  { type: 'string' },
+								digests:      { type: 'array', items: { type: 'object' } },
+							},
+						} } },
+					},
 				},
 			},
 		},
@@ -9503,6 +9663,10 @@ export default {
 						).catch(() => {}),
 					);
 				}
+				// Track receipt ID for daily attestation digest (Merkle root chain) — all modes
+				if (typeof ctx?.waitUntil === 'function' && env.ORACLE_TELEMETRY && typeof receipt['receipt_id'] === 'string') {
+					trackReceiptId(receipt['receipt_id'] as string, now.toISOString().slice(0, 10), mic, env, ctx);
+				}
 				// Receipts must not be cached — they expire in 60s and contain real-time status.
 				// discovery_url lets agents that receive this receipt discover full oracle capabilities.
 				const receiptWithDiscovery = { ...receipt, receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json', extensions: { bazaar: { discoverable: true, category: 'financial-data', tags: ['market-state', 'exchange-status', 'pre-trade', 'attestation', 'Ed25519', 'trading-hours', 'holiday-calendar', 'fail-closed', '28-exchanges', 'signed-receipt', 'MIC'], description: 'Ed25519-signed market-state receipt for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED. Real-time session status, holiday-aware calendar, 60-second TTL.' } } };
@@ -9701,6 +9865,14 @@ export default {
 							).catch(() => {})
 						)
 					));
+					// Track batch receipt IDs for daily attestation digest
+					const batchDate = now.toISOString().slice(0, 10);
+					for (let bi = 0; bi < results.length; bi++) {
+						const bReceipt = results[bi].receipt as Record<string, unknown>;
+						if (typeof bReceipt['receipt_id'] === 'string') {
+							trackReceiptId(bReceipt['receipt_id'] as string, batchDate, requestedMics[bi], env, ctx);
+						}
+					}
 				}
 
 				const batchId = crypto.randomUUID();
@@ -11123,6 +11295,88 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				);
 				const validArchiveReceipts = archiveReceipts.filter((r): r is Record<string, unknown> => r !== null);
 				return json({ mic: archiveMic, date: archiveDate, count: validArchiveReceipts.length, receipts: validArchiveReceipts });
+			}
+
+			// ── GET /v5/audit/digest — daily attestation digest with Merkle root ────────
+			// Public, no auth. Returns tamper-proof summary of all attestations issued on a date.
+			// Merkle root = SHA-256 tree over ordered receipt_ids. Each day chains to previous.
+			if (url.pathname === '/v5/audit/digest') {
+				const digestDateParam = url.searchParams.get('date');
+				const todayStr = now.toISOString().slice(0, 10);
+				const digestDate = digestDateParam || todayStr;
+				if (!/^\d{4}-\d{2}-\d{2}$/.test(digestDate)) {
+					return json({ error: 'INVALID_DATE', message: 'date must be YYYY-MM-DD format.' }, 400);
+				}
+				if (digestDate > todayStr) {
+					return json({ error: 'FUTURE_DATE', message: 'Cannot query future digest.' }, 400);
+				}
+				const launchStr = '2026-03-01';
+				if (digestDate < launchStr) {
+					return json({ error: 'OUT_OF_RANGE', message: 'Digest data available from 2026-03-01 onwards.' }, 400);
+				}
+				const digest = await getOrBuildDigest(digestDate, env);
+				if (!digest) {
+					return json({
+						date:                    digestDate,
+						total_receipts_issued:   0,
+						exchanges_attested:      [],
+						receipt_ids:             [],
+						merkle_root:             '0'.repeat(64),
+						previous_day_merkle_root: null,
+						chain_length:            0,
+						computed_at:             now.toISOString(),
+						partial:                 digestDate === todayStr,
+					});
+				}
+				return json({ ...digest, partial: digestDate === todayStr });
+			}
+
+			// ── GET /v5/audit/chain — hash chain of last 7 daily digests ────────────
+			// Public, no auth. Shows the Merkle chain — each day references the previous.
+			// Tampering with any day breaks the chain forward.
+			if (url.pathname === '/v5/audit/chain') {
+				const chainDays = Math.min(parseInt(url.searchParams.get('days') || '7', 10) || 7, 30);
+				const digests: Record<string, unknown>[] = [];
+				for (let d = 0; d < chainDays; d++) {
+					const chainDate = new Date(now);
+					chainDate.setUTCDate(chainDate.getUTCDate() - d);
+					const dateStr = chainDate.toISOString().slice(0, 10);
+					if (dateStr < '2026-03-01') break;
+					const digest = await getOrBuildDigest(dateStr, env);
+					if (digest) {
+						digests.push({ ...digest, partial: d === 0 });
+					} else {
+						digests.push({
+							date:                    dateStr,
+							total_receipts_issued:   0,
+							exchanges_attested:      [],
+							receipt_ids:             [],
+							merkle_root:             '0'.repeat(64),
+							previous_day_merkle_root: null,
+							chain_length:            0,
+							computed_at:             now.toISOString(),
+							partial:                 d === 0,
+						});
+					}
+				}
+				// Verify chain integrity — each day's previous_day_merkle_root must match the next day's merkle_root
+				let chainIntact = true;
+				for (let i = 0; i < digests.length - 1; i++) {
+					const current = digests[i];
+					const older   = digests[i + 1];
+					if (current.previous_day_merkle_root !== null &&
+						current.previous_day_merkle_root !== older.merkle_root) {
+						chainIntact = false;
+						break;
+					}
+				}
+				return json({
+					chain_length:  digests.length,
+					chain_intact:  chainIntact,
+					latest_date:   digests[0]?.date ?? null,
+					oldest_date:   digests[digests.length - 1]?.date ?? null,
+					digests,
+				});
 			}
 
 			// ── GET /v5/conformance-vectors ─────────────────────────────────────────────

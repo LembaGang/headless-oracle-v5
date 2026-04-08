@@ -760,6 +760,126 @@ describe('GET /v5/historical', () => {
 	});
 });
 
+// ─── GET /v5/audit/digest + /v5/audit/chain — daily attestation digest ───────
+
+describe('GET /v5/audit/digest', () => {
+	it('returns empty digest for a date with no receipts', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/audit/digest?date=2026-04-06');
+		expect(res.date).toBe('2026-04-06');
+		expect(res.total_receipts_issued).toBe(0);
+		expect(res.merkle_root).toBe('0'.repeat(64));
+		expect(res.chain_length).toBe(0);
+		expect(res.partial).toBe(false);
+		vi.useRealTimers();
+	});
+
+	it('returns partial=true when querying today', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/audit/digest?date=2026-04-08');
+		expect(res.partial).toBe(true);
+		expect(res.date).toBe('2026-04-08');
+		vi.useRealTimers();
+	});
+
+	it('rejects invalid date format', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/digest?date=not-a-date');
+		expect(res.status).toBe(400);
+		vi.useRealTimers();
+	});
+
+	it('rejects future dates', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/digest?date=2027-01-01');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('FUTURE_DATE');
+		vi.useRealTimers();
+	});
+
+	it('rejects dates before launch', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/digest?date=2025-12-01');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('OUT_OF_RANGE');
+		vi.useRealTimers();
+	});
+
+	it('tracks receipt IDs from /v5/status and returns them in digest', async () => {
+		vi.setSystemTime(new Date('2026-04-08T14:30:00Z'));
+		// Issue a receipt via /v5/demo (which tracks receipt IDs)
+		const demoRes = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(demoRes.receipt_id).toBeDefined();
+		// Query today's digest
+		const digest = await fetchJSON('/v5/audit/digest?date=2026-04-08');
+		expect(digest.partial).toBe(true);
+		expect(digest.date).toBe('2026-04-08');
+		// Should have at least the receipt we just issued
+		const receiptIds = digest.receipt_ids as string[];
+		expect(receiptIds.length).toBeGreaterThanOrEqual(1);
+		// Merkle root should not be all zeros (we have receipts)
+		expect(digest.merkle_root).not.toBe('0'.repeat(64));
+		expect(digest.total_receipts_issued).toBeGreaterThanOrEqual(1);
+		vi.useRealTimers();
+	});
+
+	it('defaults to today when no date param', async () => {
+		vi.setSystemTime(new Date('2026-04-08T12:00:00Z'));
+		const res = await fetchJSON('/v5/audit/digest');
+		expect(res.date).toBe('2026-04-08');
+		expect(res.partial).toBe(true);
+		vi.useRealTimers();
+	});
+});
+
+describe('GET /v5/audit/chain', () => {
+	it('returns a chain with chain_intact flag', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/audit/chain');
+		expect(res.chain_length).toBeGreaterThanOrEqual(1);
+		expect(typeof res.chain_intact).toBe('boolean');
+		expect(res.latest_date).toBeDefined();
+		expect(res.oldest_date).toBeDefined();
+		const digests = res.digests as Array<Record<string, unknown>>;
+		expect(digests.length).toBeGreaterThanOrEqual(1);
+		// First entry should be today (partial)
+		expect(digests[0].partial).toBe(true);
+		vi.useRealTimers();
+	});
+
+	it('respects days parameter', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/audit/chain?days=3');
+		const digests = res.digests as Array<Record<string, unknown>>;
+		expect(digests.length).toBeLessThanOrEqual(3);
+		vi.useRealTimers();
+	});
+
+	it('caps at 30 days', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/audit/chain?days=100');
+		const digests = res.digests as Array<Record<string, unknown>>;
+		expect(digests.length).toBeLessThanOrEqual(30);
+		vi.useRealTimers();
+	});
+
+	it('each digest has required fields', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/audit/chain?days=2');
+		const digests = res.digests as Array<Record<string, unknown>>;
+		for (const d of digests) {
+			expect(d.date).toBeDefined();
+			expect(d.merkle_root).toBeDefined();
+			expect(typeof d.total_receipts_issued).toBe('number');
+			expect(Array.isArray(d.exchanges_attested)).toBe(true);
+			expect(Array.isArray(d.receipt_ids)).toBe(true);
+		}
+		vi.useRealTimers();
+	});
+});
+
 // ─── ITEM 6: Crypto / derivatives exchange coverage ──────────────────────────
 
 describe('ITEM 6 — Crypto and derivatives exchanges', () => {
