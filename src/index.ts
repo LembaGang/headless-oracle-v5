@@ -2884,15 +2884,21 @@ function computeRetryAfterSeconds(now: Date): number {
 }
 
 // Add soft rate-limit warning headers when free tier usage crosses 80% or 95%.
-function addRateLimitWarningHeaders(headers: Headers, percentUsed: number, upgradeUrl: string): void {
+// Also adds X-Upgrade-Path and X-Daily-Usage for machine-readable upgrade nudges.
+function addRateLimitWarningHeaders(headers: Headers, percentUsed: number, upgradeUrl: string, used?: number, limit?: number): void {
 	if (percentUsed >= 95) {
 		headers.set('X-RateLimit-Warning', 'true');
-		headers.set('X-RateLimit-Warning-Message', 'You have used 95% of your daily free tier limit. Next requests will require x402 payment or upgrade.');
+		headers.set('X-RateLimit-Warning-Message', 'You have used 95% of your daily limit. Next requests may require payment or upgrade.');
 		headers.set('X-RateLimit-Upgrade-URL', upgradeUrl);
+		headers.set('X-Upgrade-Path', 'https://headlessoracle.com/pricing');
 	} else if (percentUsed >= 80) {
 		headers.set('X-RateLimit-Warning', 'true');
-		headers.set('X-RateLimit-Warning-Message', 'You have used 80% of your daily free tier limit. Upgrade at headlessoracle.com/upgrade or use x402 payments to continue.');
+		headers.set('X-RateLimit-Warning-Message', 'You have used 80% of your daily limit. Upgrade or use x402 payments to continue.');
 		headers.set('X-RateLimit-Upgrade-URL', upgradeUrl);
+		headers.set('X-Upgrade-Path', 'https://headlessoracle.com/pricing');
+	}
+	if (used !== undefined && limit !== undefined && percentUsed >= 80) {
+		headers.set('X-Daily-Usage', `${used}/${limit}`);
 	}
 }
 
@@ -5955,6 +5961,7 @@ Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 - [Windsurf](https://headlessoracle.com/docs/windsurf-config) — Windsurf IDE setup
 
 ## Agent Framework Integrations
+- [Claude Managed Agents](https://headlessoracle.com/docs/integrations/claude-managed-agents) — Pre-trade verification gate for Anthropic's production agent hosting platform (MCP native, batch checks, audit trail)
 - [Google ADK Integration](https://headlessoracle.com/docs/integrations/google-adk) — Google Agent Development Kit via McpToolset (stdio + HTTP transport)
 - [TradingAgents Integration](https://headlessoracle.com/docs/integrations/trading-agents) — Pre-trade gate for TauricResearch/TradingAgents multi-agent framework
 - [Agno Integration](https://headlessoracle.com/docs/integrations/agno) — Agno (22K stars) via MCPTools or Python SDK
@@ -6574,6 +6581,13 @@ XNYM, XBIN, XSWX, XDFM, XSAU, XCOI
 Every response includes an Ed25519 signature. Verify with the public key
 at /v5/keys. Receipts expire after 60 seconds. Do not cache or reuse
 expired receipts.
+
+## Using with Claude Managed Agents
+If you are a Claude Managed Agent running financial workflows, add
+headless-oracle-mcp as an MCP server and call get_market_status before
+any trade execution. Full integration guide with batch checks, audit
+trail patterns, and multi-exchange verification:
+https://headlessoracle.com/docs/integrations/claude-managed-agents
 
 ## Discovery endpoints
 - MCP: https://headlessoracle.com/mcp
@@ -9383,6 +9397,9 @@ export default {
 						}
 
 						// Track percent used for soft-limit warning headers on the response.
+						_rlUsed = usage;
+						_rlLimit = FREE_TIER_DAILY_LIMIT;
+						_rlPlan  = auth.plan;
 						freeTierPercentUsed = Math.round((usage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
 
 						// Design partner detection: log once per key per day when usage > 200
@@ -9429,7 +9446,22 @@ export default {
 									incrementKvCounter(`funnel_402:saw_upgrade_paths:${now.toISOString().slice(0, 10)}`, env, ctx);
 									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, { ...X402_RESPONSE_HEADERS, 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 								} else {
-									return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/upgrade' }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
+									const resetMn = new Date(now);
+									resetMn.setUTCDate(resetMn.getUTCDate() + 1);
+									resetMn.setUTCHours(0, 0, 0, 0);
+									return json({
+										error:         'RATE_LIMITED',
+										message:       'Free tier daily limit reached.',
+										daily_limit:   FREE_TIER_DAILY_LIMIT,
+										used:          usage,
+										resets_at:     resetMn.toISOString(),
+										upgrade_paths: [
+											{ id: 'x402_payment', description: 'Pay $0.001 per call, no limit', time_to_access: '< 5 seconds' },
+											{ id: 'credit_pack', description: '$5 for 1,000 calls', url: 'https://headlessoracle.com/pricing' },
+											{ id: 'builder_plan', description: '$99/month, 50,000 calls/day', url: 'https://headlessoracle.com/pricing' },
+										],
+										recommended: 'x402_payment',
+									}, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)), 'X-Upgrade-Path': 'https://headlessoracle.com/pricing' });
 								}
 							}
 						} else {
@@ -9450,8 +9482,25 @@ export default {
 						const paidKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
 						const paidUsage   = await getDailyUsage(paidKeyHash, env);
 						const paidLimit   = getPlanDailyLimit(auth.plan)!;
+						_rlUsed = paidUsage;
+						_rlLimit = paidLimit;
+						_rlPlan  = auth.plan;
 						if (paidUsage >= paidLimit) {
-							return json({ error: 'RATE_LIMITED', message: `${auth.plan} plan daily limit (${paidLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/upgrade` }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
+							{
+							const paidResetMn = new Date(now);
+							paidResetMn.setUTCDate(paidResetMn.getUTCDate() + 1);
+							paidResetMn.setUTCHours(0, 0, 0, 0);
+							return json({
+								error:       'RATE_LIMITED',
+								message:     `${auth.plan} plan daily limit reached.`,
+								daily_limit: paidLimit,
+								used:        paidUsage,
+								resets_at:   paidResetMn.toISOString(),
+								upgrade_paths: auth.plan === 'builder'
+									? [{ id: 'pro_plan', description: '$299/month, 200,000 calls/day', url: 'https://headlessoracle.com/pricing' }]
+									: [{ id: 'protocol_plan', description: 'Custom pricing, unlimited', url: 'https://headlessoracle.com/pricing' }],
+							}, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)), 'X-Upgrade-Path': 'https://headlessoracle.com/pricing' });
+						}
 						}
 						incrementDailyUsage(paidKeyHash, env, ctx, paidUsage);
 					}
@@ -9532,7 +9581,7 @@ export default {
 				const rlHeaders  = makeRateLimitHeaders(_rlPlan, _rlUsed, _rlLimit, now);
 				for (const [k, v] of Object.entries(rlHeaders)) newHeaders.set(k, v);
 				if (freeTierPercentUsed >= 80) {
-					addRateLimitWarningHeaders(newHeaders, freeTierPercentUsed, 'https://headlessoracle.com/upgrade');
+					addRateLimitWarningHeaders(newHeaders, freeTierPercentUsed, 'https://headlessoracle.com/upgrade', _rlUsed, _rlLimit);
 				}
 				return new Response(response.body, { status: response.status, headers: newHeaders });
 			};

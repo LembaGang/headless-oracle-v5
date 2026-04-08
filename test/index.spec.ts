@@ -6577,6 +6577,80 @@ describe('Retry-After on 429 responses (FINDING-03)', () => {
 
 // ─── FINDING-13: Acquisition telemetry ───────────────────────────────────────
 
+// ─── Upgrade nudge on rate limit ─────────────────────────────────────────────
+
+describe('Upgrade nudge on free tier exhaustion', () => {
+	it('free-tier 429 includes upgrade_paths and recommended field', async () => {
+		// Need to trigger the 429 path (no ORACLE_PAYMENT_ADDRESS)
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const key = 'ho_free_nudge_test_429_key_00001';
+		const hash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'free', status: 'active' }));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${hash}:2026-03-16`, '500', { expirationTtl: 25 * 3600 });
+		// Remove ORACLE_PAYMENT_ADDRESS to force 429 path
+		const savedAddr = (env as Record<string, unknown>).ORACLE_PAYMENT_ADDRESS;
+		delete (env as Record<string, unknown>).ORACLE_PAYMENT_ADDRESS;
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(429);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('upgrade_paths');
+			expect(body).toHaveProperty('recommended', 'x402_payment');
+			expect(body).toHaveProperty('daily_limit', 500);
+			expect(body).toHaveProperty('used', 500);
+			expect(typeof body.resets_at).toBe('string');
+			expect(res.headers.get('X-Upgrade-Path')).toBe('https://headlessoracle.com/pricing');
+		} finally {
+			(env as Record<string, unknown>).ORACLE_PAYMENT_ADDRESS = savedAddr;
+			await env.ORACLE_API_KEYS.delete(hash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${hash}:2026-03-16`);
+			vi.useRealTimers();
+		}
+	});
+
+	it('X-Daily-Usage header present at 80% free tier usage', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const key = 'ho_free_nudge_80pct_key_000001';
+		const hash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'free', status: 'active' }));
+		// 400 out of 500 = 80%
+		await env.ORACLE_TELEMETRY.put(`free_usage:${hash}:2026-03-16`, '400', { expirationTtl: 25 * 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(200);
+			const dailyUsage = res.headers.get('X-Daily-Usage');
+			expect(dailyUsage).toBe('400/500');
+			expect(res.headers.get('X-Upgrade-Path')).toBe('https://headlessoracle.com/pricing');
+			expect(res.headers.get('X-RateLimit-Warning')).toBe('true');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${hash}:2026-03-16`);
+			vi.useRealTimers();
+		}
+	});
+
+	it('paid tier 429 includes upgrade_paths for next tier', async () => {
+		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
+		const key = 'ho_live_builder_429_test_key01';
+		const hash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${hash}:2026-03-16`, '50000', { expirationTtl: 25 * 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(429);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('upgrade_paths');
+			expect(body).toHaveProperty('daily_limit', 50000);
+			const paths = body.upgrade_paths as Array<Record<string, unknown>>;
+			expect(paths[0]).toHaveProperty('id', 'pro_plan');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(hash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${hash}:2026-03-16`);
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe('Acquisition telemetry (FINDING-13)', () => {
 	it('batch request increments batch_combo counter in ORACLE_TELEMETRY', async () => {
 		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));

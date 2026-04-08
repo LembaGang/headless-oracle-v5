@@ -38,6 +38,9 @@ market-state attestations via MCP or HTTP (confirmed April 2026 research).
 - PulseMCP (listed)
 - awesome-mcp-servers PR #343 (pending)
 
+### Agent Hosting Platforms
+- Claude Managed Agents — integration guide published (docs/integrations/claude-managed-agents.md)
+
 ### Agent Framework PRs
 - TauricResearch/TradingAgents #523 — market gate node in risk pipeline
 - virattt/ai-hedge-fund #564 — market_state_verification_agent

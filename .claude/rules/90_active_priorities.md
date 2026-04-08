@@ -3,8 +3,15 @@
 
 ## Current Status
 **Phase**: Post-launch. Engineering hardening sprint.
-**Test suite**: 753/753 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 8 2026 — Day 43 continued: Merkle Audit Chain (742→753 tests):
+**Test suite**: 770/770 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 8 2026 — Day 43 continued: Claude Managed Agents guide + upgrade nudge (753→770 tests):
+- **docs/integrations/claude-managed-agents.md**: Full integration guide for Anthropic's Claude Managed Agents platform. 4 patterns: MCP tool (recommended), REST API with verification, multi-exchange batch, historical verification. Covers fail-closed contract, audit trail via /v5/audit/digest and /v5/audit/chain, all 28 exchanges by region, API key provisioning paths. Written for developers who have never heard of HO.
+- **Upgrade nudge on 429 responses**: Free-tier and paid-tier 429 RATE_LIMITED responses now include structured `upgrade_paths`, `recommended`, `daily_limit`, `used`, `resets_at` fields. Agents can autonomously choose the next tier. X-Upgrade-Path header on all 429s. X-Daily-Usage header at 80%+ usage.
+- **Rate limit header bug fix**: `_rlUsed` and `_rlLimit` were initialized to 0 and never updated from actual usage values. Now correctly wired to `getDailyUsage()` results for both free and paid tiers.
+- **Files updated**: docs/README.md (Integrations section), docs/api/mcp-reference.md (Managed Agents link), AGENTS.md (new section), llms-full.txt (Agent Framework Integrations), 01_business_context.md (Agent Hosting Platforms distribution surface).
+- Gap: The integration guide references `https://headlessoracle.com/docs/integrations/claude-managed-agents` but this route doesn't exist in the worker yet. The guide is a static markdown file — needs a route added or served via Pages when ready.
+
+**Previous**: Apr 8 2026 — Day 43 continued: Merkle Audit Chain (742→753 tests):
 - **GET /v5/audit/digest** (commit 3e498e9): Daily attestation digest with SHA-256 Merkle root over ordered receipt IDs. Public, no auth. ?date= param, partial flag for today, validation (future dates, pre-launch dates, format). 7 tests.
 - **GET /v5/audit/chain** (commit 3e498e9): Hash chain of last N daily digests (default 7, max 30). chain_intact verification flag. Each day chains to previous via previous_day_merkle_root. 4 tests.
 - **trackReceiptId()**: Appends receipt_id + MIC to digest_receipt_ids:{date} KV on every receipt (all modes). Non-blocking via ctx.waitUntil.

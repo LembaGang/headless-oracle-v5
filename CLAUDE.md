@@ -136,9 +136,9 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-08 by Day 43 engineering hardening sprint -->
+<!-- Last updated: 2026-04-08 by Day 43 Claude Managed Agents guide + upgrade nudge -->
 
-- **Tests**: 753/753
+- **Tests**: 770/770
 - **Worker version**: 8b1008d9 (latest deployed)
 - **Test payment**: 1 x402 payment settled (Day 41)
 - **External revenue**: $0 (no stranger has paid yet)

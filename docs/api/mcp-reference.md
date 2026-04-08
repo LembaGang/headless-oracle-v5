@@ -90,3 +90,9 @@ npx headless-oracle-mcp
 ```
 
 Supports `HEADLESS_ORACLE_API_KEY` environment variable for authenticated access.
+
+## Claude Managed Agents
+
+For a complete integration guide covering MCP tools, REST API, batch checks,
+and audit trail patterns for Claude Managed Agents, see
+[Claude Managed Agents Integration Guide](../integrations/claude-managed-agents.md).

@@ -36,8 +36,11 @@ Last updated: 2026-04-08
 - [Regulatory Compliance](business/compliance.md)
 - [Metrics Dashboard](business/metrics-dashboard.md)
 
+## Integrations
+- [Claude Managed Agents](integrations/claude-managed-agents.md) — Pre-trade verification gate for autonomous financial agents
+- [All Integration Guides](integrations/) — CrewAI, Agno, ai-hedge-fund, TradingAgents, and more
+
 ## Additional Resources
-- [Integration Guides](integrations/) — CrewAI, Agno, ai-hedge-fund, TradingAgents, and more
 - [Distribution](distribution/) — Registry submissions and outreach
 - [Blog](blog/) — Technical articles and launch posts
 - [Specifications](architecture/adr/) — SMA Protocol, MPAS, APTS
