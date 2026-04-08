@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Test + Audit
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .dev.vars (test-only values — not production keys)
+        run: |
+          {
+            printf 'ED25519_PRIVATE_KEY=ae0bbb58025719e317bc2eb6e0a31d59f8cd61bcbf011132750a61a1ecd1b872\n'
+            printf 'ED25519_PUBLIC_KEY=f8af78f563e8aa698b35b0b2511cd430a8c4aa6f7960534bb2b7e22d9b4a3fb8\n'
+            printf 'PUBLIC_KEY_ID=key_test_v1\n'
+            printf 'MASTER_API_KEY=test_master_key_local_only\n'
+            printf 'BETA_API_KEYS=test_beta_key_1,test_beta_key_2\n'
+            printf 'ORACLE_PAYMENT_ADDRESS=0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3\n'
+            printf 'X402_TEST_WALLET=0x26d4ffe98017d2f160e2daae9d119e3d8b860ad3\n'
+            printf 'SUPABASE_URL=https://test-placeholder.supabase.co\n'
+            printf 'SUPABASE_SERVICE_ROLE_KEY=test_supabase_service_role_key_placeholder\n'
+            printf 'PADDLE_API_KEY=pdl_apikey_test_placeholder_for_local_tests\n'
+            printf 'PADDLE_WEBHOOK_SECRET=pdl_ntfset_test_placeholder_for_local_tests\n'
+            printf 'PADDLE_PRICE_ID=pri_test_placeholder_for_local_tests\n'
+            printf 'PADDLE_PRICE_ID_BUILDER=pri_test_builder_placeholder\n'
+            printf 'PADDLE_PRICE_ID_PRO=pri_test_pro_placeholder\n'
+            printf 'PADDLE_PRICE_ID_PROTOCOL=pri_test_protocol_placeholder\n'
+            printf 'PADDLE_PRICE_ID_CREDITS=pri_test_credits_placeholder\n'
+            printf 'RESEND_API_KEY=re_test_placeholder_for_local_tests\n'
+          } > .dev.vars
+
+      - name: Run tests
+        run: npx vitest run
+
+      - name: Verify test count matches wrangler.toml
+        run: |
+          COUNT=$(npx vitest run 2>&1 | grep -oP '\d+(?= passed)' | head -1)
+          TOML_COUNT=$(grep '^TEST_COUNT' wrangler.toml | grep -oP '\d+')
+          echo "Vitest count: $COUNT | wrangler.toml TEST_COUNT: $TOML_COUNT"
+          if [ "$COUNT" != "$TOML_COUNT" ]; then
+            echo "::warning::TEST_COUNT in wrangler.toml ($TOML_COUNT) does not match actual test count ($COUNT). Run 'npm run test:sync-count' locally and commit."
+          fi
+
+      - name: Security audit
+        run: npm audit --audit-level=high || true
+
+      - name: License check (no copyleft in production)
+        run: npx license-checker --production --failOn "GPL-2.0;GPL-3.0;AGPL-3.0;SSPL-1.0"
+
+  smoke:
+    runs-on: ubuntu-latest
+    name: Smoke Tests (production)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run smoke tests against production
+        run: npm run test:smoke
