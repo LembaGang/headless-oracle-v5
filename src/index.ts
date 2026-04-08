@@ -2495,9 +2495,14 @@ async function verifyX402MintPayment(
 
 // Build the x402 payment payload for a 402 response.
 function build402Payload(paymentAddress: string, keyHash: string): Record<string, unknown> {
+	const resetMidnight = new Date();
+	resetMidnight.setUTCDate(resetMidnight.getUTCDate() + 1);
+	resetMidnight.setUTCHours(0, 0, 0, 0);
 	return {
 		error:   'PAYMENT_REQUIRED',
-		message: 'Free tier exhausted. Pay 0.001 USDC per request via x402 on Base network, or upgrade at headlessoracle.com/upgrade',
+		message: 'Free tier daily limit reached. Get an instant key or pay per request.',
+		upgrade_paths: buildUpgradePaths({ include_paid: true }),
+		recommended:   'instant_key',
 		x402: {
 			version:             '1',
 			scheme:              'exact',
@@ -2513,6 +2518,8 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 			memo:                   `${keyHash}:${new Date().toISOString().slice(0, 10)}:${crypto.randomUUID()}`,
 			maxAge:                 300,
 		},
+		daily_limit: FREE_TIER_DAILY_LIMIT,
+		resets_at:   resetMidnight.toISOString(),
 		alternatives: {
 			monthly:        'https://headlessoracle.com/upgrade',
 			sandbox_x402:   'POST /v5/sandbox with X-Payment header — 10 credits, no email',
@@ -2552,6 +2559,68 @@ function buildPaymentOptions(): Record<string, unknown> {
 		},
 		agent_native_path: 'No key, no signup. Send X-Payment with any request OR POST /v5/sandbox with X-Payment to get 10 credits instantly.',
 	};
+}
+
+// Machine-readable upgrade paths array for 402/429 responses.
+// Ordered by friction so agents can pick the fastest path. The "recommended" field
+// tells the agent what to do without parsing the array.
+function buildUpgradePaths(options?: { include_paid?: boolean }): unknown[] {
+	const paths: unknown[] = [
+		{
+			id:              'instant_key',
+			friction:        'zero',
+			method:          'POST',
+			url:             '/v5/keys/instant',
+			body:            { agent_id: '<your-unique-id>' },
+			result:          'Free API key, 500 calls/day, no email needed',
+			time_to_access:  '< 1 second',
+		},
+		{
+			id:              'x402_payment',
+			friction:        'low',
+			method:          'include X-Payment header',
+			cost:            '$0.001 USDC on Base',
+			result:          'Signed receipt, no key needed',
+			time_to_access:  '< 5 seconds',
+			details_url:     '/.well-known/x402.json',
+		},
+		{
+			id:              'email_key',
+			friction:        'medium',
+			method:          'POST',
+			url:             '/v5/keys/request',
+			body:            { email: '<your-email>' },
+			result:          'Free API key via email, 500 calls/day',
+			time_to_access:  '~ 2 minutes',
+		},
+		{
+			id:              'demo',
+			friction:        'none',
+			method:          'GET',
+			url:             '/v5/demo?mic=XNYS',
+			result:          'Signed demo receipt, unlimited, always free',
+			time_to_access:  'instant',
+		},
+	];
+	if (options?.include_paid) {
+		paths.push(
+			{
+				id:              'credit_pack',
+				friction:        'medium',
+				description:     '$5 for 1,000 calls',
+				url:             'https://headlessoracle.com/pricing',
+				time_to_access:  '~ 2 minutes',
+			},
+			{
+				id:              'builder_plan',
+				friction:        'medium',
+				description:     '$99/month, 50,000 calls/day',
+				url:             'https://headlessoracle.com/pricing',
+				time_to_access:  '~ 5 minutes',
+			},
+		);
+	}
+	return paths;
 }
 
 // Shared Ed25519 receipt verification logic — used by verify_receipt MCP tool and POST /v5/verify.
@@ -9162,9 +9231,9 @@ export default {
 				incrementKvCounter(`status_code:${now.toISOString().slice(0, 10)}:${status}`, env, ctx, 25 * 3600);
 			}
 			// Link header for llms.txt discovery (llmstxt.org convention).
-			// 402 responses get payment Link instead; both are additive.
+			// 402 responses get payment + instant-key Link; both are additive.
 			const llmsLink = status === 402
-				? { 'Link': '</v5/why-not-free>; rel="payment", </llms.txt>; rel="llms-txt"', 'X-X402-Foundation': 'compatible' }
+				? { 'Link': '</v5/keys/instant>; rel="payment"; method="POST", </v5/why-not-free>; rel="payment", </llms.txt>; rel="llms-txt"', 'X-X402-Foundation': 'compatible' }
 				: { 'Link': '</llms.txt>; rel="llms-txt"' };
 			return new Response(JSON.stringify(responseBody), {
 				status,
@@ -9345,7 +9414,7 @@ export default {
 						if (sbUsage >= SANDBOX_DAILY_LIMIT) {
 							// Track sandbox cap hits for acquisition telemetry (FINDING-13)
 							incrementKvCounter(`sandbox_cap_hit:${now.toISOString().slice(0, 10)}`, env, ctx);
-							return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Your free sandbox key has reached its 200-call limit. Upgrade to continue.', upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }, 402);
+							return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Sandbox key limit reached. Get an instant free key (500 calls/day) or upgrade.', upgrade_paths: buildUpgradePaths({ include_paid: true }), recommended: 'instant_key', upgrade_url: 'https://headlessoracle.com/pricing' }, 402, { 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 						}
 						incrementDailyUsage(sbKeyHash, env, ctx, sbUsage);
 					// ── Paid tier daily limits (builder: 50k/day, pro: 200k/day) ──
@@ -9389,26 +9458,38 @@ export default {
 							if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
 							incrementKvCounter(`trial_usage_served:${trialDate}`, env, ctx);
 						} else {
-							// Trial exhausted — return 402 with trial_used info
+							// Trial exhausted — return 402 with machine-readable conversion paths
 							incrementKvCounter(`funnel_402:trial_exhausted:${trialDate}`, env, ctx);
+							incrementKvCounter(`funnel_402:saw_upgrade_paths:${trialDate}`, env, ctx);
+							const trialResetMidnight = new Date(now);
+							trialResetMidnight.setUTCDate(trialResetMidnight.getUTCDate() + 1);
+							trialResetMidnight.setUTCHours(0, 0, 0, 0);
+							const trialStatusBlock = { used: FREE_TRIAL_DAILY_LIMIT, limit: FREE_TRIAL_DAILY_LIMIT, resets_at: trialResetMidnight.toISOString() };
 							if (env.ORACLE_PAYMENT_ADDRESS) {
 								const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 								const x402IdxHdrs = buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status');
 								const payload = {
 									...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource),
-									trial_used: FREE_TRIAL_DAILY_LIMIT,
-									message: `You verified ${FREE_TRIAL_DAILY_LIMIT} receipts today. Get unlimited access: x402 ($0.001/call), API key (free tier), or sandbox (200 calls, no card).`,
+									error:         'TRIAL_EXHAUSTED',
+									trial_used:    FREE_TRIAL_DAILY_LIMIT,
+									trial_status:  trialStatusBlock,
+									message:       'Trial exhausted. Get an instant API key (zero friction) or pay per request.',
+									upgrade_paths: buildUpgradePaths(),
+									recommended:   'instant_key',
 									agent_upgrade_paths: AGENT_UPGRADE_PATHS,
 								};
-								return json(payload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header', ...x402IdxHdrs });
+								return json(payload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'no-header', 'Link': '</v5/keys/instant>; rel="payment"; method="POST"', ...x402IdxHdrs });
 							} else {
 								return json({
-									error: 'TRIAL_EXHAUSTED',
-									trial_used: FREE_TRIAL_DAILY_LIMIT,
-									message: `You verified ${FREE_TRIAL_DAILY_LIMIT} receipts today. Get unlimited access: API key (free tier) or sandbox (200 calls, no card).`,
-									upgrade_url: 'https://headlessoracle.com/upgrade',
+									error:         'TRIAL_EXHAUSTED',
+									trial_used:    FREE_TRIAL_DAILY_LIMIT,
+									trial_status:  trialStatusBlock,
+									message:       'Trial exhausted. Get an instant API key (zero friction) or sign up via email.',
+									upgrade_url:   'https://headlessoracle.com/upgrade',
+									upgrade_paths: buildUpgradePaths(),
+									recommended:   'instant_key',
 									agent_upgrade_paths: AGENT_UPGRADE_PATHS,
-								}, 402);
+								}, 402, { 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 							}
 						}
 					}
@@ -9769,7 +9850,7 @@ export default {
 					const sbBatchUsage   = await getDailyUsage(sbBatchKeyHash, env);
 					if (sbBatchUsage >= SANDBOX_DAILY_LIMIT) {
 						incrementKvCounter(`sandbox_cap_hit:${now.toISOString().slice(0, 10)}`, env, ctx);
-						return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Your free sandbox key has reached its 200-call limit. Upgrade to continue.', upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }, 402);
+						return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Sandbox key limit reached. Get an instant free key (500 calls/day) or upgrade.', upgrade_paths: buildUpgradePaths({ include_paid: true }), recommended: 'instant_key', upgrade_url: 'https://headlessoracle.com/pricing' }, 402, { 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 					}
 					incrementDailyUsage(sbBatchKeyHash, env, ctx, sbBatchUsage);
 				// ── Paid tier daily limits for batch (builder: 50k/day, pro: 200k/day) ──

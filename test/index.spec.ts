@@ -258,7 +258,7 @@ describe('GET /v5/status', () => {
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('x402Version', 1);
-		expect(body).toHaveProperty('error', 'Payment Required');
+		expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
 		expect(Array.isArray(body.accepts)).toBe(true);
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('scheme', 'exact');
@@ -4376,7 +4376,7 @@ describe('Error responses include docs field', () => {
 		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
 		try {
 			const body = await fetchJSON('/v5/status');
-			expect(body).toHaveProperty('error', 'Payment Required');
+			expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
 			expect(body).toHaveProperty('x402Version', 1);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
@@ -6200,7 +6200,7 @@ describe('POST /v5/sandbox', () => {
 // ─── Sandbox 402 response body shapes ───────────────────────────────────────
 
 describe('Sandbox 402 response body shapes', () => {
-	it('SANDBOX_LIMIT_REACHED body includes upgrade_url, plans, and docs', async () => {
+	it('SANDBOX_LIMIT_REACHED body includes upgrade_paths, recommended, and docs', async () => {
 		vi.setSystemTime(new Date('2026-03-16T15:00:00Z'));
 		const key     = 'sb_sandbox_limit_test_key00000001';
 		const keyHash = await sha256Hex(key);
@@ -6213,14 +6213,9 @@ describe('Sandbox 402 response body shapes', () => {
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('error', 'SANDBOX_LIMIT_REACHED');
-			expect(body).toHaveProperty('message', 'Your free sandbox key has reached its 200-call limit. Upgrade to continue.');
-			expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/upgrade');
-			expect(body).toHaveProperty('plans');
-			const plans = body.plans as Record<string, string>;
-			expect(plans).toHaveProperty('builder');
-			expect(plans).toHaveProperty('pro');
-			expect(plans.builder).toContain('$99');
-			expect(plans.pro).toContain('$299');
+			expect(body).toHaveProperty('upgrade_paths');
+			expect(body).toHaveProperty('recommended', 'instant_key');
+			expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/pricing');
 			expect(body).toHaveProperty('docs', 'https://headlessoracle.com/docs');
 		} finally {
 			await env.ORACLE_API_KEYS.delete(keyHash);
@@ -6867,7 +6862,7 @@ describe('x402 — end-to-end payment flow', () => {
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('x402Version', 1);
-			expect(body).toHaveProperty('error', 'Payment Required');
+			expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts).toBeDefined();
 			expect(accepts.length).toBeGreaterThan(0);
@@ -8872,6 +8867,80 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 	});
 });
 
+// ─── Enhanced 402 responses — machine-readable conversion paths ──────────────
+
+describe('Enhanced 402 responses with upgrade_paths', () => {
+	it('free tier exhaustion 402 includes upgrade_paths array and recommended field', async () => {
+		const key  = 'ho_free_' + 'u'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('upgrade_paths');
+		expect(body).toHaveProperty('recommended', 'instant_key');
+		const paths = body.upgrade_paths as Array<Record<string, unknown>>;
+		expect(Array.isArray(paths)).toBe(true);
+		expect(paths.length).toBeGreaterThanOrEqual(4);
+		const instantPath = paths.find((p) => p.id === 'instant_key');
+		expect(instantPath).toBeDefined();
+		expect(instantPath!.friction).toBe('zero');
+		expect(instantPath!.url).toBe('/v5/keys/instant');
+	});
+
+	it('trial exhaustion 402 includes trial_status with resets_at', async () => {
+		const today  = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const res  = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('trial_status');
+			const ts = body.trial_status as Record<string, unknown>;
+			expect(ts).toHaveProperty('used', 3);
+			expect(ts).toHaveProperty('limit', 3);
+			expect(typeof ts.resets_at).toBe('string');
+			expect(body).toHaveProperty('upgrade_paths');
+			expect(body).toHaveProperty('recommended', 'instant_key');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
+	});
+
+	it('sandbox limit 402 includes upgrade_paths with instant_key recommended', async () => {
+		const sbKey  = 'sb_' + 'a'.repeat(32);
+		const sbHash = await sha256Hex(sbKey);
+		await env.ORACLE_API_KEYS.put(sbHash, JSON.stringify({
+			tier: 'sandbox', status: 'active', max_calls: 200, expires_at: new Date(Date.now() + 86400000).toISOString(),
+		}));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${sbHash}:${new Date().toISOString().slice(0, 10)}`, '200');
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': sbKey } });
+			expect(res.status).toBe(402);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('upgrade_paths');
+			expect(body).toHaveProperty('recommended', 'instant_key');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(sbHash);
+		}
+	});
+
+	it('402 Link header includes /v5/keys/instant', async () => {
+		const today  = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			const link = res.headers.get('Link') ?? '';
+			expect(link).toContain('/v5/keys/instant');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
+	});
+});
+
 describe('funnel_402_today in /v5/metrics/public', () => {
 	it('returns funnel_402_today field (empty object when no 402s yet)', async () => {
 		const res  = await fetchWorker('/v5/metrics/public');
@@ -8949,7 +9018,7 @@ describe('Free trial receipts on /v5/status', () => {
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('trial_used', 3);
 		expect(body).toHaveProperty('message');
-		expect((body.message as string)).toContain('3 receipts');
+		expect((body.message as string)).toContain('Trial exhausted');
 	});
 
 	it('request with API key bypasses trial tracking entirely', async () => {
