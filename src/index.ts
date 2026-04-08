@@ -7394,6 +7394,18 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/funnel': {
+			get: {
+				summary:     'Conversion funnel snapshot',
+				description: 'Returns today\'s conversion funnel: 402 counts, upgrade path usage, conversion rate. Requires MASTER_API_KEY.',
+				parameters: [{ name: 'date', in: 'query', schema: { type: 'string', format: 'date' }, description: 'Date to query (YYYY-MM-DD, defaults to today)' }],
+				security: [{ ApiKeyAuth: [] }],
+				responses: {
+					'200': { description: 'Funnel data', content: { 'application/json': { schema: { type: 'object', properties: { date: { type: 'string' }, top_of_funnel: { type: 'integer' }, conversion_rate: { type: 'string' } } } } } },
+					'401': { description: 'Admin access required' },
+				},
+			},
+		},
 		'/v5/compliance': {
 			get: {
 				summary:     'APTS compliance declaration',
@@ -9357,6 +9369,19 @@ export default {
 						const keyHash = auth.keyHash ?? await sha256Hex(apiKey);
 						const usage   = await getDailyUsage(keyHash, env);
 
+						// Track first-use of instant keys (conversion funnel)
+						if (usage === 0 && typeof ctx?.waitUntil === 'function') {
+							const kvRecord = await env.ORACLE_API_KEYS?.get(keyHash).catch(() => null);
+							if (kvRecord) {
+								try {
+									const rec = JSON.parse(kvRecord) as Record<string, unknown>;
+									if (rec.source === 'instant') {
+										incrementKvCounter(`funnel_instant_key:first_use:${now.toISOString().slice(0, 10)}`, env, ctx);
+									}
+								} catch { /* ignore parse errors */ }
+							}
+						}
+
 						// Track percent used for soft-limit warning headers on the response.
 						freeTierPercentUsed = Math.round((usage / FREE_TIER_DAILY_LIMIT) * 1000) / 10;
 
@@ -9380,6 +9405,7 @@ export default {
 
 						if (usage >= FREE_TIER_DAILY_LIMIT) {
 							const paymentHeader = getPaymentHeader(request);
+							if (paymentHeader) incrementKvCounter(`funnel_x402:attempted:${now.toISOString().slice(0, 10)}`, env, ctx);
 							if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 								const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
 								const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
@@ -9393,13 +9419,15 @@ export default {
 								}
 								// Valid x402 payment — proceed without counting against daily usage
 								_x402PaymentUsed = true;
+								incrementKvCounter(`funnel_x402:succeeded:${now.toISOString().slice(0, 10)}`, env, ctx);
 							} else {
 								const credits = await getCreditBalance(keyHash, env);
 								if (credits.balance > 0) {
 									consumeCredit(keyHash, credits, env, ctx);
 								} else if (env.ORACLE_PAYMENT_ADDRESS) {
 									incrementKvCounter(`funnel_402:free_tier_gate:${now.toISOString().slice(0, 10)}`, env, ctx);
-									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, X402_RESPONSE_HEADERS);
+									incrementKvCounter(`funnel_402:saw_upgrade_paths:${now.toISOString().slice(0, 10)}`, env, ctx);
+									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, { ...X402_RESPONSE_HEADERS, 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 								} else {
 									return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/upgrade' }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 								}
@@ -9430,6 +9458,7 @@ export default {
 				} else {
 					// No API key — trial path → x402 payment path → 402 gate
 					const paymentHeader = getPaymentHeader(request);
+					if (paymentHeader) incrementKvCounter(`funnel_x402:attempted:${now.toISOString().slice(0, 10)}`, env, ctx);
 
 					// ── x402 payment takes priority if header is present ─────────────
 					if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
@@ -9441,6 +9470,7 @@ export default {
 							return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
 						}
 						_x402PaymentUsed = true;
+						incrementKvCounter(`funnel_x402:succeeded:${now.toISOString().slice(0, 10)}`, env, ctx);
 					} else {
 						// ── Free trial: 3 signed receipts/day per IP, no key needed ──
 						const trialRawIp  = request.headers.get('X-Original-IP') || request.headers.get('CF-Connecting-IP') || '';
@@ -9753,6 +9783,7 @@ export default {
 					incrementKvCounter(`auth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 				} else {
 					incrementKvCounter(`unauth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
+					incrementKvCounter(`funnel_demo:fallback:${now.toISOString().slice(0, 10)}`, env, ctx);
 				}
 				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode);
 				// Audit: log receipt to Supabase for authenticated /v5/status calls (non-blocking)
@@ -11762,6 +11793,60 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				}, 200, { 'Cache-Control': 'public, max-age=60' });
 			}
 
+			// ── GET /v5/funnel — conversion funnel snapshot ──────────────────────
+			// Admin-only: requires MASTER_API_KEY. Returns today's conversion funnel
+			// so we can see where agents drop off and which paths convert.
+			if (url.pathname === '/v5/funnel') {
+				const funnelKey = request.headers.get('X-Oracle-Key');
+				if (!funnelKey || funnelKey !== env.MASTER_API_KEY) {
+					return json({ error: 'UNAUTHORIZED', message: 'Admin access required' }, 401);
+				}
+				const funnelDate = url.searchParams.get('date') || now.toISOString().slice(0, 10);
+				const FUNNEL_COUNTER_KEYS = [
+					'funnel_402:saw_upgrade_paths',
+					'funnel_402:trial_exhausted',
+					'funnel_402:free_tier_gate',
+					'funnel_402:payment_failed',
+					'funnel_402:facilitator_rejected',
+					'funnel_402:keyless_no_payment',
+					'funnel_instant_key:requested',
+					'funnel_instant_key:created',
+					'funnel_instant_key:reused',
+					'funnel_instant_key:first_use',
+					'funnel_email_key:requested',
+					'funnel_x402:attempted',
+					'funnel_x402:succeeded',
+					'funnel_demo:fallback',
+				] as const;
+				const funnelRaws = await Promise.all(
+					FUNNEL_COUNTER_KEYS.map((k) => env.ORACLE_TELEMETRY.get(`${k}:${funnelDate}`).catch(() => null)),
+				);
+				const counters: Record<string, number> = {};
+				FUNNEL_COUNTER_KEYS.forEach((k, i) => {
+					const shortKey = k.replace('funnel_402:', '').replace('funnel_', '');
+					counters[shortKey] = parseInt(funnelRaws[i] ?? '0', 10) || 0;
+				});
+				// Also read total 402 count from status_code counters
+				const total402Raw = await env.ORACLE_TELEMETRY.get(`status_code:${funnelDate}:402`).catch(() => null);
+				const total402 = parseInt(total402Raw ?? '0', 10) || 0;
+				const totalConversions = counters['instant_key:created'] + counters['email_key:requested'] + counters['x402:succeeded'];
+				const conversionRate = total402 > 0 ? ((totalConversions / total402) * 100).toFixed(1) + '%' : '0%';
+				return json({
+					date:             funnelDate,
+					top_of_funnel:    total402,
+					saw_paths:        counters['saw_upgrade_paths'] || counters['402:saw_upgrade_paths'] || 0,
+					instant_key_requested:  counters['instant_key:requested'],
+					instant_key_created:    counters['instant_key:created'],
+					instant_key_reused:     counters['instant_key:reused'],
+					instant_key_first_use:  counters['instant_key:first_use'],
+					email_key_requested:    counters['email_key:requested'],
+					x402_attempted:         counters['x402:attempted'],
+					x402_succeeded:         counters['x402:succeeded'],
+					demo_fallback:          counters['demo:fallback'],
+					conversion_rate:        conversionRate,
+				});
+			}
+
 			// ── GET /v5/referrers — daily referrer traffic breakdown ──────────────
 			// Lists domains that linked to headlessoracle.com today (or a given date).
 			// Best-effort: populated by the referrer tracking in the main request handler.
@@ -12158,6 +12243,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					});
 				}
 
+				incrementKvCounter(`funnel_email_key:requested:${now.toISOString().slice(0, 10)}`, env, ctx);
 				return json({ plan: 'free', message: 'API key sent to your email' });
 			}
 

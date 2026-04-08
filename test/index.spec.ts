@@ -8966,6 +8966,59 @@ describe('funnel_402_today in /v5/metrics/public', () => {
 	});
 });
 
+// ─── GET /v5/funnel — conversion funnel endpoint ─────────────────────────────
+
+describe('GET /v5/funnel — conversion funnel', () => {
+	it('returns 401 without admin key', async () => {
+		const res = await fetchWorker('/v5/funnel');
+		expect(res.status).toBe(401);
+	});
+
+	it('returns funnel data with master key', async () => {
+		const res = await fetchWorker('/v5/funnel', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('date');
+		expect(body).toHaveProperty('top_of_funnel');
+		expect(body).toHaveProperty('conversion_rate');
+		expect(body).toHaveProperty('instant_key_requested');
+		expect(body).toHaveProperty('x402_attempted');
+		expect(body).toHaveProperty('demo_fallback');
+	});
+
+	it('reflects seeded funnel counters', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_TELEMETRY.put(`funnel_instant_key:created:${today}`, '3');
+		await env.ORACLE_TELEMETRY.put(`funnel_x402:succeeded:${today}`, '2');
+		await env.ORACLE_TELEMETRY.put(`status_code:${today}:402`, '20');
+		try {
+			const res = await fetchWorker('/v5/funnel', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY },
+			});
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('instant_key_created', 3);
+			expect(body).toHaveProperty('x402_succeeded', 2);
+			expect(body).toHaveProperty('top_of_funnel', 20);
+			expect(body).toHaveProperty('conversion_rate', '25.0%');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`funnel_instant_key:created:${today}`);
+			await env.ORACLE_TELEMETRY.delete(`funnel_x402:succeeded:${today}`);
+			await env.ORACLE_TELEMETRY.delete(`status_code:${today}:402`);
+		}
+	});
+
+	it('demo request increments funnel_demo:fallback counter', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_TELEMETRY.delete(`funnel_demo:fallback:${today}`);
+		await fetchWorker('/v5/demo?mic=XNYS');
+		// Allow non-blocking counter to propagate
+		const raw = await env.ORACLE_TELEMETRY.get(`funnel_demo:fallback:${today}`);
+		expect(parseInt(raw ?? '0', 10)).toBeGreaterThanOrEqual(1);
+	});
+});
+
 // ─── Free trial receipts on /v5/status (3 per IP per day) ─────────────────────
 
 describe('Free trial receipts on /v5/status', () => {
