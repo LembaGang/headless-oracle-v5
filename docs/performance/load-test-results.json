@@ -1,0 +1,26 @@
+{
+  "config": {
+    "target": "https://headlessoracle.com/v5/demo?mic=XNYS",
+    "rps_target": 10,
+    "duration_seconds": 30,
+    "timestamp": "2026-04-08T13:44:41.962Z"
+  },
+  "summary": {
+    "total_requests": 300,
+    "successful_200": 300,
+    "failed_non_200": 0,
+    "status_codes": {
+      "200": 300
+    },
+    "actual_duration_seconds": 30.11,
+    "actual_rps": 9.96
+  },
+  "latency_ms": {
+    "min": 129.38,
+    "max": 1277.72,
+    "p50": 177.18,
+    "p95": 257.18,
+    "p99": 961.97,
+    "mean": 202.45
+  }
+}

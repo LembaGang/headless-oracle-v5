@@ -11,6 +11,7 @@
 		"test": "vitest",
 		"test:smoke": "vitest run --config vitest.smoke.config.mts",
 		"test:property": "vitest run --config vitest.property.config.mts",
+		"test:load": "node scripts/load-test.js",
 		"test:sync-count": "bash scripts/sync-test-count.sh",
 		"cf-typegen": "wrangler types"
 	},
