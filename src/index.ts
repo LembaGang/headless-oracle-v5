@@ -7921,8 +7921,19 @@ async function buildSignedReceipt(
 // Outside the main try/catch — has its own error handling and always returns
 // JSON-RPC format, never REST CRITICAL_FAILURE format.
 
+// Security headers applied to every response — API and MCP alike.
+const SECURITY_HEADERS = {
+	'Strict-Transport-Security':  'max-age=31536000; includeSubDomains; preload',
+	'X-Content-Type-Options':     'nosniff',
+	'X-Frame-Options':            'DENY',
+	'Referrer-Policy':            'strict-origin-when-cross-origin',
+	'Permissions-Policy':         'camera=(), microphone=(), geolocation=()',
+	'Content-Security-Policy':    "default-src 'none'; frame-ancestors 'none'",
+} as const;
+
 const MCP_RESPONSE_HEADERS = {
-	'Content-Type':                 'application/json',
+	...SECURITY_HEADERS,
+	'Content-Type':                 'application/json; charset=utf-8',
 	'MCP-Version':                  MCP_PROTOCOL_VERSION,
 	'Access-Control-Allow-Origin':  '*',
 	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -7935,7 +7946,7 @@ const MCP_RESPONSE_HEADERS = {
 // Issues a short-lived opaque access token stored in ORACLE_API_KEYS KV ('oauth:' prefix).
 // Completely isolated — does not share code paths with any existing route.
 async function handleOAuthToken(request: Request, env: Env): Promise<Response> {
-	const oauthHeaders = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
+	const oauthHeaders = { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
 	const oauthError = (status: number, error: string, description: string) =>
 		new Response(JSON.stringify({ error, error_description: description }), { status, headers: oauthHeaders });
 
@@ -7995,7 +8006,7 @@ async function handleOAuthToken(request: Request, env: Env): Promise<Response> {
 // Returns { active: true, scope, exp } for valid tokens, { active: false } for
 // all others. Never returns 4xx — RFC 7662 §2.2 requires 200 for all valid requests.
 async function handleOAuthIntrospect(request: Request, env: Env): Promise<Response> {
-	const introspectHeaders = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
+	const introspectHeaders = { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
 	const inactive = () => new Response(JSON.stringify({ active: false }), { status: 200, headers: introspectHeaders });
 
 	if (request.method !== 'POST') return inactive();
@@ -8792,10 +8803,11 @@ export default {
 		let _rlLimit = FREE_TIER_DAILY_LIMIT;
 
 		const corsHeaders = {
+			...SECURITY_HEADERS,
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment, Payment-Signature',
-			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Trial-Remaining',
+			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Trial-Remaining, X-Attestation-Mode',
 		};
 
 		if (request.method === 'OPTIONS') {
@@ -8857,7 +8869,7 @@ export default {
 				: { 'Link': '</llms.txt>; rel="llms-txt"' };
 			return new Response(JSON.stringify(responseBody), {
 				status,
-				headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...llmsLink, ...extraHeaders },
+				headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...llmsLink, ...extraHeaders },
 			});
 		};
 
@@ -9291,7 +9303,8 @@ export default {
 				// Receipts must not be cached — they expire in 60s and contain real-time status.
 				// discovery_url lets agents that receive this receipt discover full oracle capabilities.
 				const receiptWithDiscovery = { ...receipt, receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json', extensions: { bazaar: { discoverable: true, category: 'financial-data', tags: ['market-state', 'exchange-status', 'pre-trade', 'attestation', 'Ed25519', 'trading-hours', 'holiday-calendar', 'fail-closed', '28-exchanges', 'signed-receipt', 'MIC'], description: 'Ed25519-signed market-state receipt for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED. Real-time session status, holiday-aware calendar, 60-second TTL.' } } };
-				const statusHeaders: Record<string, string> = { 'Cache-Control': 'no-store' };
+				const attestationMode = mode === 'demo' ? 'demo' : (_trialUsed ? 'trial' : 'live');
+				const statusHeaders: Record<string, string> = { 'Cache-Control': 'no-store', 'X-Attestation-Mode': attestationMode };
 				if (_x402PaymentUsed) statusHeaders['Payment-Response'] = JSON.stringify({ status: 'payment-accepted', network: 'base' });
 				if (_trialUsed) statusHeaders['X-Trial-Remaining'] = String(_trialRemaining);
 				return withRateLimitWarning(await withMigrationNotice(json(receiptWithDiscovery, status, statusHeaders)));
@@ -9647,23 +9660,24 @@ export default {
 			if (url.pathname === '/sitemap.xml') {
 				return new Response(SITEMAP_XML, {
 					headers: {
+						...SECURITY_HEADERS,
 						'Content-Type':  'application/xml',
 						'Cache-Control': 'public, max-age=86400',
 					},
 				});
 			}
 			if (url.pathname === '/robots.txt') {
-				return new Response(ROBOTS_TXT, { headers: { 'Content-Type': 'text/plain' } });
+				return new Response(ROBOTS_TXT, { headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' } });
 			}
 			if (url.pathname === '/.well-known/security.txt') {
-				const body = `Contact: mailto:info@bytecraftresults.com\nExpires: 2027-04-03T00:00:00.000Z\nPreferred-Languages: en\nCanonical: https://headlessoracle.com/.well-known/security.txt\n`;
-				return new Response(body, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+				const body = `Contact: mailto:security@headlessoracle.com\nExpires: 2027-04-08T00:00:00.000Z\nPreferred-Languages: en\nCanonical: https://headlessoracle.com/.well-known/security.txt\nPolicy: https://github.com/LembaGang/headless-oracle-v5/blob/main/SECURITY.md\n`;
+				return new Response(body, { headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8' } });
 			}
 			if (url.pathname === '/llms.txt') {
-				return new Response(LLMS_TXT_INDEX, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Link': '</llms-full.txt>; rel="alternate"' } });
+				return new Response(LLMS_TXT_INDEX, { headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8', 'Link': '</llms-full.txt>; rel="alternate"' } });
 			}
 			if (url.pathname === '/llms-full.txt') {
-				return new Response(LLMS_FULL_TXT, { headers: { 'Content-Type': 'text/markdown; charset=utf-8' } });
+				return new Response(LLMS_FULL_TXT, { headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8' } });
 			}
 			if (url.pathname === '/SKILL.md') {
 				return new Response(SKILL_MD, {

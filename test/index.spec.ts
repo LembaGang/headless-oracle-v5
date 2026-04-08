@@ -2052,10 +2052,11 @@ describe('GET /.well-known/security.txt', () => {
 
 	it('contains required RFC 9116 fields', async () => {
 		const body = await fetchWorker('/.well-known/security.txt').then((r) => r.text());
-		expect(body).toContain('Contact: mailto:info@bytecraftresults.com');
-		expect(body).toContain('Expires: 2027-04-03T00:00:00.000Z');
+		expect(body).toContain('Contact: mailto:security@headlessoracle.com');
+		expect(body).toContain('Expires: 2027-04-08T00:00:00.000Z');
 		expect(body).toContain('Preferred-Languages: en');
 		expect(body).toContain('Canonical: https://headlessoracle.com/.well-known/security.txt');
+		expect(body).toContain('Policy: https://github.com/LembaGang/headless-oracle-v5/blob/main/SECURITY.md');
 	});
 });
 
@@ -8852,5 +8853,74 @@ describe('llms.txt and llms-full.txt (AI-discoverable documentation)', () => {
 		const res = await fetchWorker('/llms.txt');
 		const link = res.headers.get('Link');
 		expect(link).toContain('/llms-full.txt');
+	});
+});
+
+// ─── Security Headers ──────────────────────────────────────────────────────
+
+describe('Security headers on all responses', () => {
+	const REQUIRED_SECURITY_HEADERS = {
+		'Strict-Transport-Security':  'max-age=31536000; includeSubDomains; preload',
+		'X-Content-Type-Options':     'nosniff',
+		'X-Frame-Options':            'DENY',
+		'Referrer-Policy':            'strict-origin-when-cross-origin',
+		'Permissions-Policy':         'camera=(), microphone=(), geolocation=()',
+	};
+
+	const endpoints = [
+		{ path: '/v5/demo?mic=XNYS', label: 'GET /v5/demo' },
+		{ path: '/v5/health', label: 'GET /v5/health' },
+		{ path: '/v5/exchanges', label: 'GET /v5/exchanges' },
+		{ path: '/.well-known/security.txt', label: 'GET /.well-known/security.txt' },
+		{ path: '/llms.txt', label: 'GET /llms.txt' },
+		{ path: '/robots.txt', label: 'GET /robots.txt' },
+	];
+
+	for (const { path, label } of endpoints) {
+		it(`${label} includes all security headers`, async () => {
+			vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+			const res = await fetchWorker(path);
+			for (const [name, value] of Object.entries(REQUIRED_SECURITY_HEADERS)) {
+				expect(res.headers.get(name), `Missing ${name} on ${label}`).toBe(value);
+			}
+		});
+	}
+
+	it('POST /mcp includes security headers', async () => {
+		const res = await fetchWorker('/mcp', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+		});
+		for (const [name, value] of Object.entries(REQUIRED_SECURITY_HEADERS)) {
+			expect(res.headers.get(name), `Missing ${name} on POST /mcp`).toBe(value);
+		}
+	});
+
+	it('JSON responses include charset=utf-8', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/demo?mic=XNYS');
+		expect(res.headers.get('Content-Type')).toBe('application/json; charset=utf-8');
+	});
+
+	it('GET /v5/demo includes X-Attestation-Mode: demo', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/demo?mic=XNYS');
+		expect(res.headers.get('X-Attestation-Mode')).toBe('demo');
+	});
+
+	it('GET /v5/status with API key includes X-Attestation-Mode: live', async () => {
+		vi.setSystemTime(new Date('2026-03-15T15:00:00Z'));
+		const res = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get('X-Attestation-Mode')).toBe('live');
+	});
+
+	it('Content-Security-Policy present on API responses', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/demo?mic=XNYS');
+		expect(res.headers.get('Content-Security-Policy')).toContain("default-src 'none'");
 	});
 });
