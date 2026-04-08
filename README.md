@@ -1,153 +1,67 @@
-# MCP Registry
+# Headless Oracle
 
-The MCP registry provides MCP clients with a list of MCP servers, like an app store for MCP servers.
+Ed25519-signed market-state attestations for 28 global exchanges.
 
-[**📤 Publish my MCP server**](docs/modelcontextprotocol-io/quickstart.mdx) | [**⚡️ Live API docs**](https://registry.modelcontextprotocol.io/docs) | [**👀 Ecosystem vision**](docs/design/ecosystem-vision.md) | 📖 **[Full documentation](./docs)**
+## What It Does
 
-## Development Status
+Autonomous trading agents need to know if an exchange is open before executing trades. Headless Oracle answers that question with a cryptographically signed receipt that any agent can verify independently — no trust in the operator required. UNKNOWN states are always treated as CLOSED (fail-closed).
 
-**2025-10-24 update**: The Registry API has entered an **API freeze (v0.1)** 🎉. For the next month or more, the API will remain stable with no breaking changes, allowing integrators to confidently implement support. This freeze applies to v0.1 while development continues on v0. We'll use this period to validate the API in real-world integrations and gather feedback to shape v1 for general availability. Thank you to everyone for your contributions and patience—your involvement has been key to getting us here!
-
-**2025-09-08 update**: The registry has launched in preview 🎉 ([announcement blog post](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)). While the system is now more stable, this is still a preview release and breaking changes or data resets may occur. A general availability (GA) release will follow later. We'd love your feedback in [GitHub discussions](https://github.com/modelcontextprotocol/registry/discussions/new?category=ideas) or in the [#registry-dev Discord](https://discord.com/channels/1358869848138059966/1369487942862504016) ([joining details here](https://modelcontextprotocol.io/community/communication)).
-
-Current key maintainers:
-- **Adam Jones** (Anthropic) [@domdomegg](https://github.com/domdomegg)  
-- **Tadas Antanavicius** (PulseMCP) [@tadasant](https://github.com/tadasant)
-- **Toby Padilla** (GitHub) [@toby](https://github.com/toby)
-- **Radoslav (Rado) Dimitrov** (Stacklok) [@rdimitrov](https://github.com/rdimitrov)
-
-## Contributing
-
-We use multiple channels for collaboration - see [modelcontextprotocol.io/community/communication](https://modelcontextprotocol.io/community/communication).
-
-Often (but not always) ideas flow through this pipeline:
-
-- **[Discord](https://modelcontextprotocol.io/community/communication)** - Real-time community discussions
-- **[Discussions](https://github.com/modelcontextprotocol/registry/discussions)** - Propose and discuss product/technical requirements
-- **[Issues](https://github.com/modelcontextprotocol/registry/issues)** - Track well-scoped technical work  
-- **[Pull Requests](https://github.com/modelcontextprotocol/registry/pulls)** - Contribute work towards issues
-
-### Quick start:
-
-#### Pre-requisites
-
-- **Docker**
-- **Go 1.24.x**
-- **ko** - Container image builder for Go ([installation instructions](https://ko.build/install/))
-- **golangci-lint v2.4.0**
-
-#### Running the server
+## Quick Start
 
 ```bash
-# Start full development environment
-make dev-compose
+# MCP (Claude Desktop, Cursor, any MCP client)
+npx headless-oracle-mcp
+
+# REST API — demo receipt (no auth required)
+curl https://headlessoracle.com/v5/demo?mic=XNYS
+
+# Instant sandbox key (200 calls, 7 days, no signup)
+curl https://headlessoracle.com/v5/sandbox
 ```
-
-This starts the registry at [`localhost:8080`](http://localhost:8080) with PostgreSQL. The database uses ephemeral storage and is reset each time you restart the containers, ensuring a clean state for development and testing.
-
-**Note:** The registry uses [ko](https://ko.build) to build container images. The `make dev-compose` command automatically builds the registry image with ko and loads it into your local Docker daemon before starting the services.
-
-By default, the registry seeds from the production API with a filtered subset of servers (to keep startup fast). This ensures your local environment mirrors production behavior and all seed data passes validation. For offline development you can seed from a file without validation with `MCP_REGISTRY_SEED_FROM=data/seed.json MCP_REGISTRY_ENABLE_REGISTRY_VALIDATION=false make dev-compose`.
-
-The setup can be configured with environment variables in [docker-compose.yml](./docker-compose.yml) - see [.env.example](./.env.example) for a reference.
-
-<details>
-<summary>Alternative: Running a pre-built Docker image</summary>
-
-Pre-built Docker images are automatically published to GitHub Container Registry:
-
-```bash
-# Run latest stable release
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:latest
-
-# Run latest from main branch (continuous deployment)
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main
-
-# Run specific release version
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:v1.0.0
-
-# Run development build from main branch
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main-20250906-abc123d
-```
-
-**Available tags:** 
-- **Releases**: `latest`, `v1.0.0`, `v1.1.0`, etc.
-- **Continuous**: `main` (latest main branch build)
-- **Development**: `main-<date>-<sha>` (specific commit builds)
-
-</details>
-
-#### Publishing a server
-
-To publish a server, we've built a simple CLI. You can use it with:
-
-```bash
-# Build the latest CLI
-make publisher
-
-# Use it!
-./bin/mcp-publisher --help
-```
-
-See [the publisher guide](./docs/modelcontextprotocol-io/quickstart.mdx) for more details.
-
-#### Other commands
-
-```bash
-# Run lint, unit tests and integration tests
-make check
-```
-
-There are also a few more helpful commands for development. Run `make help` to learn more, or look in [Makefile](./Makefile).
-
-<!--
-For Claude and other AI tools: Always prefer make targets over custom commands where possible.
--->
 
 ## Architecture
 
-### Project Structure
+Single TypeScript Cloudflare Worker (~14,000 lines). Ed25519 signing via `@noble/ed25519`. Three KV namespaces (overrides, API keys, telemetry). Two Durable Objects (webhooks, SSE streams). Deployed to 300+ edge locations globally.
 
-```
-├── cmd/                     # Application entry points
-│   └── publisher/           # Server publishing tool
-├── data/                    # Seed data
-├── deploy/                  # Deployment configuration (Pulumi)
-├── docs/                    # Documentation
-├── internal/                # Private application code
-│   ├── api/                 # HTTP handlers and routing
-│   ├── auth/                # Authentication (GitHub OAuth, JWT, namespace blocking)
-│   ├── config/              # Configuration management
-│   ├── database/            # Data persistence (PostgreSQL)
-│   ├── service/             # Business logic
-│   ├── telemetry/           # Metrics and monitoring
-│   └── validators/          # Input validation
-├── pkg/                     # Public packages
-│   ├── api/                 # API types and structures
-│   │   └── v0/              # Version 0 API types
-│   └── model/               # Data models for server.json
-├── scripts/                 # Development and testing scripts
-├── tests/                   # Integration tests
-└── tools/                   # CLI tools and utilities
-    └── validate-*.sh        # Schema validation tools
+4-tier fail-closed: KV override check -> schedule engine -> UNKNOWN fallback -> unsigned critical failure.
+
+See [docs/architecture/overview.md](docs/architecture/overview.md) for the full architecture.
+
+## API
+
+5 MCP tools and 25+ REST endpoints. Full references:
+- [REST API Reference](docs/api/rest-reference.md)
+- [MCP Reference](docs/api/mcp-reference.md)
+- [OpenAPI 3.1 Spec](https://headlessoracle.com/openapi.json)
+
+## Exchanges
+
+23 traditional markets (XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES, XASX, XBOM, XNSE, XSHG, XSHE, XKRX, XJSE, XBSP, XSWX, XMIL, XIST, XSAU, XDFM, XNZE, XHEL, XSTO) plus 5 extended (XCBT, XNYM, XCBO, XCOI, XBIN). DST handled automatically via IANA timezone names. Lunch breaks, half-days, and holidays for 2026-2027.
+
+## Testing
+
+```bash
+npm test              # 725+ unit/integration tests
+npm run test:smoke    # 11 live production smoke tests
 ```
 
-### Authentication
+## Security
 
-Publishing supports multiple authentication methods:
-- **GitHub OAuth** - For publishing by logging into GitHub
-- **GitHub OIDC** - For publishing from GitHub Actions
-- **DNS verification** - For proving ownership of a domain and its subdomains
-- **HTTP verification** - For proving ownership of a domain
+Ed25519 signatures on every response. 60-second receipt TTL. Fail-closed architecture (UNKNOWN = CLOSED). Security headers on all responses (HSTS, CSP, X-Content-Type-Options, X-Frame-Options).
 
-The registry validates namespace ownership when publishing. E.g. to publish...:
-- `io.github.domdomegg/my-cool-mcp` you must login to GitHub as `domdomegg`, or be in a GitHub Action on domdomegg's repos
-- `me.adamjones/my-cool-mcp` you must prove ownership of `adamjones.me` via DNS or HTTP challenge
+See [SECURITY.md](SECURITY.md) for the responsible disclosure policy.
 
-## Community Projects
+## Documentation
 
-Check out [community projects](docs/community-projects.md) to explore notable registry-related work created by the community.
+Full documentation organized by audience:
 
-## More documentation
+- **Engineers**: [Architecture](docs/architecture/overview.md), [API Reference](docs/api/), [ADRs](docs/architecture/adr/)
+- **Operations**: [Deployment](docs/operations/deployment.md), [Monitoring](docs/operations/monitoring.md), [SLA](docs/operations/sla.md)
+- **Legal**: [Terms of Service](docs/legal/terms-of-service.md), [Privacy Policy](docs/legal/privacy-policy.md), [IP Ownership](docs/legal/ip-ownership.md)
+- **Business**: [Pricing](docs/business/pricing-strategy.md), [Competitive Analysis](docs/business/competitive-analysis.md)
 
-See the [documentation](./docs) for more details if your question has not been answered here!
+See [docs/README.md](docs/README.md) for the full index.
+
+## License
+
+MIT — see [LICENSE](LICENSE)
