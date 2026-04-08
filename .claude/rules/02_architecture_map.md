@@ -26,7 +26,8 @@ file so any model can navigate it without searching.
 | 1900–2000 | Constants (x402 amounts, tier limits, webhook limits) |
 | 2000–2700 | Payment: `verifyX402Payment()`, CDP JWT, facilitator, `verifyPaymentAnyFormat()`, 402 builders |
 | 2700–2800 | KV helpers: `getDailyUsage()`, `incrementKvCounter()`, `getCreditBalance()`, `addCredits()` |
-| 2800–3600 | Weekly digest, MPAS spec, aggregation verification helpers |
+| 2845–2940 | Merkle audit: `trackReceiptId()`, `computeMerkleRoot()`, `getOrBuildDigest()` |
+| 2940–3600 | Weekly digest, MPAS spec, aggregation verification helpers |
 | 3600–7800 | Large string constants (LLMS_TXT, SKILL_MD, AGENTS_MD, docs, integration guides, blog posts, OpenAPI spec) |
 | 7821–7918 | **`buildSignedReceipt()`** — the 4-tier fail-closed core |
 | 7920–8470 | MCP handler (`handleMcp()`), OAuth endpoints |

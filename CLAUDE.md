@@ -51,7 +51,7 @@ Still requires explicit confirmation in the message:
 | Path | Purpose |
 |---|---|
 | `src/index.ts` | The entire worker: routing, signing, billing, MCP, telemetry, schedule engine |
-| `test/index.spec.ts` | Main test suite (714+ tests) |
+| `test/index.spec.ts` | Main test suite (753+ tests) |
 | `test/x402_mint_telemetry.spec.ts` | x402 mint + per-tool telemetry tests |
 | `wrangler.toml` | Worker config, KV bindings, env vars, cron triggers, routes |
 | `.dev.vars` | Local dev/test secrets (test-only keypair, NOT production) |
@@ -94,6 +94,8 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `GET /openapi.json` — OpenAPI 3.1 spec
 - `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, 5 tools)
 - `GET /v5/sandbox` — Instant sandbox key (200 calls, 7-day TTL)
+- `GET /v5/audit/digest` — Daily attestation digest with Merkle root
+- `GET /v5/audit/chain` — Hash chain of last N daily digests
 
 ### Authenticated (X-Oracle-Key header)
 - `GET /v5/status?mic=<MIC>` — Signed receipt (receipt_mode: live). Also supports free trial (3/day/IP) and x402 payment.
@@ -134,10 +136,10 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-08 by Day 43 acquisition readiness sprint -->
+<!-- Last updated: 2026-04-08 by Day 43 engineering hardening sprint -->
 
-- **Tests**: 725/725
-- **Worker version**: b9655d6e (latest deployed)
+- **Tests**: 753/753
+- **Worker version**: 8b1008d9 (latest deployed)
 - **Test payment**: 1 x402 payment settled (Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11

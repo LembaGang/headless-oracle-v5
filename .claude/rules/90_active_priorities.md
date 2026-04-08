@@ -2,9 +2,31 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Acquisition readiness sprint.
-**Test suite**: 725/725 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 8 2026 — Day 43: Acquisition Readiness Sprint Part 2 (725 tests, docs only):
+**Phase**: Post-launch. Engineering hardening sprint.
+**Test suite**: 753/753 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 8 2026 — Day 43 continued: Merkle Audit Chain (742→753 tests):
+- **GET /v5/audit/digest** (commit 3e498e9): Daily attestation digest with SHA-256 Merkle root over ordered receipt IDs. Public, no auth. ?date= param, partial flag for today, validation (future dates, pre-launch dates, format). 7 tests.
+- **GET /v5/audit/chain** (commit 3e498e9): Hash chain of last N daily digests (default 7, max 30). chain_intact verification flag. Each day chains to previous via previous_day_merkle_root. 4 tests.
+- **trackReceiptId()**: Appends receipt_id + MIC to digest_receipt_ids:{date} KV on every receipt (all modes). Non-blocking via ctx.waitUntil.
+- **computeMerkleRoot()**: SHA-256 Merkle tree — leaf = sha256(receipt_id), pairs hashed upward, odd promoted.
+- **getOrBuildDigest()**: Lazy-computes and caches completed daily digests in attestation_digest:{date} KV (90-day TTL). Only caches past days (today always live-computed).
+- **Batch tracking**: Receipt IDs from /v5/batch also tracked via separate loop.
+- **Archive write fix**: Restored mode === 'live' guard on archive (was accidentally removed). Digest tracks all modes.
+- **OpenAPI spec**: /v5/audit/digest and /v5/audit/chain added with full schemas.
+- **LLMS_TXT**: "Audit & Transparency" section added.
+- Live-verified: both endpoints returning correct structure. Receipt tracking confirmed working.
+- Gap: Merkle proofs (proving a specific receipt_id is in the tree without the full list) not yet implemented. Needed when agents want to verify inclusion without fetching all IDs.
+
+**Previous**: Apr 8 2026 — Day 43 continued: Engineering Hardening Sprint (725→742 tests):
+- **Property-based tests** (commit b32e704): fast-check schedule engine tests — 15 generative tests verifying timezone determinism, holiday fail-closed, DST safety, lunch break correctness, overnight session continuity.
+- **Load test script** (commit 3ac4c13): scripts/load-test.ts with configurable RPS, baseline results at 10 req/s documented.
+- **Error budget tracker** (commit a639064): GET /v5/slo — SLO reporting endpoint with error budget computation, uptime tracking, burn rate. 4 tests.
+- **/v5/verify enhancements** (commit 953e0bc): GET support (query params), detailed check breakdown (fields_present, not_expired, signature_valid, schema_version_match), structured checks array. 4 tests.
+- **/v5/batch enhancements** (commit 1dc84e8): correlation_id for request tracing, exchanges map (keyed by MIC), batch_signature (Ed25519 over sorted MICs+statuses). 4 tests.
+- **GET /v5/historical** (commit 71de82b): Schedule reconstruction at past timestamp. Returns computed_status, reasoning (local time, weekend/holiday/hours), DST proximity notes. Public, unsigned. 9 tests.
+- Gap: /v5/historical DST transition data is hardcoded for 2026-2027 only. Needs dynamic generation from Intl API or annual maintenance beyond 2027.
+
+**Previous**: Apr 8 2026 — Day 43: Acquisition Readiness Sprint Part 2 (725 tests, docs only):
 - **Documentation reorganization**: docs/ restructured into architecture/, api/, operations/, legal/, business/, security/, integrations/, distribution/, blog/. Master index at docs/README.md. ADRs moved to docs/architecture/adr/ via git mv (history preserved).
 - **Architecture docs**: docs/architecture/overview.md (system summary, 4-tier fail-closed, signing model, auth model), docs/architecture/data-flow.md (3 request lifecycle paths + MCP path).
 - **API reference**: docs/api/rest-reference.md (all endpoints, error format, rate limits), docs/api/mcp-reference.md (5 tools, config examples, auth model).
