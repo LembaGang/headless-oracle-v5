@@ -1919,12 +1919,23 @@ const FREE_TRIAL_DAILY_LIMIT   = 3;     // Keyless trial: 3 real signed receipts
 
 // Machine-readable upgrade paths for agents hitting 402 after trial exhaustion.
 // Structured so an agent can read this and autonomously choose a path forward.
+// Ordered by friction: instant_key (zero) → x402 (low) → email (medium) → demo (none but unsigned).
 const AGENT_UPGRADE_PATHS = {
+	instant_key: {
+		method:          'POST',
+		url:             'https://headlessoracle.com/v5/keys/instant',
+		body:            { agent_id: '<your-unique-id>' },
+		description:     'Get a free API key instantly. 500 calls/day. No email required.',
+		friction:        'zero',
+		time_to_access:  '< 1 second',
+	},
 	instant_no_signup: {
 		method:      'x402',
 		cost:        '$0.001 USDC per call',
 		network:     'base',
 		instruction: 'Include X-Payment header with USDC payment',
+		friction:        'low',
+		time_to_access:  '< 5 seconds',
 	},
 	free_500_daily: {
 		method: 'api_key',
@@ -1934,11 +1945,15 @@ const AGENT_UPGRADE_PATHS = {
 			'Check email for API key',
 			'Include X-Oracle-Key header',
 		],
+		friction:        'medium',
+		time_to_access:  '~ 2 minutes',
 	},
 	try_now: {
 		method: 'demo',
 		url:    'https://headlessoracle.com/v5/demo?mic=XNYS',
 		note:   'Unsigned demo data, always free, no limits',
+		friction:        'none',
+		time_to_access:  'instant',
 	},
 };
 const SANDBOX_DAILY_LIMIT      = 200;   // Sandbox keys: 200 calls per 7-day key lifetime — enough to evaluate without replacing credit pack
@@ -7279,9 +7294,24 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/keys/instant': {
+			post: {
+				summary:     'Get a free API key instantly — zero friction',
+				description: 'Returns a free-tier API key immediately. No email, no signup. One key per agent_id (idempotent). Rate-limited to 10 keys per IP per day. Designed for autonomous agents to self-provision.',
+				requestBody: {
+					required: true,
+					content:  { 'application/json': { schema: { type: 'object', required: ['agent_id'], properties: { agent_id: { type: 'string', description: 'Unique identifier for the agent (any string, max 256 chars)', example: 'my-trading-agent-v1' } } } } },
+				},
+				responses: {
+					'200': { description: 'API key issued or existing key returned', content: { 'application/json': { schema: { type: 'object', properties: { api_key: { type: 'string', example: 'ho_free_a1b2c3...' }, daily_limit: { type: 'integer', example: 500 }, plan: { type: 'string', example: 'free' }, usage: { type: 'string' }, example: { type: 'string' }, upgrade_url: { type: 'string' } } } } } },
+					'400': { description: 'Invalid or missing agent_id', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'429': { description: 'Rate limited — max 10 instant keys per day per IP', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
 		'/v5/keys/request': {
 			post: {
-				summary:     'Provision a free-tier API key',
+				summary:     'Provision a free-tier API key via email',
 				description: 'Generates a ho_free_ prefixed API key and emails it to the provided address. Rate-limited to 3 requests per IP per 24 hours. No authentication required.',
 				requestBody: {
 					required: true,
@@ -12048,6 +12078,122 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				}
 
 				return json({ plan: 'free', message: 'API key sent to your email' });
+			}
+
+			// ── POST /v5/keys/instant — zero-friction agent key provisioning ──
+			// No email, no human-in-the-loop. Agent POSTs { agent_id }, gets a
+			// free-tier key back immediately. One key per agent_id (idempotent).
+			// Rate-limited: 10 keys per IP per day to prevent abuse.
+			if (url.pathname === '/v5/keys/instant') {
+				if (request.method === 'GET') {
+					return json({
+						message:     'POST with { "agent_id": "<your-unique-id>" } to get an instant API key',
+						method:      'POST',
+						body:        { agent_id: 'any-unique-string' },
+						daily_limit: FREE_TIER_DAILY_LIMIT,
+						description: 'Returns a free API key (500 calls/day). No email required. One key per agent_id.',
+					});
+				}
+				if (request.method !== 'POST') {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST with { "agent_id": "..." }' }, 405);
+				}
+
+				const body = await request.json().catch(() => null) as { agent_id?: unknown } | null;
+				const agentId = body?.agent_id;
+				if (typeof agentId !== 'string' || !agentId.trim() || agentId.trim().length > 256) {
+					return json({ error: 'INVALID_AGENT_ID', message: 'agent_id is required (string, max 256 chars)' }, 400);
+				}
+				const normalizedAgentId = agentId.trim();
+
+				// IP-based rate limit: max 10 instant key creations per IP per day
+				const rawIpInst   = request.headers.get('CF-Connecting-IP') ?? '';
+				const ipHashInst  = await sha256Hex(rawIpInst || 'unknown');
+				const dateInst    = now.toISOString().slice(0, 10);
+				const rlKeyInst   = `ratelimit:instant_keys:${ipHashInst}:${dateInst}`;
+				const rlStoredInst = await env.ORACLE_TELEMETRY.get(rlKeyInst).catch(() => null);
+				const rlCountInst  = rlStoredInst ? parseInt(rlStoredInst, 10) : 0;
+				if (rlCountInst >= 10) {
+					return json({ error: 'RATE_LIMITED', message: 'Max 10 instant keys per IP per day' }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
+				}
+
+				// Check for existing key by agent_id → idempotent: same agent_id gets same key
+				const agentIdHash    = await sha256Hex(normalizedAgentId);
+				const instantKvKey   = `instant_key:${agentIdHash}`;
+				const existingRecord = await env.ORACLE_TELEMETRY.get(instantKvKey).catch(() => null);
+
+				if (existingRecord) {
+					// Return cached key — agent gets the same key on repeated calls
+					const record = JSON.parse(existingRecord) as { key_hash: string; key_prefix: string; created_at: string };
+					incrementKvCounter(`funnel_instant_key:reused:${dateInst}`, env, ctx);
+					return json({
+						api_key:      `${record.key_prefix}${'*'.repeat(40)}`,
+						key_prefix:   record.key_prefix,
+						note:         'This agent_id already has a key. The full key was shown once at creation. Use the key_prefix to identify it in your config.',
+						daily_limit:  FREE_TIER_DAILY_LIMIT,
+						plan:         'free',
+						created_at:   record.created_at,
+						usage:        'Add header: X-Oracle-Key: <your-key>',
+						upgrade_url:  'https://headlessoracle.com/pricing',
+					});
+				}
+
+				// Generate new instant key
+				const rawKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+				const keyValue    = 'ho_free_' + toHex(rawKeyBytes);
+				const keyHash     = await sha256Hex(keyValue);
+				const createdAt   = now.toISOString();
+				const keyPrefix   = keyValue.substring(0, 14);
+
+				// Store key in KV (primary — no Supabase requirement for instant keys)
+				if (env.ORACLE_API_KEYS) {
+					await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({
+						plan:       'free',
+						status:     'active',
+						source:     'instant',
+						agent_id:   normalizedAgentId,
+						created_at: createdAt,
+						ip_hash:    ipHashInst,
+						user_agent: request.headers.get('User-Agent') ?? '',
+					}));
+				}
+
+				// Store agent_id → key mapping for idempotent lookups (90-day TTL)
+				const instantRecord = JSON.stringify({ key_hash: keyHash, key_prefix: keyPrefix, created_at: createdAt });
+				await env.ORACLE_TELEMETRY.put(instantKvKey, instantRecord, { expirationTtl: 86_400 * 90 }).catch(() => {});
+
+				// Non-blocking: also insert into Supabase if available (for analytics, not gating)
+				if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY && typeof ctx?.waitUntil === 'function') {
+					ctx.waitUntil((async () => {
+						try {
+							const supabase = createClient(env.SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!);
+							await supabase.from('api_keys').insert({
+								id:         crypto.randomUUID(),
+								key_hash:   keyHash,
+								key_prefix: keyPrefix,
+								plan:       'free',
+								status:     'active',
+								email:      null,
+								created_at: createdAt,
+							});
+						} catch { /* best-effort */ }
+					})());
+				}
+
+				// Increment rate limit + telemetry counters
+				const putRl = env.ORACLE_TELEMETRY.put(rlKeyInst, String(rlCountInst + 1), { expirationTtl: 25 * 3600 }).catch(() => {});
+				if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putRl);
+				incrementKvCounter(`funnel_instant_key:created:${dateInst}`, env, ctx);
+				incrementKvCounter(`funnel_instant_key:requested:${dateInst}`, env, ctx);
+
+				return json({
+					api_key:     keyValue,
+					daily_limit: FREE_TIER_DAILY_LIMIT,
+					plan:        'free',
+					created_at:  createdAt,
+					usage:       `Add header: X-Oracle-Key: ${keyValue}`,
+					example:     `curl -H 'X-Oracle-Key: ${keyValue}' https://headlessoracle.com/v5/status?mic=XNYS`,
+					upgrade_url: 'https://headlessoracle.com/pricing',
+				});
 			}
 
 			// ── GET /v5/compliance — APTS compliance declaration ─────────

@@ -3456,6 +3456,105 @@ describe('POST /v5/keys/request', () => {
 	});
 });
 
+// ─── POST /v5/keys/instant — zero-friction agent key provisioning ────────────
+
+describe('POST /v5/keys/instant', () => {
+	it('GET /v5/keys/instant → 200 with usage info', async () => {
+		const response = await fetchWorker('/v5/keys/instant');
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('method', 'POST');
+		expect(body).toHaveProperty('daily_limit', 500);
+	});
+
+	it('missing agent_id → 400 INVALID_AGENT_ID', async () => {
+		const response = await fetchWorker('/v5/keys/instant', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({}),
+		});
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'INVALID_AGENT_ID');
+	});
+
+	it('valid agent_id → 200 with api_key, example, daily_limit', async () => {
+		const response = await fetchWorker('/v5/keys/instant', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ agent_id: 'test-agent-instant-1' }),
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('plan', 'free');
+		expect(body).toHaveProperty('daily_limit', 500);
+		expect(typeof body.api_key).toBe('string');
+		expect((body.api_key as string).startsWith('ho_free_')).toBe(true);
+		expect(typeof body.example).toBe('string');
+		expect(typeof body.usage).toBe('string');
+		expect(body).toHaveProperty('upgrade_url', 'https://headlessoracle.com/pricing');
+	});
+
+	it('same agent_id → returns same key prefix (idempotent)', async () => {
+		// First request creates key
+		const res1 = await fetchWorker('/v5/keys/instant', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ agent_id: 'test-idempotent-agent' }),
+		});
+		expect(res1.status).toBe(200);
+		const body1 = await res1.json() as Record<string, unknown>;
+		expect(typeof body1.api_key).toBe('string');
+
+		// Second request returns cached key prefix with note
+		const res2 = await fetchWorker('/v5/keys/instant', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ agent_id: 'test-idempotent-agent' }),
+		});
+		expect(res2.status).toBe(200);
+		const body2 = await res2.json() as Record<string, unknown>;
+		expect(body2).toHaveProperty('note');
+		expect(body2).toHaveProperty('key_prefix');
+		expect((body2.key_prefix as string).startsWith('ho_free_')).toBe(true);
+	});
+
+	it('issued key authenticates /v5/status successfully', async () => {
+		const res = await fetchWorker('/v5/keys/instant', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ agent_id: 'test-agent-auth-check' }),
+		});
+		const body = await res.json() as { api_key: string };
+
+		// Use the key to call /v5/status
+		const statusRes = await fetchWorker('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': body.api_key },
+		});
+		expect(statusRes.status).toBe(200);
+		const statusBody = await statusRes.json() as Record<string, unknown>;
+		expect(statusBody).toHaveProperty('receipt');
+	});
+
+	it('402 on trial exhaustion includes instant_key upgrade path', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const response = await fetchWorker('/v5/status?mic=XNYS');
+			expect(response.status).toBe(402);
+			const body = await response.json() as Record<string, unknown>;
+			const paths = body.agent_upgrade_paths as Record<string, unknown>;
+			expect(paths).toHaveProperty('instant_key');
+			const instantKey = paths.instant_key as Record<string, unknown>;
+			expect(instantKey).toHaveProperty('url', 'https://headlessoracle.com/v5/keys/instant');
+			expect(instantKey).toHaveProperty('friction', 'zero');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
+	});
+});
+
 // ─── Billing: POST /v5/checkout ──────────────────────────────────────────────
 
 describe('POST /v5/checkout', () => {
