@@ -2583,6 +2583,115 @@ async function verifyReceiptLogic(
 	}
 }
 
+// Detailed receipt verification — returns per-check breakdown for the enhanced /v5/verify endpoint.
+async function verifyReceiptDetailed(
+	receipt: Record<string, unknown> | undefined,
+	pubKeyHex: string | undefined,
+): Promise<Record<string, unknown>> {
+	const checks: Record<string, { passed: boolean; detail: string }> = {};
+	let allValid = true;
+
+	if (!receipt || typeof receipt !== 'object') {
+		return {
+			valid: false,
+			checks: { schema: { passed: false, detail: 'Receipt is missing or not an object' } },
+			receipt_summary: null,
+		};
+	}
+
+	// Check 1: Schema — required fields present
+	const requiredFields = ['receipt_id', 'issued_at', 'expires_at', 'mic', 'status', 'source', 'signature'];
+	const missingFields = requiredFields.filter(f => !(f in receipt));
+	if (missingFields.length > 0) {
+		checks.schema = { passed: false, detail: `Missing required fields: ${missingFields.join(', ')}` };
+		allValid = false;
+	} else {
+		const sv = typeof receipt.schema_version === 'string' ? receipt.schema_version : 'unknown';
+		checks.schema = { passed: true, detail: `Schema version ${sv}` };
+	}
+
+	// Check 2: Issuer
+	const issuer = typeof receipt.issuer === 'string' ? receipt.issuer : null;
+	if (issuer === ORACLE_ISSUER) {
+		checks.issuer = { passed: true, detail: `Issued by ${ORACLE_ISSUER}` };
+	} else if (issuer) {
+		checks.issuer = { passed: false, detail: `Unknown issuer: ${issuer}` };
+		allValid = false;
+	} else {
+		checks.issuer = { passed: false, detail: 'No issuer field present' };
+		allValid = false;
+	}
+
+	// Check 3: Public key
+	const keyId = typeof receipt.public_key_id === 'string' ? receipt.public_key_id : null;
+	if (pubKeyHex && keyId) {
+		checks.public_key = { passed: true, detail: `Key ${keyId} is active` };
+	} else if (!pubKeyHex) {
+		checks.public_key = { passed: false, detail: 'Oracle public key not configured' };
+		allValid = false;
+	} else {
+		checks.public_key = { passed: false, detail: 'No public_key_id in receipt' };
+		allValid = false;
+	}
+
+	// Check 4: Signature
+	if (typeof receipt.signature === 'string' && receipt.signature && pubKeyHex) {
+		try {
+			const UNSIGNED_WRAPPER_FIELDS = new Set(['discovery_url', 'receipt', 'extensions']);
+			const { signature, ...rest } = receipt;
+			const payload: Record<string, string> = {};
+			for (const key of Object.keys(rest).sort()) {
+				if (UNSIGNED_WRAPPER_FIELDS.has(key)) continue;
+				payload[key] = String((rest as Record<string, unknown>)[key]);
+			}
+			const canonical = JSON.stringify(payload);
+			const msgBytes = new TextEncoder().encode(canonical);
+			const sigBytes = fromHex(signature as string);
+			const pubKey = fromHex(pubKeyHex);
+			const sigValid = await ed.verify(sigBytes, msgBytes, pubKey);
+			checks.signature = sigValid
+				? { passed: true, detail: 'Ed25519 signature verified' }
+				: { passed: false, detail: 'Ed25519 signature verification failed' };
+			if (!sigValid) allValid = false;
+		} catch {
+			checks.signature = { passed: false, detail: 'Signature verification error (malformed hex)' };
+			allValid = false;
+		}
+	} else {
+		checks.signature = { passed: false, detail: 'No valid signature present' };
+		allValid = false;
+	}
+
+	// Check 5: TTL
+	const expiresAt = typeof receipt.expires_at === 'string' ? receipt.expires_at : null;
+	if (expiresAt) {
+		const expiresMs = new Date(expiresAt).getTime();
+		const nowMs = Date.now();
+		if (expiresMs > nowMs) {
+			const remainingSec = Math.round((expiresMs - nowMs) / 1000);
+			checks.ttl = { passed: true, detail: `Receipt valid for ${remainingSec} more seconds` };
+		} else {
+			const agoSec = Math.round((nowMs - expiresMs) / 1000);
+			checks.ttl = { passed: false, detail: `Receipt expired ${agoSec} seconds ago` };
+			allValid = false;
+		}
+	} else {
+		checks.ttl = { passed: false, detail: 'No expires_at field present' };
+		allValid = false;
+	}
+
+	// Build summary
+	const receiptSummary: Record<string, unknown> = {
+		mic: typeof receipt.mic === 'string' ? receipt.mic : null,
+		status: typeof receipt.status === 'string' ? receipt.status : null,
+		issued_at: typeof receipt.issued_at === 'string' ? receipt.issued_at : null,
+		expires_at: expiresAt,
+		receipt_mode: typeof receipt.receipt_mode === 'string' ? receipt.receipt_mode : null,
+	};
+
+	return { valid: allValid, checks, receipt_summary: receiptSummary };
+}
+
 // Build the Payment-Required header value required by x402 index crawlers (e.g. 402index.io).
 // Crawlers read this header (base64 JSON) rather than parsing the response body.
 // Uses bare "base" network name and "amount" field (x402 v2 header convention).
@@ -11939,20 +12048,34 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 			// Public, no auth. Accepts a signed receipt, returns verification result.
 			// Shares verifyReceiptLogic() with the verify_receipt MCP tool.
 			if (url.pathname === '/v5/verify') {
-				if (request.method !== 'POST') {
-					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
+				let receipt: Record<string, unknown> | undefined;
+
+				if (request.method === 'GET') {
+					const receiptParam = url.searchParams.get('receipt');
+					if (!receiptParam) {
+						return json({ error: 'MISSING_RECEIPT', message: 'Provide receipt as ?receipt={url-encoded-json} or use POST with JSON body' }, 400);
+					}
+					try {
+						receipt = JSON.parse(receiptParam) as Record<string, unknown>;
+					} catch {
+						return json({ error: 'INVALID_JSON', message: 'receipt query param must be valid JSON' }, 400);
+					}
+				} else if (request.method === 'POST') {
+					let body: Record<string, unknown>;
+					try {
+						body = await request.json() as Record<string, unknown>;
+					} catch {
+						return json({ error: 'INVALID_JSON', message: 'Request body must be valid JSON' }, 400);
+					}
+					receipt = body.receipt as Record<string, unknown> | undefined;
+				} else {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use GET or POST' }, 405);
 				}
-				let body: Record<string, unknown>;
-				try {
-					body = await request.json() as Record<string, unknown>;
-				} catch {
-					return json({ error: 'INVALID_JSON', message: 'Request body must be valid JSON' }, 400);
-				}
-				const receipt = body.receipt as Record<string, unknown> | undefined;
+
 				if (!receipt || typeof receipt !== 'object') {
 					return json({ error: 'MISSING_RECEIPT', message: 'Body must include a "receipt" object field' }, 400);
 				}
-				const result = await verifyReceiptLogic(receipt, env.ED25519_PUBLIC_KEY);
+				const result = await verifyReceiptDetailed(receipt, env.ED25519_PUBLIC_KEY);
 				return json(result);
 			}
 

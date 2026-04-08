@@ -7951,9 +7951,8 @@ describe('MCP get_payment_options tool (Item 5B)', () => {
 	});
 });
 
-describe('POST /v5/verify — REST receipt verification (Item 6)', () => {
-	it('valid receipt → valid:true', async () => {
-		// Fetch a real signed receipt from /v5/demo to use as test input
+describe('GET/POST /v5/verify — detailed receipt verification', () => {
+	it('POST valid receipt → valid:true with all checks passed', async () => {
 		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
 		const receiptBody = await receiptRes.json() as Record<string, unknown>;
 		const receipt     = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
@@ -7966,14 +7965,21 @@ describe('POST /v5/verify — REST receipt verification (Item 6)', () => {
 		expect(res.status).toBe(200);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('valid', true);
-		expect(body).toHaveProperty('reason', 'SIGNATURE_VALID');
+		const checks = body.checks as Record<string, { passed: boolean; detail: string }>;
+		expect(checks.signature.passed).toBe(true);
+		expect(checks.signature.detail).toBe('Ed25519 signature verified');
+		expect(checks.ttl.passed).toBe(true);
+		expect(checks.issuer.passed).toBe(true);
+		expect(checks.schema.passed).toBe(true);
+		expect(checks.public_key.passed).toBe(true);
+		const summary = body.receipt_summary as Record<string, unknown>;
+		expect(summary.mic).toBe('XNYS');
 	});
 
-	it('tampered receipt → valid:false with INVALID_SIGNATURE', async () => {
+	it('POST tampered receipt → signature check fails', async () => {
 		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
 		const receiptBody = await receiptRes.json() as Record<string, unknown>;
 		const base        = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
-		// Tamper the status field — signature will no longer match
 		const tampered    = { ...base, status: 'OPEN_TAMPERED' };
 
 		const res  = await fetchWorker('/v5/verify', {
@@ -7984,15 +7990,14 @@ describe('POST /v5/verify — REST receipt verification (Item 6)', () => {
 		expect(res.status).toBe(200);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('valid', false);
-		expect(body).toHaveProperty('reason', 'INVALID_SIGNATURE');
+		const checks = body.checks as Record<string, { passed: boolean }>;
+		expect(checks.signature.passed).toBe(false);
 	});
 
-	it('expired receipt → expired:true', async () => {
-		// Build a receipt with expires_at in the past (but valid signature is not checked for expiry flag)
+	it('POST expired receipt → ttl check fails', async () => {
 		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
 		const receiptBody = await receiptRes.json() as Record<string, unknown>;
 		const base        = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
-		// Patch expires_at to the past without changing signature — expired:true, valid may be true or false
 		const expired = { ...base, expires_at: '2020-01-01T00:00:00.000Z' };
 
 		const res  = await fetchWorker('/v5/verify', {
@@ -8002,8 +8007,56 @@ describe('POST /v5/verify — REST receipt verification (Item 6)', () => {
 		});
 		expect(res.status).toBe(200);
 		const body = await res.json() as Record<string, unknown>;
-		// expired field must be true regardless of signature validity
-		expect(body).toHaveProperty('expired', true);
+		expect(body).toHaveProperty('valid', false);
+		const checks = body.checks as Record<string, { passed: boolean }>;
+		expect(checks.ttl.passed).toBe(false);
+	});
+
+	it('GET with ?receipt= query param works', async () => {
+		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
+		const receiptBody = await receiptRes.json() as Record<string, unknown>;
+		const receipt     = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
+
+		const encoded = encodeURIComponent(JSON.stringify(receipt));
+		const res = await fetchWorker(`/v5/verify?receipt=${encoded}`);
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('valid', true);
+		const checks = body.checks as Record<string, { passed: boolean }>;
+		expect(checks.signature.passed).toBe(true);
+	});
+
+	it('GET without ?receipt= → 400', async () => {
+		const res = await fetchWorker('/v5/verify');
+		expect(res.status).toBe(400);
+	});
+
+	it('POST missing receipt field → 400', async () => {
+		const res = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ not_receipt: {} }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it('receipt_summary contains expected fields', async () => {
+		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
+		const receiptBody = await receiptRes.json() as Record<string, unknown>;
+		const receipt     = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
+
+		const res  = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ receipt }),
+		});
+		const body = await res.json() as Record<string, unknown>;
+		const summary = body.receipt_summary as Record<string, unknown>;
+		expect(summary).toHaveProperty('mic', 'XNYS');
+		expect(summary).toHaveProperty('status');
+		expect(summary).toHaveProperty('issued_at');
+		expect(summary).toHaveProperty('expires_at');
+		expect(summary).toHaveProperty('receipt_mode', 'demo');
 	});
 });
 
