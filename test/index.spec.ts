@@ -5554,6 +5554,85 @@ describe('GET /v5/batch — portfolio summary', () => {
 	});
 });
 
+// ─── GET /v5/batch — correlation_id, exchanges map, batch signature ──────────
+
+describe('GET /v5/batch — enhanced batch fields', () => {
+	it('batch response includes correlation_id, exchanges map, and batch-level signature', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const res = await fetchWorker('/v5/batch?mics=XNYS,XNAS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+
+		// correlation_id = batch_id
+		expect(body).toHaveProperty('correlation_id');
+		expect(body.correlation_id).toBe(body.batch_id);
+
+		// exchanges map
+		const exchanges = body.exchanges as Record<string, { status: string; source: string }>;
+		expect(exchanges).toBeDefined();
+		expect(exchanges.XNYS).toBeDefined();
+		expect(exchanges.XNYS.status).toBe('OPEN');
+		expect(exchanges.XNAS.status).toBe('OPEN');
+
+		// batch-level signature
+		expect(typeof body.signature).toBe('string');
+		expect((body.signature as string).length).toBeGreaterThan(0);
+
+		// all_open at top level
+		expect(body.all_open).toBe(true);
+
+		// schema_version and public_key_id
+		expect(body.schema_version).toBe('v5.0');
+		expect(body.public_key_id).toBeDefined();
+	});
+
+	it('batch signature is verifiable via /v5/verify', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const res = await fetchWorker('/v5/batch?mics=XNYS,XLON', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const body = await res.json() as Record<string, unknown>;
+
+		// Build the receipt object that was signed
+		const receipt = {
+			batch_id:       body.batch_id,
+			correlation_id: body.correlation_id,
+			issued_at:      body.issued_at,
+			expires_at:     body.expires_at,
+			issuer:         'headlessoracle.com',
+			exchanges:      JSON.stringify(body.exchanges),
+			all_open:       String(body.all_open),
+			schema_version: body.schema_version,
+			public_key_id:  body.public_key_id,
+			signature:      body.signature,
+		};
+
+		const verifyRes = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ receipt }),
+		});
+		const verifyBody = await verifyRes.json() as Record<string, unknown>;
+		const checks = verifyBody.checks as Record<string, { passed: boolean }>;
+		expect(checks.signature.passed).toBe(true);
+	});
+
+	it('all_open is false when any exchange is CLOSED', async () => {
+		// XNYS open at 14:00 UTC, XLON closed (17:00 UTC close, 14:00 UTC = 14:00 GMT = before 16:30 close... actually XLON closes at 16:30 local)
+		// Use a time where NYSE is open but XJPX is closed
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const res = await fetchWorker('/v5/batch?mics=XNYS,XJPX', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.all_open).toBe(false);
+	});
+
+	it('rejects more than 10 MICs', async () => {
+		const mics = 'XNYS,XNAS,XLON,XJPX,XPAR,XHKG,XSES,XASX,XBOM,XNSE,XSHG';
+		const res = await fetchWorker(`/v5/batch?mics=${mics}`, { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('TOO_MANY_MICS');
+	});
+});
+
 // ─── GAP-012: batch override recheck ──────────────────────────────────────────────────────────────────
 
 describe('GAP-012: batch safe_to_execute override recheck', () => {

@@ -9519,6 +9519,14 @@ export default {
 					}, 400);
 				}
 
+				// Max 10 exchanges per batch request
+				if (requestedMics.length > 10) {
+					return json({
+						error:   'TOO_MANY_MICS',
+						message: `Maximum 10 exchanges per batch request. Received ${requestedMics.length}.`,
+					}, 400);
+				}
+
 				// Validate all MICs before processing — fail-closed on unknown input
 				const unknownMics = requestedMics.filter((m) => !MARKET_CONFIGS[m]);
 				if (unknownMics.length > 0) {
@@ -9601,7 +9609,33 @@ export default {
 					));
 				}
 
-				return withRateLimitWarning(await withMigrationNotice(json({
+				const batchId = crypto.randomUUID();
+
+					// Build exchanges map for the atomic batch view
+					const exchanges: Record<string, { status: string; source: string }> = {};
+					for (let i = 0; i < requestedMics.length; i++) {
+						const r = results[i].receipt as Record<string, unknown>;
+						exchanges[requestedMics[i]] = {
+							status: (effectiveStatuses[i] || r.status) as string,
+							source: (r.source ?? 'SCHEDULE') as string,
+						};
+					}
+
+					// Single signature over the entire batch payload (atomic truth)
+					const batchPayload = {
+						batch_id:       batchId,
+						correlation_id: batchId,
+						issued_at:      now.toISOString(),
+						expires_at:     expiresAt,
+						issuer:         ORACLE_ISSUER,
+						exchanges:      JSON.stringify(exchanges),
+						all_open:       String(countOpen === results.length && !anyHalted && !anyUnknown),
+						schema_version: 'v5.0',
+						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
+					};
+					const batchSignature = await signPayload(batchPayload, env.ED25519_PRIVATE_KEY);
+
+					return withRateLimitWarning(await withMigrationNotice(json({
 						summary: {
 							total:          results.length,
 							open:           countOpen,
@@ -9613,9 +9647,17 @@ export default {
 							safe_to_execute: safeToExecute,
 							reason:         summaryReason,
 						},
-						batch_id:   crypto.randomUUID(),
-						queried_at: now.toISOString(),
-						receipts:   results.map((r) => ({ ...r.receipt as Record<string, unknown>, receipt: r.receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' })),
+						batch_id:       batchId,
+						correlation_id: batchId,
+						issued_at:      now.toISOString(),
+						expires_at:     expiresAt,
+						exchanges,
+						all_open:       countOpen === results.length && !anyHalted && !anyUnknown,
+						schema_version: 'v5.0',
+						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
+						signature:      batchSignature,
+						queried_at:     now.toISOString(),
+						receipts:       results.map((r) => ({ ...r.receipt as Record<string, unknown>, receipt: r.receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' })),
 					})));
 			}
 
