@@ -2,9 +2,19 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Performance + distribution sprint active.
-**Test suite**: 714/714 passing + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 7 2026 — Day 41 late: Performance + Discovery + Distribution Sprint (714 tests):
+**Phase**: Post-launch. Next-model readiness meta-sprint complete.
+**Test suite**: 714/714 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 8 2026 — Day 42: Next-Model Readiness Meta-Sprint (714 tests + 11 smoke):
+- **CLAUDE.md rewrite**: Restructured as definitive onboarding doc — architecture, invariants, routes, update protocol, file layout
+- **01_business_context.md**: Market position (only signed market-state MCP), revenue model, distribution surfaces, regulatory tailwinds, key metrics
+- **02_architecture_map.md**: Route map with line ranges, 20+ key functions with signatures, 3 data flow traces, constants reference, DO classes, cron triggers
+- **03_sprint_playbook.md**: Sprint structure, 10 failure modes with mitigations, external PR checklist, session closing checklist, test/deploy patterns
+- **04_telemetry_guide.md**: All KV key patterns, 15 evaluator fingerprints, traffic indicators, conversion signals
+- **Smoke test suite**: 11 tests hitting live production (demo, invalid MIC, briefing, exchanges, health, AGENTS.md, llms.txt, llms-full.txt, openapi.json, trial/402, MCP initialize). Separate vitest config. All passing.
+- **vitest.config.mts**: Added exclude for integration tests and node_modules
+- Gap: Living document update discipline is documented but not enforced. A pre-commit hook or session-start check could verify that .claude/rules/ files were updated when src/index.ts changed.
+
+**Previous**: Apr 7 2026 — Day 41 late: Performance + Discovery + Distribution Sprint (714 tests):
 - **In-memory API key cache** (commit 9489888): Module-scope Map with 60s TTL for ORACLE_API_KEYS reads. Eliminates ~5ms KV round-trip on warm isolates. Credits-tier excluded (balance mutates per-request). HMAC CryptoKey cached across calls.
 - **llms.txt spec-compliant index** (commit e28618b): GET /llms.txt returns concise llmstxt.org index with blockquote summary, section links. GET /llms-full.txt returns complete docs (exchange hours, curl examples, verification code, MCP configs, compliance mapping). All JSON responses include `Link: </llms.txt>; rel="llms-txt"` header.
 - **ai-hedge-fund PR** (commit 6680f9a): virattt/ai-hedge-fund#564 — market_state_verification_agent between risk and portfolio managers. 17 tests, zero deps, fail-closed. MIC deduplication. Uses /v5/demo (free).
