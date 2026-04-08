@@ -9277,6 +9277,100 @@ export default {
 				return withRateLimitWarning(json({ exchanges: SUPPORTED_EXCHANGES }));
 			}
 
+			// ── GET /v5/historical — schedule reconstruction for a past timestamp ──
+			// Public, no auth. UNSIGNED — this is a reconstruction, not a real-time attestation.
+			// Includes DST reasoning and transition notes when applicable.
+			if (url.pathname === '/v5/historical') {
+				const mic = (url.searchParams.get('mic') || '').toUpperCase();
+				const atParam = url.searchParams.get('at');
+				if (!mic || !MARKET_CONFIGS[mic]) {
+					return json({
+						error:     'UNKNOWN_MIC',
+						message:   mic ? `Unsupported exchange: ${mic}. See /v5/exchanges for supported markets.` : 'mic parameter is required.',
+						supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
+					}, 400);
+				}
+				if (!atParam) {
+					return json({ error: 'MISSING_PARAMETER', message: 'at parameter is required. Example: ?mic=XNYS&at=2026-03-09T14:30:00Z' }, 400);
+				}
+				const atDate = new Date(atParam);
+				if (isNaN(atDate.getTime())) {
+					return json({ error: 'INVALID_DATE', message: 'at parameter must be a valid ISO 8601 timestamp.' }, 400);
+				}
+				const launchDate = new Date('2026-03-01T00:00:00Z');
+				if (atDate < launchDate) {
+					return json({ error: 'OUT_OF_RANGE', message: 'Historical data available from 2026-03-01 onwards only.' }, 400);
+				}
+				if (atDate > now) {
+					return json({ error: 'FUTURE_DATE', message: 'Cannot reconstruct future state. Use /v5/demo or /v5/status for current state.' }, 400);
+				}
+
+				const config = MARKET_CONFIGS[mic];
+				const { status } = getScheduleStatus(mic, atDate);
+
+				const { weekday, hour, minute, dateStr } = getLocalTimeParts(config.timezone, atDate);
+				const localTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+				const openTime = `${String(config.openHour).padStart(2, '0')}:${String(config.openMinute).padStart(2, '0')}`;
+				const closeTime = `${String(config.closeHour).padStart(2, '0')}:${String(config.closeMinute).padStart(2, '0')}`;
+
+				let reasoning = `${config.name} (${mic}) regular hours ${openTime}-${closeTime} ${config.timezone}.`;
+				reasoning += ` At ${atParam}, local time was ${weekday} ${localTime}.`;
+				if (status === 'OPEN') {
+					reasoning += ` Exchange was within trading hours.`;
+				} else if (status === 'CLOSED') {
+					const weekends = config.weekends ?? ['Sat', 'Sun'];
+					if (weekends.includes(weekday)) {
+						reasoning += ` Exchange was closed (weekend).`;
+					} else {
+						const yearHolidays = config.holidays[String(atDate.getUTCFullYear())] ?? [];
+						if (yearHolidays.includes(dateStr)) {
+							reasoning += ` Exchange was closed (holiday).`;
+						} else {
+							reasoning += ` Exchange was outside trading hours.`;
+						}
+					}
+				} else if (status === 'UNKNOWN') {
+					reasoning += ` Status could not be determined (missing holiday data for this year).`;
+				}
+
+				// DST note: check if query is within 30 days of a known DST transition
+				let dstNote: string | null = null;
+				const DST_TRANSITIONS_2026 = [
+					{ date: '2026-03-08', region: 'US', direction: 'spring forward', affected: ['XNYS', 'XNAS', 'XCBT', 'XNYM', 'XCBO'] },
+					{ date: '2026-03-29', region: 'UK/EU', direction: 'spring forward', affected: ['XLON', 'XPAR', 'XSWX', 'XMIL', 'XHEL', 'XSTO', 'XIST'] },
+					{ date: '2026-10-25', region: 'UK/EU', direction: 'fall back', affected: ['XLON', 'XPAR', 'XSWX', 'XMIL', 'XHEL', 'XSTO', 'XIST'] },
+					{ date: '2026-11-01', region: 'US', direction: 'fall back', affected: ['XNYS', 'XNAS', 'XCBT', 'XNYM', 'XCBO'] },
+				];
+				const DST_TRANSITIONS_2027 = [
+					{ date: '2027-03-14', region: 'US', direction: 'spring forward', affected: ['XNYS', 'XNAS', 'XCBT', 'XNYM', 'XCBO'] },
+					{ date: '2027-03-28', region: 'UK/EU', direction: 'spring forward', affected: ['XLON', 'XPAR', 'XSWX', 'XMIL', 'XHEL', 'XSTO', 'XIST'] },
+					{ date: '2027-10-31', region: 'UK/EU', direction: 'fall back', affected: ['XLON', 'XPAR', 'XSWX', 'XMIL', 'XHEL', 'XSTO', 'XIST'] },
+					{ date: '2027-11-07', region: 'US', direction: 'fall back', affected: ['XNYS', 'XNAS', 'XCBT', 'XNYM', 'XCBO'] },
+				];
+				const allTransitions = [...DST_TRANSITIONS_2026, ...DST_TRANSITIONS_2027];
+				for (const t of allTransitions) {
+					if (!t.affected.includes(mic)) continue;
+					const transDate = new Date(t.date + 'T00:00:00Z');
+					const diffDays = Math.abs((atDate.getTime() - transDate.getTime()) / (86400 * 1000));
+					if (diffDays <= 30) {
+						const beforeAfter = atDate >= transDate ? 'post-transition' : 'pre-transition';
+						dstNote = `${t.region} DST ${t.direction} occurred ${t.date}. This query falls in the ${beforeAfter} period.`;
+						break;
+					}
+				}
+
+				return json({
+					mic,
+					queried_at:      atParam,
+					computed_status: status,
+					source:          'SCHEDULE_RECONSTRUCTION',
+					reasoning,
+					dst_note:        dstNote,
+					disclaimer:      'Historical reconstruction from schedule data. Not a signed real-time attestation. No signature provided.',
+					schema_version:  'v5.0',
+				});
+			}
+
 			// ── GET /v5/keys — public key registry ───────────────────────
 			if (url.pathname === '/v5/keys') {
 				return withRateLimitWarning(json({

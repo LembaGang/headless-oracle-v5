@@ -681,6 +681,85 @@ describe('GET /v5/exchanges', () => {
 	});
 });
 
+// ─── GET /v5/historical — schedule reconstruction ───────────────────────────
+
+describe('GET /v5/historical', () => {
+	it('returns computed status for a known trading time', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/historical?mic=XNYS&at=2026-04-07T15:00:00Z');
+		expect(res.computed_status).toBe('OPEN');
+		expect(res.source).toBe('SCHEDULE_RECONSTRUCTION');
+		expect(res.mic).toBe('XNYS');
+		expect(res.disclaimer).toContain('Not a signed real-time attestation');
+		expect(res.reasoning).toContain('New York Stock Exchange');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED for a weekend query', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/historical?mic=XNYS&at=2026-04-04T15:00:00Z');
+		expect(res.computed_status).toBe('CLOSED');
+		expect(res.reasoning).toContain('weekend');
+		vi.useRealTimers();
+	});
+
+	it('returns CLOSED for a holiday query', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/historical?mic=XNYS&at=2026-04-03T15:00:00Z');
+		expect(res.computed_status).toBe('CLOSED');
+		expect(res.reasoning).toContain('holiday');
+		vi.useRealTimers();
+	});
+
+	it('includes dst_note when query is near a DST transition', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchJSON('/v5/historical?mic=XNYS&at=2026-03-09T14:00:00Z');
+		expect(res.dst_note).toBeDefined();
+		expect(res.dst_note).toContain('US');
+		expect(res.dst_note).toContain('spring forward');
+		vi.useRealTimers();
+	});
+
+	it('dst_note is null when query is far from any transition', async () => {
+		vi.setSystemTime(new Date('2026-08-01T15:00:00Z'));
+		const res = await fetchJSON('/v5/historical?mic=XNYS&at=2026-07-07T15:00:00Z');
+		expect(res.dst_note).toBeNull();
+		vi.useRealTimers();
+	});
+
+	it('rejects dates before 2026-03-01', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?mic=XNYS&at=2025-12-01T15:00:00Z');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('OUT_OF_RANGE');
+		vi.useRealTimers();
+	});
+
+	it('rejects future dates', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?mic=XNYS&at=2027-01-01T15:00:00Z');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('FUTURE_DATE');
+		vi.useRealTimers();
+	});
+
+	it('rejects missing mic parameter', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?at=2026-04-07T15:00:00Z');
+		expect(res.status).toBe(400);
+		vi.useRealTimers();
+	});
+
+	it('rejects missing at parameter', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?mic=XNYS');
+		expect(res.status).toBe(400);
+		vi.useRealTimers();
+	});
+});
+
 // ─── ITEM 6: Crypto / derivatives exchange coverage ──────────────────────────
 
 describe('ITEM 6 — Crypto and derivatives exchanges', () => {
