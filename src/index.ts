@@ -13282,6 +13282,547 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				});
 			}
 
+			// ── GET / — professional landing page ─────────────────────────────
+			if (url.pathname === '/' && request.method === 'GET') {
+				const landingHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Headless Oracle — Ed25519-Signed Market-State Attestations for AI Agents</title>
+<meta name="description" content="Ed25519-signed market-state attestations for AI agents. 28 exchanges. 60-second TTL. Fail-closed. The verification layer autonomous agents trust before executing.">
+<meta name="robots" content="index, follow">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://headlessoracle.com/">
+<meta property="og:title" content="Headless Oracle — Signed Market-State Attestations for AI Agents">
+<meta property="og:description" content="Ed25519-signed market-state attestations for AI agents. 28 exchanges. 60-second TTL. Fail-closed.">
+<meta property="og:image" content="https://headlessoracle.com/v5/card/XNYS">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Headless Oracle — Signed Market-State for AI Agents">
+<meta name="twitter:description" content="28 exchanges. Ed25519 signed. Fail-closed. $0.001/call.">
+<meta name="twitter:image" content="https://headlessoracle.com/v5/card/XNYS">
+<link rel="canonical" href="https://headlessoracle.com/">
+<link rel="alternate" type="application/json" href="/openapi.json" title="OpenAPI 3.1 specification">
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Headless Oracle",
+  "url": "https://headlessoracle.com",
+  "description": "Ed25519-signed market-state attestations for AI agents. 28 global exchanges. Fail-closed by contract.",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "Any",
+  "offers": [
+    { "@type": "Offer", "price": "0", "priceCurrency": "USD", "description": "Free trial — 3 signed receipts/day, no signup" },
+    { "@type": "Offer", "price": "0", "priceCurrency": "USD", "description": "Free tier — 500 requests/day with API key" },
+    { "@type": "Offer", "price": "0.001", "priceCurrency": "USD", "description": "x402 per-request — agents pay with USDC on Base" },
+    { "@type": "Offer", "price": "99", "priceCurrency": "USD", "description": "Builder — 50,000 requests/day" }
+  ],
+  "featureList": [
+    "Ed25519 cryptographic signing of every response",
+    "28 global exchanges (equities, derivatives, crypto)",
+    "Fail-closed: UNKNOWN always means CLOSED",
+    "MCP server for Claude and agent frameworks",
+    "x402 micropayments on Base mainnet",
+    "Merkle audit chain for receipt verification",
+    "60-second receipt TTL"
+  ],
+  "provider": {
+    "@type": "Organization",
+    "name": "Headless Oracle",
+    "url": "https://headlessoracle.com"
+  }
+}
+</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e17;--bg2:#111827;--bg3:#1a2332;--border:#1e293b;--border2:#334155;--text:#94a3b8;--text2:#64748b;--white:#f1f5f9;--blue:#3b82f6;--blue2:#60a5fa;--green:#22c55e;--green2:#4ade80;--red:#ef4444;--purple:#a78bfa;--indigo:#818cf8;--amber:#f59e0b}
+html{scroll-behavior:smooth}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+.mono{font-family:'SF Mono',Monaco,'Cascadia Code','Fira Code',Consolas,monospace}
+.container{max-width:1100px;margin:0 auto;padding:0 24px}
+a{color:var(--blue2);text-decoration:none}
+a:hover{color:var(--white)}
+
+/* Nav */
+nav{border-bottom:1px solid var(--border);padding:16px 0}
+.nav-inner{display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:18px;font-weight:700;color:var(--white);letter-spacing:2px}
+.logo span{color:var(--blue)}
+.nav-links{display:flex;gap:24px;font-size:13px}
+.nav-links a{color:var(--text)}
+.dot{width:6px;height:6px;background:var(--green);border-radius:50%;display:inline-block;box-shadow:0 0 6px var(--green);margin-right:4px}
+
+/* Hero */
+.hero{padding:80px 0 60px;text-align:center;position:relative}
+.hero::before{content:'';position:absolute;width:500px;height:500px;background:radial-gradient(circle,rgba(59,130,246,0.08) 0%,transparent 70%);top:-200px;left:50%;transform:translateX(-50%);z-index:0;pointer-events:none}
+.hero h1{font-size:clamp(32px,5vw,56px);color:var(--white);font-weight:700;line-height:1.15;margin-bottom:16px;position:relative;z-index:1}
+.hero h1 em{font-style:normal;background:linear-gradient(135deg,var(--blue),var(--indigo));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero .sub{font-size:18px;color:var(--text);margin-bottom:32px;font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;letter-spacing:0.5px}
+.hero .sub strong{color:var(--white)}
+.ctas{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:24px}
+.btn{padding:12px 28px;border-radius:8px;font-size:14px;font-weight:600;border:none;cursor:pointer;transition:all 0.2s;display:inline-flex;align-items:center;gap:8px}
+.btn-primary{background:var(--blue);color:var(--white)}
+.btn-primary:hover{background:#2563eb;color:var(--white)}
+.btn-secondary{background:transparent;border:1px solid var(--border2);color:var(--white)}
+.btn-secondary:hover{background:var(--bg3);color:var(--white)}
+
+/* Sections */
+section{padding:60px 0}
+.section-border{border-top:1px solid var(--border)}
+h2{font-size:28px;color:var(--white);font-weight:700;margin-bottom:8px}
+h3{font-size:18px;color:var(--white);font-weight:600;margin-bottom:8px}
+.section-sub{color:var(--text2);font-size:14px;margin-bottom:32px}
+
+/* Code blocks */
+.code-block{background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:16px 0}
+.code-header{display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:1px}
+.code-header .dots{display:flex;gap:6px}
+.code-header .dots span{width:10px;height:10px;border-radius:50%;border:1px solid}
+.code-header .dots span:nth-child(1){border-color:rgba(239,68,68,0.4)}
+.code-header .dots span:nth-child(2){border-color:rgba(245,158,11,0.4)}
+.code-header .dots span:nth-child(3){border-color:rgba(34,197,94,0.4)}
+pre{padding:20px;overflow-x:auto;font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;font-size:13px;line-height:1.7;color:var(--green2)}
+.code-comment{color:var(--text2)}
+.code-key{color:var(--blue2)}
+.code-str{color:var(--green2)}
+.code-num{color:var(--amber)}
+
+/* Cards */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px}
+.card:hover{border-color:var(--border2)}
+
+/* Grid */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.grid-6{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+
+/* Stats */
+.stat{text-align:center;padding:20px}
+.stat-num{font-size:32px;font-weight:700;color:var(--white);font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace}
+.stat-label{font-size:12px;color:var(--text2);margin-top:4px}
+
+/* Pricing */
+.tier{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;position:relative;transition:border-color 0.2s}
+.tier:hover{border-color:var(--border2)}
+.tier-featured{border-color:var(--blue);background:rgba(59,130,246,0.05)}
+.tier-featured::before{content:'AGENT-NATIVE';position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--blue);color:var(--white);font-size:10px;font-weight:700;padding:2px 12px;border-radius:10px;letter-spacing:1px}
+.tier h3{margin-top:8px}
+.tier .price{font-size:28px;font-weight:700;color:var(--white);margin:12px 0 4px;font-family:'SF Mono',Monaco,Consolas,monospace}
+.tier .price-note{font-size:12px;color:var(--text2);margin-bottom:16px}
+.tier .limit{font-size:13px;color:var(--text);padding:8px 0;border-top:1px solid var(--border)}
+
+/* Trust badges */
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;letter-spacing:0.5px}
+.badge-green{background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);color:var(--green2)}
+.badge-blue{background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.2);color:var(--blue2)}
+.badge-purple{background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.2);color:var(--purple)}
+
+/* Integration logos */
+.integrations{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+.integration{padding:8px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text);font-weight:500;transition:border-color 0.2s}
+.integration:hover{border-color:var(--border2);color:var(--white)}
+
+/* Problem section */
+.problem-grid{display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:start}
+.problem-before,.problem-after{border-radius:12px;padding:24px}
+.problem-before{background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.15)}
+.problem-after{background:rgba(34,197,94,0.05);border:1px solid rgba(34,197,94,0.15)}
+
+/* Steps */
+.steps{display:flex;flex-direction:column;gap:20px}
+.step{display:flex;gap:20px;align-items:flex-start}
+.step-num{width:36px;height:36px;border-radius:50%;background:var(--blue);color:var(--white);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}
+.step-content{flex:1}
+
+/* Footer */
+footer{border-top:1px solid var(--border);padding:40px 0;margin-top:40px}
+.footer-inner{display:flex;justify-content:space-between;flex-wrap:wrap;gap:24px}
+.footer-links{display:flex;flex-wrap:wrap;gap:20px;font-size:13px}
+.footer-links a{color:var(--text2)}
+.footer-links a:hover{color:var(--white)}
+.footer-copy{font-size:12px;color:var(--text2)}
+
+/* Live receipt widget */
+#live-receipt{cursor:pointer;transition:border-color 0.2s}
+#live-receipt:hover{border-color:var(--border2)}
+
+/* Copy button */
+.copy-btn{font-size:11px;color:var(--text2);cursor:pointer;background:none;border:1px solid var(--border);padding:2px 10px;border-radius:4px;transition:all 0.2s}
+.copy-btn:hover{color:var(--white);border-color:var(--border2)}
+
+/* Responsive */
+@media(max-width:768px){
+  .grid-2,.grid-3,.grid-4,.grid-6{grid-template-columns:1fr}
+  .problem-grid{grid-template-columns:1fr}
+  .hero h1{font-size:32px}
+  .nav-links{gap:12px;font-size:12px}
+  .footer-inner{flex-direction:column;text-align:center}
+  .grid-4{grid-template-columns:1fr 1fr}
+  .grid-6{grid-template-columns:1fr 1fr 1fr}
+}
+@media(max-width:480px){
+  .grid-4{grid-template-columns:1fr}
+  .grid-6{grid-template-columns:1fr 1fr}
+  .ctas{flex-direction:column;align-items:center}
+  .btn{width:100%;justify-content:center}
+}
+</style>
+</head>
+<body>
+
+<nav>
+<div class="container nav-inner">
+  <div class="logo">HEADLESS<span>ORACLE</span></div>
+  <div class="nav-links">
+    <a href="/pricing">Pricing</a>
+    <a href="/docs">Docs</a>
+    <a href="/openapi.json">API</a>
+    <a href="/status"><span class="dot"></span>Status</a>
+  </div>
+</div>
+</nav>
+
+<!-- ═══ HERO ═══ -->
+<div class="hero container">
+<h1>Ed25519-signed market-state<br>attestations for <em>AI agents</em></h1>
+<p class="sub"><strong>28 exchanges</strong> · 60-second TTL · Fail-closed</p>
+<div class="ctas">
+  <a href="#demo" class="btn btn-primary">Try the demo</a>
+  <a href="/v5/sandbox" class="btn btn-secondary">Get an API key</a>
+</div>
+<div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;font-size:12px;color:var(--text2)">
+  <span class="badge badge-green"><span class="dot"></span> Live in production</span>
+  <span class="badge badge-blue">MCP + REST + x402</span>
+  <span class="badge badge-purple">ESMA / NIST / MAS aligned</span>
+</div>
+</div>
+
+<!-- ═══ PROBLEM ═══ -->
+<section class="section-border">
+<div class="container">
+<h2>Your trading agent checks market hours with <code class="mono" style="color:var(--red)">datetime.now()</code></h2>
+<p class="section-sub">That works until it doesn't. DST shifts, exchange holidays, lunch breaks, circuit breakers — each one is a silent failure mode.</p>
+
+<div class="problem-grid">
+<div class="problem-before">
+  <h3 style="color:var(--red);font-size:14px;margin-bottom:12px">&#x2717; BEFORE — hardcoded assumptions</h3>
+  <div class="code-block" style="margin:0">
+    <pre style="font-size:12px;color:var(--red)"><span class="code-comment"># "NYSE is open 9:30-16:00 ET"</span>
+now = datetime.now(timezone('US/Eastern'))
+market_open = now.hour >= 9 and now.minute >= 30
+market_close = now.hour < 16
+
+<span class="code-comment"># Fails on: DST (March 9)</span>
+<span class="code-comment"># Fails on: Good Friday (closed all day)</span>
+<span class="code-comment"># Fails on: Christmas Eve (closes 1pm)</span>
+<span class="code-comment"># Fails on: circuit breaker at 2:47pm</span>
+<span class="code-comment"># Fails on: Tokyo lunch break 11:30-12:30</span></pre>
+  </div>
+</div>
+
+<div class="problem-after">
+  <h3 style="color:var(--green);font-size:14px;margin-bottom:12px">&#x2713; AFTER — signed attestation</h3>
+  <div class="code-block" style="margin:0">
+    <pre style="font-size:12px"><span class="code-comment"># Ask. Verify. Execute.</span>
+receipt = requests.get(
+  <span class="code-str">"https://headlessoracle.com/v5/status?mic=XNYS"</span>,
+  headers={<span class="code-str">"X-Oracle-Key"</span>: key}
+).json()
+
+<span class="code-comment"># Ed25519 signature — verify yourself</span>
+<span class="code-comment"># 60s TTL — always fresh</span>
+<span class="code-comment"># Fail-closed — UNKNOWN = halt</span>
+if receipt[<span class="code-str">"status"</span>] != <span class="code-str">"OPEN"</span>:
+    halt(<span class="code-str">"Market not open"</span>)</pre>
+  </div>
+</div>
+</div>
+</div>
+</section>
+
+<!-- ═══ HOW IT WORKS ═══ -->
+<section class="section-border">
+<div class="container">
+<h2>How it works</h2>
+<p class="section-sub">Three steps. One signed receipt. Zero trust required.</p>
+
+<div class="steps">
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-content">
+    <h3>Agent calls</h3>
+    <p style="font-size:14px">Your agent sends a request with an exchange MIC code. REST, MCP, or x402 — any interface works.</p>
+    <div class="code-block">
+      <div class="code-header"><span class="mono">curl</span><button class="copy-btn" onclick="copyText(this,'curl https://headlessoracle.com/v5/demo?mic=XNYS')">copy</button></div>
+      <pre style="color:var(--blue2)">curl https://headlessoracle.com/v5/demo?mic=XNYS</pre>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-content">
+    <h3>Oracle signs</h3>
+    <p style="font-size:14px">Headless Oracle computes market state from schedule data, holidays, and real-time halt detection. The result is Ed25519-signed into a receipt with a 60-second TTL.</p>
+    <div class="code-block">
+      <div class="code-header"><span class="mono">Signed receipt</span><button class="copy-btn" onclick="copyEl(this,'receipt-example')">copy</button></div>
+      <pre id="receipt-example">{
+  <span class="code-key">"receipt_id"</span>:     <span class="code-str">"a1b2c3d4-..."</span>,
+  <span class="code-key">"mic"</span>:            <span class="code-str">"XNYS"</span>,
+  <span class="code-key">"status"</span>:         <span class="code-str">"OPEN"</span>,
+  <span class="code-key">"source"</span>:         <span class="code-str">"SCHEDULE"</span>,
+  <span class="code-key">"timestamp"</span>:      <span class="code-str">"2026-04-09T14:30:00.000Z"</span>,
+  <span class="code-key">"expires_at"</span>:     <span class="code-str">"2026-04-09T14:31:00.000Z"</span>,
+  <span class="code-key">"issuer"</span>:         <span class="code-str">"headlessoracle.com"</span>,
+  <span class="code-key">"receipt_mode"</span>:   <span class="code-str">"live"</span>,
+  <span class="code-key">"schema_version"</span>: <span class="code-str">"v5.0"</span>,
+  <span class="code-key">"signature"</span>:      <span class="code-str">"3a4f...c8e1"</span>
+}</pre>
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-content">
+    <h3>Agent verifies</h3>
+    <p style="font-size:14px">The agent verifies the Ed25519 signature locally. No trust required — the public key is at <a href="/v5/keys">/v5/keys</a>. If status is anything other than <code class="mono" style="color:var(--green)">OPEN</code>, the agent halts.</p>
+    <div class="code-block">
+      <div class="code-header"><span class="mono">npm i @headlessoracle/verify</span></div>
+      <pre><span class="code-key">import</span> { verify } <span class="code-key">from</span> <span class="code-str">'@headlessoracle/verify'</span>;
+
+<span class="code-key">const</span> result = <span class="code-key">await</span> verify(receipt);
+<span class="code-key">if</span> (!result.valid) <span class="code-key">throw new</span> Error(<span class="code-str">'Signature invalid'</span>);
+<span class="code-key">if</span> (receipt.status !== <span class="code-str">'OPEN'</span>) halt();</pre>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+</section>
+
+<!-- ═══ LIVE DEMO ═══ -->
+<section class="section-border" id="demo">
+<div class="container">
+<h2>Live demo</h2>
+<p class="section-sub">This is a real signed receipt from production. Click to fetch a fresh one.</p>
+
+<div id="live-receipt" class="code-block" onclick="fetchDemo()">
+  <div class="code-header">
+    <div style="display:flex;align-items:center;gap:8px"><span class="dots"><span></span><span></span><span></span></span><span class="mono" style="margin-left:8px">GET /v5/demo?mic=XNYS</span></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="demo-status" class="badge badge-green" style="font-size:10px">click to fetch</span>
+      <button class="copy-btn" onclick="event.stopPropagation();copyEl(this,'demo-json')">copy</button>
+    </div>
+  </div>
+  <pre id="demo-json" style="min-height:120px;color:var(--text2)">
+<span class="code-comment">// Click to fetch a live signed receipt...</span>
+<span class="code-comment">// No signup required. This calls the real production API.</span></pre>
+</div>
+</div>
+</section>
+
+<!-- ═══ NUMBERS ═══ -->
+<section class="section-border">
+<div class="container">
+<h2>By the numbers</h2>
+<p class="section-sub">Infrastructure-grade reliability. Solo-founder economics.</p>
+
+<div class="grid-6">
+  <div class="card stat">
+    <div class="stat-num">1,014</div>
+    <div class="stat-label">tests passing</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-num">28</div>
+    <div class="stat-label">exchanges</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-num">44+</div>
+    <div class="stat-label">days uptime</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-num">6</div>
+    <div class="stat-label">AI platforms crawling</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-num">$0.001</div>
+    <div class="stat-label">per request</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-num">&lt;50ms</div>
+    <div class="stat-label">P50 latency</div>
+  </div>
+</div>
+</div>
+</section>
+
+<!-- ═══ PRICING ═══ -->
+<section class="section-border">
+<div class="container">
+<h2>Pricing</h2>
+<p class="section-sub">Start free. Pay per request. Scale when ready.</p>
+
+<div class="grid-4">
+  <div class="tier">
+    <h3>Free trial</h3>
+    <div class="price">$0</div>
+    <div class="price-note">no signup required</div>
+    <div class="limit">3 signed receipts/day per IP</div>
+  </div>
+  <div class="tier">
+    <h3>Free tier</h3>
+    <div class="price">$0</div>
+    <div class="price-note">API key via email</div>
+    <div class="limit">500 requests/day</div>
+  </div>
+  <div class="tier tier-featured">
+    <h3>x402</h3>
+    <div class="price">$0.001</div>
+    <div class="price-note">USDC on Base · per request</div>
+    <div class="limit">Unlimited · agents pay directly</div>
+  </div>
+  <div class="tier">
+    <h3>Builder</h3>
+    <div class="price">$99<span style="font-size:14px;font-weight:400">/mo</span></div>
+    <div class="price-note">via Paddle</div>
+    <div class="limit">50,000 requests/day</div>
+  </div>
+</div>
+<p style="text-align:center;margin-top:16px;font-size:13px"><a href="/pricing">Full pricing details including Pro ($299/mo) and Protocol tiers →</a></p>
+</div>
+</section>
+
+<!-- ═══ INTEGRATIONS ═══ -->
+<section class="section-border">
+<div class="container">
+<h2>Integrations</h2>
+<p class="section-sub">Works with every agent framework. Ship in minutes.</p>
+
+<div class="integrations">
+  <a href="/mcp" class="integration">MCP Server</a>
+  <a href="/openapi.json" class="integration">REST API</a>
+  <a href="https://pypi.org/project/headless-oracle/" class="integration">Python SDK</a>
+  <a href="https://npmjs.com/package/@headlessoracle/verify" class="integration">TypeScript SDK</a>
+  <a href="https://pypi.org/project/headless-oracle-langchain/" class="integration">LangChain</a>
+  <a href="https://pypi.org/project/headless-oracle-crewai/" class="integration">CrewAI</a>
+  <a href="https://github.com/LembaGang/headless-oracle-go" class="integration">Go SDK</a>
+  <a href="https://npmjs.com/package/headless-oracle-mcp" class="integration">npm MCP package</a>
+</div>
+</div>
+</section>
+
+<!-- ═══ TRUST ═══ -->
+<section class="section-border">
+<div class="container">
+<h2>Trust model</h2>
+<p class="section-sub">Verify everything. Trust nothing.</p>
+
+<div class="grid-3">
+  <div class="card">
+    <h3 style="font-size:14px;margin-bottom:8px">Ed25519 Signatures</h3>
+    <p style="font-size:13px;color:var(--text)">Every receipt is cryptographically signed. Verify locally with the public key at <a href="/v5/keys">/v5/keys</a>. No server trust required.</p>
+  </div>
+  <div class="card">
+    <h3 style="font-size:14px;margin-bottom:8px">Merkle Audit Chain</h3>
+    <p style="font-size:13px;color:var(--text)">Daily attestation digests with SHA-256 Merkle roots. Hash chain at <a href="/v5/audit/chain">/v5/audit/chain</a>. Tamper-evident by design.</p>
+  </div>
+  <div class="card">
+    <h3 style="font-size:14px;margin-bottom:8px">Fail-Closed Contract</h3>
+    <p style="font-size:13px;color:var(--text)">UNKNOWN = CLOSED. Always. If the oracle can't determine state, it signs UNKNOWN and your agent halts. No silent failures.</p>
+  </div>
+  <div class="card">
+    <h3 style="font-size:14px;margin-bottom:8px">60-Second TTL</h3>
+    <p style="font-size:13px;color:var(--text)">Receipts expire after 60 seconds. No stale cache. <code class="mono">expires_at</code> is signed into the payload — tamper-proof.</p>
+  </div>
+  <div class="card">
+    <h3 style="font-size:14px;margin-bottom:8px">Regulatory Alignment</h3>
+    <p style="font-size:13px;color:var(--text)">Designed for ESMA algorithm auditability, NIST cryptographic chain-of-custody, and Singapore MAS agentic AI governance.</p>
+  </div>
+  <div class="card">
+    <h3 style="font-size:14px;margin-bottom:8px">Open Standards</h3>
+    <p style="font-size:13px;color:var(--text)"><a href="https://github.com/LembaGang/sma-protocol">SMA Protocol</a>, <a href="https://github.com/LembaGang/mpas-spec">MPAS</a>, and <a href="https://github.com/LembaGang/agent-pretrade-safety-standard">APTS</a> — all Apache 2.0. Not vendor lock-in.</p>
+  </div>
+</div>
+</div>
+</section>
+
+<!-- ═══ FOOTER ═══ -->
+<footer>
+<div class="container footer-inner">
+  <div>
+    <div class="logo" style="margin-bottom:8px">HEADLESS<span>ORACLE</span></div>
+    <p class="footer-copy">&copy; 2026 Headless Oracle. The signed market-state primitive for AI agent infrastructure.</p>
+  </div>
+  <div class="footer-links">
+    <a href="/docs">Docs</a>
+    <a href="/openapi.json">API Reference</a>
+    <a href="https://github.com/LembaGang/headless-oracle-v5">GitHub</a>
+    <a href="/blog/why-your-trading-agent-needs-a-pre-trade-gate">Blog</a>
+    <a href="/llms.txt">llms.txt</a>
+    <a href="/pricing">Pricing</a>
+    <a href="/terms">Terms</a>
+    <a href="/privacy">Privacy</a>
+    <a href="mailto:hello@headlessoracle.com">hello@headlessoracle.com</a>
+  </div>
+</div>
+</footer>
+
+<script>
+function copyText(btn,text){
+  navigator.clipboard.writeText(text).then(()=>{
+    btn.textContent='copied!';
+    setTimeout(()=>{btn.textContent='copy'},2000);
+  });
+}
+function copyEl(btn,id){
+  const el=document.getElementById(id);
+  if(!el)return;
+  navigator.clipboard.writeText(el.textContent).then(()=>{
+    btn.textContent='copied!';
+    setTimeout(()=>{btn.textContent='copy'},2000);
+  });
+}
+async function fetchDemo(){
+  const json=document.getElementById('demo-json');
+  const status=document.getElementById('demo-status');
+  json.textContent='Fetching...';
+  status.textContent='loading';
+  try{
+    const res=await fetch('https://headlessoracle.com/v5/demo?mic=XNYS');
+    const data=await res.json();
+    json.textContent=JSON.stringify(data,null,2);
+    json.style.color='var(--green2)';
+    const s=data.status||'UNKNOWN';
+    if(s==='OPEN'){status.textContent='OPEN';status.className='badge badge-green';}
+    else if(s==='CLOSED'){status.textContent='CLOSED';status.className='badge';status.style.cssText='font-size:10px;background:rgba(100,116,139,0.2);border:1px solid rgba(100,116,139,0.3);color:var(--text)';}
+    else{status.textContent=s;status.className='badge badge-purple';}
+  }catch(e){
+    json.textContent=JSON.stringify({error:'Could not reach Oracle',details:e.message},null,2);
+    json.style.color='var(--red)';
+    status.textContent='error';
+  }
+}
+</script>
+<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
+<script src="/js/paddle-init.js"></script>
+</body>
+</html>`;
+				return new Response(landingHtml, {
+					status: 200,
+					headers: {
+						...SECURITY_HEADERS,
+						'Content-Type': 'text/html; charset=utf-8',
+						'Cache-Control': 'public, max-age=300',
+						'X-Oracle-Version': 'v5',
+						'Content-Security-Policy': "default-src 'self' https://headlessoracle.com https://api.headlessoracle.com https://cdn.paddle.com; script-src 'self' 'unsafe-inline' https://cdn.paddle.com; style-src 'self' 'unsafe-inline'; img-src 'self' https://headlessoracle.com; frame-ancestors 'none'",
+					},
+				});
+			}
+
 			// ── GET /pricing — human-readable HTML pricing page ──────────────
 			// Replaces the stale Pages pricing.html. Worker route takes precedence.
 			if (url.pathname === '/pricing' && request.method === 'GET') {

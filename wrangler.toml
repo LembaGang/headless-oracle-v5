@@ -3,6 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
 routes = [
+  { pattern = "headlessoracle.com/", zone_name = "headlessoracle.com" },
   { pattern = "api.headlessoracle.com/*", zone_name = "headlessoracle.com" },
   { pattern = "www.headlessoracle.com/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v5/*", zone_name = "headlessoracle.com" },
@@ -52,7 +53,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "777"
+TEST_COUNT = "1020"
 
 # ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
 # Used for circuit breaker halts and emergency market status overrides.

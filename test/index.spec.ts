@@ -1129,7 +1129,7 @@ describe('KV Override (Circuit Breaker)', () => {
 
 describe('404 — Unknown routes', () => {
 	// Note: /v5/status/* returns 401 (auth guard fires before routing), not 404.
-	const UNKNOWN_PATHS = ['/unknown', '/v4/demo', '/v5', '/'];
+	const UNKNOWN_PATHS = ['/unknown', '/v4/demo', '/v5'];
 
 	for (const path of UNKNOWN_PATHS) {
 		it(`returns 404 for ${path}`, async () => {
@@ -1774,6 +1774,64 @@ describe('GET /v5/pricing', () => {
 		const tiers = body.tiers as Record<string, unknown>[];
 		const builder = tiers.find((t) => t.id === 'builder')!;
 		expect(builder.calls_per_day).toBe(50_000);
+	});
+});
+
+// ─── GET / — Landing page ───────────────────────────────────────────────────
+
+describe('GET / (landing page)', () => {
+	it('returns 200 with text/html content-type', async () => {
+		const res = await fetchWorker('/');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/html');
+	});
+
+	it('includes key landing page phrases', async () => {
+		const res = await fetchWorker('/');
+		const body = await res.text();
+		expect(body).toContain('Ed25519-signed market-state');
+		expect(body).toContain('28 exchanges');
+		expect(body).toContain('Fail-closed');
+		expect(body).toContain('headlessoracle.com');
+	});
+
+	it('includes JSON-LD structured data', async () => {
+		const res = await fetchWorker('/');
+		const body = await res.text();
+		expect(body).toContain('application/ld+json');
+		expect(body).toContain('SoftwareApplication');
+	});
+
+	it('includes pricing tiers', async () => {
+		const res = await fetchWorker('/');
+		const body = await res.text();
+		expect(body).toContain('Free trial');
+		expect(body).toContain('x402');
+		expect(body).toContain('Builder');
+	});
+
+	it('includes trust model section', async () => {
+		const res = await fetchWorker('/');
+		const body = await res.text();
+		expect(body).toContain('Ed25519 Signatures');
+		expect(body).toContain('Merkle Audit Chain');
+		expect(body).toContain('Fail-Closed Contract');
+	});
+
+	it('includes security headers', async () => {
+		const res = await fetchWorker('/');
+		expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+		expect(res.headers.get('X-Frame-Options')).toBe('DENY');
+		expect(res.headers.get('X-Oracle-Version')).toBe('v5');
+	});
+
+	it('includes meta tags for social sharing', async () => {
+		const res = await fetchWorker('/');
+		const body = await res.text();
+		expect(body).toContain('og:title');
+		expect(body).toContain('og:description');
+		expect(body).toContain('og:image');
+		expect(body).toContain('twitter:card');
 	});
 });
 
