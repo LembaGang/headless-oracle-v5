@@ -24,7 +24,7 @@
 		"typescript": "^5.5.2",
 		"viem": "^2.47.10",
 		"vitest": "~3.2.0",
-		"wrangler": "^4.64.0"
+		"wrangler": "^4.81.0"
 	},
 	"dependencies": {
 		"@noble/ed25519": "^3.0.0",
