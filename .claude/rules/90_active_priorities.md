@@ -3,8 +3,16 @@
 
 ## Current Status
 **Phase**: Post-launch. Engineering hardening sprint.
-**Test suite**: 770/770 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 8 2026 — Day 43 continued: Claude Managed Agents guide + upgrade nudge (753→770 tests):
+**Test suite**: 777/777 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 9 2026 — Day 44: Telemetry gap fixes (770→777 tests):
+- **/.well-known/oracle-keys.json enhanced**: Added `created_at`, `status` (active), `usage` (receipt_signing), `issuer` (headlessoracle.com) fields. Cache-Control: public, max-age=86400. Backward-compatible (existing `service` and `spec` fields preserved). Triggered by agent request at 22:00 UTC looking for signing keys.
+- **GET /docs/integrations/claude-managed-agents**: Full integration guide now served at the URL referenced in AGENTS.md and LLMS_TXT. Both extensionless (text/plain) and .md (text/markdown) variants. 299 lines covering 4 patterns, fail-closed contract, audit trail, 28 exchanges.
+- **GET /docs**: Master documentation index (docs/README.md) served as text/markdown. Links to architecture, API, operations, legal, security, business, and integrations docs.
+- **wrangler.toml**: Routes added for /docs, /docs/integrations/claude-managed-agents, and .md variant.
+- **3 new tests** for oracle-keys.json (status/usage/created_at fields, issuer field, Cache-Control header). **5 new tests** for doc routes (claude-managed-agents extensionless + .md + content, /docs content-type + content).
+- Gap: /docs serves a static index with relative links (architecture/overview.md etc.) but those sub-paths are not yet routed in the worker. Only specific /docs/* paths are served — a wildcard /docs/* → markdown file resolver would eliminate the need to add routes one-by-one.
+
+**Previous**: Apr 8 2026 — Day 43 continued: Claude Managed Agents guide + upgrade nudge (753→770 tests):
 - **docs/integrations/claude-managed-agents.md**: Full integration guide for Anthropic's Claude Managed Agents platform. 4 patterns: MCP tool (recommended), REST API with verification, multi-exchange batch, historical verification. Covers fail-closed contract, audit trail via /v5/audit/digest and /v5/audit/chain, all 28 exchanges by region, API key provisioning paths. Written for developers who have never heard of HO.
 - **Upgrade nudge on 429 responses**: Free-tier and paid-tier 429 RATE_LIMITED responses now include structured `upgrade_paths`, `recommended`, `daily_limit`, `used`, `resets_at` fields. Agents can autonomously choose the next tier. X-Upgrade-Path header on all 429s. X-Daily-Usage header at 80%+ usage.
 - **Rate limit header bug fix**: `_rlUsed` and `_rlLimit` were initialized to 0 and never updated from actual usage values. Now correctly wired to `getDailyUsage()` results for both free and paid tiers.
