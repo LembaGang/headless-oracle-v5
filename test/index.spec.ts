@@ -8762,6 +8762,47 @@ describe('GET /docs/integrations/autogpt', () => {
 	});
 });
 
+// ─── GET /docs/integrations/claude-managed-agents ────────────────────────────
+
+describe('GET /docs/integrations/claude-managed-agents', () => {
+	it('returns 200 with text/plain content-type (extensionless)', async () => {
+		const response = await fetchWorker('/docs/integrations/claude-managed-agents');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('returns 200 with text/markdown for .md variant', async () => {
+		const response = await fetchWorker('/docs/integrations/claude-managed-agents.md');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains Claude Managed Agents integration content', async () => {
+		const body = await fetchWorker('/docs/integrations/claude-managed-agents').then((r) => r.text());
+		expect(body).toContain('Claude Managed Agents');
+		expect(body).toContain('get_market_status');
+		expect(body).toContain('fail-closed');
+		expect(body).toContain('UNKNOWN');
+	});
+});
+
+// ─── GET /docs ───────────────────────────────────────────────────────────────
+
+describe('GET /docs', () => {
+	it('returns 200 with text/markdown content-type', async () => {
+		const response = await fetchWorker('/docs');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains documentation index content', async () => {
+		const body = await fetchWorker('/docs').then((r) => r.text());
+		expect(body).toContain('Headless Oracle Documentation');
+		expect(body).toContain('Architecture Overview');
+		expect(body).toContain('Claude Managed Agents');
+	});
+});
+
 // ─── GET /blog/why-your-trading-agent-needs-a-pre-trade-gate ─────────────────
 
 describe('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate', () => {
