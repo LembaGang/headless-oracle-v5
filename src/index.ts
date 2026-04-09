@@ -10241,12 +10241,16 @@ export default {
 						algorithm:   'Ed25519',
 						format:      'hex',
 						public_key:  env.ED25519_PUBLIC_KEY || '',
+						created_at:  env.PUBLIC_KEY_VALID_FROM || '2026-03-10T08:00:00Z',
+						status:      'active',
+						usage:       'receipt_signing',
 						valid_from:  env.PUBLIC_KEY_VALID_FROM  || '2026-01-01T00:00:00Z',
 						valid_until: env.PUBLIC_KEY_VALID_UNTIL || null,
 					}],
+					issuer:  'headlessoracle.com',
 					service: 'headless-oracle',
 					spec:    'https://headlessoracle.com/openapi.json',
-				});
+				}, 200, { 'Cache-Control': 'public, max-age=86400' });
 			}
 			if (url.pathname === '/openapi.json') {
 				return json(OPENAPI_SPEC);

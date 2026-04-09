@@ -2163,11 +2163,26 @@ describe('GET /.well-known/oracle-keys.json', () => {
 		expect(Object.prototype.hasOwnProperty.call(key, 'valid_until')).toBe(true);
 	});
 
-	it('response includes service identifier and spec URL', async () => {
+	it('key entry includes created_at, status, and usage fields', async () => {
 		const body = await fetchJSON('/.well-known/oracle-keys.json');
+		const key = (body.keys as Array<Record<string, unknown>>)[0];
+		expect(key).toHaveProperty('status', 'active');
+		expect(key).toHaveProperty('usage', 'receipt_signing');
+		expect(key).toHaveProperty('created_at');
+		expect(new Date(key.created_at as string).getTime()).not.toBeNaN();
+	});
+
+	it('response includes issuer, service identifier, and spec URL', async () => {
+		const body = await fetchJSON('/.well-known/oracle-keys.json');
+		expect(body).toHaveProperty('issuer', 'headlessoracle.com');
 		expect(body).toHaveProperty('service', 'headless-oracle');
 		expect(body).toHaveProperty('spec');
 		expect(typeof body.spec).toBe('string');
+	});
+
+	it('returns Cache-Control public max-age=86400', async () => {
+		const response = await fetchWorker('/.well-known/oracle-keys.json');
+		expect(response.headers.get('Cache-Control')).toBe('public, max-age=86400');
 	});
 
 	it('public_key matches the key returned by /v5/keys', async () => {
