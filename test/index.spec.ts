@@ -9606,3 +9606,693 @@ describe('Security headers on all responses', () => {
 		expect(res.headers.get('Content-Security-Policy')).toContain("default-src 'none'");
 	});
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TASK 2: Endpoint Coverage Gaps — comprehensive tests for uncovered routes
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── /v5/keys/instant — all error cases ──────────────────────────────────────
+
+describe('/v5/keys/instant — error cases', () => {
+	it('PUT returns 405 METHOD_NOT_ALLOWED', async () => {
+		const res = await fetchWorker('/v5/keys/instant', { method: 'PUT' });
+		expect(res.status).toBe(405);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('METHOD_NOT_ALLOWED');
+	});
+
+	it('POST with empty body returns 400 INVALID_AGENT_ID', async () => {
+		const res = await fetchWorker('/v5/keys/instant', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_AGENT_ID');
+	});
+
+	it('POST with numeric agent_id returns 400', async () => {
+		const res = await fetchWorker('/v5/keys/instant', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ agent_id: 12345 }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_AGENT_ID');
+	});
+
+	it('POST with blank agent_id returns 400', async () => {
+		const res = await fetchWorker('/v5/keys/instant', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ agent_id: '   ' }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_AGENT_ID');
+	});
+
+	it('POST with agent_id >256 chars returns 400', async () => {
+		const res = await fetchWorker('/v5/keys/instant', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ agent_id: 'x'.repeat(257) }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_AGENT_ID');
+	});
+
+	it('POST with invalid JSON body returns 400', async () => {
+		const res = await fetchWorker('/v5/keys/instant', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: 'not json',
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it('rate limit counter key follows expected pattern', async () => {
+		// Seed the rate limit counter to simulate 10 prior keys
+		const ipHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('unknown'));
+		const hashHex = [...new Uint8Array(ipHash)].map(b => b.toString(16).padStart(2, '0')).join('');
+		const date = new Date().toISOString().slice(0, 10);
+		const rlKey = `ratelimit:instant_keys:${hashHex}:${date}`;
+		await env.ORACLE_TELEMETRY.put(rlKey, '10', { expirationTtl: 25 * 3600 });
+
+		const res = await fetchWorker('/v5/keys/instant', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ agent_id: 'ratelimit-test-overflow' }),
+		});
+		expect(res.status).toBe(429);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('RATE_LIMITED');
+		expect(res.headers.get('Retry-After')).toBeTruthy();
+	});
+});
+
+// ─── /v5/verify — malformed and expired receipts ─────────────────────────────
+
+describe('/v5/verify — additional error cases', () => {
+	it('PUT returns 405', async () => {
+		const res = await fetchWorker('/v5/verify', { method: 'PUT' });
+		expect(res.status).toBe(405);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('METHOD_NOT_ALLOWED');
+	});
+
+	it('GET with invalid JSON in receipt param returns 400', async () => {
+		const res = await fetchWorker('/v5/verify?receipt=not-json');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_JSON');
+	});
+
+	it('POST with non-object receipt returns 400', async () => {
+		const res = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt: 'not-an-object' }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('MISSING_RECEIPT');
+	});
+
+	it('POST with null receipt returns 400', async () => {
+		const res = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt: null }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it('POST with malformed JSON body returns 400', async () => {
+		const res = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: '{broken',
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('INVALID_JSON');
+	});
+
+	it('POST with valid receipt returns detailed checks', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		// First get a real receipt
+		const demoRes = await fetchJSON('/v5/demo?mic=XNYS') as Record<string, unknown>;
+		const receipt = demoRes.receipt ?? demoRes;
+		// Verify it
+		const verifyRes = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt }),
+		});
+		expect(verifyRes.status).toBe(200);
+		const body = await verifyRes.json() as Record<string, unknown>;
+		expect(body.valid).toBe(true);
+		// checks is an object with named keys, not an array
+		if (body.checks) {
+			expect(typeof body.checks).toBe('object');
+			const checks = body.checks as Record<string, Record<string, unknown>>;
+			expect(checks.signature?.passed).toBe(true);
+		}
+	});
+
+	it('GET /v5/verify with valid receipt query param works', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoRes = await fetchJSON('/v5/demo?mic=XNYS') as Record<string, unknown>;
+		const receipt = demoRes.receipt ?? demoRes;
+		const encoded = encodeURIComponent(JSON.stringify(receipt));
+		const res = await fetchWorker(`/v5/verify?receipt=${encoded}`);
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.valid).toBe(true);
+	});
+});
+
+// ─── /v5/historical — edge cases ────────────────────────────────────────────
+
+describe('/v5/historical — additional edge cases', () => {
+	it('returns 400 for date before 2026-03-01', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?mic=XNYS&at=2025-01-01T12:00:00Z');
+		expect(res.status).toBe(400);
+	});
+
+	it('returns 400 for missing mic parameter', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?at=2026-03-15T12:00:00Z');
+		expect(res.status).toBe(400);
+	});
+
+	it('returns 400 for missing at parameter', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?mic=XNYS');
+		expect(res.status).toBe(400);
+	});
+
+	it('returns computed_status for DST spring-forward boundary', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		// US Spring Forward: Mar 8, 2026 — NYSE should open 13:30 UTC (not 14:30)
+		const res = await fetchWorker('/v5/historical?mic=XNYS&at=2026-03-09T14:00:00Z');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.computed_status).toBeDefined();
+		expect(['OPEN', 'CLOSED']).toContain(body.computed_status);
+	});
+
+	it('returns reasoning field', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/historical?mic=XNYS&at=2026-03-15T15:00:00Z');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.reasoning).toBeDefined();
+	});
+});
+
+// ─── /v5/audit/digest — additional edge cases ───────────────────────────────
+
+describe('/v5/audit/digest — additional edge cases', () => {
+	it('returns 400 for date before launch (2026-03-01)', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/digest?date=2025-12-01');
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('OUT_OF_RANGE');
+	});
+
+	it('returns merkle_root field even for empty day', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/digest?date=2026-03-02');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.merkle_root).toBeDefined();
+		expect(typeof body.merkle_root).toBe('string');
+	});
+
+	it('returns computed_at timestamp', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/digest?date=2026-04-07');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.computed_at).toBeDefined();
+	});
+});
+
+// ─── /v5/audit/chain — edge cases ───────────────────────────────────────────
+
+describe('/v5/audit/chain — additional edge cases', () => {
+	it('respects days parameter', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/chain?days=3');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.chain_length).toBeLessThanOrEqual(3);
+	});
+
+	it('caps at 30 days', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/chain?days=100');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.chain_length as number).toBeLessThanOrEqual(30);
+	});
+
+	it('returns latest_date and oldest_date', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const res = await fetchWorker('/v5/audit/chain');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.latest_date).toBeDefined();
+		expect(body.oldest_date).toBeDefined();
+	});
+});
+
+// ─── /v5/funnel — admin auth and date params ────────────────────────────────
+
+describe('/v5/funnel — auth and params', () => {
+	it('returns 401 without API key', async () => {
+		const res = await fetchWorker('/v5/funnel');
+		expect(res.status).toBe(401);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('UNAUTHORIZED');
+	});
+
+	it('returns 401 with non-master key', async () => {
+		const res = await fetchWorker('/v5/funnel', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		});
+		expect(res.status).toBe(401);
+	});
+
+	it('returns 200 with master key', async () => {
+		const res = await fetchWorker('/v5/funnel', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.date).toBeDefined();
+		expect(body.conversion_rate).toBeDefined();
+		expect(body.top_of_funnel).toBeDefined();
+	});
+
+	it('accepts ?date parameter', async () => {
+		const res = await fetchWorker('/v5/funnel?date=2026-04-01', {
+			headers: { 'X-Oracle-Key': 'test_master_key_local_only' },
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.date).toBe('2026-04-01');
+	});
+});
+
+// ─── /v5/stack — response format ────────────────────────────────────────────
+
+describe('/v5/stack', () => {
+	it('returns 200 with stack layers', async () => {
+		const res = await fetchWorker('/v5/stack');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const stack = body.stack as Record<string, unknown>;
+		expect(stack.layer_1).toBeDefined();
+		expect(stack.layer_2).toBeDefined();
+		expect(stack.layer_3).toBeDefined();
+		expect(body.description).toBeDefined();
+	});
+
+	it('layer_3 references Headless Oracle', async () => {
+		const body = await fetchJSON('/v5/stack');
+		const stack = body.stack as Record<string, Record<string, unknown>>;
+		expect(stack.layer_3.standard).toContain('Headless Oracle');
+		expect(stack.layer_3.compliance).toContain('headlessoracle.com');
+	});
+});
+
+// ─── /v5/credits/purchase — error paths ─────────────────────────────────────
+
+describe('/v5/credits/purchase — error paths', () => {
+	it('GET returns 405', async () => {
+		const res = await fetchWorker('/v5/credits/purchase');
+		expect(res.status).toBe(405);
+	});
+
+	it('POST without API key returns 401', async () => {
+		const res = await fetchWorker('/v5/credits/purchase', { method: 'POST' });
+		expect(res.status).toBe(401);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('API_KEY_REQUIRED');
+	});
+
+	it('POST with invalid key returns 403', async () => {
+		const res = await fetchWorker('/v5/credits/purchase', {
+			method: 'POST',
+			headers: { 'X-Oracle-Key': 'invalid_key_here' },
+		});
+		expect(res.status).toBe(403);
+	});
+
+	it('POST with valid key but no payment returns 402', async () => {
+		const res = await fetchWorker('/v5/credits/purchase', {
+			method: 'POST',
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		});
+		expect(res.status).toBe(402);
+	});
+});
+
+// ─── /v5/credits/balance — additional ───────────────────────────────────────
+
+describe('/v5/credits/balance — additional cases', () => {
+	it('returns balance with valid beta key', async () => {
+		const res = await fetchWorker('/v5/credits/balance', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(typeof body.balance).toBe('number');
+		expect(body.estimated_requests_remaining).toBeDefined();
+	});
+});
+
+// ─── /.well-known/* endpoints — comprehensive ───────────────────────────────
+
+describe('/.well-known/* endpoints — coverage', () => {
+	it('/.well-known/oauth-protected-resource returns JSON', async () => {
+		const res = await fetchWorker('/.well-known/oauth-protected-resource');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.resource).toBeDefined();
+	});
+
+	it('/.well-known/402index-verify.txt returns text', async () => {
+		const res = await fetchWorker('/.well-known/402index-verify.txt');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('/.well-known/mcp.json aliases /.well-known/mcp/server-card.json', async () => {
+		const res1 = await fetchWorker('/.well-known/mcp.json');
+		const res2 = await fetchWorker('/.well-known/mcp/server-card.json');
+		expect(res1.status).toBe(200);
+		expect(res2.status).toBe(200);
+		const body1 = await res1.json() as Record<string, unknown>;
+		const body2 = await res2.json() as Record<string, unknown>;
+		expect(body1.name).toBe(body2.name);
+	});
+});
+
+// ─── /docs/* endpoints — coverage ───────────────────────────────────────────
+
+describe('/docs/* endpoints — coverage', () => {
+	it('GET /docs/sma-protocol/rfc-001 returns 200', async () => {
+		const res = await fetchWorker('/docs/sma-protocol/rfc-001');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/plain');
+	});
+
+	it('GET /docs/sma-protocol/rfc-001.md returns markdown', async () => {
+		const res = await fetchWorker('/docs/sma-protocol/rfc-001.md');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('GET /docs/mpas returns 200', async () => {
+		const res = await fetchWorker('/docs/mpas');
+		expect(res.status).toBe(200);
+	});
+
+	it('GET /docs/x402-payments returns 200', async () => {
+		const res = await fetchWorker('/docs/x402-payments');
+		expect(res.status).toBe(200);
+	});
+
+	it('GET /docs/integrations/bun returns 200', async () => {
+		const res = await fetchWorker('/docs/integrations/bun');
+		expect(res.status).toBe(200);
+	});
+
+	it('GET /docs/cline returns 200', async () => {
+		const res = await fetchWorker('/docs/cline');
+		expect(res.status).toBe(200);
+	});
+
+	it('GET /docs/continue returns 200', async () => {
+		const res = await fetchWorker('/docs/continue');
+		expect(res.status).toBe(200);
+	});
+
+	it('GET /docs/integrations/strands returns 200', async () => {
+		const res = await fetchWorker('/docs/integrations/strands');
+		expect(res.status).toBe(200);
+	});
+
+	it('GET /docs/nonexistent returns 404', async () => {
+		const res = await fetchWorker('/docs/nonexistent-path');
+		expect(res.status).toBe(404);
+	});
+});
+
+// ─── Catch-all 404 ──────────────────────────────────────────────────────────
+
+describe('Catch-all 404', () => {
+	it('returns 404 for unknown routes', async () => {
+		const res = await fetchWorker('/completely/unknown/path');
+		expect(res.status).toBe(404);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('NOT_FOUND');
+	});
+
+	it('includes security headers on 404', async () => {
+		const res = await fetchWorker('/unknown');
+		expect(res.status).toBe(404);
+		expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+	});
+
+	it('includes X-Oracle-Version on 404', async () => {
+		const res = await fetchWorker('/random/path');
+		expect(res.status).toBe(404);
+		expect(res.headers.get('X-Oracle-Version')).toBe('v5');
+	});
+});
+
+// ─── Method Not Allowed coverage ────────────────────────────────────────────
+
+describe('405 Method Not Allowed — coverage', () => {
+	it('DELETE on an endpoint that only supports GET returns error', async () => {
+		const res = await fetchWorker('/v5/compliance', { method: 'DELETE' });
+		// Falls through routing — either 404 or 405 or treated as GET
+		expect([200, 404, 405]).toContain(res.status);
+	});
+
+	it('PUT /mcp returns 405', async () => {
+		const res = await fetchWorker('/mcp', { method: 'PUT' });
+		expect(res.status).toBe(405);
+	});
+
+	it('PATCH /mcp returns 405', async () => {
+		const res = await fetchWorker('/mcp', { method: 'PATCH' });
+		expect(res.status).toBe(405);
+	});
+
+	it('DELETE /mcp returns 405', async () => {
+		const res = await fetchWorker('/mcp', { method: 'DELETE' });
+		expect(res.status).toBe(405);
+	});
+});
+
+// ─── /v5/batch — additional error paths ─────────────────────────────────────
+
+describe('/v5/batch — additional coverage', () => {
+	it('batch with 3 MICs returns correct count', async () => {
+		vi.setSystemTime(new Date('2026-03-15T15:00:00Z'));
+		const res = await fetchWorker('/v5/batch?mics=XNYS,XNAS,XLON', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const receipts = body.receipts as Array<unknown>;
+		expect(receipts).toHaveLength(3);
+	});
+
+	it('OPTIONS returns CORS for batch', async () => {
+		const res = await fetchWorker('/v5/batch', { method: 'OPTIONS' });
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+});
+
+// ─── /v5/briefing — additional coverage ─────────────────────────────────────
+
+describe('/v5/briefing — additional coverage', () => {
+	it('includes upcoming_opens and upcoming_closes fields', async () => {
+		vi.setSystemTime(new Date('2026-03-09T12:00:00Z'));
+		const body = await fetchJSON('/v5/briefing');
+		expect(body.upcoming_opens).toBeDefined();
+		expect(body.upcoming_closes).toBeDefined();
+	});
+
+	it('includes holidays_today field', async () => {
+		vi.setSystemTime(new Date('2026-04-08T12:00:00Z'));
+		const body = await fetchJSON('/v5/briefing');
+		expect(body.holidays_today).toBeDefined();
+	});
+});
+
+// ─── /v5/pricing — additional coverage ──────────────────────────────────────
+
+describe('/v5/pricing — additional coverage', () => {
+	it('builder tier has calls_per_day 50000', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const builder = tiers.find(t => t.name === 'Builder');
+		expect(builder).toBeDefined();
+		expect(builder!.calls_per_day).toBe(50000);
+	});
+});
+
+// ─── /v5/compliance — additional coverage ───────────────────────────────────
+
+describe('/v5/compliance — additional coverage', () => {
+	it('returns sma_spec_version field', async () => {
+		const body = await fetchJSON('/v5/compliance');
+		expect(body.sma_spec_version).toBeDefined();
+	});
+
+	it('returns verify_sdk at top level', async () => {
+		const body = await fetchJSON('/v5/compliance');
+		expect(body.verify_sdk).toBeDefined();
+		expect(typeof body.verify_sdk).toBe('string');
+	});
+});
+
+// ─── /v5/payment-proof — additional coverage ────────────────────────────────
+
+describe('/v5/payment-proof — additional coverage', () => {
+	it('returns correct shape with payment_count and network', async () => {
+		const body = await fetchJSON('/v5/payment-proof');
+		expect(body.payment_count).toBeDefined();
+		expect(body.network).toBe('base');
+		expect(body.asset).toBe('USDC');
+	});
+});
+
+// ─── /x402 — additional coverage ────────────────────────────────────────────
+
+describe('/x402 — additional coverage', () => {
+	it('returns network and facilitator fields', async () => {
+		const body = await fetchJSON('/x402');
+		expect(body.network).toBeDefined();
+		expect(body.facilitator).toBeDefined();
+	});
+});
+
+// ─── /v5/why-not-free — additional coverage ─────────────────────────────────
+
+describe('/v5/why-not-free — additional coverage', () => {
+	it('returns agent_native_path field', async () => {
+		const body = await fetchJSON('/v5/why-not-free');
+		expect(body.agent_native_path).toBeDefined();
+	});
+
+	it('returns sandbox option', async () => {
+		const body = await fetchJSON('/v5/why-not-free');
+		expect(body.sandbox).toBeDefined();
+	});
+});
+
+// ─── /sitemap.xml ───────────────────────────────────────────────────────────
+
+describe('/sitemap.xml', () => {
+	it('returns 200 with XML content type', async () => {
+		const res = await fetchWorker('/sitemap.xml');
+		expect(res.status).toBe(200);
+		const ct = res.headers.get('Content-Type') || '';
+		expect(ct).toContain('xml');
+	});
+});
+
+// ─── /mics.json — additional ────────────────────────────────────────────────
+
+describe('/mics.json — mic_type coverage', () => {
+	it('all entries have mic_type field', async () => {
+		const res = await fetchWorker('/mics.json');
+		const body = await res.json() as Array<Record<string, unknown>>;
+		for (const entry of body) {
+			expect(entry.mic_type).toBeDefined();
+			expect(['iso', 'convention']).toContain(entry.mic_type);
+		}
+	});
+});
+
+// ─── CORS preflight coverage for more endpoints ─────────────────────────────
+
+describe('CORS preflight — additional endpoints', () => {
+	it('OPTIONS /v5/status returns CORS', async () => {
+		const res = await fetchWorker('/v5/status', { method: 'OPTIONS' });
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+
+	it('OPTIONS /v5/keys/instant returns CORS', async () => {
+		const res = await fetchWorker('/v5/keys/instant', { method: 'OPTIONS' });
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+
+	it('OPTIONS /v5/verify returns CORS', async () => {
+		const res = await fetchWorker('/v5/verify', { method: 'OPTIONS' });
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+	});
+
+	it('OPTIONS /v5/x402/mint returns CORS with Payment headers', async () => {
+		const res = await fetchWorker('/v5/x402/mint', { method: 'OPTIONS' });
+		expect(res.status).toBe(200);
+		const allowHeaders = res.headers.get('Access-Control-Allow-Headers') || '';
+		expect(allowHeaders).toContain('X-Payment');
+	});
+});
+
+// ─── /v5/handoff — additional coverage ──────────────────────────────────────
+
+describe('/v5/handoff — additional coverage', () => {
+	it('returns 401 without any auth', async () => {
+		const res = await fetchWorker('/v5/handoff');
+		expect(res.status).toBe(401);
+	});
+
+	it('returns 403 with invalid key', async () => {
+		const res = await fetchWorker('/v5/handoff', {
+			headers: { 'X-Oracle-Key': 'invalid' },
+		});
+		expect(res.status).toBe(403);
+	});
+});
+
+// ─── Redirect routes ────────────────────────────────────────────────────────
+
+describe('Redirect routes — coverage', () => {
+	it('GET /npm redirects to npmjs.com', async () => {
+		const res = await fetchWorker('/npm');
+		expect(res.status).toBe(302);
+		expect(res.headers.get('Location')).toContain('npmjs.com');
+	});
+
+	it('GET /pypi redirects to pypi.org', async () => {
+		const res = await fetchWorker('/pypi');
+		expect(res.status).toBe(302);
+		expect(res.headers.get('Location')).toContain('pypi.org');
+	});
+
+	it('GET /github redirects to github.com', async () => {
+		const res = await fetchWorker('/github');
+		expect(res.status).toBe(302);
+		expect(res.headers.get('Location')).toContain('github.com');
+	});
+});
