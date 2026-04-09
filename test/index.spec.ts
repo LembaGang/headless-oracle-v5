@@ -9608,6 +9608,386 @@ describe('Security headers on all responses', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TASK 3: Schedule Engine Edge Case Tests — exhaustive exchange coverage
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Helper: fetch a demo receipt at a specific time and verify status
+async function expectDemoStatus(mic: string, dateStr: string, expectedStatus: string) {
+	vi.setSystemTime(new Date(dateStr));
+	const body = await fetchJSON(`/v5/demo?mic=${mic}`);
+	const receipt = (body.receipt ?? body) as Record<string, unknown>;
+	expect(receipt.status, `${mic} at ${dateStr} expected ${expectedStatus}`).toBe(expectedStatus);
+}
+
+// ─── Schedule: All 28 exchanges — mid-session OPEN ──────────────────────────
+
+describe('Schedule engine — mid-session OPEN (all 28 exchanges)', () => {
+	// Standard exchanges — pick a Wednesday in April 2026, mid-session in local time
+	const midSessionCases: [string, string][] = [
+		['XNYS', '2026-04-08T15:00:00Z'],   // 11:00 ET (mid-session 9:30-16:00)
+		['XNAS', '2026-04-08T15:00:00Z'],   // 11:00 ET
+		['XLON', '2026-04-08T10:00:00Z'],   // 11:00 BST (mid-session 8:00-16:30)
+		['XJPX', '2026-04-08T02:00:00Z'],   // 11:00 JST (mid-session 9:00-15:30, before lunch)
+		['XPAR', '2026-04-08T10:00:00Z'],   // 12:00 CEST (mid-session 9:00-17:30)
+		['XHKG', '2026-04-08T02:30:00Z'],   // 10:30 HKT (mid-session 9:30-16:00, before lunch)
+		['XSES', '2026-04-08T03:00:00Z'],   // 11:00 SGT (mid-session 9:00-17:00)
+		['XASX', '2026-04-08T01:00:00Z'],   // 11:00 AEST (mid-session 10:00-16:00)
+		['XBOM', '2026-04-08T06:00:00Z'],   // 11:30 IST (mid-session 9:15-15:30)
+		['XNSE', '2026-04-08T06:00:00Z'],   // 11:30 IST
+		['XSHG', '2026-04-08T02:00:00Z'],   // 10:00 CST (mid-session 9:30-15:00, before lunch)
+		['XSHE', '2026-04-08T02:00:00Z'],   // 10:00 CST
+		['XKRX', '2026-04-08T02:00:00Z'],   // 11:00 KST (mid-session 9:00-15:30)
+		['XJSE', '2026-04-08T09:30:00Z'],   // 11:30 SAST (mid-session 9:00-17:00)
+		['XBSP', '2026-04-08T14:00:00Z'],   // 11:00 BRT (mid-session 10:00-17:55)
+		['XSWX', '2026-04-08T10:00:00Z'],   // 12:00 CEST (mid-session 9:00-17:30)
+		['XMIL', '2026-04-08T10:00:00Z'],   // 12:00 CEST (mid-session 9:00-17:35)
+		['XIST', '2026-04-08T11:00:00Z'],   // 14:00 TRT (mid-session 10:00-18:00)
+		['XSAU', '2026-04-08T09:00:00Z'],   // 12:00 AST (mid-session 10:00-15:00, Sun-Thu)
+		['XDFM', '2026-04-08T08:00:00Z'],   // 12:00 GST (mid-session 10:00-14:00)
+		['XNZE', '2026-04-08T00:00:00Z'],   // 12:00 NZST (mid-session 10:00-16:45)
+		['XHEL', '2026-04-08T09:00:00Z'],   // 12:00 EEST (mid-session 10:00-18:30)
+		['XSTO', '2026-04-08T10:00:00Z'],   // 12:00 CEST (mid-session 9:00-17:30)
+		['XCBO', '2026-04-08T15:00:00Z'],   // 11:00 ET (mid-session 9:30-16:15)
+		// Crypto: always OPEN
+		['XCOI', '2026-04-08T15:00:00Z'],
+		['XBIN', '2026-04-08T15:00:00Z'],
+	];
+
+	for (const [mic, time] of midSessionCases) {
+		it(`${mic} OPEN at mid-session`, async () => {
+			await expectDemoStatus(mic, time, 'OPEN');
+		});
+	}
+
+	// CME overnight: OPEN during active overnight session (Tue evening CT)
+	it('XCBT OPEN during overnight session', async () => {
+		await expectDemoStatus('XCBT', '2026-04-07T23:00:00Z', 'OPEN'); // 18:00 CT — after 17:00 open
+	});
+
+	it('XNYM OPEN during overnight session', async () => {
+		await expectDemoStatus('XNYM', '2026-04-07T23:00:00Z', 'OPEN');
+	});
+});
+
+// ─── Schedule: Before open — CLOSED ─────────────────────────────────────────
+
+describe('Schedule engine — before open CLOSED (all standard exchanges)', () => {
+	const beforeOpenCases: [string, string][] = [
+		['XNYS', '2026-04-08T12:00:00Z'],   // 08:00 ET — before 9:30 open
+		['XNAS', '2026-04-08T12:00:00Z'],
+		['XLON', '2026-04-08T06:00:00Z'],   // 07:00 BST — before 8:00 open
+		['XJPX', '2026-04-07T23:00:00Z'],   // 08:00 JST — before 9:00 open
+		['XPAR', '2026-04-08T06:00:00Z'],   // 08:00 CEST — before 9:00 open
+		['XHKG', '2026-04-08T00:00:00Z'],   // 08:00 HKT — before 9:30 open
+		['XSES', '2026-04-08T00:00:00Z'],   // 08:00 SGT — before 9:00 open
+		['XASX', '2026-04-07T23:00:00Z'],   // 09:00 AEST — before 10:00 open
+		['XBOM', '2026-04-08T02:00:00Z'],   // 07:30 IST — before 9:15 open
+		['XNSE', '2026-04-08T02:00:00Z'],
+		['XSHG', '2026-04-08T00:00:00Z'],   // 08:00 CST — before 9:30 open
+		['XSHE', '2026-04-08T00:00:00Z'],
+		['XKRX', '2026-04-07T23:00:00Z'],   // 08:00 KST — before 9:00 open
+		['XJSE', '2026-04-08T06:00:00Z'],   // 08:00 SAST — before 9:00 open
+		['XBSP', '2026-04-08T11:00:00Z'],   // 08:00 BRT — before 10:00 open
+		['XSWX', '2026-04-08T06:00:00Z'],   // 08:00 CEST — before 9:00 open
+		['XMIL', '2026-04-08T06:00:00Z'],
+		['XIST', '2026-04-08T06:00:00Z'],   // 09:00 TRT — before 10:00 open
+		['XSAU', '2026-04-08T06:00:00Z'],   // 09:00 AST — before 10:00 open
+		['XDFM', '2026-04-08T05:00:00Z'],   // 09:00 GST — before 10:00 open
+		['XNZE', '2026-04-07T21:00:00Z'],   // 09:00 NZST — before 10:00 open
+		['XHEL', '2026-04-08T06:00:00Z'],   // 09:00 EEST — before 10:00 open
+		['XSTO', '2026-04-08T06:00:00Z'],   // 08:00 CEST — before 9:00 open
+		['XCBO', '2026-04-08T12:00:00Z'],   // 08:00 ET — before 9:30 open
+	];
+
+	for (const [mic, time] of beforeOpenCases) {
+		it(`${mic} CLOSED before open`, async () => {
+			await expectDemoStatus(mic, time, 'CLOSED');
+		});
+	}
+});
+
+// ─── Schedule: After close — CLOSED ─────────────────────────────────────────
+
+describe('Schedule engine — after close CLOSED (all standard exchanges)', () => {
+	const afterCloseCases: [string, string][] = [
+		['XNYS', '2026-04-08T21:00:00Z'],   // 17:00 ET — after 16:00 close
+		['XNAS', '2026-04-08T21:00:00Z'],
+		['XLON', '2026-04-08T16:00:00Z'],   // 17:00 BST — after 16:30 close
+		['XJPX', '2026-04-08T07:00:00Z'],   // 16:00 JST — after 15:30 close
+		['XPAR', '2026-04-08T16:00:00Z'],   // 18:00 CEST — after 17:30 close
+		['XHKG', '2026-04-08T09:00:00Z'],   // 17:00 HKT — after 16:00 close
+		['XSES', '2026-04-08T10:00:00Z'],   // 18:00 SGT — after 17:00 close
+		['XASX', '2026-04-08T07:00:00Z'],   // 17:00 AEST — after 16:00 close
+		['XBOM', '2026-04-08T11:00:00Z'],   // 16:30 IST — after 15:30 close
+		['XNSE', '2026-04-08T11:00:00Z'],
+		['XSHG', '2026-04-08T08:00:00Z'],   // 16:00 CST — after 15:00 close
+		['XSHE', '2026-04-08T08:00:00Z'],
+		['XKRX', '2026-04-08T07:00:00Z'],   // 16:00 KST — after 15:30 close
+		['XJSE', '2026-04-08T16:00:00Z'],   // 18:00 SAST — after 17:00 close
+		['XBSP', '2026-04-08T22:00:00Z'],   // 19:00 BRT — after 17:55 close
+		['XSWX', '2026-04-08T16:00:00Z'],   // 18:00 CEST — after 17:30 close
+		['XMIL', '2026-04-08T16:00:00Z'],   // 18:00 CEST — after 17:35 close
+		['XIST', '2026-04-08T16:00:00Z'],   // 19:00 TRT — after 18:00 close
+		['XSAU', '2026-04-08T13:00:00Z'],   // 16:00 AST — after 15:00 close
+		['XDFM', '2026-04-08T11:00:00Z'],   // 15:00 GST — after 14:00 close
+		['XNZE', '2026-04-08T05:00:00Z'],   // 17:00 NZST — after 16:45 close
+		['XHEL', '2026-04-08T16:00:00Z'],   // 19:00 EEST — after 18:30 close
+		['XSTO', '2026-04-08T16:00:00Z'],   // 18:00 CEST — after 17:30 close
+		['XCBO', '2026-04-08T21:00:00Z'],   // 17:00 ET — after 16:15 close
+	];
+
+	for (const [mic, time] of afterCloseCases) {
+		it(`${mic} CLOSED after close`, async () => {
+			await expectDemoStatus(mic, time, 'CLOSED');
+		});
+	}
+});
+
+// ─── Schedule: Weekend CLOSED ───────────────────────────────────────────────
+
+describe('Schedule engine — weekend CLOSED', () => {
+	// Saturday April 11, 2026 at noon UTC — all standard exchanges closed
+	const saturdayNoon = '2026-04-11T12:00:00Z';
+
+	const standardMics = [
+		'XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES',
+		'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE',
+		'XBSP', 'XSWX', 'XMIL', 'XIST', 'XNZE', 'XHEL', 'XSTO', 'XCBO',
+	];
+
+	for (const mic of standardMics) {
+		it(`${mic} CLOSED on Saturday`, async () => {
+			await expectDemoStatus(mic, saturdayNoon, 'CLOSED');
+		});
+	}
+
+	// Middle Eastern exchanges: Friday is weekend
+	it('XSAU CLOSED on Friday (Middle Eastern weekend)', async () => {
+		await expectDemoStatus('XSAU', '2026-04-10T09:00:00Z', 'CLOSED'); // Fri 12:00 AST
+	});
+
+	it('XDFM CLOSED on Friday (Middle Eastern weekend)', async () => {
+		await expectDemoStatus('XDFM', '2026-04-10T09:00:00Z', 'CLOSED');
+	});
+
+	// But XSAU/XDFM are OPEN on Sunday
+	it('XSAU OPEN on Sunday (not a Middle Eastern weekend)', async () => {
+		await expectDemoStatus('XSAU', '2026-04-12T09:00:00Z', 'OPEN'); // Sun 12:00 AST
+	});
+
+	it('XDFM OPEN on Sunday (not a Middle Eastern weekend)', async () => {
+		await expectDemoStatus('XDFM', '2026-04-12T08:00:00Z', 'OPEN'); // Sun 12:00 GST
+	});
+
+	// Crypto: OPEN on weekends
+	it('XCOI OPEN on Saturday', async () => {
+		await expectDemoStatus('XCOI', saturdayNoon, 'OPEN');
+	});
+
+	it('XBIN OPEN on Sunday', async () => {
+		await expectDemoStatus('XBIN', '2026-04-12T12:00:00Z', 'OPEN');
+	});
+});
+
+// ─── Schedule: Known holidays 2026 ─────────────────────────────────────────
+
+describe('Schedule engine — holiday CLOSED (2026)', () => {
+	const holidayCases: [string, string, string][] = [
+		// US
+		['XNYS', '2026-01-01T15:00:00Z', "New Year's Day"],
+		['XNAS', '2026-07-03T15:00:00Z', 'Independence Day observed'],
+		// UK
+		['XLON', '2026-04-06T10:00:00Z', 'Easter Monday'],
+		// Japan
+		['XJPX', '2026-05-04T02:00:00Z', 'Greenery Day'],
+		// France
+		['XPAR', '2026-05-01T10:00:00Z', 'Labour Day'],
+		// Hong Kong
+		['XHKG', '2026-01-01T03:00:00Z', "New Year's Day"],
+		// Australia
+		['XASX', '2026-01-26T01:00:00Z', 'Australia Day'],
+		// India
+		['XBOM', '2026-01-26T06:00:00Z', 'Republic Day'],
+		// Korea
+		['XKRX', '2026-03-01T02:00:00Z', 'Independence Movement Day'],
+		// South Africa
+		['XJSE', '2026-03-21T09:00:00Z', 'Human Rights Day'],
+		// Brazil
+		['XBSP', '2026-02-16T14:00:00Z', 'Carnival'],
+		// Switzerland
+		['XSWX', '2026-01-01T10:00:00Z', "New Year's Day"],
+		// Saudi
+		['XSAU', '2026-09-23T09:00:00Z', 'Saudi National Day'],
+		// New Zealand
+		['XNZE', '2026-02-05T23:00:00Z', 'Waitangi Day (Feb 6 NZST)'],
+	];
+
+	for (const [mic, time, name] of holidayCases) {
+		it(`${mic} CLOSED on ${name}`, async () => {
+			await expectDemoStatus(mic, time, 'CLOSED');
+		});
+	}
+});
+
+// ─── Schedule: Half-day early close ─────────────────────────────────────────
+
+describe('Schedule engine — half-day early close (2026)', () => {
+	it('XNYS open before 13:00 on Black Friday', async () => {
+		// Black Friday 2026: Nov 27. Close at 13:00 ET.
+		// 10:00 ET = 15:00 UTC (EST in Nov)
+		await expectDemoStatus('XNYS', '2026-11-27T15:00:00Z', 'OPEN');
+	});
+
+	it('XNYS closed after 13:00 on Black Friday', async () => {
+		// 14:00 ET = 19:00 UTC (EST in Nov)
+		await expectDemoStatus('XNYS', '2026-11-27T19:00:00Z', 'CLOSED');
+	});
+});
+
+// ─── Schedule: Lunch breaks ─────────────────────────────────────────────────
+
+describe('Schedule engine — lunch break CLOSED', () => {
+	it('XJPX CLOSED during lunch (11:30-12:30 JST)', async () => {
+		// 12:00 JST = 03:00 UTC
+		await expectDemoStatus('XJPX', '2026-04-08T03:00:00Z', 'CLOSED');
+	});
+
+	it('XJPX OPEN after lunch resumption (12:30 JST)', async () => {
+		// 13:00 JST = 04:00 UTC
+		await expectDemoStatus('XJPX', '2026-04-08T04:00:00Z', 'OPEN');
+	});
+
+	it('XHKG CLOSED during lunch (12:00-13:00 HKT)', async () => {
+		// 12:30 HKT = 04:30 UTC
+		await expectDemoStatus('XHKG', '2026-04-08T04:30:00Z', 'CLOSED');
+	});
+
+	it('XHKG OPEN after lunch resumption (13:00 HKT)', async () => {
+		// 13:30 HKT = 05:30 UTC
+		await expectDemoStatus('XHKG', '2026-04-08T05:30:00Z', 'OPEN');
+	});
+
+	it('XSHG CLOSED during lunch (11:30-13:00 CST)', async () => {
+		// 12:00 CST = 04:00 UTC
+		await expectDemoStatus('XSHG', '2026-04-08T04:00:00Z', 'CLOSED');
+	});
+
+	it('XSHG OPEN after lunch resumption (13:00 CST)', async () => {
+		// 13:30 CST = 05:30 UTC
+		await expectDemoStatus('XSHG', '2026-04-08T05:30:00Z', 'OPEN');
+	});
+
+	it('XSHE CLOSED during lunch (11:30-13:00 CST)', async () => {
+		await expectDemoStatus('XSHE', '2026-04-08T04:00:00Z', 'CLOSED');
+	});
+
+	it('XSHE OPEN after lunch resumption', async () => {
+		await expectDemoStatus('XSHE', '2026-04-08T05:30:00Z', 'OPEN');
+	});
+});
+
+// ─── Schedule: DST transitions ──────────────────────────────────────────────
+
+describe('Schedule engine — DST transitions', () => {
+	// US Spring Forward: March 8, 2026 (EST→EDT)
+	// After spring forward, NYSE opens at 13:30 UTC (was 14:30 UTC in EST)
+	it('NYSE opens at 13:30 UTC after US spring forward (Mar 9)', async () => {
+		// Mar 9 is Monday after spring forward
+		// 13:30 UTC = 9:30 EDT (OPEN)
+		await expectDemoStatus('XNYS', '2026-03-09T14:00:00Z', 'OPEN');
+	});
+
+	it('NYSE closed at 13:00 UTC on Mar 9 (before open)', async () => {
+		// 13:00 UTC = 9:00 EDT (before 9:30 open)
+		await expectDemoStatus('XNYS', '2026-03-09T13:00:00Z', 'CLOSED');
+	});
+
+	// Before spring forward: NYSE opens at 14:30 UTC
+	it('NYSE opens at 14:30 UTC before US spring forward (Mar 6)', async () => {
+		// Mar 6 is Friday before spring forward (still EST)
+		// 15:00 UTC = 10:00 EST (OPEN)
+		await expectDemoStatus('XNYS', '2026-03-06T15:00:00Z', 'OPEN');
+	});
+
+	it('NYSE closed at 14:00 UTC on Mar 6 (before EST open)', async () => {
+		// 14:00 UTC = 9:00 EST (before 9:30 open)
+		await expectDemoStatus('XNYS', '2026-03-06T14:00:00Z', 'CLOSED');
+	});
+
+	// US Fall Back: November 1, 2026 (EDT→EST)
+	// After fall back, NYSE opens at 14:30 UTC (was 13:30 UTC in EDT)
+	it('NYSE opens at 14:30 UTC after US fall back (Nov 2)', async () => {
+		// Nov 2 is Monday after fall back
+		// 15:00 UTC = 10:00 EST (OPEN)
+		await expectDemoStatus('XNYS', '2026-11-02T15:00:00Z', 'OPEN');
+	});
+
+	it('NYSE closed at 14:00 UTC on Nov 2 (before EST open)', async () => {
+		await expectDemoStatus('XNYS', '2026-11-02T14:00:00Z', 'CLOSED');
+	});
+
+	// EU Spring Forward: March 29, 2026 (GMT→BST, CET→CEST)
+	// After spring forward, XLON opens at 07:00 UTC (was 08:00 UTC in GMT)
+	it('XLON opens at 07:00 UTC after EU spring forward (Mar 30)', async () => {
+		// Mar 30 is Monday after EU spring forward
+		// 08:00 UTC = 09:00 BST (OPEN, since open is 8:00 local)
+		await expectDemoStatus('XLON', '2026-03-30T08:00:00Z', 'OPEN');
+	});
+
+	it('XLON closed at 06:30 UTC on Mar 30 (before BST open)', async () => {
+		// 06:30 UTC = 07:30 BST (before 8:00 open)
+		await expectDemoStatus('XLON', '2026-03-30T06:30:00Z', 'CLOSED');
+	});
+
+	// Before EU spring forward, XLON opens at 08:00 UTC
+	it('XLON opens at 08:00 UTC before EU spring forward (Mar 27)', async () => {
+		// Mar 27 is Friday before EU spring forward (still GMT)
+		// 09:00 UTC = 09:00 GMT (OPEN)
+		await expectDemoStatus('XLON', '2026-03-27T09:00:00Z', 'OPEN');
+	});
+
+	// EU Fall Back: October 25, 2026 (BST→GMT)
+	it('XLON opens at 08:00 UTC after EU fall back (Oct 26)', async () => {
+		// Oct 26 is Monday after fall back
+		// 09:00 UTC = 09:00 GMT (OPEN)
+		await expectDemoStatus('XLON', '2026-10-26T09:00:00Z', 'OPEN');
+	});
+
+	// The 3-week gap: Mar 8 (US forward) to Mar 29 (EU forward)
+	// During this period, NYSE is EDT but XLON is still GMT
+	it('3-week DST gap: NYSE at EDT, XLON at GMT (Mar 16)', async () => {
+		// NYSE opens 13:30 UTC (EDT), XLON opens 08:00 UTC (GMT)
+		// At 14:00 UTC: NYSE OPEN (10:00 EDT), XLON OPEN (14:00 GMT)
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const nyseBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const xnysReceipt = (nyseBody.receipt ?? nyseBody) as Record<string, unknown>;
+		expect(xnysReceipt.status).toBe('OPEN');
+
+		const lonBody = await fetchJSON('/v5/demo?mic=XLON');
+		const xlonReceipt = (lonBody.receipt ?? lonBody) as Record<string, unknown>;
+		expect(xlonReceipt.status).toBe('OPEN');
+	});
+});
+
+// ─── Schedule: CME overnight session edge cases ─────────────────────────────
+
+describe('Schedule engine — CME overnight session', () => {
+	it('XCBT CLOSED during maintenance halt (16:00-17:00 CT)', async () => {
+		// 16:30 CT = 21:30 UTC (CDT in April)
+		await expectDemoStatus('XCBT', '2026-04-08T21:30:00Z', 'CLOSED');
+	});
+
+	it('XCBT OPEN after maintenance (17:00 CT)', async () => {
+		// 17:30 CT = 22:30 UTC (CDT in April)
+		await expectDemoStatus('XCBT', '2026-04-08T22:30:00Z', 'OPEN');
+	});
+
+	it('XCBT CLOSED on Saturday', async () => {
+		await expectDemoStatus('XCBT', '2026-04-11T12:00:00Z', 'CLOSED');
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TASK 2: Endpoint Coverage Gaps — comprehensive tests for uncovered routes
 // ═══════════════════════════════════════════════════════════════════════════════
 
