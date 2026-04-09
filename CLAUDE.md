@@ -62,6 +62,8 @@ Still requires explicit confirmation in the message:
 | `.github/actions/market-gate/` | Reusable GitHub Action for CI/CD market checks |
 | `scripts/` | Deployment helpers, test sync, payment testing |
 | `packages/headless-oracle-mcp/` | npm stdio MCP package |
+| `packages/sdk-typescript/` | @headlessoracle/sdk TypeScript SDK (not published) |
+| `packages/sdk-python/` | headless-oracle-sdk Python SDK (not published) |
 
 ## Supported Exchanges (28 total)
 
@@ -139,7 +141,7 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 <!-- Last updated: 2026-04-08 by Day 43 Claude Managed Agents guide + upgrade nudge -->
 
 - **Tests**: 1014/1014
-- **Worker version**: 8b1008d9 (latest deployed)
+- **Worker version**: d07e539a (latest deployed)
 - **Test payment**: 1 x402 payment settled (Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11

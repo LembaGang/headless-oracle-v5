@@ -4,7 +4,13 @@
 ## Current Status
 **Phase**: Post-launch. Engineering hardening sprint.
 **Test suite**: 1014/1014 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 9 2026 — Day 44 continued: Coverage sprint (777→1014 tests):
+**Last significant work**: Apr 9 2026 — Day 44 continued: API completeness sprint:
+- **OpenAPI 3.1 spec complete**: 73 paths (was ~50), 11 semantic tags, 2 server URLs (headlessoracle.com + api.headlessoracle.com), MIT license, contact email, BearerAuth security scheme. Added ~25 missing paths: /oauth/*, /v5/historical, /v5/status/realtime, /v5/briefing, /v5/referrers, /v5/payment-proof, /v5/why-not-free, /v5/pricing, /v5/slo, /v5/errors/{code}, /v5/changelog, /.well-known/x402.json, /.well-known/mcp-servers.json, /.well-known/mcp/server-card.json, /.well-known/oauth-*, /.well-known/ai-plugin.json, /AGENTS.md, /skill.md, /badge/{mic}, /v5/webhooks/unsubscribe, /sitemap.xml. Deployed d07e539a. Verified live: 73 paths.
+- **TypeScript SDK stub**: packages/sdk-typescript/ — @headlessoracle/sdk. Full types, getStatus/batch/historical/verify/verifyOffline, Ed25519 via Web Crypto, auto-retry 429, auto-provision key on 402, safety helpers (isSafeToExecute, allOpen), OracleError class, dual ESM+CJS build via tsup.
+- **Python SDK stub**: packages/sdk-python/ — headless-oracle-sdk. Pydantic v2 models, httpx client, PyNaCl Ed25519 verification, auto-retry/auto-provision, 12 pytest tests using respx mock, pyproject.toml ready for publish.
+- Gap: Neither SDK is published yet. TypeScript needs `tsup` build + `npm publish`. Python needs `pip install -e .` test + PyPI upload.
+
+**Previous**: Apr 9 2026 — Day 44 continued: Coverage sprint (777→1014 tests):
 - **Coverage tooling**: Istanbul coverage provider configured (`npm run test:coverage`). Baseline: 78% stmts / 71% branch / 53% funcs / 81% lines.
 - **Endpoint coverage gaps (77 tests)**: /v5/keys/instant error cases, /v5/verify error paths, /v5/historical edge cases, /v5/audit/digest + chain, /v5/funnel auth, /v5/stack, /v5/credits/purchase + balance, /.well-known/* endpoints, /docs/* endpoints, catch-all 404, method not allowed, CORS preflight.
 - **Schedule engine exhaustive tests (142 tests)**: All 28 exchanges tested for mid-session OPEN, before-open CLOSED, after-close CLOSED, weekend CLOSED, 2026 holiday CLOSED, half-day early close, lunch breaks (XJPX/XHKG/XSHG/XSHE), DST transitions (US Mar 8 + Nov 1, EU Mar 29 + Oct 25, 3-week gap), CME overnight session.
