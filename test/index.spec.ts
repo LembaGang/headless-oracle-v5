@@ -6140,8 +6140,18 @@ describe('POST /v5/sandbox', () => {
 		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKeyDefault);
 	});
 
-	it('GET /v5/sandbox returns 405 with helpful message', async () => {
-		const res  = await fetchWorker('/v5/sandbox');
+	it('GET /v5/sandbox returns HTML signup form for browsers', async () => {
+		const res = await fetchWorker('/v5/sandbox', { headers: { 'Accept': 'text/html' } });
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/html');
+		const text = await res.text();
+		expect(text).toContain('Get a Free API Key');
+		expect(text).toContain('sandbox-form');
+		expect(text).toContain('email');
+	});
+
+	it('GET /v5/sandbox returns 405 JSON for API callers', async () => {
+		const res  = await fetchWorker('/v5/sandbox', { headers: { 'Accept': 'application/json' } });
 		expect(res.status).toBe(405);
 		const body = await res.json() as { error: string; message: string };
 		expect(body.error).toBe('METHOD_NOT_ALLOWED');

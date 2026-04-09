@@ -14148,11 +14148,12 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
 </head>
 <body>
 <header>
-  <a href="/">Headless Oracle</a>
+  <a href="/">HEADLESS<span style="color:var(--accent)">ORACLE</span></a>
   <nav>
     <a href="/docs">Docs</a>
-    <a href="/status">Status</a>
-    <a href="https://github.com/LembaGang" target="_blank">GitHub</a>
+    <a href="/openapi.json">API</a>
+    <a href="/blog">Blog</a>
+    <a href="https://github.com/LembaGang/headless-oracle-v5" target="_blank">GitHub</a>
   </nav>
 </header>
 <main>
@@ -14172,7 +14173,7 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
         <li>Ed25519 signed receipts</li>
         <li>MCP + REST access</li>
       </ul>
-      <a href="/docs/quickstart" class="cta secondary">Get sandbox key</a>
+      <a href="/v5/sandbox" class="cta secondary">Get sandbox key</a>
     </div>
 
     <div class="card">
@@ -14187,7 +14188,7 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
         <li>Ed25519 signed receipts</li>
         <li>Rate-limit warning headers</li>
       </ul>
-      <a href="/v5/keys/request" class="cta secondary">Request free key</a>
+      <a href="/v5/sandbox" class="cta secondary">Request free key</a>
     </div>
 
     <div class="card featured">
@@ -14217,7 +14218,7 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
         <li>Balance visible at /v5/credits/balance</li>
         <li>Via Paddle checkout</li>
       </ul>
-      <a href="/v5/checkout?type=credits" class="cta secondary">Buy credits</a>
+      <a href="mailto:mike@headlessoracle.com?subject=Credit%20Pack%20Purchase" class="cta secondary">Buy credits</a>
     </div>
 
     <div class="card">
@@ -14232,7 +14233,7 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
         <li>Receipt audit log</li>
         <li>Priority support</li>
       </ul>
-      <a href="/v5/checkout" class="cta">Subscribe — Builder</a>
+      <a href="mailto:mike@headlessoracle.com?subject=Builder%20Plan" class="cta">Subscribe — Builder</a>
     </div>
 
     <div class="card">
@@ -14247,7 +14248,7 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
         <li>Receipt audit log</li>
         <li>SLA + dedicated support</li>
       </ul>
-      <a href="/v5/checkout" class="cta">Subscribe — Pro</a>
+      <a href="mailto:mike@headlessoracle.com?subject=Pro%20Plan" class="cta">Subscribe — Pro</a>
     </div>
 
   </div>
@@ -14260,6 +14261,8 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
 <footer>
   <a href="/">Home</a>
   <a href="/docs">Docs</a>
+  <a href="/blog">Blog</a>
+  <a href="/llms.txt">llms.txt</a>
   <a href="/terms">Terms</a>
   <a href="/privacy">Privacy</a>
   <a href="https://github.com/LembaGang/headless-oracle-v5" target="_blank">GitHub</a>
@@ -14268,7 +14271,7 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
 </html>`;
 				return new Response(pricingHtml, {
 					status: 200,
-					headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Oracle-Version': 'v5' },
+					headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Oracle-Version': 'v5' },
 				});
 			}
 
@@ -14715,8 +14718,99 @@ document.addEventListener('DOMContentLoaded', fetchDemo);
 			// (10 credits, no email, no fingerprint blocking — payment proves intent).
 			if (url.pathname === '/v5/sandbox') {
 				if (request.method === 'GET') {
-					// Helpful error for callers using the old GET interface.
-					return json({ error: 'METHOD_NOT_ALLOWED', message: 'POST /v5/sandbox with JSON body { "email": "you@example.com" }' }, 405);
+					// Browser users see a signup form; API callers get JSON hint
+					const accept = request.headers.get('Accept') || '';
+					if (!accept.includes('text/html')) {
+						return json({ error: 'METHOD_NOT_ALLOWED', message: 'POST /v5/sandbox with JSON body { "email": "you@example.com" }' }, 405);
+					}
+					const sandboxFormBody = `
+<h1>Get a Free API Key</h1>
+<p style="color:var(--text2);margin-bottom:32px">Instant sandbox key — 200 calls over 7 days. No credit card required.</p>
+
+<div style="max-width:480px">
+  <form id="sandbox-form" style="display:flex;flex-direction:column;gap:16px">
+    <div>
+      <label for="email" style="display:block;font-size:13px;color:var(--text2);margin-bottom:6px">Email address</label>
+      <input type="email" id="email" name="email" required placeholder="you@example.com"
+        style="width:100%;padding:10px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--white);font-size:15px;outline:none"
+        onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+    </div>
+    <div>
+      <label for="use_case" style="display:block;font-size:13px;color:var(--text2);margin-bottom:6px">What are you building? <span style="color:var(--text2)">(optional)</span></label>
+      <input type="text" id="use_case" name="use_case" placeholder="e.g. trading bot, risk pipeline, MCP agent"
+        style="width:100%;padding:10px 14px;background:var(--bg2);border:1px solid var(--border2);border-radius:8px;color:var(--white);font-size:15px;outline:none"
+        onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+    </div>
+    <button type="submit" id="submit-btn"
+      style="padding:12px 24px;background:var(--blue);color:var(--white);border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:opacity 0.2s"
+      onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+      Get API Key
+    </button>
+  </form>
+
+  <div id="result" style="display:none;margin-top:24px"></div>
+  <div id="error" style="display:none;margin-top:16px;padding:12px 16px;background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:8px;color:var(--red);font-size:14px"></div>
+</div>
+
+<div style="margin-top:48px;padding:24px;background:var(--bg2);border:1px solid var(--border);border-radius:8px">
+  <h3 style="margin-top:0">What you get</h3>
+  <ul style="color:var(--text)">
+    <li><strong style="color:var(--white)">200 API calls</strong> over 7 days</li>
+    <li>Full Ed25519-signed receipts (same as paid tiers)</li>
+    <li>Access to all 28 exchanges</li>
+    <li>Works with REST API and MCP</li>
+  </ul>
+  <p style="font-size:13px;color:var(--text2);margin-bottom:0">Need more? <a href="/pricing">View paid plans</a> starting at $0.001/request via x402.</p>
+</div>
+
+<script>
+document.getElementById('sandbox-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('submit-btn');
+  const errEl = document.getElementById('error');
+  const resEl = document.getElementById('result');
+  btn.disabled = true;
+  btn.textContent = 'Provisioning...';
+  errEl.style.display = 'none';
+  resEl.style.display = 'none';
+  try {
+    const body = { email: document.getElementById('email').value };
+    const uc = document.getElementById('use_case').value.trim();
+    if (uc) body.use_case = uc;
+    const r = await fetch('/v5/sandbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) {
+      errEl.textContent = d.message || d.error || 'Something went wrong.';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Get API Key';
+      return;
+    }
+    const cmd = 'curl \\'' + 'https://api.headlessoracle.com/v5/status?mic=XNYS\\'' + ' -H \\'' + 'X-Oracle-Key: ' + d.api_key + '\\'';
+    resEl.innerHTML = '<div style="padding:20px;background:var(--bg3);border:1px solid var(--green);border-radius:8px">' +
+      '<p style="color:var(--green);font-weight:600;margin-bottom:12px">\\u2713 Your API key is ready</p>' +
+      '<div style="position:relative"><code id="key-display" style="display:block;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:14px;word-break:break-all;color:var(--amber)">' + d.api_key + '</code>' +
+      '<button onclick="navigator.clipboard.writeText(document.getElementById(\\'key-display\\').textContent);this.textContent=\\'Copied!\\';setTimeout(()=>this.textContent=\\'Copy\\',2000)" style="position:absolute;top:8px;right:8px;padding:4px 12px;background:var(--bg2);border:1px solid var(--border2);border-radius:4px;color:var(--text);cursor:pointer;font-size:12px">Copy</button></div>' +
+      '<p style="font-size:13px;color:var(--text2);margin:12px 0 8px">Try it:</p>' +
+      '<pre style="font-size:12px;overflow-x:auto">' + cmd + '</pre>' +
+      '<p style="font-size:12px;color:var(--text2);margin-top:12px;margin-bottom:0">Key also sent to <strong style="color:var(--white)">' + d.email + '</strong>. Valid for 7 days.</p>' +
+      '</div>';
+    resEl.style.display = 'block';
+    document.getElementById('sandbox-form').style.display = 'none';
+  } catch (err) {
+    errEl.textContent = 'Network error. Please try again.';
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Get API Key';
+  }
+});
+</script>`;
+					return new Response(wrapHtml('Get a Free API Key', sandboxFormBody, {
+						description: 'Get a free Headless Oracle API key — 200 calls over 7 days, no credit card required.',
+						canonical: 'https://headlessoracle.com/v5/sandbox',
+					}), {
+						headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Oracle-Version': 'v5' },
+					});
 				}
 				if (request.method !== 'POST') {
 					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST' }, 405);
