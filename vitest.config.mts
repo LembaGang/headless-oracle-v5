@@ -8,5 +8,12 @@ export default defineWorkersConfig({
 				wrangler: { configPath: './wrangler.toml' },
 			},
 		},
+		coverage: {
+			provider: 'istanbul',
+			reporter: ['text', 'text-summary', 'json-summary', 'json', 'html'],
+			reportsDirectory: './coverage',
+			include: ['src/**/*.ts'],
+			exclude: ['node_modules/**', 'test/**', '**/*.d.ts'],
+		},
 	},
 });
