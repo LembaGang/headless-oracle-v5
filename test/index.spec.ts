@@ -9448,6 +9448,42 @@ describe('402 trial exhaustion agent_upgrade_paths', () => {
 	});
 });
 
+// ─── GET /v5/slo — SLO and error budget report ───────────────────────────────
+
+describe('GET /v5/slo', () => {
+	it('returns SLO report with correct structure', async () => {
+		const res = await fetchWorker('/v5/slo');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.slo_target).toBe('99.9%');
+		expect(body.status).toBe('HEALTHY');
+		expect(body).toHaveProperty('total_requests');
+		expect(body).toHaveProperty('server_errors');
+		expect(body).toHaveProperty('availability');
+		expect(body).toHaveProperty('error_budget');
+		expect(body).toHaveProperty('daily');
+		expect(Array.isArray(body.daily)).toBe(true);
+	});
+
+	it('respects ?days= parameter', async () => {
+		const res = await fetchWorker('/v5/slo?days=3');
+		expect(res.status).toBe(200);
+		const body = await res.json() as { period_days: number; daily: unknown[] };
+		expect(body.period_days).toBe(3);
+		expect(body.daily).toHaveLength(3);
+	});
+
+	it('reports HEALTHY when there are no server errors', async () => {
+		// Seed some 200 status codes
+		await env.ORACLE_TELEMETRY.put(`status_code:${new Date().toISOString().slice(0, 10)}:200`, '100');
+		const res = await fetchWorker('/v5/slo?days=1');
+		const body = await res.json() as { status: string; server_errors: number; availability: string };
+		expect(body.status).toBe('HEALTHY');
+		expect(body.server_errors).toBe(0);
+		expect(body.availability).toBe('100.0000%');
+	});
+});
+
 // ─── MCP initialize clientInfo capture ─────────────────────────────────────────
 
 describe('MCP initialize clientInfo capture', () => {

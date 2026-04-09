@@ -12771,6 +12771,65 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				}, 200, { 'Cache-Control': 'public, max-age=60' });
 			}
 
+			// ── GET /v5/slo — SLO and error budget report ─────────────────────
+			// Public, no auth. Reads status_code KV counters for the last 7 days,
+			// computes availability and error budget against 99.9% SLO target.
+			if (url.pathname === '/v5/slo' && request.method === 'GET') {
+				const SLO_TARGET = 0.999;
+				const daysBack = Math.min(parseInt(url.searchParams.get('days') || '7', 10) || 7, 30);
+				const dailyBreakdown: Array<{ date: string; total: number; success: number; server_errors: number }> = [];
+				let totalRequests = 0;
+				let serverErrors = 0;
+
+				for (let i = 0; i < daysBack; i++) {
+					const d = new Date(now);
+					d.setUTCDate(d.getUTCDate() - i);
+					const dateStr = d.toISOString().slice(0, 10);
+					const codes = [200, 301, 302, 400, 401, 402, 403, 404, 405, 429, 500, 502, 503];
+					const reads = await Promise.all(
+						codes.map(c => env.ORACLE_TELEMETRY.get(`status_code:${dateStr}:${c}`).catch(() => null)),
+					);
+					let dayTotal = 0;
+					let daySuccess = 0;
+					let day5xx = 0;
+					for (let j = 0; j < codes.length; j++) {
+						const val = parseInt(reads[j] || '0', 10) || 0;
+						dayTotal += val;
+						if (codes[j] === 200 || codes[j] === 402) daySuccess += val;
+						if (codes[j] >= 500) day5xx += val;
+					}
+					dailyBreakdown.push({ date: dateStr, total: dayTotal, success: daySuccess, server_errors: day5xx });
+					totalRequests += dayTotal;
+					serverErrors += day5xx;
+				}
+
+				const availability = totalRequests > 0 ? (totalRequests - serverErrors) / totalRequests : 1;
+				const errorBudgetTotal = Math.floor(totalRequests * (1 - SLO_TARGET));
+				const budgetConsumed = serverErrors;
+				const budgetRemaining = Math.max(0, errorBudgetTotal - budgetConsumed);
+				const budgetConsumedPct = errorBudgetTotal > 0 ? (budgetConsumed / errorBudgetTotal) * 100 : 0;
+				let status: string;
+				if (budgetConsumedPct < 50) status = 'HEALTHY';
+				else if (budgetConsumedPct < 80) status = 'WARNING';
+				else status = 'CRITICAL';
+
+				return json({
+					slo_target: '99.9%',
+					period_days: daysBack,
+					total_requests: totalRequests,
+					server_errors: serverErrors,
+					availability: `${(availability * 100).toFixed(4)}%`,
+					error_budget: {
+						total: errorBudgetTotal,
+						consumed: budgetConsumed,
+						remaining: budgetRemaining,
+						consumed_pct: `${budgetConsumedPct.toFixed(1)}%`,
+					},
+					status,
+					daily: dailyBreakdown,
+				}, 200, { 'Cache-Control': 'public, max-age=300' });
+			}
+
 			// ── GET /v5/funnel — conversion funnel snapshot ──────────────────────
 			// Admin-only: requires MASTER_API_KEY. Returns today's conversion funnel
 			// so we can see where agents drop off and which paths convert.
