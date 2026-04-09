@@ -156,6 +156,179 @@ async function sha256Hex(input: string): Promise<string> {
 	return toHex(new Uint8Array(hash));
 }
 
+// ─── Shared HTML Template ────────────────────────────────────────────────────
+// Used by /docs, /blog, /refund, /terms, /privacy, 404, and 405 pages.
+// Consistent dark theme matching the landing page.
+
+const PAGE_STYLES = `*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e17;--bg2:#111827;--bg3:#1a2332;--border:#1e293b;--border2:#334155;--text:#94a3b8;--text2:#64748b;--white:#f1f5f9;--blue:#3b82f6;--blue2:#60a5fa;--green:#22c55e;--red:#ef4444;--purple:#a78bfa;--amber:#f59e0b}
+html{scroll-behavior:smooth}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
+.container{max-width:860px;margin:0 auto;padding:0 24px}
+a{color:var(--blue2);text-decoration:none}
+a:hover{text-decoration:underline;color:var(--white)}
+nav{border-bottom:1px solid var(--border);padding:16px 0}
+.nav-inner{max-width:1100px;margin:0 auto;padding:0 24px;display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:18px;font-weight:700;color:var(--white);letter-spacing:2px;text-decoration:none}
+.logo span{color:var(--blue)}
+.logo:hover{text-decoration:none}
+.nav-links{display:flex;gap:24px;font-size:13px}
+.nav-links a{color:var(--text)}
+.nav-links a:hover{color:var(--white);text-decoration:none}
+main{padding:48px 0 80px}
+h1{font-size:32px;color:var(--white);font-weight:700;margin-bottom:8px;line-height:1.3}
+h2{font-size:22px;color:var(--white);font-weight:600;margin:32px 0 12px;padding-top:16px;border-top:1px solid var(--border)}
+h3{font-size:17px;color:var(--white);font-weight:600;margin:24px 0 8px}
+p{margin-bottom:12px}
+ul,ol{margin:0 0 16px 24px}
+li{margin-bottom:4px}
+code{font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;font-size:0.9em;background:var(--bg2);border:1px solid var(--border);padding:2px 6px;border-radius:4px;color:var(--blue2)}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;overflow-x:auto;margin:12px 0;font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;font-size:13px;line-height:1.6;color:var(--green)}
+pre code{background:none;border:none;padding:0;color:inherit}
+blockquote{border-left:3px solid var(--blue);padding:8px 16px;margin:12px 0;color:var(--text2);background:rgba(59,130,246,0.05);border-radius:0 8px 8px 0}
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+th{text-align:left;padding:8px 12px;border-bottom:2px solid var(--border2);color:var(--white);font-weight:600}
+td{padding:8px 12px;border-bottom:1px solid var(--border)}
+hr{border:none;border-top:1px solid var(--border);margin:24px 0}
+footer{border-top:1px solid var(--border);padding:32px 0;margin-top:40px}
+.footer-inner{max-width:1100px;margin:0 auto;padding:0 24px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:16px}
+.footer-links{display:flex;flex-wrap:wrap;gap:16px;font-size:13px}
+.footer-links a{color:var(--text2)}
+.footer-links a:hover{color:var(--white)}
+.footer-copy{font-size:12px;color:var(--text2)}
+.breadcrumb{font-size:13px;color:var(--text2);margin-bottom:24px}
+.breadcrumb a{color:var(--text2)}
+.breadcrumb a:hover{color:var(--blue2)}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin:16px 0}
+.doc-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;transition:border-color 0.2s}
+.doc-card:hover{border-color:var(--blue);text-decoration:none}
+.doc-card h3{margin:0 0 4px;font-size:15px}
+.doc-card p{font-size:13px;color:var(--text2);margin:0}
+.error-page{text-align:center;padding:120px 24px}
+.error-page h1{font-size:72px;color:var(--blue);margin-bottom:16px}
+.error-page p{font-size:18px;margin-bottom:24px}
+.error-page a{display:inline-block;padding:10px 24px;border-radius:8px;background:var(--blue);color:var(--white);font-weight:600;font-size:14px}
+.error-page a:hover{text-decoration:none;opacity:0.9}
+@media(max-width:768px){h1{font-size:24px}h2{font-size:18px}.card-grid{grid-template-columns:1fr}.footer-inner{flex-direction:column;text-align:center}}`;
+
+function wrapHtml(title: string, bodyContent: string, opts?: { breadcrumbs?: string; description?: string; canonical?: string }): string {
+	const desc = opts?.description || 'Headless Oracle — Ed25519-signed market-state attestations for AI agents.';
+	const canonical = opts?.canonical ? `\n<link rel="canonical" href="${opts.canonical}">` : '';
+	const breadcrumbHtml = opts?.breadcrumbs ? `<div class="breadcrumb">${opts.breadcrumbs}</div>` : '';
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title} — Headless Oracle</title>
+<meta name="description" content="${desc}">
+<meta name="robots" content="index, follow">${canonical}
+<style>${PAGE_STYLES}</style>
+</head>
+<body>
+<nav><div class="nav-inner">
+  <a href="/" class="logo">HEADLESS<span>ORACLE</span></a>
+  <div class="nav-links">
+    <a href="/pricing">Pricing</a>
+    <a href="/docs">Docs</a>
+    <a href="/openapi.json">API</a>
+    <a href="/blog">Blog</a>
+    <a href="https://github.com/LembaGang/headless-oracle-v5">GitHub</a>
+  </div>
+</div></nav>
+<main><div class="container">
+${breadcrumbHtml}
+${bodyContent}
+</div></main>
+<footer><div class="footer-inner">
+  <div>
+    <a href="/" class="logo" style="display:inline-block;margin-bottom:8px">HEADLESS<span>ORACLE</span></a>
+    <p class="footer-copy">&copy; 2026 Headless Oracle. The signed market-state primitive for AI agent infrastructure.</p>
+  </div>
+  <div class="footer-links">
+    <a href="/docs">Docs</a>
+    <a href="/openapi.json">API</a>
+    <a href="https://github.com/LembaGang/headless-oracle-v5">GitHub</a>
+    <a href="/blog">Blog</a>
+    <a href="/llms.txt">llms.txt</a>
+    <a href="/pricing">Pricing</a>
+    <a href="mailto:hello@headlessoracle.com">Contact</a>
+  </div>
+</div></footer>
+</body>
+</html>`;
+}
+
+// Basic markdown-to-HTML converter for docs and blog posts.
+// Handles headings, links, bold, italic, code blocks, lists, tables, blockquotes.
+function renderMarkdownToHtml(md: string): string {
+	let html = md;
+	// Escape HTML entities in non-code content (preserve code blocks first)
+	const codeBlocks: string[] = [];
+	html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+		const idx = codeBlocks.length;
+		const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+		codeBlocks.push(`<pre><code>${escaped}</code></pre>`);
+		return `%%CODEBLOCK_${idx}%%`;
+	});
+	// Inline code (before other processing)
+	html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+	// Headings
+	html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+	html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+	html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+	html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+	// Horizontal rules
+	html = html.replace(/^---+$/gm, '<hr>');
+	// Bold and italic
+	html = html.replace(/\*\*([^*]+)\*\*/g, '<strong style="color:var(--white)">$1</strong>');
+	html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+	// Links — convert relative .md links to working routes
+	html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, href) => {
+		let url = href;
+		// Convert relative doc links to absolute routes
+		if (!url.startsWith('http') && !url.startsWith('/') && !url.startsWith('#')) {
+			url = '/docs/' + url;
+		}
+		// Strip .md extension for worker routes
+		url = url.replace(/\.md$/, '');
+		return `<a href="${url}">${text}</a>`;
+	});
+	// Blockquotes
+	html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+	// Merge adjacent blockquotes
+	html = html.replace(/<\/blockquote>\n<blockquote>/g, '\n');
+	// Tables
+	html = html.replace(/^\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)*)/gm, (_m, headerRow, bodyRows) => {
+		const headers = headerRow.split('|').map((h: string) => h.trim()).filter(Boolean);
+		const headHtml = headers.map((h: string) => `<th>${h}</th>`).join('');
+		const rows = bodyRows.trim().split('\n').map((row: string) => {
+			const cells = row.split('|').map((c: string) => c.trim()).filter(Boolean);
+			return `<tr>${cells.map((c: string) => `<td>${c}</td>`).join('')}</tr>`;
+		}).join('\n');
+		return `<table><thead><tr>${headHtml}</tr></thead><tbody>\n${rows}\n</tbody></table>`;
+	});
+	// Unordered lists
+	html = html.replace(/(?:^- .+$\n?)+/gm, (block) => {
+		const items = block.trim().split('\n').map(line => `<li>${line.replace(/^- /, '')}</li>`).join('\n');
+		return `<ul>\n${items}\n</ul>`;
+	});
+	// Ordered lists
+	html = html.replace(/(?:^\d+\. .+$\n?)+/gm, (block) => {
+		const items = block.trim().split('\n').map(line => `<li>${line.replace(/^\d+\. /, '')}</li>`).join('\n');
+		return `<ol>\n${items}\n</ol>`;
+	});
+	// Paragraphs — wrap remaining text lines
+	html = html.replace(/^(?!<[a-z]|%%CODEBLOCK)(.+)$/gm, '<p>$1</p>');
+	// Remove empty paragraphs
+	html = html.replace(/<p>\s*<\/p>/g, '');
+	// Restore code blocks
+	for (let i = 0; i < codeBlocks.length; i++) {
+		html = html.replace(`%%CODEBLOCK_${i}%%`, codeBlocks[i]);
+	}
+	return html;
+}
+
 // ─── Market Configuration ────────────────────────────────────────────────────
 //
 // All times are LOCAL to the exchange timezone.
@@ -10964,8 +11137,57 @@ export default {
 			// .md variants: Content-Type text/markdown (for agents/LLMs)
 			// Extensionless variants: Content-Type text/plain (for direct browser/email links)
 			if (url.pathname === '/docs' || url.pathname === '/docs/') {
-				return new Response(DOCS_README_MD, {
-					headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'public, max-age=3600' },
+				// Render docs index as a navigable HTML page with card grid
+				const docsIndexBody = `
+<h1>Documentation</h1>
+<p style="color:var(--text2);margin-bottom:32px">Everything you need to integrate Headless Oracle into your agent infrastructure.</p>
+
+<h2 style="border-top:none;padding-top:0">Getting Started</h2>
+<div class="card-grid">
+  <a href="/docs/x402-payments" class="doc-card"><h3>x402 Payments Guide</h3><p>Pay per request with USDC on Base mainnet.</p></a>
+  <a href="/openapi.json" class="doc-card"><h3>API Reference</h3><p>OpenAPI 3.1 spec — all 73 endpoints.</p></a>
+  <a href="/docs/integrations/claude-managed-agents" class="doc-card"><h3>Claude Managed Agents</h3><p>Pre-trade verification for autonomous financial agents.</p></a>
+</div>
+
+<h2>Architecture</h2>
+<div class="card-grid">
+  <a href="/docs/sma-protocol/rfc-001" class="doc-card"><h3>SMA Protocol RFC-001</h3><p>Signed Market Attestation open standard.</p></a>
+  <a href="/docs/mpas" class="doc-card"><h3>MPAS Specification</h3><p>Multi-Party Attestation protocol.</p></a>
+  <a href="/docs/rfc" class="doc-card"><h3>External State Attestation RFC</h3><p>Protocol design for external state verification.</p></a>
+</div>
+
+<h2>Integrations</h2>
+<div class="card-grid">
+  <a href="/docs/integrations/google-adk" class="doc-card"><h3>Google ADK</h3><p>Agent Development Kit integration.</p></a>
+  <a href="/docs/integrations/trading-agents" class="doc-card"><h3>TradingAgents</h3><p>Market gate in the risk pipeline.</p></a>
+  <a href="/docs/integrations/agno" class="doc-card"><h3>Agno</h3><p>Streamable HTTP + stdio MCP patterns.</p></a>
+  <a href="/docs/integrations/strands" class="doc-card"><h3>Strands</h3><p>AWS Strands Agents SDK integration.</p></a>
+  <a href="/docs/integrations/olas" class="doc-card"><h3>Olas / Autonolas</h3><p>Autonomous agent service integration.</p></a>
+  <a href="/docs/integrations/autogpt" class="doc-card"><h3>AutoGPT</h3><p>AutoGPT plugin integration guide.</p></a>
+  <a href="/docs/integrations/bun" class="doc-card"><h3>Bun</h3><p>Fast TypeScript runtime integration.</p></a>
+  <a href="/docs/integrations/datacamp-workspace" class="doc-card"><h3>DataCamp Workspace</h3><p>Jupyter notebook integration.</p></a>
+  <a href="/docs/cline" class="doc-card"><h3>Cline</h3><p>VS Code agent IDE setup.</p></a>
+  <a href="/docs/continue" class="doc-card"><h3>Continue.dev</h3><p>Continue IDE setup.</p></a>
+</div>
+
+<h2>Specifications</h2>
+<div class="card-grid">
+  <a href="/docs/sma-protocol-repo/SPEC" class="doc-card"><h3>SMA Protocol Spec</h3><p>Full technical specification.</p></a>
+  <a href="/docs/agent-safety-standard/STANDARD" class="doc-card"><h3>Agent Pre-Trade Safety</h3><p>APTS standard for execution safety.</p></a>
+</div>
+
+<h2>Resources</h2>
+<div class="card-grid">
+  <a href="/v5/exchanges" class="doc-card"><h3>Exchange Directory</h3><p>All 28 supported exchanges with MIC codes.</p></a>
+  <a href="/v5/keys" class="doc-card"><h3>Public Key Registry</h3><p>Ed25519 public key + signing specification.</p></a>
+  <a href="/v5/pricing" class="doc-card"><h3>Pricing API</h3><p>Machine-readable pricing tiers.</p></a>
+  <a href="/llms.txt" class="doc-card"><h3>llms.txt</h3><p>LLM-optimised documentation index.</p></a>
+</div>`;
+				return new Response(wrapHtml('Documentation', docsIndexBody, {
+					description: 'Headless Oracle documentation — API reference, integration guides, specifications, and architecture.',
+					canonical: 'https://headlessoracle.com/docs',
+				}), {
+					headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600', 'X-Oracle-Version': 'v5' },
 				});
 			}
 			if (url.pathname.startsWith('/docs/')) {
@@ -10973,12 +11195,8 @@ export default {
 					'Content-Type':  'text/markdown; charset=utf-8',
 					'Cache-Control': 'public, max-age=3600',
 				};
-				const plainHeaders = {
-					'Content-Type':  'text/plain; charset=utf-8',
-					'Cache-Control': 'public, max-age=3600',
-				};
 				const p = url.pathname;
-				// .md variants (canonical for agents)
+				// .md variants return raw markdown (for agents/LLMs)
 				if (p === '/docs/sma-protocol-repo/SPEC.md')
 					return new Response(SMA_SPEC_MD, { headers: mdHeaders });
 				if (p === '/docs/agent-safety-standard/STANDARD.md' || p === '/docs/agent-safety-standard-repo/STANDARD.md')
@@ -10991,52 +11209,104 @@ export default {
 					return new Response(BUN_MD, { headers: mdHeaders });
 				if (p === '/docs/rfc.md' || p === '/docs/rfc-external-state-attestation.md')
 					return new Response(RFC_EXTERNAL_STATE_MD, { headers: mdHeaders });
-				// Extensionless variants (for email links and browser navigation)
-				if (p === '/docs/x402-payments')
-					return new Response(X402_PAYMENTS_MD, { headers: plainHeaders });
-				if (p === '/docs/integrations/datacamp-workspace')
-					return new Response(DATACAMP_WORKSPACE_MD, { headers: plainHeaders });
-				if (p === '/docs/integrations/bun')
-					return new Response(BUN_MD, { headers: plainHeaders });
-				if (p === '/docs/rfc')
-					return new Response(RFC_EXTERNAL_STATE_MD, { headers: plainHeaders });
-				if (p === '/docs/sma-protocol/rfc-001' || p === '/docs/sma-protocol/rfc-001.md')
-					return new Response(SMA_RFC_001_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-					if (p === '/docs/mpas' || p === '/docs/mpas.md')
-						return new Response(MPAS_SPEC_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/cline' || p === '/docs/cline.md')
-					return new Response(CLINE_CONFIG_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/continue' || p === '/docs/continue.md')
-					return new Response(CONTINUE_CONFIG_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/integrations/olas' || p === '/docs/integrations/olas.md')
-					return new Response(OLAS_INTEGRATION_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/integrations/autogpt' || p === '/docs/integrations/autogpt.md')
-					return new Response(AUTOGPT_INTEGRATION_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/integrations/google-adk' || p === '/docs/integrations/google-adk.md')
-					return new Response(GOOGLE_ADK_INTEGRATION_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/integrations/trading-agents' || p === '/docs/integrations/trading-agents.md')
-					return new Response(TRADING_AGENTS_INTEGRATION_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/integrations/agno' || p === '/docs/integrations/agno.md')
-					return new Response(AGNO_INTEGRATION_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/integrations/strands' || p === '/docs/integrations/strands.md')
-					return new Response(STRANDS_INTEGRATION_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
-				if (p === '/docs/integrations/claude-managed-agents' || p === '/docs/integrations/claude-managed-agents.md')
-					return new Response(CLAUDE_MANAGED_AGENTS_MD, { headers: p.endsWith('.md') ? mdHeaders : plainHeaders });
+				if (p === '/docs/integrations/olas.md')
+					return new Response(OLAS_INTEGRATION_MD, { headers: mdHeaders });
+				if (p === '/docs/integrations/autogpt.md')
+					return new Response(AUTOGPT_INTEGRATION_MD, { headers: mdHeaders });
+				if (p === '/docs/integrations/google-adk.md')
+					return new Response(GOOGLE_ADK_INTEGRATION_MD, { headers: mdHeaders });
+				if (p === '/docs/integrations/trading-agents.md')
+					return new Response(TRADING_AGENTS_INTEGRATION_MD, { headers: mdHeaders });
+				if (p === '/docs/integrations/agno.md')
+					return new Response(AGNO_INTEGRATION_MD, { headers: mdHeaders });
+				if (p === '/docs/integrations/strands.md')
+					return new Response(STRANDS_INTEGRATION_MD, { headers: mdHeaders });
+				if (p === '/docs/integrations/claude-managed-agents.md')
+					return new Response(CLAUDE_MANAGED_AGENTS_MD, { headers: mdHeaders });
+				if (p === '/docs/sma-protocol/rfc-001.md')
+					return new Response(SMA_RFC_001_MD, { headers: mdHeaders });
+				if (p === '/docs/mpas.md')
+					return new Response(MPAS_SPEC_MD, { headers: mdHeaders });
+				if (p === '/docs/cline.md')
+					return new Response(CLINE_CONFIG_MD, { headers: mdHeaders });
+				if (p === '/docs/continue.md')
+					return new Response(CONTINUE_CONFIG_MD, { headers: mdHeaders });
+
+				// Extensionless variants — render as HTML pages
+				const docMap: Record<string, { content: string; title: string }> = {
+					'/docs/x402-payments': { content: X402_PAYMENTS_MD, title: 'x402 Payments Guide' },
+					'/docs/integrations/datacamp-workspace': { content: DATACAMP_WORKSPACE_MD, title: 'DataCamp Workspace Integration' },
+					'/docs/integrations/bun': { content: BUN_MD, title: 'Bun Integration' },
+					'/docs/rfc': { content: RFC_EXTERNAL_STATE_MD, title: 'External State Attestation RFC' },
+					'/docs/sma-protocol/rfc-001': { content: SMA_RFC_001_MD, title: 'SMA Protocol RFC-001' },
+					'/docs/mpas': { content: MPAS_SPEC_MD, title: 'Multi-Party Attestation Spec' },
+					'/docs/cline': { content: CLINE_CONFIG_MD, title: 'Cline IDE Setup' },
+					'/docs/continue': { content: CONTINUE_CONFIG_MD, title: 'Continue.dev Setup' },
+					'/docs/integrations/olas': { content: OLAS_INTEGRATION_MD, title: 'Olas / Autonolas Integration' },
+					'/docs/integrations/autogpt': { content: AUTOGPT_INTEGRATION_MD, title: 'AutoGPT Integration' },
+					'/docs/integrations/google-adk': { content: GOOGLE_ADK_INTEGRATION_MD, title: 'Google ADK Integration' },
+					'/docs/integrations/trading-agents': { content: TRADING_AGENTS_INTEGRATION_MD, title: 'TradingAgents Integration' },
+					'/docs/integrations/agno': { content: AGNO_INTEGRATION_MD, title: 'Agno Integration' },
+					'/docs/integrations/strands': { content: STRANDS_INTEGRATION_MD, title: 'Strands Integration' },
+					'/docs/integrations/claude-managed-agents': { content: CLAUDE_MANAGED_AGENTS_MD, title: 'Claude Managed Agents Integration' },
+					'/docs/sma-protocol-repo/SPEC': { content: SMA_SPEC_MD, title: 'SMA Protocol Specification' },
+					'/docs/agent-safety-standard/STANDARD': { content: APTS_STANDARD_MD, title: 'Agent Pre-Trade Safety Standard' },
+					'/docs/agent-safety-standard-repo/STANDARD': { content: APTS_STANDARD_MD, title: 'Agent Pre-Trade Safety Standard' },
+				};
+				const doc = docMap[p];
+				if (doc) {
+					const renderedBody = renderMarkdownToHtml(doc.content);
+					return new Response(wrapHtml(doc.title, renderedBody, {
+						breadcrumbs: '<a href="/">Home</a> / <a href="/docs">Docs</a> / ' + doc.title,
+						canonical: `https://headlessoracle.com${p}`,
+					}), {
+						headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600', 'X-Oracle-Version': 'v5' },
+					});
+				}
 				// Unknown /docs/ path — fall through to 404 below
 			}
 
-			// ── /blog/* — blog posts served as plain text ───────────────────
+			// ── /blog — blog index and posts ───────────────────────────────
+			if (url.pathname === '/blog' || url.pathname === '/blog/') {
+				const blogIndexBody = `
+<h1>Blog</h1>
+<p style="color:var(--text2);margin-bottom:32px">Technical articles on market-state verification, agent safety, and infrastructure.</p>
+
+<div class="card-grid">
+  <a href="/blog/market-hours-api-vs-signed-attestation" class="doc-card">
+    <h3>Market Hours APIs Are Not Enough for Autonomous Agents</h3>
+    <p>Why boolean is_open fails agents and what signed attestations solve.</p>
+  </a>
+  <a href="/blog/why-your-trading-agent-needs-a-pre-trade-gate" class="doc-card">
+    <h3>Why Your Trading Agent Needs a Pre-Trade Gate</h3>
+    <p>DST post-mortem: $50,000 into a halted market at 3am. The fail-closed contract.</p>
+  </a>
+</div>`;
+				return new Response(wrapHtml('Blog', blogIndexBody, {
+					description: 'Headless Oracle blog — technical articles on market-state verification and agent safety.',
+					canonical: 'https://headlessoracle.com/blog',
+				}), {
+					headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600', 'X-Oracle-Version': 'v5' },
+				});
+			}
 			if (url.pathname.startsWith('/blog/')) {
-				const blogSlug    = url.pathname.slice('/blog/'.length);
-				const blogHeaders = {
-					'Content-Type':  'text/plain; charset=utf-8',
-					'Cache-Control': 'public, max-age=3600',
-					'Link':          `<https://headlessoracle.com/blog/${blogSlug}>; rel="canonical"`,
+				const blogMap: Record<string, { content: string; title: string }> = {
+					'/blog/why-your-trading-agent-needs-a-pre-trade-gate': { content: BLOG_POST_WHY_PRE_TRADE_GATE, title: 'Why Your Trading Agent Needs a Pre-Trade Gate' },
+					'/blog/market-hours-api-vs-signed-attestation': { content: BLOG_MARKET_HOURS_VS_SIGNED, title: 'Market Hours APIs Are Not Enough' },
 				};
-				if (url.pathname === '/blog/why-your-trading-agent-needs-a-pre-trade-gate')
-					return new Response(BLOG_POST_WHY_PRE_TRADE_GATE, { headers: blogHeaders });
-				if (url.pathname === '/blog/market-hours-api-vs-signed-attestation')
-					return new Response(BLOG_MARKET_HOURS_VS_SIGNED, { headers: blogHeaders });
+				const post = blogMap[url.pathname];
+				if (post) {
+					const renderedBody = renderMarkdownToHtml(post.content);
+					return new Response(wrapHtml(post.title, renderedBody, {
+						breadcrumbs: '<a href="/">Home</a> / <a href="/blog">Blog</a> / ' + post.title,
+						canonical: `https://headlessoracle.com${url.pathname}`,
+					}), {
+						headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600', 'X-Oracle-Version': 'v5',
+							'Link': `<https://headlessoracle.com${url.pathname}>; rel="canonical"`,
+						},
+					});
+				}
+				// Unknown blog slug — fall through to 404
 			}
 
 			// ── /v5/errors/{code} — machine-readable error documentation ─────────
@@ -13633,7 +13903,7 @@ if receipt[<span class="code-str">"status"</span>] != <span class="code-str">"OP
 
 <div class="grid-6">
   <div class="card stat">
-    <div class="stat-num">1,014</div>
+    <div class="stat-num">1,020+</div>
     <div class="stat-label">tests passing</div>
   </div>
   <div class="card stat">
@@ -13692,7 +13962,10 @@ if receipt[<span class="code-str">"status"</span>] != <span class="code-str">"OP
     <div class="limit">50,000 requests/day</div>
   </div>
 </div>
-<p style="text-align:center;margin-top:16px;font-size:13px"><a href="/pricing">Full pricing details including Pro ($299/mo) and Protocol tiers →</a></p>
+<div style="display:flex;justify-content:center;gap:12px;margin-top:20px;flex-wrap:wrap">
+  <a href="/v5/sandbox" class="btn btn-secondary" style="font-size:13px;padding:8px 20px">Get free sandbox key</a>
+  <a href="/pricing" class="btn btn-primary" style="font-size:13px;padding:8px 20px">View all plans →</a>
+</div>
 </div>
 </section>
 
@@ -13807,8 +14080,11 @@ async function fetchDemo(){
   }
 }
 </script>
-<script src="https://cdn.paddle.com/paddle/v2/paddle.js"></script>
-<script src="/js/paddle-init.js"></script>
+
+<script>
+// Auto-fetch live demo on page load
+document.addEventListener('DOMContentLoaded', fetchDemo);
+</script>
 </body>
 </html>`;
 				return new Response(landingHtml, {
@@ -13818,7 +14094,7 @@ async function fetchDemo(){
 						'Content-Type': 'text/html; charset=utf-8',
 						'Cache-Control': 'public, max-age=300',
 						'X-Oracle-Version': 'v5',
-						'Content-Security-Policy': "default-src 'self' https://headlessoracle.com https://api.headlessoracle.com https://cdn.paddle.com; script-src 'self' 'unsafe-inline' https://cdn.paddle.com; style-src 'self' 'unsafe-inline'; img-src 'self' https://headlessoracle.com; frame-ancestors 'none'",
+						'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://headlessoracle.com https://api.headlessoracle.com; img-src 'self' https://headlessoracle.com; frame-ancestors 'none'",
 					},
 				});
 			}
@@ -15671,7 +15947,22 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 		if (url.pathname === '/pypi')   return Response.redirect('https://pypi.org/project/headless-oracle/', 302);
 		if (url.pathname === '/github') return Response.redirect('https://github.com/LembaGang/headless-oracle-v5', 302);
 
-		return json({ error: 'NOT_FOUND', message: 'Route not found' }, 404);
+		// Return HTML 404 for browsers, JSON for agents/API callers
+		const accept = request.headers.get('Accept') || '';
+		if (accept.includes('text/html')) {
+			const html404 = wrapHtml('404 — Not Found', `
+<div class="error-page">
+  <h1>404</h1>
+  <p>This page doesn't exist.</p>
+  <p style="font-size:14px;color:var(--text2);margin-bottom:24px">Looking for the API? Try <a href="/openapi.json">/openapi.json</a> or <a href="/docs">/docs</a>.</p>
+  <a href="/">Back to Home</a>
+</div>`);
+			return new Response(html404, {
+				status: 404,
+				headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'X-Oracle-Version': 'v5' },
+			});
+		}
+		return json({ error: 'NOT_FOUND', message: 'Route not found', docs: 'https://headlessoracle.com/docs' }, 404);
 
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : 'Internal server error';

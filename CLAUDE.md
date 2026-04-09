@@ -138,10 +138,10 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-08 by Day 43 Claude Managed Agents guide + upgrade nudge -->
+<!-- Last updated: 2026-04-09 by Day 44 landing page sprint -->
 
-- **Tests**: 1014/1014
-- **Worker version**: d07e539a (latest deployed)
+- **Tests**: 1020/1020
+- **Worker version**: 2cfb8bf0 (latest deployed)
 - **Test payment**: 1 x402 payment settled (Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11

@@ -1969,20 +1969,20 @@ describe('GET /v5/why-not-free', () => {
 // ─── IDE setup docs routes ────────────────────────────────────────────────────
 
 describe('IDE setup docs routes', () => {
-	it('GET /docs/cline returns 200 text/plain with Cline setup content', async () => {
+	it('GET /docs/cline returns 200 HTML with Cline setup content', async () => {
 		const res = await fetchWorker('/docs/cline');
 		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/plain');
+		expect(res.headers.get('Content-Type')).toContain('text/html');
 		const text = await res.text();
 		expect(text).toContain('Cline');
 		expect(text).toContain('cline_mcp_settings.json');
 		expect(text).toContain('headlessoracle.com/mcp');
 	});
 
-	it('GET /docs/continue returns 200 text/plain with Continue.dev setup content', async () => {
+	it('GET /docs/continue returns 200 HTML with Continue.dev setup content', async () => {
 		const res = await fetchWorker('/docs/continue');
 		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/plain');
+		expect(res.headers.get('Content-Type')).toContain('text/html');
 		const text = await res.text();
 		expect(text).toContain('Continue');
 		expect(text).toContain('.continue/config.json');
@@ -2382,10 +2382,10 @@ describe('GET /SKILL.md', () => {
 // ─── GET /docs/integrations/* and /docs/x402-payments ───────────────────────
 
 describe('GET /docs/integrations/datacamp-workspace', () => {
-	it('returns 200 with text/plain content-type (extensionless email link)', async () => {
+	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/integrations/datacamp-workspace');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains DataCamp-specific content: pip install and safe_market_check', async () => {
@@ -2403,10 +2403,10 @@ describe('GET /docs/integrations/datacamp-workspace', () => {
 });
 
 describe('GET /docs/integrations/bun', () => {
-	it('returns 200 with text/plain content-type (extensionless)', async () => {
+	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/integrations/bun');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains Bun integration content', async () => {
@@ -2417,10 +2417,10 @@ describe('GET /docs/integrations/bun', () => {
 });
 
 describe('GET /docs/x402-payments', () => {
-	it('returns 200 with text/plain content-type (extensionless)', async () => {
+	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/x402-payments');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains x402 payment content', async () => {
@@ -8610,10 +8610,10 @@ describe('GET /x402 — x402 Foundation alignment (Item 7)', () => {
 // ─── GET /docs/integrations/olas ─────────────────────────────────────────────
 
 describe('GET /docs/integrations/olas', () => {
-	it('returns 200 with text/plain content-type', async () => {
+	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/olas');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains Olas integration content', async () => {
@@ -8719,10 +8719,10 @@ describe('GET /.well-known/mcp-servers.json', () => {
 // ─── GET /blog/market-hours-api-vs-signed-attestation ────────────────────────
 
 describe('GET /blog/market-hours-api-vs-signed-attestation', () => {
-	it('returns 200 with text/plain', async () => {
+	it('returns 200 with text/html', async () => {
 		const response = await fetchWorker('/blog/market-hours-api-vs-signed-attestation');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains signed attestation and fail-closed content', async () => {
@@ -8736,10 +8736,10 @@ describe('GET /blog/market-hours-api-vs-signed-attestation', () => {
 // ─── GET /docs/integrations/agno ─────────────────────────────────────────────
 
 describe('GET /docs/integrations/agno', () => {
-	it('returns 200 with text/plain', async () => {
+	it('returns 200 with text/html', async () => {
 		const response = await fetchWorker('/docs/integrations/agno');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains MCPTools and fail-closed contract', async () => {
@@ -8753,10 +8753,10 @@ describe('GET /docs/integrations/agno', () => {
 // ─── GET /docs/integrations/strands ──────────────────────────────────────────
 
 describe('GET /docs/integrations/strands', () => {
-	it('returns 200 with text/plain', async () => {
+	it('returns 200 with text/html', async () => {
 		const response = await fetchWorker('/docs/integrations/strands');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains Strands SDK and is_market_open pattern', async () => {
@@ -8770,10 +8770,10 @@ describe('GET /docs/integrations/strands', () => {
 // ─── GET /docs/integrations/google-adk ───────────────────────────────────────
 
 describe('GET /docs/integrations/google-adk', () => {
-	it('returns 200 with text/plain content-type', async () => {
+	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/google-adk');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains ADK McpToolset content and fail-closed contract', async () => {
@@ -8788,10 +8788,10 @@ describe('GET /docs/integrations/google-adk', () => {
 // ─── GET /docs/integrations/trading-agents ───────────────────────────────────
 
 describe('GET /docs/integrations/trading-agents', () => {
-	it('returns 200 with text/plain content-type', async () => {
+	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/trading-agents');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains TradingAgents integration content and pre-trade gate', async () => {
@@ -8806,10 +8806,10 @@ describe('GET /docs/integrations/trading-agents', () => {
 // ─── GET /docs/integrations/autogpt ──────────────────────────────────────────
 
 describe('GET /docs/integrations/autogpt', () => {
-	it('returns 200 with text/plain content-type', async () => {
+	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/autogpt');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains AutoGPT integration content', async () => {
@@ -8823,10 +8823,10 @@ describe('GET /docs/integrations/autogpt', () => {
 // ─── GET /docs/integrations/claude-managed-agents ────────────────────────────
 
 describe('GET /docs/integrations/claude-managed-agents', () => {
-	it('returns 200 with text/plain content-type (extensionless)', async () => {
+	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/integrations/claude-managed-agents');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('returns 200 with text/markdown for .md variant', async () => {
@@ -8847,27 +8847,27 @@ describe('GET /docs/integrations/claude-managed-agents', () => {
 // ─── GET /docs ───────────────────────────────────────────────────────────────
 
 describe('GET /docs', () => {
-	it('returns 200 with text/markdown content-type', async () => {
+	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains documentation index content', async () => {
 		const body = await fetchWorker('/docs').then((r) => r.text());
-		expect(body).toContain('Headless Oracle Documentation');
-		expect(body).toContain('Architecture Overview');
+		expect(body).toContain('Documentation');
 		expect(body).toContain('Claude Managed Agents');
+		expect(body).toContain('x402 Payments');
 	});
 });
 
 // ─── GET /blog/why-your-trading-agent-needs-a-pre-trade-gate ─────────────────
 
 describe('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate', () => {
-	it('returns 200 with text/plain content-type', async () => {
+	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate');
 		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/plain');
+		expect(response.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('contains blog post content with fail-closed contract and code example', async () => {
@@ -10695,7 +10695,7 @@ describe('/docs/* endpoints — coverage', () => {
 	it('GET /docs/sma-protocol/rfc-001 returns 200', async () => {
 		const res = await fetchWorker('/docs/sma-protocol/rfc-001');
 		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/plain');
+		expect(res.headers.get('Content-Type')).toContain('text/html');
 	});
 
 	it('GET /docs/sma-protocol/rfc-001.md returns markdown', async () => {
