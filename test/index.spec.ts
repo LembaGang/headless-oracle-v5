@@ -1779,7 +1779,8 @@ describe('GET /v5/pricing', () => {
 
 // ─── GET / — Landing page ───────────────────────────────────────────────────
 
-describe('GET / (landing page)', () => {
+// Skipped: landing page now served by Cloudflare Pages, not the Worker
+describe.skip('GET / (landing page)', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const res = await fetchWorker('/');
 		expect(res.status).toBe(200);
@@ -1837,7 +1838,8 @@ describe('GET / (landing page)', () => {
 
 // ─── GET /pricing — HTML pricing page ────────────────────────────────────────
 
-describe('GET /pricing', () => {
+// Skipped: pricing page now served by Cloudflare Pages, not the Worker
+describe.skip('GET /pricing', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const res = await fetchWorker('/pricing');
 		expect(res.status).toBe(200);
@@ -1968,7 +1970,8 @@ describe('GET /v5/why-not-free', () => {
 
 // ─── IDE setup docs routes ────────────────────────────────────────────────────
 
-describe('IDE setup docs routes', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('IDE setup docs routes', () => {
 	it('GET /docs/cline returns 200 HTML with Cline setup content', async () => {
 		const res = await fetchWorker('/docs/cline');
 		expect(res.status).toBe(200);
@@ -2381,7 +2384,8 @@ describe('GET /SKILL.md', () => {
 
 // ─── GET /docs/integrations/* and /docs/x402-payments ───────────────────────
 
-describe('GET /docs/integrations/datacamp-workspace', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/datacamp-workspace', () => {
 	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/integrations/datacamp-workspace');
 		expect(response.status).toBe(200);
@@ -2402,7 +2406,8 @@ describe('GET /docs/integrations/datacamp-workspace', () => {
 	});
 });
 
-describe('GET /docs/integrations/bun', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/bun', () => {
 	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/integrations/bun');
 		expect(response.status).toBe(200);
@@ -2416,7 +2421,8 @@ describe('GET /docs/integrations/bun', () => {
 	});
 });
 
-describe('GET /docs/x402-payments', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/x402-payments', () => {
 	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/x402-payments');
 		expect(response.status).toBe(200);
@@ -7255,7 +7261,8 @@ describe('GET /v5/changelog', () => {
 
 // ─── GET /status — HTML status page ─────────────────────────────────────────
 
-describe('GET /status (HTML page)', () => {
+// Skipped: status page now served by Cloudflare Pages, not the Worker
+describe.skip('GET /status (HTML page)', () => {
 	it('returns 200 with Content-Type: text/html', async () => {
 		const res = await fetchWorker('/status');
 		expect(res.status).toBe(200);
@@ -8619,7 +8626,8 @@ describe('GET /x402 — x402 Foundation alignment (Item 7)', () => {
 
 // ─── GET /docs/integrations/olas ─────────────────────────────────────────────
 
-describe('GET /docs/integrations/olas', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/olas', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/olas');
 		expect(response.status).toBe(200);
@@ -8728,7 +8736,8 @@ describe('GET /.well-known/mcp-servers.json', () => {
 
 // ─── GET /blog/market-hours-api-vs-signed-attestation ────────────────────────
 
-describe('GET /blog/market-hours-api-vs-signed-attestation', () => {
+// Skipped: blog routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /blog/market-hours-api-vs-signed-attestation', () => {
 	it('returns 200 with text/html', async () => {
 		const response = await fetchWorker('/blog/market-hours-api-vs-signed-attestation');
 		expect(response.status).toBe(200);
@@ -8745,7 +8754,8 @@ describe('GET /blog/market-hours-api-vs-signed-attestation', () => {
 
 // ─── GET /docs/integrations/agno ─────────────────────────────────────────────
 
-describe('GET /docs/integrations/agno', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/agno', () => {
 	it('returns 200 with text/html', async () => {
 		const response = await fetchWorker('/docs/integrations/agno');
 		expect(response.status).toBe(200);
@@ -8762,7 +8772,8 @@ describe('GET /docs/integrations/agno', () => {
 
 // ─── GET /docs/integrations/strands ──────────────────────────────────────────
 
-describe('GET /docs/integrations/strands', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/strands', () => {
 	it('returns 200 with text/html', async () => {
 		const response = await fetchWorker('/docs/integrations/strands');
 		expect(response.status).toBe(200);
@@ -8779,7 +8790,8 @@ describe('GET /docs/integrations/strands', () => {
 
 // ─── GET /docs/integrations/google-adk ───────────────────────────────────────
 
-describe('GET /docs/integrations/google-adk', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/google-adk', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/google-adk');
 		expect(response.status).toBe(200);
@@ -8797,7 +8809,8 @@ describe('GET /docs/integrations/google-adk', () => {
 
 // ─── GET /docs/integrations/trading-agents ───────────────────────────────────
 
-describe('GET /docs/integrations/trading-agents', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/trading-agents', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/trading-agents');
 		expect(response.status).toBe(200);
@@ -8815,7 +8828,8 @@ describe('GET /docs/integrations/trading-agents', () => {
 
 // ─── GET /docs/integrations/autogpt ──────────────────────────────────────────
 
-describe('GET /docs/integrations/autogpt', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/autogpt', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs/integrations/autogpt');
 		expect(response.status).toBe(200);
@@ -8832,7 +8846,8 @@ describe('GET /docs/integrations/autogpt', () => {
 
 // ─── GET /docs/integrations/claude-managed-agents ────────────────────────────
 
-describe('GET /docs/integrations/claude-managed-agents', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs/integrations/claude-managed-agents', () => {
 	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
 		const response = await fetchWorker('/docs/integrations/claude-managed-agents');
 		expect(response.status).toBe(200);
@@ -8856,7 +8871,8 @@ describe('GET /docs/integrations/claude-managed-agents', () => {
 
 // ─── GET /docs ───────────────────────────────────────────────────────────────
 
-describe('GET /docs', () => {
+// Skipped: docs page now served by Cloudflare Pages, not the Worker
+describe.skip('GET /docs', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/docs');
 		expect(response.status).toBe(200);
@@ -8873,7 +8889,8 @@ describe('GET /docs', () => {
 
 // ─── GET /blog/why-your-trading-agent-needs-a-pre-trade-gate ─────────────────
 
-describe('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate', () => {
+// Skipped: blog routes now served by Cloudflare Pages, not the Worker
+describe.skip('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate', () => {
 	it('returns 200 with text/html content-type', async () => {
 		const response = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate');
 		expect(response.status).toBe(200);
@@ -8943,7 +8960,8 @@ describe('GET /v5/metrics/public — status_codes_today', () => {
 
 // ─── Blog canonical Link header ───────────────────────────────────────────────
 
-describe('Blog canonical Link header', () => {
+// Skipped: blog routes now served by Cloudflare Pages, not the Worker
+describe.skip('Blog canonical Link header', () => {
 	it('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate includes canonical Link header', async () => {
 		const response = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate');
 		expect(response.status).toBe(200);
@@ -10737,7 +10755,8 @@ describe('/.well-known/* endpoints — coverage', () => {
 
 // ─── /docs/* endpoints — coverage ───────────────────────────────────────────
 
-describe('/docs/* endpoints — coverage', () => {
+// Skipped: docs routes now served by Cloudflare Pages, not the Worker
+describe.skip('/docs/* endpoints — coverage', () => {
 	it('GET /docs/sma-protocol/rfc-001 returns 200', async () => {
 		const res = await fetchWorker('/docs/sma-protocol/rfc-001');
 		expect(res.status).toBe(200);

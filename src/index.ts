@@ -9984,6 +9984,27 @@ export default {
 			return Response.redirect(url.toString(), 301);
 		}
 
+		// ── Pages passthrough ────────────────────────────────────────────────────
+		// HTML pages are served by Cloudflare Pages (headless-oracle-web).
+		// If a request for an HTML page somehow reaches this Worker (e.g. via
+		// api.headlessoracle.com fallback), pass it through to the origin.
+		const _p = url.pathname;
+		if (
+			_p === '/' ||
+			_p === '/pricing' ||
+			_p === '/status' ||
+			_p === '/verify' ||
+			_p === '/traction' ||
+			_p === '/refund' ||
+			_p === '/upgrade' ||
+			_p === '/terms' ||
+			_p === '/privacy' ||
+			_p === '/docs' || _p === '/docs/' || _p.startsWith('/docs/') ||
+			_p === '/blog' || _p === '/blog/' || _p.startsWith('/blog/')
+		) {
+			return fetch(request);
+		}
+
 		const now = new Date();
 		const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
 
