@@ -7321,12 +7321,31 @@ const OPENAPI_SPEC = {
 		description: 'Cryptographically signed market-state receipts for AI agents and automated trading systems. ' +
 			'All signed receipts use Ed25519. Consumers MUST treat UNKNOWN status as CLOSED and halt execution. ' +
 			'Receipts expire at expires_at — do not act on stale receipts.',
-		contact: { url: 'https://headlessoracle.com' },
+		contact: { name: 'Headless Oracle', email: 'api@headlessoracle.com', url: 'https://headlessoracle.com' },
+		license: { name: 'MIT', url: 'https://github.com/LembaGang/headless-oracle-v5/blob/main/LICENSE' },
 	},
-	servers: [{ url: 'https://headlessoracle.com' }],
+	externalDocs: { description: 'Full documentation for LLMs and agents', url: 'https://headlessoracle.com/llms-full.txt' },
+	servers: [
+		{ url: 'https://headlessoracle.com', description: 'Production' },
+		{ url: 'https://api.headlessoracle.com', description: 'API alias (same worker)' },
+	],
+	tags: [
+		{ name: 'Market State', description: 'Signed market-state receipts and schedule data' },
+		{ name: 'Key Management', description: 'API key provisioning and account management' },
+		{ name: 'Verification', description: 'Receipt signature verification' },
+		{ name: 'Audit', description: 'Attestation digests, Merkle chains, and receipt logs' },
+		{ name: 'Discovery', description: 'Health, exchanges, public keys, and machine-readable metadata' },
+		{ name: 'Operations', description: 'Metrics, analytics, and SLO tracking' },
+		{ name: 'MCP', description: 'Model Context Protocol (JSON-RPC 2.0)' },
+		{ name: 'Payment', description: 'x402 micropayments, Paddle billing, credit packs' },
+		{ name: 'Webhooks', description: 'State-change webhook subscriptions' },
+		{ name: 'OAuth', description: 'OAuth 2.0 token endpoints (RFC 6749/7662)' },
+		{ name: 'Documentation', description: 'Agent guides, specs, and blog content' },
+	],
 	components: {
 		securitySchemes: {
 			ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-Oracle-Key' },
+			BearerAuth: { type: 'http', scheme: 'bearer', description: 'OAuth 2.0 Bearer token from POST /oauth/token' },
 		},
 		schemas: {
 			Status: {
@@ -7372,6 +7391,7 @@ const OPENAPI_SPEC = {
 	paths: {
 		'/v5/demo': {
 			get: {
+				tags:        ['Market State'],
 				summary:     'Public signed receipt',
 				description: 'Returns a signed market-state receipt. No authentication required. Suitable for integration testing and public dashboards. For production use, prefer /v5/status.',
 				parameters:  [{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' }, description: 'Market Identifier Code (MIC). See /v5/exchanges for supported values.' }],
@@ -7383,6 +7403,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/status': {
 			get: {
+				tags:        ['Market State'],
 				summary:     'Authenticated signed receipt',
 				description: 'Returns a signed market-state receipt. Requires X-Oracle-Key header OR x402 payment via Payment-Signature/X-Payment header. Primary production endpoint.',
 				security:    [{ ApiKeyAuth: [] }],
@@ -7402,6 +7423,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/schedule': {
 			get: {
+				tags:        ['Market State'],
 				summary:     'Next open/close times',
 				description: 'Schedule-based next session open and close times in UTC. Not signed. Does not reflect real-time halts or KV overrides. For authoritative status use /v5/demo or /v5/status.',
 				parameters:  [{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' } }],
@@ -7433,6 +7455,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/exchanges': {
 			get: {
+				tags:        ['Discovery'],
 				summary:     'Directory of supported exchanges',
 				description: 'Returns all exchanges for which Oracle provides signed receipts.',
 				responses: {
@@ -7464,6 +7487,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/keys': {
 			get: {
+				tags:        ['Discovery'],
 				summary:     'Public key registry',
 				description: 'Returns active signing public keys and the canonical payload specification required for independent receipt verification. Each key includes valid_from and valid_until (null if no scheduled rotation) for lifecycle tracking.',
 				responses: {
@@ -7473,6 +7497,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/health': {
 			get: {
+				tags:        ['Discovery'],
 				summary:     'Signed liveness probe',
 				description: 'Returns a signed receipt confirming the Oracle signing infrastructure is alive. ' +
 					'Use this to distinguish Oracle-is-down from market-is-UNKNOWN. ' +
@@ -7488,6 +7513,7 @@ const OPENAPI_SPEC = {
 		},
 		'/openapi.json': {
 			get: {
+				tags:      ['Discovery'],
 				summary:   'OpenAPI 3.1 specification',
 				responses: { '200': { description: 'This document' } },
 			},
@@ -7528,6 +7554,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/batch': {
 			get: {
+				tags:        ['Market State'],
 				summary:     'Authenticated batch receipt query',
 				description: 'Returns independently signed receipts for multiple exchanges in one request. ' +
 					'Each receipt goes through the same 4-tier fail-closed architecture as /v5/status. ' +
@@ -7577,6 +7604,7 @@ const OPENAPI_SPEC = {
 		},
 		'/mcp': {
 			post: {
+				tags:        ['MCP'],
 				summary:     'MCP (Model Context Protocol) endpoint',
 				description: 'JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05). ' +
 					'Tools: get_market_status, get_market_schedule, list_exchanges. No authentication required.',
@@ -7589,6 +7617,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/checkout': {
 			post: {
+				tags:        ['Payment'],
 				summary:     'Create Paddle Checkout Transaction',
 				description: 'Creates a Paddle transaction for the Pro plan and returns the hosted payment URL. No authentication required. Redirect the user to the returned url.',
 				responses: {
@@ -7604,6 +7633,7 @@ const OPENAPI_SPEC = {
 		},
 		'/webhooks/paddle': {
 			post: {
+				tags:        ['Payment'],
 				summary:     'Paddle webhook receiver',
 				description: 'Receives and processes Paddle events. Requires a valid Paddle-Signature header. Handles: transaction.completed (key generation + email), subscription.updated, subscription.past_due, subscription.canceled.',
 				responses: {
@@ -7615,6 +7645,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/account': {
 			get: {
+				tags:        ['Key Management'],
 				summary:     'Account info for the calling API key',
 				description: 'Returns plan, status, and key_prefix for the authenticated key. Use to verify subscription status.',
 				security:    [{ ApiKeyAuth: [] }],
@@ -8554,6 +8585,275 @@ const OPENAPI_SPEC = {
 						} } },
 					},
 					'400': { description: 'Missing or malformed body', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+			get: {
+				tags:        ['Verification'],
+				summary:     'Verify Ed25519 receipt signature (query params)',
+				description: 'GET variant — accepts receipt fields as query parameters. Same verification logic as POST.',
+				parameters:  [
+					{ name: 'receipt', in: 'query', required: true, schema: { type: 'string' }, description: 'JSON-encoded signed receipt string.' },
+				],
+				responses: {
+					'200': { description: 'Verification result', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/v5/historical': {
+			get: {
+				tags:        ['Market State'],
+				summary:     'Historical market-state reconstruction',
+				description: 'Reconstructs market status at a past timestamp from schedule data. Public, unsigned. Includes DST proximity notes. Not a signed attestation.',
+				parameters:  [
+					{ name: 'mic', in: 'query', required: true, schema: { type: 'string' }, description: 'MIC code.' },
+					{ name: 'at', in: 'query', required: true, schema: { type: 'string', format: 'date-time' }, description: 'ISO 8601 timestamp to reconstruct.' },
+				],
+				responses: {
+					'200': { description: 'Reconstructed status', content: { 'application/json': { schema: { type: 'object', properties: { mic: { type: 'string' }, queried_at: { type: 'string' }, computed_status: { '$ref': '#/components/schemas/Status' }, source: { type: 'string', example: 'SCHEDULE_RECONSTRUCTION' }, reasoning: { type: 'object' }, dst_note: { type: 'string', nullable: true }, disclaimer: { type: 'string' } } } } } },
+					'400': { description: 'Missing or invalid parameters', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/status/realtime': {
+			get: {
+				tags:        ['Market State'],
+				summary:     'Real-time halt detection status',
+				description: 'Returns the signed receipt plus halt monitor metadata (active REALTIME overrides). Requires X-Oracle-Key.',
+				security:    [{ ApiKeyAuth: [] }],
+				parameters:  [{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' } }],
+				responses: {
+					'200': { description: 'Receipt with halt monitor metadata', content: { 'application/json': { schema: { type: 'object', properties: { mic: { type: 'string' }, signed_receipt: { '$ref': '#/components/schemas/SignedReceipt' }, halt_monitor: { type: 'object' } } } } } },
+					'400': { description: 'Unknown MIC' },
+					'401': { description: 'Missing API key' },
+				},
+			},
+		},
+		'/oauth/token': {
+			post: {
+				tags:        ['OAuth'],
+				summary:     'OAuth 2.0 token endpoint (RFC 6749)',
+				description: 'Client Credentials grant. client_id = existing Oracle API key. Returns a short-lived opaque bearer token (3600s TTL) for MCP authentication.',
+				requestBody: {
+					required: true,
+					content: { 'application/x-www-form-urlencoded': { schema: { type: 'object', required: ['grant_type', 'client_id'], properties: { grant_type: { type: 'string', enum: ['client_credentials'] }, client_id: { type: 'string', description: 'Your Oracle API key' } } } } },
+				},
+				responses: {
+					'200': { description: 'Token issued', content: { 'application/json': { schema: { type: 'object', properties: { access_token: { type: 'string' }, token_type: { type: 'string', example: 'bearer' }, expires_in: { type: 'integer', example: 3600 }, scope: { type: 'string', example: 'oracle:read' } } } } } },
+					'400': { description: 'Invalid request (missing client_id or unsupported grant type)' },
+					'401': { description: 'Invalid client (API key not recognised)' },
+					'405': { description: 'Method not allowed — use POST' },
+				},
+			},
+		},
+		'/oauth/introspect': {
+			post: {
+				tags:        ['OAuth'],
+				summary:     'OAuth 2.0 token introspection (RFC 7662)',
+				description: 'Returns { active: true/false } for a given token. Always HTTP 200 per RFC 7662.',
+				requestBody: {
+					required: true,
+					content: { 'application/x-www-form-urlencoded': { schema: { type: 'object', required: ['token'], properties: { token: { type: 'string' } } } } },
+				},
+				responses: {
+					'200': { description: 'Introspection result', content: { 'application/json': { schema: { type: 'object', properties: { active: { type: 'boolean' }, scope: { type: 'string' }, exp: { type: 'integer', nullable: true }, token_type: { type: 'string' } } } } } },
+				},
+			},
+		},
+		'/v5/briefing': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'Daily market intelligence snapshot',
+				description: 'All 28 exchanges at a glance: open/closed/lunch break, upcoming opens/closes with minutes-until, holidays today. Public, no auth. Cached 60s.',
+				responses: {
+					'200': { description: 'Market briefing', content: { 'application/json': { schema: { type: 'object', properties: { briefing_date: { type: 'string' }, markets_open_now: { type: 'array', items: { type: 'string' } }, markets_closed_now: { type: 'array', items: { type: 'string' } }, markets_in_lunch_break: { type: 'array', items: { type: 'string' } }, upcoming_opens: { type: 'array', items: { type: 'object' } }, upcoming_closes: { type: 'array', items: { type: 'object' } }, holidays_today: { type: 'array', items: { type: 'string' } }, coverage: { type: 'integer' } } } } } },
+				},
+			},
+		},
+		'/v5/referrers': {
+			get: {
+				tags:        ['Operations'],
+				summary:     'Daily referrer traffic breakdown',
+				description: 'Lists domains that linked to headlessoracle.com today (or a given date). Best-effort from KV counters.',
+				parameters:  [{ name: 'date', in: 'query', schema: { type: 'string', format: 'date' }, description: 'YYYY-MM-DD (defaults to today)' }],
+				responses: {
+					'200': { description: 'Referrer counts', content: { 'application/json': { schema: { type: 'object', properties: { date: { type: 'string' }, referrers: { type: 'object', additionalProperties: { type: 'integer' } } } } } } },
+				},
+			},
+		},
+		'/v5/payment-proof': {
+			get: {
+				tags:        ['Payment'],
+				summary:     'On-chain USDC payment ledger',
+				description: 'Public. Returns lifetime x402 payment stats from KV: count, first/last payment timestamps, Base mainnet USDC contract and verify link.',
+				responses: {
+					'200': { description: 'Payment proof', content: { 'application/json': { schema: { type: 'object', properties: { payment_count: { type: 'integer' }, first_payment_at: { type: 'string', nullable: true }, first_payment_tx: { type: 'string', nullable: true }, last_payment_at: { type: 'string', nullable: true }, network: { type: 'string' }, asset: { type: 'string' }, contract: { type: 'string' }, verify_at: { type: 'string' } } } } } },
+				},
+			},
+		},
+		'/v5/why-not-free': {
+			get: {
+				tags:        ['Payment'],
+				summary:     'Machine-readable upgrade ladder',
+				description: 'Structured payment options for agents that receive a 402. Linked from every 402 via Link header.',
+				responses: {
+					'200': { description: 'Payment options', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/v5/pricing': {
+			get: {
+				tags:        ['Payment'],
+				summary:     'Machine-readable pricing tiers',
+				description: 'All tiers in one JSON response: sandbox, free, x402, credits, builder, pro, protocol. Canonical pricing source.',
+				responses: {
+					'200': { description: 'Pricing tiers', content: { 'application/json': { schema: { type: 'object', properties: { tiers: { type: 'array', items: { type: 'object' } }, x402: { type: 'object' }, checkout_url: { type: 'string' }, sandbox_url: { type: 'string' } } } } } },
+				},
+			},
+		},
+		'/v5/slo': {
+			get: {
+				tags:        ['Operations'],
+				summary:     'SLO and error budget report',
+				description: 'Returns uptime tracking, error budget computation, and burn rate. Public, no auth.',
+				responses: {
+					'200': { description: 'SLO report', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/v5/errors/{code}': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'Machine-readable error documentation',
+				description: 'Returns description, HTTP status, and resolution steps for a specific error code (e.g. RATE_LIMITED, API_KEY_REQUIRED).',
+				parameters:  [{ name: 'code', in: 'path', required: true, schema: { type: 'string' }, description: 'Error code in SCREAMING_SNAKE_CASE.' }],
+				responses: {
+					'200': { description: 'Error documentation', content: { 'application/json': { schema: { type: 'object', properties: { code: { type: 'string' }, message: { type: 'string' }, resolution: { type: 'string' }, http_status: { type: 'integer' } } } } } },
+					'404': { description: 'Unknown error code' },
+				},
+			},
+		},
+		'/.well-known/x402.json': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'x402 payment resource discovery',
+				description: 'Lists endpoints that accept x402 micropayments: /v5/status ($0.001 USDC), /v5/batch ($0.005), /v5/x402/mint (99/299 USDC). x402scan-compatible.',
+				responses: {
+					'200': { description: 'x402 resources', content: { 'application/json': { schema: { type: 'object', properties: { version: { type: 'integer' }, resources: { type: 'array', items: { type: 'object' } } } } } } },
+				},
+			},
+		},
+		'/.well-known/mcp-servers.json': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'Self-describing MCP registry feed',
+				description: 'Machine-readable listing metadata for MCP registries. Proposed convention — registries can poll to sync tool/exchange counts automatically.',
+				responses: {
+					'200': { description: 'Server registry', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/.well-known/mcp/server-card.json': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'MCP server card metadata',
+				description: 'Full MCP server metadata: tools, coverage, authentication, x402 payment details, standards compliance. Also served at /.well-known/mcp.json.',
+				responses: {
+					'200': { description: 'Server card', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/.well-known/oauth-protected-resource': {
+			get: {
+				tags:        ['OAuth'],
+				summary:     'OAuth 2.0 Protected Resource Metadata (RFC 8705)',
+				description: 'Tells MCP clients where to find the authorization server for optional OAuth.',
+				responses: {
+					'200': { description: 'Protected resource metadata', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/.well-known/oauth-authorization-server': {
+			get: {
+				tags:        ['OAuth'],
+				summary:     'OAuth 2.0 Authorization Server Metadata (RFC 8414)',
+				description: 'Describes token endpoint, supported grant types, and scopes.',
+				responses: {
+					'200': { description: 'AS metadata', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/.well-known/ai-plugin.json': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'ChatGPT / OpenAI plugin manifest',
+				description: 'Plugin manifest for ChatGPT Custom GPT Actions. Also served at /ai-plugin.json.',
+				responses: {
+					'200': { description: 'Plugin manifest', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/AGENTS.md': {
+			get: {
+				tags:        ['Documentation'],
+				summary:     'Agent integration guide (AAIF/Linux Foundation format)',
+				description: 'Markdown briefing for autonomous agents: critical rules, MCP tools, x402 payment, all 28 exchanges. text/markdown.',
+				responses: {
+					'200': { description: 'Agent guide', content: { 'text/markdown': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/skill.md': {
+			get: {
+				tags:        ['Documentation'],
+				summary:     'Ampersend skill format',
+				description: 'YAML frontmatter skill file for Ampersend registry. x402 payment details, ERC-8004, 28 exchanges.',
+				responses: {
+					'200': { description: 'Skill file', content: { 'text/markdown': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/sitemap.xml': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'XML sitemap',
+				responses: { '200': { description: 'Sitemap', content: { 'application/xml': { schema: { type: 'string' } } } } },
+			},
+		},
+		'/badge/{mic}': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'shields.io-style market status badge',
+				description: 'SVG badge: green=OPEN, grey=CLOSED, red=HALTED, orange=UNKNOWN. Cache-Control: max-age=60.',
+				parameters:  [{ name: 'mic', in: 'path', required: true, schema: { type: 'string' } }],
+				responses: {
+					'200': { description: 'SVG badge', content: { 'image/svg+xml': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/v5/changelog': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'Structured version changelog',
+				description: 'JSON feed of major milestones and version changes. Public, no auth.',
+				responses: {
+					'200': { description: 'Changelog entries', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/v5/webhooks/unsubscribe': {
+			delete: {
+				tags:        ['Webhooks'],
+				summary:     'Unsubscribe from webhooks (legacy)',
+				description: 'Legacy DELETE endpoint. Removes a webhook subscription by subscription_id in request body. Prefer DELETE /v5/webhooks/{webhook_id}.',
+				security:    [{ ApiKeyAuth: [] }],
+				requestBody: {
+					required: true,
+					content: { 'application/json': { schema: { type: 'object', required: ['subscription_id'], properties: { subscription_id: { type: 'string' } } } } },
+				},
+				responses: {
+					'204': { description: 'Unsubscribed' },
+					'401': { description: 'Missing API key' },
+					'404': { description: 'Subscription not found' },
 				},
 			},
 		},
