@@ -3,8 +3,16 @@
 
 ## Current Status
 **Phase**: Post-launch. Engineering hardening sprint.
-**Test suite**: 777/777 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 9 2026 — Day 44: Telemetry gap fixes (770→777 tests):
+**Test suite**: 1014/1014 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 9 2026 — Day 44 continued: Coverage sprint (777→1014 tests):
+- **Coverage tooling**: Istanbul coverage provider configured (`npm run test:coverage`). Baseline: 78% stmts / 71% branch / 53% funcs / 81% lines.
+- **Endpoint coverage gaps (77 tests)**: /v5/keys/instant error cases, /v5/verify error paths, /v5/historical edge cases, /v5/audit/digest + chain, /v5/funnel auth, /v5/stack, /v5/credits/purchase + balance, /.well-known/* endpoints, /docs/* endpoints, catch-all 404, method not allowed, CORS preflight.
+- **Schedule engine exhaustive tests (142 tests)**: All 28 exchanges tested for mid-session OPEN, before-open CLOSED, after-close CLOSED, weekend CLOSED, 2026 holiday CLOSED, half-day early close, lunch breaks (XJPX/XHKG/XSHG/XSHE), DST transitions (US Mar 8 + Nov 1, EU Mar 29 + Oct 25, 3-week gap), CME overnight session.
+- **Ed25519 signing tests (18 tests)**: Verify against /.well-known/oracle-keys.json, tampered payload/signature rejection, canonical alphabetical key sort, no-whitespace JSON, UUID receipt_id, ISO 8601 timestamps, 60s TTL, receipt_mode differentiation, batch signature, health receipt schema.
+- Final coverage: 78.80% stmts / 71.97% branch / 53.25% funcs / 81.28% lines.
+- Gap: Function coverage at 53% is bounded by cron handlers, Durable Objects, real-network payment verification, and ~100 template literal builder functions. Core trust path (signing, schedule, auth) has near-100% coverage.
+
+**Previous**: Apr 9 2026 — Day 44: Telemetry gap fixes (770→777 tests):
 - **/.well-known/oracle-keys.json enhanced**: Added `created_at`, `status` (active), `usage` (receipt_signing), `issuer` (headlessoracle.com) fields. Cache-Control: public, max-age=86400. Backward-compatible (existing `service` and `spec` fields preserved). Triggered by agent request at 22:00 UTC looking for signing keys.
 - **GET /docs/integrations/claude-managed-agents**: Full integration guide now served at the URL referenced in AGENTS.md and LLMS_TXT. Both extensionless (text/plain) and .md (text/markdown) variants. 299 lines covering 4 patterns, fail-closed contract, audit trail, 28 exchanges.
 - **GET /docs**: Master documentation index (docs/README.md) served as text/markdown. Links to architecture, API, operations, legal, security, business, and integrations docs.
