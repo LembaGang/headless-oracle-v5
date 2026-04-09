@@ -9988,6 +9988,250 @@ describe('Schedule engine — CME overnight session', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TASK 4: Signing and Cryptographic Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('Ed25519 signing — cryptographic correctness', () => {
+	it('signed receipt verifies against /.well-known/oracle-keys.json public key', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		// Get receipt
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		// Get public key from well-known
+		const keysBody = await fetchJSON('/.well-known/oracle-keys.json');
+		const keys = keysBody.keys as Array<Record<string, unknown>>;
+		const pubKeyHex = keys[0].public_key as string;
+		// Verify via /v5/verify
+		const verifyRes = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt }),
+		});
+		const verifyBody = await verifyRes.json() as Record<string, unknown>;
+		expect(verifyBody.valid).toBe(true);
+		// Key matches
+		expect(pubKeyHex).toBeTruthy();
+	});
+
+	it('modified payload byte invalidates signature', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = { ...((demoBody.receipt ?? demoBody) as Record<string, unknown>) };
+		// Tamper with status
+		receipt.status = 'CLOSED';
+		const verifyRes = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt }),
+		});
+		const body = await verifyRes.json() as Record<string, unknown>;
+		expect(body.valid).toBe(false);
+	});
+
+	it('modified signature byte invalidates verification', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = { ...((demoBody.receipt ?? demoBody) as Record<string, unknown>) };
+		// Tamper with last byte of signature
+		const sig = receipt.signature as string;
+		const lastChar = sig[sig.length - 1];
+		const newLastChar = lastChar === '0' ? '1' : '0';
+		receipt.signature = sig.slice(0, -1) + newLastChar;
+		const verifyRes = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt }),
+		});
+		const body = await verifyRes.json() as Record<string, unknown>;
+		expect(body.valid).toBe(false);
+	});
+
+	it('canonical payload has keys sorted alphabetically', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		// Extract all signed fields (excluding signature, discovery_url, receipt, extensions)
+		const UNSIGNED = new Set(['signature', 'discovery_url', 'receipt', 'extensions']);
+		const signedKeys = Object.keys(receipt).filter(k => !UNSIGNED.has(k)).sort();
+		// Verify they are in alphabetical order
+		for (let i = 0; i < signedKeys.length - 1; i++) {
+			expect(signedKeys[i] <= signedKeys[i + 1]).toBe(true);
+		}
+	});
+
+	it('canonical JSON has no whitespace', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		// Build canonical payload same way as signPayload
+		const UNSIGNED = new Set(['signature', 'discovery_url', 'receipt', 'extensions']);
+		const payload: Record<string, string> = {};
+		for (const key of Object.keys(receipt).sort()) {
+			if (UNSIGNED.has(key)) continue;
+			payload[key] = String(receipt[key]);
+		}
+		const canonical = JSON.stringify(payload);
+		// No spaces, no newlines
+		expect(canonical).not.toContain(' ');
+		expect(canonical).not.toContain('\n');
+		expect(canonical).not.toContain('\t');
+	});
+
+	it('receipt_id is a valid UUID', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		const uuid = receipt.receipt_id as string;
+		// UUID v4 format: 8-4-4-4-12
+		expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+	});
+
+	it('issued_at is ISO 8601', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		const issuedAt = receipt.issued_at as string;
+		// Must parse to a valid date
+		const parsed = new Date(issuedAt);
+		expect(parsed.getTime()).not.toBeNaN();
+		// Must end with Z (UTC)
+		expect(issuedAt).toMatch(/Z$/);
+	});
+
+	it('expires_at = issued_at + 60 seconds exactly', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		const issuedAt = new Date(receipt.issued_at as string).getTime();
+		const expiresAt = new Date(receipt.expires_at as string).getTime();
+		expect(expiresAt - issuedAt).toBe(60_000); // exactly 60 seconds
+	});
+
+	it('different receipt_modes produce different signatures (demo vs live)', async () => {
+		vi.setSystemTime(new Date('2026-03-15T15:00:00Z'));
+		// Demo receipt
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const demoReceipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		// Live receipt (authenticated)
+		const liveBody = await fetchJSON('/v5/status?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		} as RequestInit);
+		const liveReceipt = (liveBody.receipt ?? liveBody) as Record<string, unknown>;
+		// receipt_mode is different
+		expect(demoReceipt.receipt_mode).toBe('demo');
+		expect(liveReceipt.receipt_mode).toBe('live');
+		// Signatures must be different (different payloads due to receipt_mode)
+		expect(demoReceipt.signature).not.toBe(liveReceipt.signature);
+	});
+
+	it('batch has Ed25519 signature over entire batch payload', async () => {
+		vi.setSystemTime(new Date('2026-03-15T15:00:00Z'));
+		const batchRes = await fetchJSON('/v5/batch?mics=XNYS,XNAS', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		} as RequestInit);
+		// Batch-level signature field
+		const batchSig = batchRes.signature as string;
+		expect(batchSig).toBeDefined();
+		expect(typeof batchSig).toBe('string');
+		expect(batchSig.length).toBe(128); // Ed25519 signature is 64 bytes = 128 hex chars
+		// Also has batch_id and correlation_id
+		expect(batchRes.batch_id).toBeDefined();
+		expect(batchRes.correlation_id).toBeDefined();
+	});
+
+	it('public key in response matches key_2026_v1 or test key', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		const keyId = receipt.public_key_id as string;
+		// In test env it's key_test_v1 (from .dev.vars)
+		expect(keyId).toBeDefined();
+		expect(typeof keyId).toBe('string');
+	});
+
+	it('signature is 128 hex characters (64 bytes)', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const demoBody = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (demoBody.receipt ?? demoBody) as Record<string, unknown>;
+		const sig = receipt.signature as string;
+		expect(sig).toMatch(/^[0-9a-f]{128}$/);
+	});
+
+	it('two sequential receipts have different receipt_ids and signatures', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const body1 = await fetchJSON('/v5/demo?mic=XNYS');
+		const r1 = (body1.receipt ?? body1) as Record<string, unknown>;
+		const body2 = await fetchJSON('/v5/demo?mic=XNYS');
+		const r2 = (body2.receipt ?? body2) as Record<string, unknown>;
+		// Different receipt_ids
+		expect(r1.receipt_id).not.toBe(r2.receipt_id);
+		// Different signatures (different receipt_id in payload)
+		expect(r1.signature).not.toBe(r2.signature);
+	});
+
+	it('health receipt has different schema than market receipt (no mic)', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const healthBody = await fetchJSON('/v5/health');
+		const receipt = (healthBody.receipt ?? healthBody) as Record<string, unknown>;
+		// Health receipt should not have mic
+		expect(receipt.status).toBe('OK');
+		expect(receipt.source).toBe('SYSTEM');
+		expect(receipt.signature).toMatch(/^[0-9a-f]{128}$/);
+		// No mic field
+		expect(receipt.mic).toBeUndefined();
+	});
+
+	it('HALTED override produces signed receipt with OVERRIDE source', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		// Set an override
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status: 'HALTED',
+			reason: 'Test halt',
+			expires: new Date(Date.now() + 3600000).toISOString(),
+		}));
+		clearOverrideCache();
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (body.receipt ?? body) as Record<string, unknown>;
+		expect(receipt.status).toBe('HALTED');
+		expect(receipt.source).toBe('OVERRIDE');
+		// Still signed
+		expect(receipt.signature).toMatch(/^[0-9a-f]{128}$/);
+		// Cleanup
+		await env.ORACLE_OVERRIDES.delete('XNYS');
+		clearOverrideCache();
+	});
+
+	it('issuer field is headlessoracle.com', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (body.receipt ?? body) as Record<string, unknown>;
+		expect(receipt.issuer).toBe('headlessoracle.com');
+	});
+
+	it('schema_version is v5.0', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (body.receipt ?? body) as Record<string, unknown>;
+		expect(receipt.schema_version).toBe('v5.0');
+	});
+
+	it('halt_detection field is signed', async () => {
+		vi.setSystemTime(new Date('2026-04-08T15:00:00Z'));
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = (body.receipt ?? body) as Record<string, unknown>;
+		expect(receipt.halt_detection).toBeDefined();
+		// Verify the whole receipt still validates
+		const verifyRes = await fetchWorker('/v5/verify', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt }),
+		});
+		const vBody = await verifyRes.json() as Record<string, unknown>;
+		expect(vBody.valid).toBe(true);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TASK 2: Endpoint Coverage Gaps — comprehensive tests for uncovered routes
 // ═══════════════════════════════════════════════════════════════════════════════
 

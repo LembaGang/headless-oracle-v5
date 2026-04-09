@@ -72,6 +72,32 @@ npm run test:coverage
 open coverage/index.html
 ```
 
-## Final Coverage (after sprint)
+## Final Coverage (Apr 9 2026 — 1,014 tests)
 
-_Updated after Tasks 2-4 completion._
+| Metric     | Baseline | Final  | Delta  | Covered | Total |
+|------------|----------|--------|--------|---------|-------|
+| Statements | 78.06%   | 78.80% | +0.74% | 2,461   | 3,123 |
+| Branches   | 70.91%   | 71.97% | +1.06% | 1,772   | 2,462 |
+| Functions  | 52.95%   | 53.25% | +0.30% | 180     | 338   |
+| Lines      | 80.51%   | 81.28% | +0.77% | 2,328   | 2,864 |
+
+### Tests added: 237 (777 → 1,014)
+
+| Category | Tests | Description |
+|----------|-------|-------------|
+| Endpoint coverage gaps | 77 | Error paths, auth, CORS, method not allowed for 25+ routes |
+| Schedule engine | 142 | All 28 exchanges: open, closed, weekend, holiday, half-day, lunch, DST |
+| Cryptographic signing | 18 | Signature verification, tampering, canonical payload, TTL, receipt modes |
+
+### Why functions coverage is hard to move
+
+The single-file architecture (~15K lines) has ~338 functions. Coverage of
+~158 functions is blocked by:
+
+- **Cron handlers** (4): `runHaltMonitor()`, `runWeeklyDigest()`, npm stats, MCP aggregation — these require `scheduled()` event simulation
+- **Durable Objects** (6+): `WebhookDispatcher.alarm()`, `StreamCoordinator` methods — require DO lifecycle mocking
+- **Real network calls** (5): `verifyX402Payment()` RPC paths, `generateCdpJwt()`, `verifyX402ViaFacilitator()` — require external API mocking
+- **HTML generators** (10+): `/status`, `/upgrade`, `/pricing` pages, `/v5/card/:mic` SVG — executed but functions inside template literals not counted
+- **Template literal builders** (100+): `LLMS_TXT`, `SKILL_MD`, `AGENTS_MD`, etc. — constant strings, not functions
+
+The core **trust path** (signing, schedule, auth, fail-closed) has near-100% coverage.
