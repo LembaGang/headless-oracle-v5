@@ -1,6 +1,6 @@
 <!-- Living document. Update when new evaluator fingerprints appear or
-telemetry keys are added. Last updated: 2026-04-08 by Day 42
-meta-sprint -->
+telemetry keys are added. Last updated: 2026-04-10 Day 44 living doc
+refresh -->
 
 # Telemetry Guide — Headless Oracle V5
 
@@ -45,6 +45,16 @@ via `ctx.waitUntil`). Reads are cached where noted.
 | `funnel_402:trial_exhausted:{YYYY-MM-DD}` | Integer counter | 25h | Trial limit hit |
 | `funnel_402:free_limit_reached:{YYYY-MM-DD}` | Integer counter | 25h | Free tier limit hit |
 | `funnel_402:sandbox_limit_reached:{YYYY-MM-DD}` | Integer counter | 25h | Sandbox limit hit |
+| `funnel_402:saw_upgrade_paths:{YYYY-MM-DD}` | Integer counter | 25h | Agent saw upgrade paths in 402/429 |
+
+### Instant Key / Conversion Funnel
+| Key Pattern | Value | TTL | Written By |
+|---|---|---|---|
+| `funnel_instant_key:requested:{YYYY-MM-DD}` | Integer counter | 25h | Instant key requested |
+| `funnel_instant_key:created:{YYYY-MM-DD}` | Integer counter | 25h | Instant key created |
+| `funnel_instant_key:reused:{YYYY-MM-DD}` | Integer counter | 25h | Existing key returned |
+| `funnel_demo:fallback:{YYYY-MM-DD}` | Integer counter | 25h | Demo fallback triggered |
+| `trial_usage_served:{YYYY-MM-DD}` | Integer counter | 25h | Total trial receipts served |
 
 ### x402 Payment Tracking
 | Key Pattern | Value | TTL | Written By |
@@ -157,6 +167,23 @@ new fingerprints appear in MCP client telemetry.
 - **ASN**: Indiana University
 - **Location**: Bloomington, US
 - **Behavior**: Called `get_market_status` — academic user
+
+### Drexel University
+- **User Agent**: varies
+- **ASN**: Drexel University
+- **Location**: Philadelphia, US
+- **Behavior**: Academic evaluator — appeared Day 44
+
+### Latitude.sh
+- **User Agent**: varies
+- **ASN**: Latitude.sh
+- **Behavior**: Infrastructure evaluator — appeared Day 44
+
+### continuum-sync
+- **Behavior**: Evaluator — appeared Day 44
+
+### MCP-Client NYC
+- **Behavior**: MCP client evaluator — appeared Day 44
 
 ### Comcast Philadelphia
 - **User Agent**: `python-httpx/0.24.1`

@@ -1,19 +1,62 @@
 <!-- Living document. Update after every session that adds routes,
-functions, or changes data flow. Last updated: 2026-04-10 by dead code
-cleanup sprint -->
+functions, or changes data flow. Last updated: 2026-04-10 Day 44
+living doc refresh -->
 
 # Architecture Map — src/index.ts
 
-Single-file Cloudflare Worker (~12,100 lines). This document maps the
-file so any model can navigate it without searching.
+Single-file Cloudflare Worker (~12,100 lines post-cleanup). This document
+maps the file so any model can navigate it without searching.
 
-## Routing Architecture
+## Two-Repo Routing Architecture
 
-Worker = API only. HTML pages served by Cloudflare Pages (headless-oracle-web).
-A Pages passthrough guard in fetch() intercepts /, /pricing, /status, /verify,
-/traction, /refund, /upgrade, /terms, /privacy, /docs/*, /blog/* and calls
-fetch(request) to forward to Pages. No HTML templates or renderers exist in
-the Worker — all HTML generation code was removed on 2026-04-10.
+**Worker** (`headless-oracle-v5`) = API only. Zero HTML templates or renderers.
+**Pages** (`headless-oracle-web`) = All HTML pages (10 pages via Vite build).
+
+The Worker has a catch-all route on `headlessoracle.com/*`. Routing logic:
+1. Worker receives ALL requests to `headlessoracle.com`
+2. For API paths → Worker handles directly (see API Routes below)
+3. For HTML paths → Pages passthrough guard calls `fetch(request)` to forward to Cloudflare Pages
+
+### Pages Passthrough Paths (forwarded to headless-oracle-web)
+`/`, `/pricing`, `/status`, `/verify`, `/traction`, `/refund`, `/upgrade`,
+`/terms`, `/privacy`, `/docs/*`, `/blog/*`
+
+### Deploy Commands
+| Repo | Command | What it does |
+|---|---|---|
+| `headless-oracle-v5` | `npm run deploy` | `wrangler deploy` → Cloudflare Workers |
+| `headless-oracle-web` | `npm run deploy` | `wrangler pages deploy dist` → Cloudflare Pages |
+
+### Pages (headless-oracle-web) — 10 HTML pages
+`index.html`, `docs.html`, `status.html`, `pricing.html`, `verify.html`,
+`traction.html`, `blog.html`, `terms.html`, `privacy.html`, `refund.html`
+Plus `public/docs/` integration guides (quickstart, LangGraph, Bun, Anthropic Claude, DataCamp, x402)
+
+### Worker API Routes (19 route handlers in fetch())
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /v5/demo` | no | Signed demo receipt |
+| `GET /v5/status` | yes/trial/x402 | Signed live receipt |
+| `GET /v5/batch` | yes | Batch signed receipts |
+| `GET /v5/schedule` | no | Next open/close times |
+| `GET /v5/exchanges` | no | Directory of 28 exchanges |
+| `GET /v5/keys` | no | Public key registry |
+| `POST /v5/keys/instant` | no | Instant key provisioning |
+| `GET /v5/health` | no | Signed liveness probe |
+| `GET /v5/briefing` | no | Daily market intelligence |
+| `POST /v5/sandbox` | no | Sandbox key via email or x402 |
+| `GET /v5/usage` | yes | Per-key usage stats |
+| `GET /v5/receipts` | yes | Audit log query (builder+) |
+| `POST /v5/webhooks/subscribe` | yes | Register webhook |
+| `GET /v5/audit/digest` | no | Daily attestation Merkle root |
+| `GET /v5/audit/chain` | no | Hash chain of daily digests |
+| `POST /v5/checkout` | no | Paddle transaction |
+| `POST /webhooks/paddle` | no | Paddle webhook handler |
+| `POST /v5/x402/mint` | no | Mint API key via USDC |
+| `POST /mcp` | no | MCP Streamable HTTP (5 tools) |
+
+Plus: discovery files (`/llms.txt`, `/AGENTS.md`, `/openapi.json`, `/.well-known/*`),
+OAuth endpoints, utility routes (redirects, changelog, etc.).
 
 ## File Structure (top to bottom)
 

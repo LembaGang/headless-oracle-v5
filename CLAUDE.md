@@ -25,15 +25,20 @@ Still requires explicit confirmation in the message:
 
 ## Architecture in 30 Seconds
 
-- **Single TypeScript file**: `src/index.ts` (~12,100 lines)
-- **Runtime**: Cloudflare Workers (edge, no origin server)
+- **Single TypeScript file**: `src/index.ts` (~12,100 lines post-cleanup)
+- **Runtime**: Cloudflare Workers (edge, no origin server) — API only, zero HTML
+- **HTML**: Served by Cloudflare Pages via `headless-oracle-web` repo
+- **Routing**: Worker catch-all on `headlessoracle.com/*`; API paths handled directly, HTML paths forwarded to Pages via `fetch(request)`
 - **KV namespaces**: `ORACLE_TELEMETRY` (metrics/usage), `ORACLE_API_KEYS` (auth + billing state), `ORACLE_OVERRIDES` (manual halt overrides)
 - **Signing**: Ed25519 via `@noble/ed25519` with CryptoKey cached in module scope
 - **MCP server**: POST `/mcp` (protocol `2024-11-05`, streamable HTTP, 5 tools)
 - **Payments**: x402 via Coinbase CDP facilitator on Base mainnet
 - **Billing**: Paddle (subscriptions + credit packs), keys stored in Supabase + KV cache
+- **Conversion**: `/v5/keys/instant` instant key provisioning, enhanced 402/429 with `agent_upgrade_paths`, funnel telemetry
 - **Email**: Resend for key delivery
 - **Durable Objects**: `StreamCoordinator` (SSE), `WebhookDispatcher` (state-change fan-out)
+- **OpenAPI**: 73 paths in `/openapi.json` (11 semantic tags, 2 server URLs, MIT license)
+- **SDKs**: `packages/sdk-typescript/` (@headlessoracle/sdk), `packages/sdk-python/` (headless-oracle-sdk) — not yet published
 - **Published packages**: `headless-oracle-mcp` (npm), `headless-oracle` (PyPI), framework SDKs (LangChain, CrewAI, Strands)
 
 ## Critical Invariants (NEVER violate these)
@@ -51,7 +56,7 @@ Still requires explicit confirmation in the message:
 | Path | Purpose |
 |---|---|
 | `src/index.ts` | The entire worker: routing, signing, billing, MCP, telemetry, schedule engine |
-| `test/index.spec.ts` | Main test suite (960+ tests) |
+| `test/index.spec.ts` | Main test suite (973 tests) |
 | `test/x402_mint_telemetry.spec.ts` | x402 mint + per-tool telemetry tests |
 | `wrangler.toml` | Worker config, KV bindings, env vars, cron triggers, routes |
 | `.dev.vars` | Local dev/test secrets (test-only keypair, NOT production) |
@@ -138,18 +143,24 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-10 by dead code cleanup sprint -->
+<!-- Last updated: 2026-04-10 Day 44 living doc refresh -->
 
-- **Tests**: 973/973 (51 dead HTML-page tests removed)
-- **Worker version**: 2cfb8bf0 (latest deployed)
-- **Test payment**: 1 x402 payment settled (Day 41)
+- **Day**: 44 (since project start)
+- **Tests**: 973/973 (51 dead HTML-page tests removed Day 44) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Worker**: `src/index.ts` ~12,100 lines (was 16,565 before cleanup). API-only — zero HTML.
+- **Worker version**: 6bc892a7 (latest deployed)
+- **OpenAPI**: 73 paths, 11 semantic tags
+- **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11
-- **Evaluators**: DataCamp, Chiark, CacheFly/Glama, MCPScoreboard 100/100, YellowMCP, AgentDiscoveryIndex
+- **Evaluators**: DataCamp (warmest), Chiark 85/100, CacheFly/Glama, MCPScoreboard 100/100, YellowMCP, AgentDiscoveryIndex, Amazon San Jose, Latitude.sh, Indiana University, Drexel University
 - **npm users**: 4 independent (South Africa, Italy, Germany, Indiana University)
-- **Auth calls**: recurring (Day 41: 9, Day 42: 4+)
+- **Auth calls trend**: 3 → 8 → 14 → 19 (weeks 11–14)
 - **Weekly unique MCP clients**: 65 (Week 14)
+- **Returning clients**: 12 and growing
 - **Infrastructure cost**: $15.50/month
+- **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published)
+- **Conversion**: instant keys live, Paddle checkout working, enhanced 402/429 with upgrade paths
 
 ## How to Work on This Project
 

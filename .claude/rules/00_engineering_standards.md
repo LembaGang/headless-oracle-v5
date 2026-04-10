@@ -1,11 +1,18 @@
 # Headless Oracle V5 — Engineering Standards
 
 ## Hard Rules (Never Break)
-- All tests must pass before any change is considered complete — run `npm test` to verify (count tracked in `wrangler.toml` TEST_COUNT)
+- All tests must pass before any change is considered complete — run `npm test` to verify (973 tests as of Day 44; count tracked in `wrangler.toml` TEST_COUNT)
+- Coverage baseline: 78% statements, 72% branches (run `npm run test:coverage`)
 - Fail-closed behavior must be preserved at all tiers: UNKNOWN always means CLOSED to consumers
 - No hardcoded UTC offsets — DST is handled exclusively via IANA timezone names in `Intl.DateTimeFormat`
 - KV override expiry MUST be checked before returning HALTED — expired overrides are silently ignored
 - Signing must be attempted before any non-CRITICAL_FAILURE response is returned
+
+## Two-Repo Workflow
+- **Worker changes** (`headless-oracle-v5`): `npm run deploy` → `wrangler deploy` (Cloudflare Workers)
+- **Website changes** (`headless-oracle-web`): `npm run deploy` → `wrangler pages deploy dist` (Cloudflare Pages)
+- Always confirm which repo you're in before running deploy commands
+- Worker is API-only (zero HTML). All HTML served by Pages.
 
 ## Adding a New Exchange
 When adding any exchange:

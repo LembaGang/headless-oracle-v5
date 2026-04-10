@@ -2,14 +2,32 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Engineering hardening sprint.
-**Test suite**: 973/973 passing (51 dead HTML-page tests removed) + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 10 2026 — Dead code cleanup sprint:
-- **Removed 4,439 lines** from src/index.ts (16,565 → 12,126): PAGE_STYLES, wrapHtml(), renderMarkdownToHtml(), 20 embedded markdown constants, GET /, /pricing, /docs/*, /blog/*, /status, /upgrade HTML route handlers, sandbox GET HTML form, 404 HTML handler (now JSON-only).
-- **Removed 440 lines** from test/index.spec.ts (11,045 → 10,605): 19 describe.skip blocks (51 tests for dead routes), updated sandbox GET test to expect 405.
-- Worker is now API-only. All HTML served by Cloudflare Pages (headless-oracle-web). Pages passthrough guard retained.
-- Deployed worker version 6bc892a7. Live-verified: /v5/health, /v5/demo, /mcp, /.well-known/oracle-keys.json, /openapi.json all 200. Pages landing and pricing verified.
-- Gap: Line ranges in 02_architecture_map.md are now stale (shifted by ~4,400 lines). Next session should re-map the file structure.
+**Phase**: Post-launch. Revenue focus.
+**Day**: 44 (2026-04-10)
+**Test suite**: 973/973 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~12,100 lines (API-only, zero HTML). Deployed 6bc892a7.
+**Website**: 10 HTML pages on Cloudflare Pages (headless-oracle-web). Instant keys + Paddle checkout live.
+**OpenAPI**: 73 paths, 11 semantic tags.
+**SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published).
+
+### What's Done (Day 44)
+- Dead code cleanup: removed 4,439 lines from Worker (was 16,565 → 12,126). Worker = API only.
+- 51 dead HTML-page tests removed. Worker serves zero HTML.
+- OpenAPI spec complete: 73 paths (was ~50).
+- TypeScript + Python SDKs stubbed in packages/.
+- Coverage sprint: 777 → 1,014 tests, then 1,024 → 973 after dead test removal.
+- Instant key provisioning live. Enhanced 402/429 with agent_upgrade_paths.
+- 3-hour outage recovered (Day 42).
+- Website deployed on Pages: working buttons, 28 exchanges, all CTAs wired.
+- Living documents refreshed (this session).
+
+### What's Next
+- **Revenue**: DataCamp follow-up April 12. Warmest lead.
+- **Distribution**: VeroQ on FinRL — reply posted, second tweet posted.
+- **Managed Agents decision**: April 15.
+- **Max → Pro transition**: possible next week (cost optimization).
+- **SDKs**: publish to npm/PyPI when first customer needs them.
+- **Gap**: Line ranges in 02_architecture_map.md approximate (shifted by ~4,400-line cleanup). Re-map on next deep code change.
 
 **Previous**: Apr 9 2026 — Day 44 continued: API completeness sprint:
 - **OpenAPI 3.1 spec complete**: 73 paths (was ~50), 11 semantic tags, 2 server URLs (headlessoracle.com + api.headlessoracle.com), MIT license, contact email, BearerAuth security scheme. Added ~25 missing paths: /oauth/*, /v5/historical, /v5/status/realtime, /v5/briefing, /v5/referrers, /v5/payment-proof, /v5/why-not-free, /v5/pricing, /v5/slo, /v5/errors/{code}, /v5/changelog, /.well-known/x402.json, /.well-known/mcp-servers.json, /.well-known/mcp/server-card.json, /.well-known/oauth-*, /.well-known/ai-plugin.json, /AGENTS.md, /skill.md, /badge/{mic}, /v5/webhooks/unsubscribe, /sitemap.xml. Deployed d07e539a. Verified live: 73 paths.

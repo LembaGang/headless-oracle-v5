@@ -75,15 +75,18 @@ Full regulatory alignment table: `docs/compliance.md`
 
 | Metric | Value | As of |
 |---|---|---|
+| x402 payment count | 1 | Day 41 |
 | Weekly unique MCP clients | 65 | Week 14 (Apr 2026) |
+| Returning clients | 12 and growing | Week 14 |
 | Daily 402 bounces | ~19 | Day 41 |
-| Evaluator platforms | DataCamp, Chiark, CacheFly/Glama, MCPScoreboard, YellowMCP, AgentDiscoveryIndex | Apr 2026 |
+| Auth calls trend | 3 → 8 → 14 → 19 (weeks 11–14) | Day 44 |
+| Evaluator platforms | DataCamp (warmest), Chiark 85/100, CacheFly/Glama, MCPScoreboard 100/100, YellowMCP, AgentDiscoveryIndex, Amazon San Jose, Latitude.sh, Indiana University, Drexel University | Day 44 |
 | npm package users (independent) | 4 (ZA, IT, DE, US-Indiana) | Apr 2026 |
-| Auth calls | recurring (Day 41: 9, Day 42: 4+) | Apr 2026 |
 | Infrastructure cost | $15.50/month | Apr 2026 |
-| External revenue | $0 | Apr 2026 |
+| External revenue | $0 | Day 44 |
 | MCPScoreboard score | 100/100 | Apr 2026 |
-| Test suite | 714 tests | Apr 2026 |
+| Test suite | 973 tests (main) + 11 smoke + 24 SDK | Day 44 |
+| OpenAPI paths | 73 | Day 44 |
 | Exchanges covered | 28 | Apr 2026 |
 
 ## The Thesis

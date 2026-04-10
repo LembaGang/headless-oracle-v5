@@ -1,5 +1,6 @@
 <!-- Living document. Update when new patterns are discovered or failure
-modes are encountered. Last updated: 2026-04-08 by Day 42 meta-sprint -->
+modes are encountered. Last updated: 2026-04-10 Day 44 living doc
+refresh -->
 
 # Sprint Playbook — Headless Oracle V5
 
@@ -14,6 +15,13 @@ starting any multi-task session.
 4. Deploy after tasks that change the worker (`npm run deploy`)
 5. Live-verify after deploy (curl the changed endpoints)
 6. Update `.claude/rules/` docs and `90_active_priorities.md` when done
+
+## Two-Repo Awareness (Day 42+ pattern)
+- Always confirm which repo you're in before deploying
+- Worker changes: `headless-oracle-v5` → `npm run deploy` (wrangler deploy)
+- Website changes: `headless-oracle-web` → `npm run deploy` (wrangler pages deploy)
+- Worker is API-only. If you need to change HTML, you're in the wrong repo.
+- Context docs (`.claude/rules/`) live in headless-oracle-v5 only
 
 ## What Makes a Good Task
 
