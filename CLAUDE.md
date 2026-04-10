@@ -37,7 +37,7 @@ Still requires explicit confirmation in the message:
 - **Conversion**: `/v5/keys/instant` instant key provisioning, enhanced 402/429 with `agent_upgrade_paths`, funnel telemetry
 - **Email**: Resend for key delivery
 - **Durable Objects**: `StreamCoordinator` (SSE), `WebhookDispatcher` (state-change fan-out)
-- **OpenAPI**: 73 paths in `/openapi.json` (11 semantic tags, 2 server URLs, MIT license)
+- **OpenAPI**: 78 paths in `/openapi.json` (11 semantic tags, 2 server URLs, MIT license)
 - **SDKs**: `packages/sdk-typescript/` (@headlessoracle/sdk), `packages/sdk-python/` (headless-oracle-sdk) — not yet published
 - **Published packages**: `headless-oracle-mcp` (npm), `headless-oracle` (PyPI), framework SDKs (LangChain, CrewAI, Strands)
 
@@ -143,13 +143,13 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-10 Day 44 living doc refresh -->
+<!-- Last updated: 2026-04-10 Day 44 evening distribution sprint -->
 
 - **Day**: 44 (since project start)
-- **Tests**: 985/985 (973 + 12 new pre-trade stack/A2A tests) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
-- **Worker**: `src/index.ts` ~12,400 lines. API-only — zero HTML.
-- **Worker version**: 50bbd3d4 (latest deployed)
-- **OpenAPI**: 77 paths, 11 semantic tags
+- **Tests**: 989/989 (985 + 4 CPVR-1 spec tests) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Worker**: `src/index.ts` ~12,700 lines. API-only — zero HTML.
+- **Worker version**: 10238dda (latest deployed)
+- **OpenAPI**: 78 paths, 11 semantic tags
 - **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11

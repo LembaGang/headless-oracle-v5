@@ -2,13 +2,22 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue focus. Strategic positioning sprint.
+**Phase**: Post-launch. Revenue focus. Distribution sprint.
 **Day**: 44 (2026-04-10)
-**Test suite**: 985/985 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~12,400 lines (API-only, zero HTML). Deployed 50bbd3d4.
+**Test suite**: 989/989 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~12,700 lines (API-only, zero HTML). Deployed 10238dda.
 **Website**: 10 HTML pages on Cloudflare Pages (headless-oracle-web). Instant keys + Paddle checkout live.
-**OpenAPI**: 77 paths, 11 semantic tags.
+**OpenAPI**: 78 paths, 11 semantic tags.
 **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published).
+
+### What's Done (Day 44 — late evening distribution sprint)
+- **CPVR-1 spec**: Composable Pre-Trade Verification Receipt — PROPOSAL for JSON envelope wrapping all layer proofs into a single artifact. Served at /docs/specifications/cpvr-1. 4 new tests.
+- **Ampersend outreach edited**: Removed spec URL, added POST INSTRUCTIONS (GitHub Discussion, timing). Draft ends with handoff pattern question.
+- **VeroQ hold note**: "Wait for FinRL reply until April 16, then cold outreach."
+- **Distribution outreach drafts**: 8 targets (CrewAI, AutoGen, Strands, OpenBB, Composio, LangChain, Mastra, QuantConnect). 5 READY TO POST, 3 NEEDS REVIEW. Each with project-specific code examples.
+- **Glama description update**: server-card.json and mcp-servers.json descriptions updated with discovery keywords (exchange hours, market open closed, trading schedule, DST-aware, etc.). Saved docs/distribution/glama-description.md.
+- **OpenAPI**: 77 → 78 paths (+1: /docs/specifications/cpvr-1).
+- Updated: AGENTS_MD, LLMS_TXT_INDEX, LLMS_FULL_TXT, SITEMAP_XML, OPENAPI_SPEC.
 
 ### What's Done (Day 44 — evening session)
 - **Pre-Trade Verification Stack spec**: 5-layer composable verification (Market State → Spend Auth → Signal Verification → Payment → Execution). HO = Layer 1. Published as markdown at /docs/specifications/pre-trade-stack and JSON at /v5/pre-trade-stack.
