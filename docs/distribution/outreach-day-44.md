@@ -6,6 +6,12 @@
 **Context**: Their A2A tweet positioning Ampersend as agent spend control.
 We already have PR #11 on ampersend-examples showing x402 integration.
 
+**POST INSTRUCTIONS**: Post as a GitHub Discussion (not Issue) on
+edgeandnode/ampersend or ampersend repo. If no Discussions enabled,
+comment on the most relevant open issue about architecture or
+integrations. Post at 15:00-16:00 SAST (09:00-10:00 ET) for US
+business hours.
+
 ---
 
 Hey team,
@@ -36,10 +42,8 @@ We already have an example in your ampersend-examples repo (PR #11) showing
 the x402 payment flow. Happy to build a more complete two-step verification
 example showing HO → Ampersend → execute if that's useful.
 
-We published a lightweight spec for the composable stack:
-https://headlessoracle.com/docs/specifications/pre-trade-stack
-
-Interested in your thoughts on the Layer 1 → Layer 2 handoff pattern.
+Interested in your thoughts on the Layer 1 → Layer 2 handoff
+pattern.
 
 ---
 
@@ -48,6 +52,9 @@ their positioning positively. Proposes collaboration, not competition.
 Includes concrete code reference (PR #11). Ends with a question.
 
 ## VeroQ Follow-Up (Draft)
+
+**HOLD — wait for FinRL reply before sending. If no reply by April 16,
+send as cold outreach.**
 
 **Target**: VeroQ — Twitter DM or GitHub
 **Context**: Signal verification as Layer 3 in the pre-trade stack.
