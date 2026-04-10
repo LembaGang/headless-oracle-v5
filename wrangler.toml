@@ -26,6 +26,8 @@ routes = [
   { pattern = "headlessoracle.com/AGENTS.md", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/badge/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/x402", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/specifications/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
 ]
 
 [vars]

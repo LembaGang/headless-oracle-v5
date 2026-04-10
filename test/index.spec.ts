@@ -10603,3 +10603,111 @@ describe('Redirect routes — coverage', () => {
 		expect(res.headers.get('Location')).toContain('github.com');
 	});
 });
+
+// ─── Pre-Trade Verification Stack ────────────────────────────────────────────
+
+describe('GET /v5/pre-trade-stack', () => {
+	it('returns 200 with 5 layers and Layer 1 is Headless Oracle', async () => {
+		const body = await fetchJSON('/v5/pre-trade-stack');
+		expect(body.spec_version).toBe('1.0');
+		expect(body.layers).toHaveLength(5);
+		expect(body.layers[0].layer).toBe(1);
+		expect(body.layers[0].name).toBe('Market State Gate');
+		expect(body.layers[0].provider).toBe('Headless Oracle');
+		expect(body.layers[0].fail_closed).toBe(true);
+	});
+
+	it('includes reference implementations for all layers', async () => {
+		const body = await fetchJSON('/v5/pre-trade-stack');
+		const refs = body.reference_implementations as Record<string, { name: string }>;
+		expect(refs.layer_1.name).toBe('Headless Oracle');
+		expect(refs.layer_2.name).toBe('Ampersend');
+		expect(refs.layer_3.name).toBe('VeroQ');
+		expect(refs.layer_4.name).toBe('x402 Protocol');
+	});
+
+	it('Layer 2 (Ampersend) references composability with Layer 1', async () => {
+		const body = await fetchJSON('/v5/pre-trade-stack');
+		const layer2 = body.layers[1];
+		expect(layer2.composable_with_layer_1).toContain('receipt signature');
+	});
+});
+
+describe('GET /docs/specifications/pre-trade-stack', () => {
+	it('returns 200 with text/markdown content-type', async () => {
+		const response = await fetchWorker('/docs/specifications/pre-trade-stack');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains 5-layer stack description', async () => {
+		const text = await fetchWorker('/docs/specifications/pre-trade-stack').then((r) => r.text());
+		expect(text).toContain('Layer 1');
+		expect(text).toContain('Market State Gate');
+		expect(text).toContain('Ampersend');
+		expect(text).toContain('VeroQ');
+	});
+});
+
+describe('GET /docs/integrations/ampersend', () => {
+	it('returns 200 with text/markdown content-type', async () => {
+		const response = await fetchWorker('/docs/integrations/ampersend');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains composable pattern code example', async () => {
+		const text = await fetchWorker('/docs/integrations/ampersend').then((r) => r.text());
+		expect(text).toContain('Spend Authorization');
+		expect(text).toContain('@headlessoracle/verify');
+	});
+});
+
+// ─── A2A Agent Card v1 ──────────────────────────────────────────────────────
+
+describe('GET /.well-known/agent-card.json (A2A v1)', () => {
+	it('returns 200 with same content as agent.json', async () => {
+		const agentJson = await fetchJSON('/.well-known/agent.json');
+		const agentCard = await fetchJSON('/.well-known/agent-card.json');
+		expect(agentCard.name).toBe(agentJson.name);
+		expect(agentCard.schemaVersion).toBe('1.0');
+		expect(agentCard.humanReadableId).toBe('lembagang/headless-oracle');
+	});
+
+	it('contains A2A v1 required fields', async () => {
+		const body = await fetchJSON('/.well-known/agent-card.json');
+		expect(body.schemaVersion).toBe('1.0');
+		expect(body.humanReadableId).toBeDefined();
+		expect(body.agentVersion).toBe('5.0.0');
+		expect(body.name).toBe('Headless Oracle');
+		expect(body.url).toBe('https://headlessoracle.com');
+		expect(body.defaultInputModes).toContain('application/json');
+		expect(body.defaultOutputModes).toContain('application/json');
+	});
+
+	it('contains authSchemes array with api_key and oauth2', async () => {
+		const body = await fetchJSON('/.well-known/agent-card.json');
+		const schemes = body.authSchemes as Array<{ scheme: string }>;
+		expect(Array.isArray(schemes)).toBe(true);
+		const schemeNames = schemes.map((s) => s.scheme);
+		expect(schemeNames).toContain('api_key');
+		expect(schemeNames).toContain('oauth2');
+		expect(schemeNames).toContain('bearer_token');
+	});
+
+	it('includes pre_trade_stack reference', async () => {
+		const body = await fetchJSON('/.well-known/agent-card.json');
+		const stack = body.pre_trade_stack as { layer: number; role: string };
+		expect(stack.layer).toBe(1);
+		expect(stack.role).toBe('Market State Gate');
+	});
+
+	it('includes tags array for discovery', async () => {
+		const body = await fetchJSON('/.well-known/agent-card.json');
+		const tags = body.tags as string[];
+		expect(Array.isArray(tags)).toBe(true);
+		expect(tags).toContain('finance');
+		expect(tags).toContain('pre-trade');
+		expect(tags).toContain('fail-closed');
+	});
+});

@@ -3275,6 +3275,18 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
+  <url>
+    <loc>https://headlessoracle.com/docs/specifications/pre-trade-stack</loc>
+    <lastmod>2026-04-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/docs/integrations/ampersend</loc>
+    <lastmod>2026-04-10</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
 </urlset>`;
 
 const ROBOTS_TXT = `User-agent: *
@@ -3291,6 +3303,7 @@ Allow: /v5/exchanges
 Allow: /v5/keys
 Allow: /v5/health
 Allow: /mics.json
+Allow: /v5/pre-trade-stack
 Disallow:
 `;
 
@@ -3334,6 +3347,11 @@ Headless Oracle returns cryptographically signed receipts confirming whether an 
 - [LangChain](https://pypi.org/project/headless-oracle-langchain/): headless-oracle-langchain tool
 - [CrewAI](https://headlessoracle.com/docs/integrations/crewai): MCPServerStdio configuration
 - [x402 Payment](https://headlessoracle.com/docs/integrations/x402): Pay-per-call $0.001 USDC on Base
+
+## Pre-Trade Verification Stack
+
+- [Stack Specification](https://headlessoracle.com/docs/specifications/pre-trade-stack): 5-layer composable verification for autonomous trading agents
+- [Machine-Readable Stack](https://headlessoracle.com/v5/pre-trade-stack): JSON description of the stack with layer definitions
 
 ## Standards
 
@@ -3575,6 +3593,11 @@ Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 - [Strands Integration](https://headlessoracle.com/docs/integrations/strands) — AWS Strands Agents SDK with first-party headless-oracle-strands PyPI package
 - [Olas Integration](https://headlessoracle.com/docs/integrations/olas) — Pre-trade gate for Olas autonomous services
 - [AutoGPT Integration](https://headlessoracle.com/docs/integrations/autogpt) — AutoGPT plugin for pre-trade verification
+- [Ampersend Integration](https://headlessoracle.com/docs/integrations/ampersend) — Composable market state (Layer 1) + spend authorization (Layer 2) pattern
+
+## Pre-Trade Verification Stack
+- [Stack Specification](https://headlessoracle.com/docs/specifications/pre-trade-stack) — 5-layer composable verification: Market State → Spend Auth → Signal Verification → Payment → Execution
+- [Machine-Readable Stack](https://headlessoracle.com/v5/pre-trade-stack) — JSON: layer definitions, reference implementations, composability metadata
 
 ## Blog
 - [Market Hours APIs Are Not Enough for Autonomous Agents](https://headlessoracle.com/blog/market-hours-api-vs-signed-attestation) — Why boolean is_open fails agents; the signed attestation model
@@ -4136,6 +4159,264 @@ const SKILL_MD_ETAG     = `"${fnv1a32(SKILL_MD)}"`;
 const SKILL_MD_LAST_MOD = new Date().toUTCString();         // RFC 7231 HTTP-date format
 const DEPLOY_DATE       = new Date().toISOString().slice(0, 10); // YYYY-MM-DD for spec_version
 
+// ─── Pre-Trade Verification Stack ────────────────────────────────────────────
+// Defines the composable 5-layer pre-trade verification stack for autonomous
+// trading agents. Headless Oracle = Layer 1 (market state gate). JSON version
+// served at /v5/pre-trade-stack for machine discovery.
+const PRE_TRADE_STACK_JSON = {
+	spec_version: '1.0',
+	title: 'The Composable Pre-Trade Verification Stack for Autonomous Trading Agents',
+	description: 'Five independent verification layers that an autonomous agent must pass before executing any financial transaction. Each layer is fail-closed, independently verifiable, and designed for machine consumption.',
+	spec_url: 'https://headlessoracle.com/docs/specifications/pre-trade-stack',
+	layers: [
+		{
+			layer: 1,
+			name: 'Market State Gate',
+			question: 'Is the target exchange currently open for trading?',
+			provider: 'Headless Oracle',
+			protocol: 'Ed25519-signed market-state receipt, 60-second TTL',
+			fail_closed: true,
+			fail_behavior: 'Any state other than OPEN halts the entire stack',
+			endpoints: {
+				mcp: 'https://headlessoracle.com/mcp',
+				rest: 'https://headlessoracle.com/v5/status',
+				discovery: 'https://headlessoracle.com/.well-known/agent.json',
+			},
+			coverage: '28 global exchanges (equities, derivatives, 24/7 crypto)',
+			url: 'https://headlessoracle.com',
+		},
+		{
+			layer: 2,
+			name: 'Spend Authorization',
+			question: 'Is the agent authorized to spend this amount on this trade?',
+			provider: 'Ampersend (or equivalent)',
+			protocol: 'Policy-bound authorization, human-in-the-loop for high-value actions',
+			fail_closed: true,
+			fail_behavior: 'Unauthorized spend requests halt execution',
+			composable_with_layer_1: 'Market state receipt signature serves as evidence in authorization request',
+			url: 'https://github.com/edgeandnode/ampersend',
+		},
+		{
+			layer: 3,
+			name: 'Signal Verification',
+			question: 'Is the trading signal factually accurate?',
+			provider: 'VeroQ (or equivalent)',
+			protocol: 'Claim verification against live market data',
+			fail_closed: true,
+			fail_behavior: 'Unverified signals halt execution',
+			url: 'https://veroq.ai',
+		},
+		{
+			layer: 4,
+			name: 'Payment',
+			question: 'Can the payment be executed with cryptographic proof?',
+			provider: 'x402 Protocol (or equivalent)',
+			protocol: 'On-chain USDC payment on Base with transaction-level proof',
+			fail_closed: true,
+			fail_behavior: 'Failed payment halts execution',
+			url: 'https://www.x402.org/',
+		},
+		{
+			layer: 5,
+			name: 'Trade Execution',
+			question: 'Execute the trade with all verification proofs attached',
+			provider: 'Application-specific',
+			protocol: 'Exchange APIs, DeFi protocols',
+			fail_closed: true,
+			fail_behavior: 'Execution failure is logged with all layer proofs for audit',
+			prerequisites: ['market_state_receipt', 'spend_authorization', 'signal_verification', 'payment_proof'],
+		},
+	],
+	why_layer_1_is_foundation: 'Market state is the only layer where failure mode is deterministic and externally verifiable. All other layers depend on the market being open. You cannot authorize spend on a closed exchange, verify a signal for a halted market, or execute a payment for an unplaceable trade.',
+	reference_implementations: {
+		layer_1: { name: 'Headless Oracle', url: 'https://headlessoracle.com', protocol: 'Ed25519 signed receipts, MCP, REST, x402' },
+		layer_2: { name: 'Ampersend', url: 'https://github.com/edgeandnode/ampersend', protocol: 'A2A, policy-bound authorization' },
+		layer_3: { name: 'VeroQ', url: 'https://veroq.ai', protocol: 'AI claim verification' },
+		layer_4: { name: 'x402 Protocol', url: 'https://www.x402.org/', protocol: 'HTTP 402, on-chain USDC' },
+	},
+	integration_guide: 'https://headlessoracle.com/docs/integrations/ampersend',
+};
+
+// Pre-trade stack spec served at /docs/specifications/pre-trade-stack (text/markdown).
+const PRE_TRADE_STACK_SPEC_MD = `# The Composable Pre-Trade Verification Stack for Autonomous Trading Agents
+
+**Version**: 1.0 | **Status**: Draft Specification | **License**: Apache 2.0
+
+## Abstract
+
+Autonomous trading agents need layered verification before executing trades.
+Capability without verification is liability. This specification defines a
+composable pre-trade verification stack — five independent layers that an
+autonomous agent MUST pass through before executing any financial transaction.
+
+## The Problem: Agents With Money and No Safety Rails
+
+An autonomous trading agent with exchange access, a funded wallet, and no
+pre-trade verification will execute trades during market closures, circuit
+breaker halts, and based on unverified signals. Each failure mode is
+independently dangerous. Together, they represent systemic risk.
+
+## The Stack
+
+\`\`\`
+┌─────────────────────────────────────────────────┐
+│  Layer 5: Trade Execution                       │
+├─────────────────────────────────────────────────┤
+│  Layer 4: Payment (x402 or equivalent)          │
+├─────────────────────────────────────────────────┤
+│  Layer 3: Signal Verification (VeroQ or equiv.) │
+├─────────────────────────────────────────────────┤
+│  Layer 2: Spend Authorization (Ampersend or eq.)│
+├─────────────────────────────────────────────────┤
+│  Layer 1: Market State Gate (Headless Oracle)   │
+│  Ed25519-signed, fail-closed. UNKNOWN = CLOSED. │
+└─────────────────────────────────────────────────┘
+\`\`\`
+
+If any layer fails, all subsequent layers are skipped and the trade is halted.
+
+### Layer 1 — Market State Gate (Headless Oracle)
+
+**Question**: Is the target exchange currently open for trading?
+**Protocol**: Ed25519-signed receipt, 60-second TTL.
+**States**: OPEN, CLOSED, HALTED, UNKNOWN. Only OPEN proceeds.
+**Coverage**: 28 global exchanges (equities, derivatives, 24/7 crypto).
+**Endpoints**: MCP (\`npx headless-oracle-mcp\`), REST (\`/v5/status\`), x402 ($0.001 USDC).
+**Why Layer 1**: Every subsequent layer depends on the market being open.
+
+### Layer 2 — Spend Authorization (Ampersend or equivalent)
+
+**Question**: Is the agent authorized to spend this amount?
+**Protocol**: Policy-bound authorization. Human-in-the-loop for high-value actions.
+**Composable**: Layer 1 receipt signature serves as evidence in authorization request.
+
+### Layer 3 — Signal Verification (VeroQ or equivalent)
+
+**Question**: Is the trading signal factually accurate?
+**Protocol**: Claim verification against live market data.
+
+### Layer 4 — Payment (x402 or equivalent)
+
+**Question**: Can the payment be executed with cryptographic proof?
+**Protocol**: On-chain USDC on Base with transaction-level proof.
+
+### Layer 5 — Trade Execution
+
+Execute the order with all layer proofs attached for audit trail.
+
+## Why Layer 1 Must Be Fail-Closed
+
+1. Markets have objective state — open or closed is a fact, not a judgment.
+2. All other layers depend on market state.
+3. Fail-closed prevents the worst outcomes (capital loss vs. opportunity cost).
+4. 60-second TTL forces re-verification before every execution window.
+
+## Reference Implementations
+
+| Layer | Implementation | Protocol |
+|-------|---------------|----------|
+| 1 | [Headless Oracle](https://headlessoracle.com) | Ed25519 receipts, MCP, REST, x402 |
+| 2 | [Ampersend](https://github.com/edgeandnode/ampersend) | A2A, policy-bound auth |
+| 3 | [VeroQ](https://veroq.ai) | AI claim verification |
+| 4 | [x402](https://www.x402.org/) | HTTP 402, on-chain USDC |
+
+## Machine-Readable Discovery
+
+JSON: \`GET https://headlessoracle.com/v5/pre-trade-stack\`
+`;
+
+// Ampersend integration guide — composable market state + spend authorization pattern.
+const AMPERSEND_INTEGRATION_MD = `# Ampersend + Headless Oracle: Composable Pre-Trade Verification
+
+## Why Market State Must Come Before Spend Authorization
+
+An agent requesting spend authorization for a trade on a closed exchange
+is wasting compute, authorization bandwidth, and — if approved — creating
+a pending order that will fail or queue unpredictably.
+
+The composable pattern:
+
+1. **Headless Oracle** (Layer 1) — Is the exchange open? Signed receipt.
+2. **Ampersend** (Layer 2) — Is the agent authorized to spend? Policy check.
+3. **Execute** — Place the order with both proofs attached.
+
+If Layer 1 returns anything other than \`OPEN\`, Layer 2 is never called.
+This is fail-closed by design.
+
+## Two-Step Verification Pattern
+
+\`\`\`typescript
+import { verify } from '@headlessoracle/verify';
+
+// Step 1: Market State Gate (Headless Oracle)
+const marketRes = await fetch('https://headlessoracle.com/v5/status?mic=XNYS', {
+  headers: { 'X-Oracle-Key': process.env.ORACLE_KEY }
+});
+const { receipt } = await marketRes.json();
+
+const verification = await verify(receipt);
+if (!verification.ok) throw new Error(verification.reason);
+if (receipt.status !== 'OPEN') {
+  console.log(\`Market \${receipt.mic} is \${receipt.status} — halting\`);
+  return;
+}
+
+// Step 2: Spend Authorization (Ampersend)
+// Include the HO receipt as evidence that market state was verified
+const auth = await ampersendClient.requestAuthorization({
+  action: 'BUY',
+  asset: 'AAPL',
+  amount_usd: 10000,
+  exchange: 'XNYS',
+  evidence: {
+    market_state: {
+      provider: 'headlessoracle.com',
+      mic: receipt.mic,
+      status: receipt.status,
+      verified_at: receipt.timestamp,
+      expires_at: receipt.expires_at,
+      signature: receipt.signature
+    }
+  }
+});
+
+if (!auth.authorized) return;
+
+// Step 3: Execute with both proofs
+await executeTrade({
+  asset: 'AAPL',
+  side: 'BUY',
+  proofs: { market_state: receipt.signature, spend_auth: auth.token }
+});
+\`\`\`
+
+## Batch Verification
+
+For multi-exchange portfolios, verify all markets before requesting
+batch spend authorization:
+
+\`\`\`typescript
+const batch = await fetch(
+  'https://headlessoracle.com/v5/batch?mics=XNYS,XNAS,XLON',
+  { headers: { 'X-Oracle-Key': process.env.ORACLE_KEY } }
+).then(r => r.json());
+
+if (!batch.summary.safe_to_execute) return; // Not all markets open
+
+const auth = await ampersend.requestAuthorization({
+  action: 'REBALANCE',
+  exchanges: ['XNYS', 'XNAS', 'XLON'],
+  evidence: { batch_signature: batch.batch_signature }
+});
+\`\`\`
+
+## Links
+
+- [Pre-Trade Stack Spec](https://headlessoracle.com/docs/specifications/pre-trade-stack) — Full 5-layer specification
+- [Ampersend](https://github.com/edgeandnode/ampersend) — Agent spend control
+- [Headless Oracle](https://headlessoracle.com) — Market state verification
+`;
+
 // AGENTS.md — coordinator-mode agent briefing (AAIF/Linux Foundation spec).
 // Claude Code coordinator reads this to brief worker agents that market verification
 // is a pre-execution gate, not optional data.
@@ -4196,46 +4477,84 @@ any trade execution. Full integration guide with batch checks, audit
 trail patterns, and multi-exchange verification:
 https://headlessoracle.com/docs/integrations/claude-managed-agents
 
+## Pre-Trade Verification Stack
+Headless Oracle is Layer 1 of the composable pre-trade verification stack:
+1. Market State Gate (Headless Oracle) — is the exchange open?
+2. Spend Authorization (Ampersend) — is the agent authorized?
+3. Signal Verification (VeroQ) — is the signal accurate?
+4. Payment (x402) — execute with cryptographic proof
+5. Trade Execution — place the order with all proofs attached
+
+Full spec: https://headlessoracle.com/docs/specifications/pre-trade-stack
+Machine-readable: https://headlessoracle.com/v5/pre-trade-stack
+
 ## Discovery endpoints
 - MCP: https://headlessoracle.com/mcp
 - REST: https://api.headlessoracle.com/v5/status?mic={MIC}
 - OpenAPI: https://headlessoracle.com/openapi.json
 - Public key: https://headlessoracle.com/.well-known/oracle-keys.json
 - Agent card: https://headlessoracle.com/.well-known/agent.json
+- Agent card (A2A v1): https://headlessoracle.com/.well-known/agent-card.json
 `;
 
 // Canonical issuer identifier — included in every signed payload so receipts are self-describing.
 // Agents encountering an unfamiliar receipt can resolve {issuer}/v5/keys to find the public key.
 const ORACLE_ISSUER = 'headlessoracle.com';
 
-// agent.json — A2A Agent Card (google.github.io/A2A/spec/) + Oracle-specific extensions.
-// A2A-required fields appear first; Oracle extensions follow as non-standard additions.
+// agent.json — A2A Agent Card (a2a-protocol.org/latest/specification/) + Oracle extensions.
+// A2A v1 fields appear first; Oracle extensions follow as non-standard additions.
+// Serves both /.well-known/agent.json (legacy) and /.well-known/agent-card.json (A2A v1).
 // Additive only — existing consumers see a strict superset of the previous structure.
-// spec_version removed: DEPLOY_DATE resolved to epoch (Date.now()=0 at Workers module init).
 const AGENT_JSON = {
-	// ── A2A AgentCard required/recommended fields ─────────────────────────────
-	name:           'Headless Oracle',
-	version:        'v5.0',
-	description:    'Autonomous agents execute trades and payments during market closures, circuit breaker halts, and DST transitions without knowing it — this oracle provides cryptographically signed market-state receipts so agents can gate execution on confirmed open markets.',
-	url:            'https://headlessoracle.com',
+	// ── A2A v1 AgentCard required fields ──────────────────────────────────────
+	schemaVersion:     '1.0',
+	humanReadableId:   'lembagang/headless-oracle',
+	agentVersion:      '5.0.0',
+	name:              'Headless Oracle',
+	version:           'v5.0',
+	description:       'Layer 1 of the composable pre-trade verification stack. Provides Ed25519-signed market-state receipts (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges. Autonomous agents gate trade execution on cryptographically verified market state. Fail-closed: UNKNOWN always means CLOSED.',
+	url:               'https://headlessoracle.com',
 	provider: {
 		organization: 'LembaGang',
 		url:          'https://headlessoracle.com',
 	},
 	documentationUrl:    'https://headlessoracle.com/docs',
+	privacyPolicyUrl:    'https://headlessoracle.com/privacy',
+	termsOfServiceUrl:   'https://headlessoracle.com/terms',
 	quickstartUrl:       'https://headlessoracle.com/docs/quickstart',
 	// A2A capabilities object — streaming/push/history are all false (pure request/response).
 	capabilities: {
+		a2aVersion:             '1.0',
 		streaming:              false,
 		pushNotifications:      false,
 		stateTransitionHistory: false,
 	},
+	// A2A authSchemes array — multiple auth mechanisms supported
+	authSchemes: [
+		{
+			scheme:      'api_key',
+			description: 'API key in X-Oracle-Key header',
+			header_name: 'X-Oracle-Key',
+		},
+		{
+			scheme:      'bearer_token',
+			description: 'OAuth 2.0 Bearer token (RFC 6749 client_credentials grant)',
+		},
+		{
+			scheme:      'oauth2',
+			description: 'OAuth 2.0 token endpoint',
+			tokenUrl:    'https://headlessoracle.com/oauth/token',
+			scopes:      ['oracle:read'],
+		},
+	],
+	// Retained for backward compatibility
 	authentication: {
 		schemes:     ['bearer', 'apiKey', 'x402'],
 		credentials: 'https://headlessoracle.com/v5/keys/request',
 	},
 	defaultInputModes:  ['application/json'],
 	defaultOutputModes: ['application/json'],
+	tags: ['finance', 'market-data', 'pre-trade', 'safety', 'ed25519', 'signed-receipts', 'fail-closed', 'mcp', 'x402', 'autonomous-agents'],
 	skills: [
 		{
 			id:          'get_market_status',
@@ -4369,6 +4688,13 @@ const AGENT_JSON = {
 	skill_url:           'https://headlessoracle.com/skill.md',
 	erc8004:             '8453:38413',
 	ampersend:           'https://app.ampersend.ai/agents/headless-oracle',
+	pre_trade_stack: {
+		spec_url:        'https://headlessoracle.com/docs/specifications/pre-trade-stack',
+		json_url:        'https://headlessoracle.com/v5/pre-trade-stack',
+		layer:           1,
+		role:            'Market State Gate',
+		composable_with: ['Ampersend (Layer 2: Spend Authorization)', 'VeroQ (Layer 3: Signal Verification)', 'x402 (Layer 4: Payment)'],
+	},
 	mcp: {
 		endpoint:         'https://headlessoracle.com/mcp',
 		protocol_version: '2024-11-05',
@@ -6051,6 +6377,46 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/pre-trade-stack': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'Composable pre-trade verification stack (JSON)',
+				description: 'Machine-readable description of the 5-layer composable pre-trade verification stack for autonomous trading agents. Headless Oracle = Layer 1 (Market State Gate). Includes layer definitions, reference implementations, and composability metadata.',
+				responses: {
+					'200': { description: 'Pre-trade stack definition', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/docs/specifications/pre-trade-stack': {
+			get: {
+				tags:        ['Documentation'],
+				summary:     'Pre-trade verification stack specification',
+				description: '5-layer composable verification spec: Market State Gate (Layer 1) → Spend Authorization → Signal Verification → Payment → Trade Execution. text/markdown.',
+				responses: {
+					'200': { description: 'Specification document', content: { 'text/markdown': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/docs/integrations/ampersend': {
+			get: {
+				tags:        ['Documentation'],
+				summary:     'Ampersend integration guide',
+				description: 'Composable pattern: Headless Oracle (Layer 1: market state) + Ampersend (Layer 2: spend authorization). Code examples, batch verification, MCP integration.',
+				responses: {
+					'200': { description: 'Integration guide', content: { 'text/markdown': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/.well-known/agent-card.json': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'A2A v1 Agent Card (alias)',
+				description: 'A2A Protocol v1 agent card. Same content as /.well-known/agent.json. Some A2A crawlers check agent-card.json per the latest spec.',
+				responses: {
+					'200': { description: 'Agent card', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
 		'/AGENTS.md': {
 			get: {
 				tags:        ['Documentation'],
@@ -7068,6 +7434,19 @@ export default {
 		if (url.hostname === 'www.headlessoracle.com') {
 			url.hostname = 'headlessoracle.com';
 			return Response.redirect(url.toString(), 301);
+		}
+
+		// ── Pre-Trade Verification Stack spec (markdown) ────────────────────────
+		if (url.pathname === '/docs/specifications/pre-trade-stack' || url.pathname === '/docs/specifications/pre-trade-stack.md') {
+			return new Response(PRE_TRADE_STACK_SPEC_MD, {
+				headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8' },
+			});
+		}
+		// ── Ampersend integration guide (markdown) ──────────────────────────────
+		if (url.pathname === '/docs/integrations/ampersend' || url.pathname === '/docs/integrations/ampersend.md') {
+			return new Response(AMPERSEND_INTEGRATION_MD, {
+				headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8' },
+			});
 		}
 
 		// ── Pages passthrough ────────────────────────────────────────────────────
@@ -8279,7 +8658,7 @@ export default {
 				});
 			}
 
-			if (url.pathname === '/.well-known/agent.json') {
+			if (url.pathname === '/.well-known/agent.json' || url.pathname === '/.well-known/agent-card.json') {
 				return json(AGENT_JSON);
 			}
 
@@ -11672,6 +12051,11 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				total_implementations: 5,
 				last_updated:          '2026-03-31',
 			});
+		}
+
+		// ── GET /v5/pre-trade-stack — machine-readable composable verification stack ─
+		if (url.pathname === '/v5/pre-trade-stack' && request.method === 'GET') {
+			return json(PRE_TRADE_STACK_JSON);
 		}
 
 		// ── GET /v5/showcase — social proof and reference projects ───────────────────
