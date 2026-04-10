@@ -8914,9 +8914,11 @@ export default {
 					servers: [{
 						name:                 'headless-oracle',
 						display_name:         'Headless Oracle',
-						description:          'Ed25519-signed market-state attestations for autonomous agent pre-trade verification. ' +
-							'Returns OPEN, CLOSED, HALTED, or UNKNOWN for 28 global exchanges. ' +
-							'Fail-closed: UNKNOWN and HALTED always treated as CLOSED.',
+						description:          'Ed25519-signed market-state attestations for 28 global exchanges. ' +
+							'Pre-trade verification gate for autonomous financial agents. ' +
+							'Check if any exchange is open or closed — NYSE, NASDAQ, London, Tokyo, Hong Kong, and 22 more. ' +
+							'DST-aware, holiday calendar, lunch breaks, circuit breaker detection. ' +
+							'Fail-closed: UNKNOWN and HALTED always mean CLOSED.',
 						mcp_endpoint:         'https://headlessoracle.com/mcp',
 						mcp_protocol_version: MCP_PROTOCOL_VERSION,
 						transport:            ['streamable-http', 'stdio'],
@@ -8975,10 +8977,15 @@ export default {
 				return json({
 					name:           'Headless Oracle',
 					version:        'v5.0',
-					description:    'Cryptographically signed market-state attestations for pre-trade verification and pre-execution gating. ' +
-						'Ed25519 signatures, fail-closed architecture, 28 global exchanges (equities, derivatives, 24/7 crypto). ' +
-						'Use as a pre-trade check before any financial execution or capital commitment. ' +
-						'UNKNOWN and HALTED MUST be treated as CLOSED. Receipts include attestation_ref for x402 payment flows and audit trails.',
+					description:    'Ed25519-signed market-state attestations for 28 global exchanges. ' +
+						'Pre-trade verification gate for autonomous financial agents. ' +
+						'Check if any exchange is open or closed right now — NYSE, NASDAQ, London, Tokyo, Hong Kong, and 22 more. ' +
+						'Handles DST transitions, exchange holidays, lunch breaks, and circuit breaker detection. ' +
+						'Fail-closed: if state is unknown, agents halt. 60-second TTL signed receipts. ' +
+						'MCP tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt, get_payment_options. ' +
+						'REST API + x402 micropayments ($0.001 USDC on Base mainnet). ' +
+						'Layer 1 of the composable pre-trade verification stack. ' +
+						'DST-aware holiday calendar, market state API, exchange hours, trading schedule, pre-trade check.',
 					mcp_endpoint:   'https://headlessoracle.com/mcp',
 					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt'],
 					authentication: ['bearer', 'apiKey', 'x402'],
