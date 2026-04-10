@@ -25,7 +25,7 @@ Still requires explicit confirmation in the message:
 
 ## Architecture in 30 Seconds
 
-- **Single TypeScript file**: `src/index.ts` (~12,100 lines post-cleanup)
+- **Single TypeScript file**: `src/index.ts` (~12,400 lines)
 - **Runtime**: Cloudflare Workers (edge, no origin server) — API only, zero HTML
 - **HTML**: Served by Cloudflare Pages via `headless-oracle-web` repo
 - **Routing**: Worker catch-all on `headlessoracle.com/*`; API paths handled directly, HTML paths forwarded to Pages via `fetch(request)`
@@ -146,10 +146,10 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 <!-- Last updated: 2026-04-10 Day 44 living doc refresh -->
 
 - **Day**: 44 (since project start)
-- **Tests**: 973/973 (51 dead HTML-page tests removed Day 44) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
-- **Worker**: `src/index.ts` ~12,100 lines (was 16,565 before cleanup). API-only — zero HTML.
-- **Worker version**: 6bc892a7 (latest deployed)
-- **OpenAPI**: 73 paths, 11 semantic tags
+- **Tests**: 985/985 (973 + 12 new pre-trade stack/A2A tests) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Worker**: `src/index.ts` ~12,400 lines. API-only — zero HTML.
+- **Worker version**: 50bbd3d4 (latest deployed)
+- **OpenAPI**: 77 paths, 11 semantic tags
 - **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11

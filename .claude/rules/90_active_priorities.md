@@ -2,15 +2,24 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue focus.
+**Phase**: Post-launch. Revenue focus. Strategic positioning sprint.
 **Day**: 44 (2026-04-10)
-**Test suite**: 973/973 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~12,100 lines (API-only, zero HTML). Deployed 6bc892a7.
+**Test suite**: 985/985 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~12,400 lines (API-only, zero HTML). Deployed 50bbd3d4.
 **Website**: 10 HTML pages on Cloudflare Pages (headless-oracle-web). Instant keys + Paddle checkout live.
-**OpenAPI**: 73 paths, 11 semantic tags.
+**OpenAPI**: 77 paths, 11 semantic tags.
 **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published).
 
-### What's Done (Day 44)
+### What's Done (Day 44 — evening session)
+- **Pre-Trade Verification Stack spec**: 5-layer composable verification (Market State → Spend Auth → Signal Verification → Payment → Execution). HO = Layer 1. Published as markdown at /docs/specifications/pre-trade-stack and JSON at /v5/pre-trade-stack.
+- **Ampersend Integration Guide**: Composable market state + spend authorization pattern with code examples. /docs/integrations/ampersend live.
+- **A2A Agent Card v1**: /.well-known/agent-card.json (A2A v1 standard path) aliased to agent.json. Added schemaVersion, humanReadableId, agentVersion, authSchemes, tags, privacyPolicyUrl, termsOfServiceUrl. pre_trade_stack reference in agent card.
+- **Outreach drafts**: Ampersend GitHub comment + VeroQ follow-up in docs/distribution/outreach-day-44.md.
+- **12 new tests**: pre-trade stack JSON shape, spec markdown routes, Ampersend guide, A2A agent-card.json fields.
+- **OpenAPI**: 73 → 77 paths (+4: /v5/pre-trade-stack, /docs/specifications/pre-trade-stack, /docs/integrations/ampersend, /.well-known/agent-card.json).
+- Updated: AGENTS_MD, LLMS_TXT_INDEX, LLMS_FULL_TXT, SITEMAP_XML, OPENAPI_SPEC, ROBOTS_TXT, AGENT_JSON, wrangler.toml routes.
+
+### What's Done (Day 44 — earlier)
 - Dead code cleanup: removed 4,439 lines from Worker (was 16,565 → 12,126). Worker = API only.
 - 51 dead HTML-page tests removed. Worker serves zero HTML.
 - OpenAPI spec complete: 73 paths (was ~50).
@@ -19,15 +28,16 @@
 - Instant key provisioning live. Enhanced 402/429 with agent_upgrade_paths.
 - 3-hour outage recovered (Day 42).
 - Website deployed on Pages: working buttons, 28 exchanges, all CTAs wired.
-- Living documents refreshed (this session).
+- Living documents refreshed.
 
 ### What's Next
 - **Revenue**: DataCamp follow-up April 12. Warmest lead.
 - **Distribution**: VeroQ on FinRL — reply posted, second tweet posted.
+- **Outreach**: Mike to review Ampersend and VeroQ drafts in docs/distribution/outreach-day-44.md.
 - **Managed Agents decision**: April 15.
 - **Max → Pro transition**: possible next week (cost optimization).
 - **SDKs**: publish to npm/PyPI when first customer needs them.
-- **Gap**: Line ranges in 02_architecture_map.md approximate (shifted by ~4,400-line cleanup). Re-map on next deep code change.
+- **Gap**: Line ranges in 02_architecture_map.md approximate (shifted by cleanup). Re-map on next deep code change.
 
 **Previous**: Apr 9 2026 — Day 44 continued: API completeness sprint:
 - **OpenAPI 3.1 spec complete**: 73 paths (was ~50), 11 semantic tags, 2 server URLs (headlessoracle.com + api.headlessoracle.com), MIT license, contact email, BearerAuth security scheme. Added ~25 missing paths: /oauth/*, /v5/historical, /v5/status/realtime, /v5/briefing, /v5/referrers, /v5/payment-proof, /v5/why-not-free, /v5/pricing, /v5/slo, /v5/errors/{code}, /v5/changelog, /.well-known/x402.json, /.well-known/mcp-servers.json, /.well-known/mcp/server-card.json, /.well-known/oauth-*, /.well-known/ai-plugin.json, /AGENTS.md, /skill.md, /badge/{mic}, /v5/webhooks/unsubscribe, /sitemap.xml. Deployed d07e539a. Verified live: 73 paths.
