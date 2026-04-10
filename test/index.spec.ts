@@ -1777,85 +1777,6 @@ describe('GET /v5/pricing', () => {
 	});
 });
 
-// ─── GET / — Landing page ───────────────────────────────────────────────────
-
-// Skipped: landing page now served by Cloudflare Pages, not the Worker
-describe.skip('GET / (landing page)', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const res = await fetchWorker('/');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('includes key landing page phrases', async () => {
-		const res = await fetchWorker('/');
-		const body = await res.text();
-		expect(body).toContain('Ed25519-signed market-state');
-		expect(body).toContain('28 exchanges');
-		expect(body).toContain('Fail-closed');
-		expect(body).toContain('headlessoracle.com');
-	});
-
-	it('includes JSON-LD structured data', async () => {
-		const res = await fetchWorker('/');
-		const body = await res.text();
-		expect(body).toContain('application/ld+json');
-		expect(body).toContain('SoftwareApplication');
-	});
-
-	it('includes pricing tiers', async () => {
-		const res = await fetchWorker('/');
-		const body = await res.text();
-		expect(body).toContain('Free trial');
-		expect(body).toContain('x402');
-		expect(body).toContain('Builder');
-	});
-
-	it('includes trust model section', async () => {
-		const res = await fetchWorker('/');
-		const body = await res.text();
-		expect(body).toContain('Ed25519 Signatures');
-		expect(body).toContain('Merkle Audit Chain');
-		expect(body).toContain('Fail-Closed Contract');
-	});
-
-	it('includes security headers', async () => {
-		const res = await fetchWorker('/');
-		expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
-		expect(res.headers.get('X-Frame-Options')).toBe('DENY');
-		expect(res.headers.get('X-Oracle-Version')).toBe('v5');
-	});
-
-	it('includes meta tags for social sharing', async () => {
-		const res = await fetchWorker('/');
-		const body = await res.text();
-		expect(body).toContain('og:title');
-		expect(body).toContain('og:description');
-		expect(body).toContain('og:image');
-		expect(body).toContain('twitter:card');
-	});
-});
-
-// ─── GET /pricing — HTML pricing page ────────────────────────────────────────
-
-// Skipped: pricing page now served by Cloudflare Pages, not the Worker
-describe.skip('GET /pricing', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const res = await fetchWorker('/pricing');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('includes all tier names in HTML', async () => {
-		const res = await fetchWorker('/pricing');
-		const html = await res.text();
-		expect(html).toContain('Sandbox');
-		expect(html).toContain('x402');
-		expect(html).toContain('Builder');
-		expect(html).toContain('Pro');
-	});
-});
-
 // ─── MCP fast path — no telemetry KV for protocol handshake methods ──────────
 
 describe('MCP fast path — no ORACLE_TELEMETRY write for handshake methods', () => {
@@ -1965,31 +1886,6 @@ describe('GET /v5/why-not-free', () => {
 				expect(true).toBe(true);
 			}
 		}
-	});
-});
-
-// ─── IDE setup docs routes ────────────────────────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('IDE setup docs routes', () => {
-	it('GET /docs/cline returns 200 HTML with Cline setup content', async () => {
-		const res = await fetchWorker('/docs/cline');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/html');
-		const text = await res.text();
-		expect(text).toContain('Cline');
-		expect(text).toContain('cline_mcp_settings.json');
-		expect(text).toContain('headlessoracle.com/mcp');
-	});
-
-	it('GET /docs/continue returns 200 HTML with Continue.dev setup content', async () => {
-		const res = await fetchWorker('/docs/continue');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/html');
-		const text = await res.text();
-		expect(text).toContain('Continue');
-		expect(text).toContain('.continue/config.json');
-		expect(text).toContain('headlessoracle.com/mcp');
 	});
 });
 
@@ -2379,60 +2275,6 @@ describe('GET /SKILL.md', () => {
 		expect(lastMod).toMatch(/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/);
 		// ETag must be a quoted string (RFC 7232)
 		expect(etag).toMatch(/^"[0-9a-f]+"$/);
-	});
-});
-
-// ─── GET /docs/integrations/* and /docs/x402-payments ───────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/datacamp-workspace', () => {
-	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
-		const response = await fetchWorker('/docs/integrations/datacamp-workspace');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains DataCamp-specific content: pip install and safe_market_check', async () => {
-		const body = await fetchWorker('/docs/integrations/datacamp-workspace').then((r) => r.text());
-		expect(body).toContain('pip install headless-oracle');
-		expect(body).toContain('safe_market_check');
-		expect(body).toContain('pd.DataFrame');
-	});
-
-	it('.md variant returns text/markdown', async () => {
-		const response = await fetchWorker('/docs/integrations/datacamp-workspace.md');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/markdown');
-	});
-});
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/bun', () => {
-	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
-		const response = await fetchWorker('/docs/integrations/bun');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains Bun integration content', async () => {
-		const body = await fetchWorker('/docs/integrations/bun').then((r) => r.text());
-		expect(body).toContain('@headlessoracle/verify');
-		expect(body).toContain('Bun.serve');
-	});
-});
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/x402-payments', () => {
-	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
-		const response = await fetchWorker('/docs/x402-payments');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains x402 payment content', async () => {
-		const body = await fetchWorker('/docs/x402-payments').then((r) => r.text());
-		expect(body).toContain('x402');
-		expect(body).toContain('USDC');
 	});
 });
 
@@ -6146,14 +5988,11 @@ describe('POST /v5/sandbox', () => {
 		await env.ORACLE_TELEMETRY.delete(sandboxEmailFpKeyDefault);
 	});
 
-	it('GET /v5/sandbox returns HTML signup form for browsers', async () => {
+	it('GET /v5/sandbox returns 405 JSON (HTML form removed — served by Pages)', async () => {
 		const res = await fetchWorker('/v5/sandbox', { headers: { 'Accept': 'text/html' } });
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/html');
-		const text = await res.text();
-		expect(text).toContain('Get a Free API Key');
-		expect(text).toContain('sandbox-form');
-		expect(text).toContain('email');
+		expect(res.status).toBe(405);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('METHOD_NOT_ALLOWED');
 	});
 
 	it('GET /v5/sandbox returns 405 JSON for API callers', async () => {
@@ -7256,29 +7095,6 @@ describe('GET /v5/changelog', () => {
 		expect(entries[0]).toHaveProperty('date');
 		expect(entries[0]).toHaveProperty('version');
 		expect(Array.isArray(entries[0].changes)).toBe(true);
-	});
-});
-
-// ─── GET /status — HTML status page ─────────────────────────────────────────
-
-// Skipped: status page now served by Cloudflare Pages, not the Worker
-describe.skip('GET /status (HTML page)', () => {
-	it('returns 200 with Content-Type: text/html', async () => {
-		const res = await fetchWorker('/status');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/html');
-		const body = await res.text();
-		expect(body).toContain('<html');
-		expect(body).toContain('XNYS');
-		expect(body).toContain('Headless Oracle');
-	});
-	it('returns 200 HTML with schema.org markup', async () => {
-		const res = await fetchWorker('/status');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('content-type')).toContain('text/html');
-		const body = await res.text();
-		expect(body).toContain('Headless Oracle');
-		expect(body).toContain('schema.org');
 	});
 });
 
@@ -8624,25 +8440,6 @@ describe('GET /x402 — x402 Foundation alignment (Item 7)', () => {
 	});
 });
 
-// ─── GET /docs/integrations/olas ─────────────────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/olas', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const response = await fetchWorker('/docs/integrations/olas');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains Olas integration content', async () => {
-		const body = await fetchWorker('/docs/integrations/olas').then((r) => r.text());
-		expect(body).toContain('Olas');
-		expect(body).toContain('pip install headless-oracle');
-		expect(body).toContain('act(self)');
-		expect(body).toContain('headlessoracle.com/mcp');
-	});
-});
-
 // ─── GET /v5/metrics/public ───────────────────────────────────────────────────
 
 describe('GET /v5/metrics/public', () => {
@@ -8734,178 +8531,6 @@ describe('GET /.well-known/mcp-servers.json', () => {
 	});
 });
 
-// ─── GET /blog/market-hours-api-vs-signed-attestation ────────────────────────
-
-// Skipped: blog routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /blog/market-hours-api-vs-signed-attestation', () => {
-	it('returns 200 with text/html', async () => {
-		const response = await fetchWorker('/blog/market-hours-api-vs-signed-attestation');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains signed attestation and fail-closed content', async () => {
-		const body = await fetchWorker('/blog/market-hours-api-vs-signed-attestation').then((r) => r.text());
-		expect(body).toContain('signed');
-		expect(body).toContain('UNKNOWN');
-		expect(body).toContain('Ed25519');
-	});
-});
-
-// ─── GET /docs/integrations/agno ─────────────────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/agno', () => {
-	it('returns 200 with text/html', async () => {
-		const response = await fetchWorker('/docs/integrations/agno');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains MCPTools and fail-closed contract', async () => {
-		const body = await fetchWorker('/docs/integrations/agno').then((r) => r.text());
-		expect(body).toContain('MCPTools');
-		expect(body).toContain('headless-oracle-mcp');
-		expect(body).toContain('UNKNOWN');
-	});
-});
-
-// ─── GET /docs/integrations/strands ──────────────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/strands', () => {
-	it('returns 200 with text/html', async () => {
-		const response = await fetchWorker('/docs/integrations/strands');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains Strands SDK and is_market_open pattern', async () => {
-		const body = await fetchWorker('/docs/integrations/strands').then((r) => r.text());
-		expect(body).toContain('headless-oracle-strands');
-		expect(body).toContain('is_market_open');
-		expect(body).toContain('UNKNOWN');
-	});
-});
-
-// ─── GET /docs/integrations/google-adk ───────────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/google-adk', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const response = await fetchWorker('/docs/integrations/google-adk');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains ADK McpToolset content and fail-closed contract', async () => {
-		const body = await fetchWorker('/docs/integrations/google-adk').then((r) => r.text());
-		expect(body).toContain('McpToolset');
-		expect(body).toContain('StdioServerParameters');
-		expect(body).toContain('headless-oracle-mcp');
-		expect(body).toContain('UNKNOWN');
-	});
-});
-
-// ─── GET /docs/integrations/trading-agents ───────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/trading-agents', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const response = await fetchWorker('/docs/integrations/trading-agents');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains TradingAgents integration content and pre-trade gate', async () => {
-		const body = await fetchWorker('/docs/integrations/trading-agents').then((r) => r.text());
-		expect(body).toContain('TradingAgents');
-		expect(body).toContain('pre_trade_gate');
-		expect(body).toContain('XNYS');
-		expect(body).toContain('UNKNOWN');
-	});
-});
-
-// ─── GET /docs/integrations/autogpt ──────────────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/autogpt', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const response = await fetchWorker('/docs/integrations/autogpt');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains AutoGPT integration content', async () => {
-		const body = await fetchWorker('/docs/integrations/autogpt').then((r) => r.text());
-		expect(body).toContain('AutoGPT');
-		expect(body).toContain('can_handle_pre_command');
-		expect(body).toContain('headlessoracle.com/mcp');
-	});
-});
-
-// ─── GET /docs/integrations/claude-managed-agents ────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs/integrations/claude-managed-agents', () => {
-	it('returns 200 with text/html content-type (extensionless renders HTML)', async () => {
-		const response = await fetchWorker('/docs/integrations/claude-managed-agents');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('returns 200 with text/markdown for .md variant', async () => {
-		const response = await fetchWorker('/docs/integrations/claude-managed-agents.md');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/markdown');
-	});
-
-	it('contains Claude Managed Agents integration content', async () => {
-		const body = await fetchWorker('/docs/integrations/claude-managed-agents').then((r) => r.text());
-		expect(body).toContain('Claude Managed Agents');
-		expect(body).toContain('get_market_status');
-		expect(body).toContain('fail-closed');
-		expect(body).toContain('UNKNOWN');
-	});
-});
-
-// ─── GET /docs ───────────────────────────────────────────────────────────────
-
-// Skipped: docs page now served by Cloudflare Pages, not the Worker
-describe.skip('GET /docs', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const response = await fetchWorker('/docs');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains documentation index content', async () => {
-		const body = await fetchWorker('/docs').then((r) => r.text());
-		expect(body).toContain('Documentation');
-		expect(body).toContain('Claude Managed Agents');
-		expect(body).toContain('x402 Payments');
-	});
-});
-
-// ─── GET /blog/why-your-trading-agent-needs-a-pre-trade-gate ─────────────────
-
-// Skipped: blog routes now served by Cloudflare Pages, not the Worker
-describe.skip('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate', () => {
-	it('returns 200 with text/html content-type', async () => {
-		const response = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate');
-		expect(response.status).toBe(200);
-		expect(response.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('contains blog post content with fail-closed contract and code example', async () => {
-		const body = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate').then((r) => r.text());
-		expect(body).toContain('pre-trade gate');
-		expect(body).toContain('safe_to_execute');
-		expect(body).toContain('UNKNOWN');
-		expect(body).toContain('DST');
-	});
-});
-
 // ─── Convenience redirects ────────────────────────────────────────────────────
 
 describe('Convenience redirects (/npm, /pypi, /github)', () => {
@@ -8955,19 +8580,6 @@ describe('GET /v5/metrics/public — status_codes_today', () => {
 		expect(response.status).toBe(200);
 		const body = await response.json() as { status_codes_today: Record<string, number> };
 		expect(typeof body.status_codes_today).toBe('object');
-	});
-});
-
-// ─── Blog canonical Link header ───────────────────────────────────────────────
-
-// Skipped: blog routes now served by Cloudflare Pages, not the Worker
-describe.skip('Blog canonical Link header', () => {
-	it('GET /blog/why-your-trading-agent-needs-a-pre-trade-gate includes canonical Link header', async () => {
-		const response = await fetchWorker('/blog/why-your-trading-agent-needs-a-pre-trade-gate');
-		expect(response.status).toBe(200);
-		const link = response.headers.get('Link');
-		expect(link).toContain('rel="canonical"');
-		expect(link).toContain('why-your-trading-agent-needs-a-pre-trade-gate');
 	});
 });
 
@@ -10750,58 +10362,6 @@ describe('/.well-known/* endpoints — coverage', () => {
 		const body1 = await res1.json() as Record<string, unknown>;
 		const body2 = await res2.json() as Record<string, unknown>;
 		expect(body1.name).toBe(body2.name);
-	});
-});
-
-// ─── /docs/* endpoints — coverage ───────────────────────────────────────────
-
-// Skipped: docs routes now served by Cloudflare Pages, not the Worker
-describe.skip('/docs/* endpoints — coverage', () => {
-	it('GET /docs/sma-protocol/rfc-001 returns 200', async () => {
-		const res = await fetchWorker('/docs/sma-protocol/rfc-001');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/html');
-	});
-
-	it('GET /docs/sma-protocol/rfc-001.md returns markdown', async () => {
-		const res = await fetchWorker('/docs/sma-protocol/rfc-001.md');
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('text/markdown');
-	});
-
-	it('GET /docs/mpas returns 200', async () => {
-		const res = await fetchWorker('/docs/mpas');
-		expect(res.status).toBe(200);
-	});
-
-	it('GET /docs/x402-payments returns 200', async () => {
-		const res = await fetchWorker('/docs/x402-payments');
-		expect(res.status).toBe(200);
-	});
-
-	it('GET /docs/integrations/bun returns 200', async () => {
-		const res = await fetchWorker('/docs/integrations/bun');
-		expect(res.status).toBe(200);
-	});
-
-	it('GET /docs/cline returns 200', async () => {
-		const res = await fetchWorker('/docs/cline');
-		expect(res.status).toBe(200);
-	});
-
-	it('GET /docs/continue returns 200', async () => {
-		const res = await fetchWorker('/docs/continue');
-		expect(res.status).toBe(200);
-	});
-
-	it('GET /docs/integrations/strands returns 200', async () => {
-		const res = await fetchWorker('/docs/integrations/strands');
-		expect(res.status).toBe(200);
-	});
-
-	it('GET /docs/nonexistent returns 404', async () => {
-		const res = await fetchWorker('/docs/nonexistent-path');
-		expect(res.status).toBe(404);
 	});
 });
 
