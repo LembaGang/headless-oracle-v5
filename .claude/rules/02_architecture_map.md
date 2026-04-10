@@ -1,11 +1,19 @@
 <!-- Living document. Update after every session that adds routes,
-functions, or changes data flow. Last updated: 2026-04-08 by Day 42
-meta-sprint -->
+functions, or changes data flow. Last updated: 2026-04-10 by dead code
+cleanup sprint -->
 
 # Architecture Map — src/index.ts
 
-Single-file Cloudflare Worker (~14,000 lines). This document maps the
+Single-file Cloudflare Worker (~12,100 lines). This document maps the
 file so any model can navigate it without searching.
+
+## Routing Architecture
+
+Worker = API only. HTML pages served by Cloudflare Pages (headless-oracle-web).
+A Pages passthrough guard in fetch() intercepts /, /pricing, /status, /verify,
+/traction, /refund, /upgrade, /terms, /privacy, /docs/*, /blog/* and calls
+fetch(request) to forward to Pages. No HTML templates or renderers exist in
+the Worker — all HTML generation code was removed on 2026-04-10.
 
 ## File Structure (top to bottom)
 
@@ -15,7 +23,7 @@ file so any model can navigate it without searching.
 | 7–93 | Module-level caches (Ed25519 warm-up, override cache, API key cache, HMAC key cache) |
 | 95–137 | `Env` interface (all env vars, KV bindings, DO bindings) |
 | 139–157 | Hex helpers (`toHex`, `fromHex`, `sha256Hex`) |
-| 159–1200 | `MARKET_CONFIGS` — all 28 exchange configs (timezone, hours, holidays, lunch breaks) |
+| 159–1200 | `MARKET_CONFIGS` — all 28 exchange configs (timezone, hours, holidays, lunch breaks). PAGE_STYLES/wrapHtml/renderMarkdownToHtml/embedded markdown constants removed 2026-04-10 |
 | 1206–1218 | `utcOffsetMinutes()` — DST detection via Intl |
 | 1219–1308 | `edgeCaseCount(year)` — computes holidays, half-days, DST transitions, lunch breaks, weekends |
 | 1310–1445 | Schedule engine: `getLocalTimeParts()`, `isInSession()`, `getScheduleStatus()` |

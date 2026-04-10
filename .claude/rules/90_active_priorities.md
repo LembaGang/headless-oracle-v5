@@ -3,8 +3,15 @@
 
 ## Current Status
 **Phase**: Post-launch. Engineering hardening sprint.
-**Test suite**: 1014/1014 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Last significant work**: Apr 9 2026 — Day 44 continued: API completeness sprint:
+**Test suite**: 973/973 passing (51 dead HTML-page tests removed) + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Last significant work**: Apr 10 2026 — Dead code cleanup sprint:
+- **Removed 4,439 lines** from src/index.ts (16,565 → 12,126): PAGE_STYLES, wrapHtml(), renderMarkdownToHtml(), 20 embedded markdown constants, GET /, /pricing, /docs/*, /blog/*, /status, /upgrade HTML route handlers, sandbox GET HTML form, 404 HTML handler (now JSON-only).
+- **Removed 440 lines** from test/index.spec.ts (11,045 → 10,605): 19 describe.skip blocks (51 tests for dead routes), updated sandbox GET test to expect 405.
+- Worker is now API-only. All HTML served by Cloudflare Pages (headless-oracle-web). Pages passthrough guard retained.
+- Deployed worker version 6bc892a7. Live-verified: /v5/health, /v5/demo, /mcp, /.well-known/oracle-keys.json, /openapi.json all 200. Pages landing and pricing verified.
+- Gap: Line ranges in 02_architecture_map.md are now stale (shifted by ~4,400 lines). Next session should re-map the file structure.
+
+**Previous**: Apr 9 2026 — Day 44 continued: API completeness sprint:
 - **OpenAPI 3.1 spec complete**: 73 paths (was ~50), 11 semantic tags, 2 server URLs (headlessoracle.com + api.headlessoracle.com), MIT license, contact email, BearerAuth security scheme. Added ~25 missing paths: /oauth/*, /v5/historical, /v5/status/realtime, /v5/briefing, /v5/referrers, /v5/payment-proof, /v5/why-not-free, /v5/pricing, /v5/slo, /v5/errors/{code}, /v5/changelog, /.well-known/x402.json, /.well-known/mcp-servers.json, /.well-known/mcp/server-card.json, /.well-known/oauth-*, /.well-known/ai-plugin.json, /AGENTS.md, /skill.md, /badge/{mic}, /v5/webhooks/unsubscribe, /sitemap.xml. Deployed d07e539a. Verified live: 73 paths.
 - **TypeScript SDK stub**: packages/sdk-typescript/ — @headlessoracle/sdk. Full types, getStatus/batch/historical/verify/verifyOffline, Ed25519 via Web Crypto, auto-retry 429, auto-provision key on 402, safety helpers (isSafeToExecute, allOpen), OracleError class, dual ESM+CJS build via tsup.
 - **Python SDK stub**: packages/sdk-python/ — headless-oracle-sdk. Pydantic v2 models, httpx client, PyNaCl Ed25519 verification, auto-retry/auto-provision, 12 pytest tests using respx mock, pyproject.toml ready for publish.

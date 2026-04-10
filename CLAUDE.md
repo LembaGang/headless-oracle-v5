@@ -25,7 +25,7 @@ Still requires explicit confirmation in the message:
 
 ## Architecture in 30 Seconds
 
-- **Single TypeScript file**: `src/index.ts` (~14,000 lines)
+- **Single TypeScript file**: `src/index.ts` (~12,100 lines)
 - **Runtime**: Cloudflare Workers (edge, no origin server)
 - **KV namespaces**: `ORACLE_TELEMETRY` (metrics/usage), `ORACLE_API_KEYS` (auth + billing state), `ORACLE_OVERRIDES` (manual halt overrides)
 - **Signing**: Ed25519 via `@noble/ed25519` with CryptoKey cached in module scope
@@ -51,7 +51,7 @@ Still requires explicit confirmation in the message:
 | Path | Purpose |
 |---|---|
 | `src/index.ts` | The entire worker: routing, signing, billing, MCP, telemetry, schedule engine |
-| `test/index.spec.ts` | Main test suite (753+ tests) |
+| `test/index.spec.ts` | Main test suite (960+ tests) |
 | `test/x402_mint_telemetry.spec.ts` | x402 mint + per-tool telemetry tests |
 | `wrangler.toml` | Worker config, KV bindings, env vars, cron triggers, routes |
 | `.dev.vars` | Local dev/test secrets (test-only keypair, NOT production) |
@@ -95,7 +95,7 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `GET /v5/briefing` — Daily market intelligence snapshot
 - `GET /openapi.json` — OpenAPI 3.1 spec
 - `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, 5 tools)
-- `GET /v5/sandbox` — Instant sandbox key (200 calls, 7-day TTL)
+- `POST /v5/sandbox` — Sandbox key via email or x402 (200 calls, 7-day TTL)
 - `GET /v5/audit/digest` — Daily attestation digest with Merkle root
 - `GET /v5/audit/chain` — Hash chain of last N daily digests
 
@@ -138,9 +138,9 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-09 by Day 44 landing page sprint -->
+<!-- Last updated: 2026-04-10 by dead code cleanup sprint -->
 
-- **Tests**: 1020/1020
+- **Tests**: 973/973 (51 dead HTML-page tests removed)
 - **Worker version**: 2cfb8bf0 (latest deployed)
 - **Test payment**: 1 x402 payment settled (Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
