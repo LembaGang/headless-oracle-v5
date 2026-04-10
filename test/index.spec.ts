@@ -10663,6 +10663,36 @@ describe('GET /docs/integrations/ampersend', () => {
 	});
 });
 
+// ─── CPVR-1 Spec ────────────────────────────────────────────────────────────
+
+describe('GET /docs/specifications/cpvr-1', () => {
+	it('returns 200 with text/markdown content-type', async () => {
+		const response = await fetchWorker('/docs/specifications/cpvr-1');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains CPVR-1 spec content', async () => {
+		const text = await fetchWorker('/docs/specifications/cpvr-1').then((r) => r.text());
+		expect(text).toContain('CPVR-1');
+		expect(text).toContain('Composable Pre-Trade Verification Receipt');
+		expect(text).toContain('PROPOSAL');
+		expect(text).toContain('composite_hash');
+	});
+
+	it('references MPAS and Pre-Trade Stack', async () => {
+		const text = await fetchWorker('/docs/specifications/cpvr-1').then((r) => r.text());
+		expect(text).toContain('MPAS');
+		expect(text).toContain('Pre-Trade Verification Stack');
+	});
+
+	it('.md variant also works', async () => {
+		const response = await fetchWorker('/docs/specifications/cpvr-1.md');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+});
+
 // ─── A2A Agent Card v1 ──────────────────────────────────────────────────────
 
 describe('GET /.well-known/agent-card.json (A2A v1)', () => {
