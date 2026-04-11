@@ -3,12 +3,15 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue focus. Distribution sprint.
-**Day**: 44 (2026-04-10)
+**Day**: 45 (2026-04-11)
 **Test suite**: 989/989 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~12,700 lines (API-only, zero HTML). Deployed 10238dda.
+**Worker**: src/index.ts ~12,700 lines (API-only, zero HTML). Deployed 0436cbd3.
 **Website**: 10 HTML pages on Cloudflare Pages (headless-oracle-web). Instant keys + Paddle checkout live.
 **OpenAPI**: 78 paths, 11 semantic tags.
 **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published).
+
+### What's Done (Day 45 — 402 messaging update)
+- **402 response messaging**: All human-readable `message` fields in 402 responses updated to risk-framing language: "You are running an execution system without verified market-state gating. Continuing without verification increases risk of invalid trades. Upgrade for execution-grade access." Applies to: build402Payload (free tier gate), trial exhausted (with and without x402), and /v5/errors/PAYMENT_REQUIRED. All machine-readable fields (upgrade_paths, agent_upgrade_paths, x402, pricing) unchanged. 1 test updated to match new message. 989/989 passing. Deployed 0436cbd3. Live-verified via curl.
 
 ### What's Done (Day 44 — late evening distribution sprint)
 - **CPVR-1 spec**: Composable Pre-Trade Verification Receipt — PROPOSAL for JSON envelope wrapping all layer proofs into a single artifact. Served at /docs/specifications/cpvr-1. 4 new tests.

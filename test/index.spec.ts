@@ -8899,7 +8899,7 @@ describe('Free trial receipts on /v5/status', () => {
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('trial_used', 3);
 		expect(body).toHaveProperty('message');
-		expect((body.message as string)).toContain('Trial exhausted');
+		expect((body.message as string)).toContain('execution system without verified market-state gating');
 	});
 
 	it('request with API key bypasses trial tracking entirely', async () => {
