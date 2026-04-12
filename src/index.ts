@@ -1762,6 +1762,48 @@ async function insertReceiptAudit(
 	}
 }
 
+// ─── Paddle Revenue Pulse ─────────────────────────────────────────────────────
+// Records every successful Paddle payment to ORACLE_TELEMETRY KV so the
+// /v5/revenue-pulse endpoint and the scheduled health-check workflow
+// (.github/workflows/health-check.yml) can detect and surface new revenue
+// without polling Paddle directly. Best-effort — never throws.
+//
+// Key layout (all in ORACLE_TELEMETRY):
+//   paddle_revenue_count                       lifetime counter, no TTL
+//   paddle_revenue_count:{tier}                per-tier lifetime counter, no TTL
+//   paddle_revenue_last_at                     ISO timestamp of most recent event
+//   paddle_revenue_event:{ISO}                 JSON blob, 30-day TTL, listable
+type PaddleRevenueEvent = {
+	tier:        string;
+	plan:        string;
+	amount:      string;
+	currency:    string;
+	txn_id:      string;
+	customer_id: string | null;
+};
+async function recordPaddleRevenueEvent(env: Env, evt: PaddleRevenueEvent): Promise<void> {
+	if (!env.ORACLE_TELEMETRY) return;
+	const ts = new Date().toISOString();
+	const blob = JSON.stringify({ ...evt, ts });
+	try {
+		const [countStr, tierStr] = await Promise.all([
+			env.ORACLE_TELEMETRY.get('paddle_revenue_count').catch(() => null),
+			env.ORACLE_TELEMETRY.get(`paddle_revenue_count:${evt.tier}`).catch(() => null),
+		]);
+		const count     = parseInt(countStr ?? '0', 10) || 0;
+		const tierCount = parseInt(tierStr  ?? '0', 10) || 0;
+		await Promise.all([
+			env.ORACLE_TELEMETRY.put('paddle_revenue_count',                String(count + 1)),
+			env.ORACLE_TELEMETRY.put(`paddle_revenue_count:${evt.tier}`,    String(tierCount + 1)),
+			env.ORACLE_TELEMETRY.put('paddle_revenue_last_at',              ts),
+			env.ORACLE_TELEMETRY.put(`paddle_revenue_event:${ts}`, blob, { expirationTtl: 60 * 60 * 24 * 30 }),
+		]);
+		console.log(JSON.stringify({ event: 'PADDLE_REVENUE_EVENT', tier: evt.tier, plan: evt.plan, amount: evt.amount, currency: evt.currency, txn_id: evt.txn_id, ts }));
+	} catch (err) {
+		console.error(`PADDLE_REVENUE_RECORD_FAILED: ${(err as Error).message}`);
+	}
+}
+
 // ─── Paddle Webhook Signature Verification ────────────────────────────────────
 // Paddle signs webhooks with HMAC-SHA256 using the webhook secret.
 // Header format: "ts=<timestamp>;h1=<hex_signature>"
@@ -6502,6 +6544,18 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/v5/revenue-pulse': {
+			get: {
+				tags:        ['Operations'],
+				summary:     'Admin revenue feed (Paddle + x402)',
+				description: 'Admin only — requires MASTER_API_KEY in X-Oracle-Key header. Returns Paddle lifetime counts (by tier), x402 lifetime stats, and the most recent 50 Paddle revenue events from KV (30-day TTL). Consumed by .github/workflows/health-check.yml to surface new revenue as GitHub issues.',
+				parameters:  [{ name: 'X-Oracle-Key', in: 'header', required: true, schema: { type: 'string' }, description: 'Master API key' }],
+				responses: {
+					'200': { description: 'Revenue pulse', content: { 'application/json': { schema: { type: 'object', properties: { paddle: { type: 'object' }, x402: { type: 'object' } } } } } },
+					'401': { description: 'Missing or invalid master key' },
+				},
+			},
+		},
 		'/v5/why-not-free': {
 			get: {
 				tags:        ['Payment'],
@@ -9434,6 +9488,17 @@ export default {
 							}).catch(() => {});
 						}
 						console.log(JSON.stringify({ event: 'CREDITS_KEY_MINTED', email: creditsEmail ?? 'none', txn_id: txn['id'] ?? 'unknown' }));
+						// Revenue pulse — record this event so /v5/revenue-pulse and the
+						// scheduled health-check (.github/workflows/health-check.yml) can
+						// detect and surface new payments. Best-effort, errors swallowed.
+						await recordPaddleRevenueEvent(env, {
+							tier:       'credits',
+							plan:       'credits',
+							amount:     '5.00',
+							currency:   'USD',
+							txn_id:     (txn['id'] as string) ?? 'unknown',
+							customer_id: (txn['customer_id'] as string) ?? null,
+						});
 						return json({ received: true });
 					}
 
@@ -9547,6 +9612,16 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 							console.error(`RESEND_ERROR: failed to send key email to ${email}`);
 						}
 					}
+
+					// Revenue pulse — see credits branch above for rationale.
+					await recordPaddleRevenueEvent(env, {
+						tier:        plan,
+						plan,
+						amount:      plan === 'builder' ? '99.00' : plan === 'pro' ? '299.00' : plan === 'protocol' ? '500.00' : 'unknown',
+						currency:    'USD',
+						txn_id:      (txn['id'] as string) ?? 'unknown',
+						customer_id: (txn['customer_id'] as string) ?? null,
+					});
 
 					return json({ received: true });
 				}
@@ -11039,6 +11114,62 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					asset:            'USDC',
 					contract:         '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
 					verify_at:        'https://basescan.org/address/0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3#tokentxns',
+				});
+			}
+
+			// ── GET /v5/revenue-pulse — admin-only revenue feed ──────────────
+			// Returns Paddle revenue events recorded by recordPaddleRevenueEvent
+			// plus x402 lifetime stats. Master-key gated. Consumed by the
+			// scheduled health-check workflow (.github/workflows/health-check.yml)
+			// to surface new payments as GitHub issues.
+			//
+			// Recent events list is read via KV list(prefix:'paddle_revenue_event:')
+			// and limited to the most recent 50 (events have a 30-day TTL).
+			if (url.pathname === '/v5/revenue-pulse') {
+				const pulseKey = request.headers.get('X-Oracle-Key');
+				if (!pulseKey || pulseKey !== env.MASTER_API_KEY) {
+					return json({ error: 'UNAUTHORIZED', message: 'Admin access required' }, 401);
+				}
+				const [
+					paddleCountStr, paddleLastAt,
+					builderStr, proStr, protocolStr, creditsStr,
+					x402CountStr, x402FirstAt, x402LastAt,
+				] = await Promise.all([
+					env.ORACLE_TELEMETRY.get('paddle_revenue_count').catch(() => null),
+					env.ORACLE_TELEMETRY.get('paddle_revenue_last_at').catch(() => null),
+					env.ORACLE_TELEMETRY.get('paddle_revenue_count:builder').catch(() => null),
+					env.ORACLE_TELEMETRY.get('paddle_revenue_count:pro').catch(() => null),
+					env.ORACLE_TELEMETRY.get('paddle_revenue_count:protocol').catch(() => null),
+					env.ORACLE_TELEMETRY.get('paddle_revenue_count:credits').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_first_payment_at').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_last_payment_at').catch(() => null),
+				]);
+				// List recent events (most recent 50 — KV list returns lexicographic
+				// order, which matches ISO timestamp order, so we reverse for desc).
+				let recent: Array<Record<string, unknown>> = [];
+				try {
+					const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_event:', limit: 200 });
+					const blobs  = await Promise.all(listed.keys.slice(-50).reverse().map((k) => env.ORACLE_TELEMETRY.get(k.name)));
+					recent = blobs.filter((b): b is string => !!b).map((b) => JSON.parse(b) as Record<string, unknown>);
+				} catch { /* fail-safe to empty list */ }
+				return json({
+					paddle: {
+						lifetime_count: parseInt(paddleCountStr ?? '0', 10) || 0,
+						by_tier: {
+							builder:  parseInt(builderStr  ?? '0', 10) || 0,
+							pro:      parseInt(proStr      ?? '0', 10) || 0,
+							protocol: parseInt(protocolStr ?? '0', 10) || 0,
+							credits:  parseInt(creditsStr  ?? '0', 10) || 0,
+						},
+						last_event_at: paddleLastAt ?? null,
+						recent_events: recent,
+					},
+					x402: {
+						lifetime_count:   parseInt(x402CountStr ?? '0', 10) || 0,
+						first_payment_at: x402FirstAt ?? null,
+						last_payment_at:  x402LastAt  ?? null,
+					},
 				});
 			}
 

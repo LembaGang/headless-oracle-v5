@@ -2,13 +2,26 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue focus. Distribution sprint.
-**Day**: 45 (2026-04-11)
-**Test suite**: 989/989 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~12,700 lines (API-only, zero HTML). Deployed 0436cbd3.
+**Phase**: Post-launch. Revenue focus. Distribution sprint. Monitoring infra in place.
+**Day**: 45 (2026-04-12)
+**Test suite**: 994/994 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~12,800 lines (API-only, zero HTML). Pending deploy of revenue-pulse + monitor sprint (last live: 0436cbd3).
 **Website**: 10 HTML pages on Cloudflare Pages (headless-oracle-web). Instant keys + Paddle checkout live.
-**OpenAPI**: 78 paths, 11 semantic tags.
+**OpenAPI**: 79 paths (+1 /v5/revenue-pulse), 11 semantic tags.
 **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published).
+**Monitoring**: GitHub Actions health-check every 15 min. See `.claude/rules/monitors.md`.
+
+### What's Done (Day 45 — monitor sprint, durable option)
+- **Decision (architectural)**: rejected session-scoped `/loop` and `CronCreate` for monitoring — they die when the Claude session exits. All monitoring lives in GitHub Actions, the Worker cron, or KV-backed observability surfaces. Rationale and the constraint discussion are captured in `.claude/rules/monitors.md`.
+- **`scripts/health-check.mjs`**: self-contained Node 22 script, zero npm deps. Hits `/v5/health`, `/v5/demo?mic=XNYS`, `/v5/exchanges`, `/v5/schedule?mic=XNYS`, `/openapi.json`. Verifies Ed25519 signatures on `/v5/health` and `/v5/demo` using Web Crypto, with the canonical payload field list driven off `canonical_payload_spec` from `/v5/keys` (NOT a heuristic). Asserts TTL is exactly 60s. Probes the Pages frontend `/` against a 3s SLO and emits a Pages-vs-Worker classifier when something fails. When `MASTER_API_KEY` is in env, also queries `/v5/revenue-pulse` and emits `REVENUE_NEW` log lines for events in a 20-min sliding window.
+- **`.github/workflows/health-check.yml`**: runs the script every 15 min on `*/15 * * * *`. On failure, opens a GitHub issue (labels: `health-check`, `auto`, `incident`) with the last 3500 bytes of script output. On `REVENUE_NEW` log lines, opens one GitHub issue per `txn_id` (labels: `revenue`, `auto`), deduping against existing open issues with the same transaction id in the title.
+- **`recordPaddleRevenueEvent()` helper** (src/index.ts ~line 1765): best-effort KV writer called from both `transaction.completed` branches in the Paddle webhook. Writes `paddle_revenue_count`, `paddle_revenue_count:{tier}`, `paddle_revenue_last_at`, and `paddle_revenue_event:{ISO}` (30-day TTL, listable).
+- **`GET /v5/revenue-pulse`** (src/index.ts ~line 11045): admin-only (master-key gated). Returns Paddle lifetime counts by tier, x402 lifetime counts, and the most recent 50 Paddle revenue events. Added to OpenAPI spec under the Operations tag.
+- **5 new tests** for `/v5/revenue-pulse`: 401 without key, 401 with wrong key, 200 empty state, 200 reflects KV state, end-to-end credits webhook → revenue-pulse readback. Total: 989 → 994.
+- **Live verification**: `node scripts/health-check.mjs` against production passes — both `/v5/health` and `/v5/demo` Ed25519 signatures verify, all 5 endpoints under SLO, Pages frontend 200 in <1s.
+- **Worker exception monitoring**: explicitly NOT running `wrangler tail` from a Claude session. `wrangler.toml` already has `[observability] enabled=true head_sampling_rate=1`, all events flow to Cloudflare Workers Logs, and the health-check captures sustained errors as test failures (a stronger signal than raw exception counts).
+- **Required GitHub secret**: `MASTER_API_KEY` must be set at Settings → Secrets → Actions for the revenue pulse step to fire. Without it the workflow logs `REVENUE_SKIPPED` and continues — health checks still run.
+- **Gap**: no third-party uptime prober (Pingdom/UptimeRobot/BetterUptime). The current setup verifies headlessoracle.com from a GitHub-hosted runner, which catches Worker bugs and Pages bugs but cannot independently confirm that Cloudflare itself is reachable from outside the github.com network egress. Add an external prober when paid traffic justifies the spend.
 
 ### What's Done (Day 45 — 402 messaging update)
 - **402 response messaging**: All human-readable `message` fields in 402 responses updated to risk-framing language: "You are running an execution system without verified market-state gating. Continuing without verification increases risk of invalid trades. Upgrade for execution-grade access." Applies to: build402Payload (free tier gate), trial exhausted (with and without x402), and /v5/errors/PAYMENT_REQUIRED. All machine-readable fields (upgrade_paths, agent_upgrade_paths, x402, pricing) unchanged. 1 test updated to match new message. 989/989 passing. Deployed 0436cbd3. Live-verified via curl.

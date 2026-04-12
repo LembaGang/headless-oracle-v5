@@ -116,6 +116,7 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `POST /webhooks/paddle` — Paddle webhook handler
 - `POST /v5/x402/mint` — Mint API key via on-chain USDC payment
 - `POST /v5/credits/purchase` — Buy credits via x402
+- `GET /v5/revenue-pulse` — Admin-only Paddle + x402 revenue feed (master-key gated). Consumed by `.github/workflows/health-check.yml` to surface new payments as GitHub issues.
 
 ### Discovery files
 - `/llms.txt`, `/llms-full.txt`, `/AGENTS.md`, `/SKILL.md`
@@ -143,15 +144,16 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-11 Day 45 402 messaging update -->
+<!-- Last updated: 2026-04-12 Day 45 monitor sprint -->
 
 - **Day**: 45 (since project start)
-- **Tests**: 989/989 (985 + 4 CPVR-1 spec tests) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
-- **Worker**: `src/index.ts` ~12,700 lines. API-only — zero HTML.
-- **Worker version**: 0436cbd3 (latest deployed)
-- **OpenAPI**: 78 paths, 11 semantic tags
+- **Tests**: 994/994 (989 + 5 revenue-pulse) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Worker**: `src/index.ts` ~12,800 lines. API-only — zero HTML.
+- **Worker version**: 0436cbd3 (revenue-pulse + monitor sprint pending deploy)
+- **OpenAPI**: 79 paths (+1 /v5/revenue-pulse), 11 semantic tags
 - **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
+- **Monitoring**: GitHub Actions health-check every 15 min — `.github/workflows/health-check.yml` + `scripts/health-check.mjs`. Verifies 5 endpoints, Ed25519 signatures, TTL window, Pages-vs-Worker classifier, and Paddle revenue events → GH issues. Full design in `.claude/rules/monitors.md`.
 - **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11
 - **Evaluators**: DataCamp (warmest), Chiark 85/100, CacheFly/Glama, MCPScoreboard 100/100, YellowMCP, AgentDiscoveryIndex, Amazon San Jose, Latitude.sh, Indiana University, Drexel University
 - **npm users**: 4 independent (South Africa, Italy, Germany, Indiana University)

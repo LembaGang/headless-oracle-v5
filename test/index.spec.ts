@@ -7999,6 +7999,109 @@ describe('Paddle credit packs — webhook minting', () => {
 	});
 });
 
+describe('GET /v5/revenue-pulse — admin revenue feed', () => {
+	const MASTER = 'test_master_key_local_only'; // matches .dev.vars
+
+	beforeEach(async () => {
+		// Wipe paddle revenue keys so tests are deterministic
+		const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_' });
+		await Promise.all(listed.keys.map((k) => env.ORACLE_TELEMETRY.delete(k.name)));
+	});
+
+	it('returns 401 without master key', async () => {
+		const res = await fetchWorker('/v5/revenue-pulse');
+		expect(res.status).toBe(401);
+	});
+
+	it('returns 401 with wrong master key', async () => {
+		const res = await fetchWorker('/v5/revenue-pulse', { headers: { 'X-Oracle-Key': 'not_the_master' } });
+		expect(res.status).toBe(401);
+	});
+
+	it('returns 200 with empty state when master key is valid', async () => {
+		const res = await fetchWorker('/v5/revenue-pulse', { headers: { 'X-Oracle-Key': MASTER } });
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, any>;
+		expect(body).toHaveProperty('paddle');
+		expect(body).toHaveProperty('x402');
+		expect(body.paddle.lifetime_count).toBe(0);
+		expect(body.paddle.recent_events).toEqual([]);
+		expect(body.paddle.by_tier).toEqual({ builder: 0, pro: 0, protocol: 0, credits: 0 });
+	});
+
+	it('reflects KV state after paddle revenue events are recorded', async () => {
+		const ts1 = '2026-04-12T10:00:00.000Z';
+		const ts2 = '2026-04-12T11:00:00.000Z';
+		await env.ORACLE_TELEMETRY.put('paddle_revenue_count',          '2');
+		await env.ORACLE_TELEMETRY.put('paddle_revenue_count:credits',  '1');
+		await env.ORACLE_TELEMETRY.put('paddle_revenue_count:builder',  '1');
+		await env.ORACLE_TELEMETRY.put('paddle_revenue_last_at',        ts2);
+		await env.ORACLE_TELEMETRY.put(`paddle_revenue_event:${ts1}`, JSON.stringify({ tier: 'credits', plan: 'credits', amount: '5.00', currency: 'USD', txn_id: 'txn_001', ts: ts1 }));
+		await env.ORACLE_TELEMETRY.put(`paddle_revenue_event:${ts2}`, JSON.stringify({ tier: 'builder', plan: 'builder', amount: '99.00', currency: 'USD', txn_id: 'txn_002', ts: ts2 }));
+
+		const res = await fetchWorker('/v5/revenue-pulse', { headers: { 'X-Oracle-Key': MASTER } });
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, any>;
+		expect(body.paddle.lifetime_count).toBe(2);
+		expect(body.paddle.last_event_at).toBe(ts2);
+		expect(body.paddle.by_tier.credits).toBe(1);
+		expect(body.paddle.by_tier.builder).toBe(1);
+		expect(body.paddle.recent_events).toHaveLength(2);
+		// Most recent first
+		expect(body.paddle.recent_events[0].txn_id).toBe('txn_002');
+		expect(body.paddle.recent_events[1].txn_id).toBe('txn_001');
+	});
+
+	it('credits webhook records a paddle revenue event', async () => {
+		const WEBHOOK_SECRET = 'pdl_ntfset_test_placeholder_for_local_tests';
+		const CREDITS_PRICE_ID = 'pri_test_credits_placeholder';
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'pulse-test@example.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('api.resend.com')) {
+				return new Response(JSON.stringify({ id: 'email_pulse_001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const rawBody = JSON.stringify({
+				event_type: 'transaction.completed',
+				data: { id: 'txn_pulse_001', customer_id: 'ctm_pulse_001', items: [{ price_id: CREDITS_PRICE_ID }] },
+			});
+			const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+			const webhookRes = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(webhookRes.status).toBe(200);
+
+			const res = await fetchWorker('/v5/revenue-pulse', { headers: { 'X-Oracle-Key': MASTER } });
+			const body = await res.json() as Record<string, any>;
+			expect(body.paddle.lifetime_count).toBe(1);
+			expect(body.paddle.by_tier.credits).toBe(1);
+			expect(body.paddle.recent_events).toHaveLength(1);
+			expect(body.paddle.recent_events[0].txn_id).toBe('txn_pulse_001');
+			expect(body.paddle.recent_events[0].tier).toBe('credits');
+		} finally {
+			globalThis.fetch = originalFetch;
+			// Clean up minted credits key
+			const listed = await env.ORACLE_API_KEYS.list({ prefix: '' });
+			for (const kv of listed.keys) {
+				const val = await env.ORACLE_API_KEYS.get(kv.name);
+				if (!val) continue;
+				const parsed = JSON.parse(val) as Record<string, unknown>;
+				if (parsed.source === 'paddle_credits' && parsed.email === 'pulse-test@example.com') {
+					await env.ORACLE_API_KEYS.delete(kv.name);
+				}
+			}
+		}
+	});
+});
+
 describe('Paddle credit packs — auth layer', () => {
 	async function sha256Hex(value: string): Promise<string> {
 		const bytes = new TextEncoder().encode(value);

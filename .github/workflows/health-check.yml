@@ -1,0 +1,112 @@
+name: Production Health Check
+
+# Durable health-check for the Worker API + Pages frontend.
+# Runs scripts/health-check.mjs every 15 minutes against headlessoracle.com.
+# - Verifies Ed25519 signatures on /v5/health and /v5/demo
+# - Validates response shape on 5 critical endpoints
+# - Checks Pages SLO (<3s) and classifies failures as Worker vs Pages
+# - Surfaces new Paddle revenue events as GitHub issues (one per txn_id)
+#
+# See .claude/rules/monitors.md for the full design and the failure
+# classification decision tree.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    name: Endpoint health + revenue pulse
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Run health check
+        id: check
+        env:
+          MASTER_API_KEY: ${{ secrets.MASTER_API_KEY }}
+        run: |
+          set +e
+          node scripts/health-check.mjs 2>&1 | tee /tmp/health-output.log
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Surface new revenue events as issues
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const lines = fs.readFileSync('/tmp/health-output.log', 'utf8').split('\n');
+            for (const line of lines) {
+              if (!line.trim().startsWith('{')) continue;
+              let evt;
+              try { evt = JSON.parse(line); } catch { continue; }
+              if (evt.event !== 'REVENUE_NEW') continue;
+
+              // Dedup by txn_id — search existing open issues with this title
+              const title = `Revenue: ${evt.tier} ${evt.amount} ${evt.currency} (${evt.txn_id})`;
+              const search = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:issue "${evt.txn_id}" in:title`,
+              });
+              if (search.data.total_count > 0) {
+                core.info(`Skipping duplicate revenue issue for ${evt.txn_id}`);
+                continue;
+              }
+              const body = [
+                `**Tier**: ${evt.tier}`,
+                `**Plan**: ${evt.plan}`,
+                `**Amount**: ${evt.amount} ${evt.currency}`,
+                `**Transaction ID**: \`${evt.txn_id}\``,
+                `**Recorded at**: ${evt.event_ts}`,
+                ``,
+                `Detected by the scheduled health check. Source: \`scripts/health-check.mjs\` querying \`/v5/revenue-pulse\`.`,
+              ].join('\n');
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['revenue', 'auto'],
+              });
+              core.notice(`Opened revenue issue for ${evt.txn_id}`);
+            }
+
+      - name: Open issue on health check failure
+        if: steps.check.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync('/tmp/health-output.log', 'utf8');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `Health check FAILED at ${new Date().toISOString()}`;
+            const body = [
+              `Scheduled production health check failed.`,
+              ``,
+              `**Workflow run**: ${runUrl}`,
+              ``,
+              `### Output`,
+              '```',
+              log.slice(-3500),
+              '```',
+              ``,
+              `See \`.claude/rules/monitors.md\` for the failure classification decision tree.`,
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['health-check', 'auto', 'incident'],
+            });
+            core.setFailed('Health check failed — see issue created above.');

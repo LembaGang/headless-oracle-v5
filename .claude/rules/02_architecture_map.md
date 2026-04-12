@@ -53,6 +53,7 @@ Plus `public/docs/` integration guides (quickstart, LangGraph, Bun, Anthropic Cl
 | `POST /v5/checkout` | no | Paddle transaction |
 | `POST /webhooks/paddle` | no | Paddle webhook handler |
 | `POST /v5/x402/mint` | no | Mint API key via USDC |
+| `GET /v5/revenue-pulse` | master-key | Admin Paddle + x402 revenue feed (consumed by health-check.yml) |
 | `POST /mcp` | no | MCP Streamable HTTP (5 tools) |
 
 Plus: discovery files (`/llms.txt`, `/AGENTS.md`, `/openapi.json`, `/.well-known/*`),
@@ -170,6 +171,13 @@ lunch break sessions, weekend days. Used by `/v5/health` and content.
 
 **`verifyPaddleSignature(body, sigHeader, secret)`** — Line 1771
 HMAC-SHA256 verification of Paddle webhook signatures. 5-min replay protection.
+
+**`recordPaddleRevenueEvent(env, evt)`** — Line ~1765
+Best-effort (never throws) KV writer called from both `transaction.completed`
+branches in the Paddle webhook handler. Writes `paddle_revenue_count`,
+`paddle_revenue_count:{tier}`, `paddle_revenue_last_at`, and
+`paddle_revenue_event:{ISO}` (30-day TTL, listable). Read by
+`GET /v5/revenue-pulse`. Pipeline documented in `.claude/rules/monitors.md`.
 
 **`runHaltMonitor(env)`** — Line 8537
 Cron-triggered (every minute). Checks Polygon.io (primary) / Alpaca (fallback, US-only)
