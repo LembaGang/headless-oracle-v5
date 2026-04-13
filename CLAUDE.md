@@ -147,9 +147,9 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 <!-- Last updated: 2026-04-13 Day 46 semantic upgrade sprint -->
 
 - **Day**: 46 (since project start)
-- **Tests**: 1008/1008 (998 + 9 multi-oracle consensus + 1 prior bump) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Tests**: 1011/1011 (1008 + 3 x402 payment hardening) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
 - **Worker**: `src/index.ts` ~13,100 lines. API-only — zero HTML.
-- **Worker version**: d5bfdaf1 (multi-oracle consensus v1.0.0 — first published market-state verification standard)
+- **Worker version**: 35beb439 (x402 payment hardening — flat machine-readable 402 fields + server-card payment section)
 - **OpenAPI**: 81 paths (+2 multi-oracle-consensus-v1 + multi-oracle-guide), 11 semantic tags
 - **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)

@@ -2543,6 +2543,23 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 	return {
 		error:   'PAYMENT_REQUIRED',
 		message: 'You are running an execution system without verified market-state gating. Continuing without verification increases risk of invalid trades. Upgrade for execution-grade access.',
+		// Flat top-level fields for maximum machine-readability — any agent, any model tier,
+		// any framework can parse these without walking nested objects.
+		payment_required:   true,
+		payment_method:     'x402',
+		currency:           'USDC',
+		network:            'base',
+		chain_id:           8453,
+		pricing: {
+			per_request:     { amount_usdc: '0.001', units: String(X402_MIN_AMOUNT_UNITS), scheme: 'x402' },
+			credit_pack:     { amount_usd: '5.00',   calls: 1000,   purchase: 'POST /v5/x402/mint' },
+			builder_monthly: { amount_usd: '99.00',  calls_per_day: BUILDER_TIER_DAILY_LIMIT, purchase: 'POST /v5/checkout' },
+			pro_monthly:     { amount_usd: '299.00', calls_per_day: PRO_TIER_DAILY_LIMIT,     purchase: 'POST /v5/checkout' },
+		},
+		x402_endpoint:      'https://headlessoracle.com/v5/status',
+		pricing_endpoint:   'https://headlessoracle.com/v5/pricing',
+		documentation_url:  'https://headlessoracle.com/docs/x402-payments',
+		alternative:        'Get free sandbox key: POST https://headlessoracle.com/v5/sandbox (200 calls, 7 days, no card)',
 		upgrade_paths: buildUpgradePaths({ include_paid: true }),
 		recommended:   'instant_key',
 		x402: {
@@ -9355,6 +9372,18 @@ export default {
 						asset:            '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
 						discovery:        'https://headlessoracle.com/.well-known/x402.json',
 						payment_endpoint: 'https://headlessoracle.com/v5/status',
+					},
+					// Payment capabilities — surfaced at the top level so any agent parsing the
+					// server card (without walking the x402 object) knows autonomous payment works.
+					payment: {
+						methods:            ['x402'],
+						currency:           'USDC',
+						network:            'base',
+						chain_id:           8453,
+						autonomous_payment: true,
+						human_required:     false,
+						pricing_endpoint:   'https://headlessoracle.com/v5/pricing',
+						documentation_url:  'https://headlessoracle.com/docs/x402-payments',
 					},
 					sma_protocol_version:  'RFC-001-draft',
 					sma_note:              'SMA = Signed Market Attestation (not Simple Moving Average). Receipts are Ed25519-signed, 60-second TTL, fail-closed.',

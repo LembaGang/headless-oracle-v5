@@ -8850,6 +8850,68 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
 	});
+
+	it('402 response contains flat machine-readable payment fields', async () => {
+		const key  = 'ho_free_' + 'w'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('PAYMENT_REQUIRED');
+		expect(body.payment_required).toBe(true);
+		expect(body.payment_method).toBe('x402');
+		expect(body.currency).toBe('USDC');
+		expect(body.network).toBe('base');
+		expect(body.chain_id).toBe(8453);
+		expect(body.x402_endpoint).toBe('https://headlessoracle.com/v5/status');
+		expect(body.documentation_url).toBe('https://headlessoracle.com/docs/x402-payments');
+		expect(typeof body.alternative).toBe('string');
+		const pricing = body.pricing as Record<string, Record<string, unknown>>;
+		expect(pricing).toBeDefined();
+		expect(pricing.per_request).toHaveProperty('amount_usdc', '0.001');
+		expect(pricing.credit_pack).toHaveProperty('amount_usd', '5.00');
+		expect(pricing.credit_pack).toHaveProperty('calls', 1000);
+		expect(pricing.builder_monthly).toHaveProperty('amount_usd', '99.00');
+		expect(pricing.pro_monthly).toHaveProperty('amount_usd', '299.00');
+	});
+});
+
+describe('x402 payment hardening — pricing + server-card', () => {
+	it('GET /v5/pricing returns valid JSON with all tiers', async () => {
+		const res = await fetchWorker('/v5/pricing');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		expect(Array.isArray(tiers)).toBe(true);
+		const ids = tiers.map((t) => t.id);
+		expect(ids).toContain('sandbox');
+		expect(ids).toContain('free');
+		expect(ids).toContain('x402');
+		expect(ids).toContain('credits');
+		expect(ids).toContain('builder');
+		expect(ids).toContain('pro');
+		const x402 = body.x402 as Record<string, unknown>;
+		expect(x402).toHaveProperty('amount_usdc', '0.001');
+		expect(x402).toHaveProperty('network', 'base');
+		expect(x402).toHaveProperty('chain_id', 8453);
+	});
+
+	it('server-card.json includes payment section with autonomous_payment=true', async () => {
+		const res = await fetchWorker('/.well-known/mcp/server-card.json');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const payment = body.payment as Record<string, unknown>;
+		expect(payment).toBeDefined();
+		expect(payment.methods).toEqual(['x402']);
+		expect(payment.currency).toBe('USDC');
+		expect(payment.network).toBe('base');
+		expect(payment.chain_id).toBe(8453);
+		expect(payment.autonomous_payment).toBe(true);
+		expect(payment.human_required).toBe(false);
+		expect(payment.pricing_endpoint).toBe('https://headlessoracle.com/v5/pricing');
+		expect(payment.documentation_url).toBe('https://headlessoracle.com/docs/x402-payments');
+	});
 });
 
 // ─── Enhanced 402 responses — machine-readable conversion paths ──────────────

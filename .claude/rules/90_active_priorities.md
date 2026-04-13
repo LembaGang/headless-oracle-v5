@@ -4,8 +4,20 @@
 ## Current Status
 **Phase**: Post-launch. Revenue focus. Distribution sprint. Standards authorship sprint live.
 **Day**: 46 (2026-04-13)
-**Test suite**: 1008/1008 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~13,100 lines (API-only, zero HTML). Live version: d5bfdaf1 (multi-oracle consensus v1 deployed).
+**Test suite**: 1011/1011 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~13,100 lines (API-only, zero HTML). Live version: 35beb439 (x402 payment hardening deployed).
+
+### What's Done (Day 46 — x402 payment hardening sprint)
+- **build402Payload**: Added flat top-level machine-readable fields so any agent — regardless of model tier (Mythos $125/MTok, GPT-5 nano $0.05, on down) — can parse the 402 response without walking nested objects. New fields: `payment_required: true`, `payment_method: "x402"`, `currency: "USDC"`, `network: "base"`, `chain_id: 8453`, `pricing` (per_request/credit_pack/builder_monthly/pro_monthly with real values from BUILDER_TIER_DAILY_LIMIT/PRO_TIER_DAILY_LIMIT constants), `x402_endpoint`, `pricing_endpoint`, `documentation_url`, `alternative` (sandbox path). Existing nested `x402` object, `upgrade_paths`, `agent_actions`, and `alternatives` blocks preserved for backward compat.
+- **server-card.json**: Added top-level `payment` section (methods, currency, network, chain_id, autonomous_payment=true, human_required=false, pricing_endpoint, documentation_url) sitting alongside the existing nested `x402` block. Surfaces autonomous payment capability to any agent walking the discovery card without needing to read the x402 sub-object.
+- **/v5/pricing**: Already present (Day 39). Verified live — 7 tiers, x402 amount/network/chain_id correct.
+- **docs/x402-payments.md**: Already present (214 lines). Covers full agent flow, code examples, failure modes.
+- **3 new tests** (1008 → 1011): (1) 402 body contains all 9 flat fields with correct values + nested pricing object; (2) /v5/pricing returns valid JSON with all 6 tier IDs and correct x402 metadata; (3) server-card.json payment section has autonomous_payment=true and all required URLs.
+- **TEST_COUNT**: 1008 → 1011 in wrangler.toml.
+- **Live verified**: server-card payment section + /v5/pricing both return expected fields against production.
+- **Deployed**: Worker version 35beb439.
+- **Strategic significance**: In a compute-stratified world (Mythos restricted to 50 orgs, GPT-5 nano at $0.05/MTok), the bottleneck shifts from "can the agent access the tool?" to "can the agent PAY for the tool autonomously?" HO's 402 response is now parseable by the lowest-capability model in any framework. Korea Investment, Zerodha, AgenticTrading, Dify, Coze, AgentScope agents can all hit /v5/status, get a 402, and immediately know exactly how to pay — no human-readable parsing required.
+- **Gap**: Pricing values are still duplicated between `build402Payload` (hardcoded "5.00", "99.00", "299.00") and the `/v5/pricing` tier list (5, 99, 299 numbers + "$5", "$99/month" labels). Two paths for the same numbers will eventually drift. Next sprint: extract a single PRICING constant and have both endpoints derive from it.
 
 ### What's Done (Day 46 — multi-oracle consensus v1.0.0 sprint)
 - **MULTI-ORACLE-CONSENSUS-v1.md**: full spec written and shipped at `docs/specs/MULTI-ORACLE-CONSENSUS-v1.md`. First published standard for market-state verification across independent oracle feeds. License: MIT. Designed to satisfy SEC/CFTC Technical Framework for Tokenized Collateral (Nov 2025) requirement for ≥3 independent oracle feeds with cryptographic attestation. Defines `majority_with_fail_closed` algorithm, attestation field set (exchange, status, timestamp, expires_at, signature, public_key_url, oracle_id), 7-step verification flow, error handling table, and Ed25519/ECDSA-secp256k1/RSA-PSS-2048+ crypto requirements (SHA-1 and RSA-1024 forbidden).
