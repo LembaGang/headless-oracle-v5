@@ -144,12 +144,12 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-12 Day 45 monitor sprint -->
+<!-- Last updated: 2026-04-13 Day 46 semantic upgrade sprint -->
 
-- **Day**: 45 (since project start)
-- **Tests**: 994/994 (989 + 5 revenue-pulse) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Day**: 46 (since project start)
+- **Tests**: 998/998 (994 + 4 semantic upgrade) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
 - **Worker**: `src/index.ts` ~12,800 lines. API-only — zero HTML.
-- **Worker version**: 0436cbd3 (revenue-pulse + monitor sprint pending deploy)
+- **Worker version**: 942911e8 (semantic upgrade — model-agnostic + SEC/CFTC + global exchange names)
 - **OpenAPI**: 79 paths (+1 /v5/revenue-pulse), 11 semantic tags
 - **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)

@@ -3,9 +3,23 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue focus. Distribution sprint. Monitoring infra in place.
-**Day**: 45 (2026-04-12)
-**Test suite**: 994/994 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~12,800 lines (API-only, zero HTML). Pending deploy of revenue-pulse + monitor sprint (last live: 0436cbd3).
+**Day**: 46 (2026-04-13)
+**Test suite**: 998/998 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~12,800 lines (API-only, zero HTML). Live version: 942911e8 (semantic upgrade deployed).
+
+### What's Done (Day 46 — semantic upgrade sprint)
+- **MCP tool descriptions**: model-agnostic positioning + SEC/CFTC tokenized collateral language added to all 5 tools (get_market_status, get_market_schedule, list_exchanges, verify_receipt, get_payment_options). Same 5-point WHAT/WHEN/RETURNS/FAILURE/LATENCY structure preserved; content upgraded.
+- **get_market_status**: explicit "Pre-trade safety check: call this BEFORE executing any trade" line + "If this tool is unreachable, the agent MUST NOT execute the trade." Reinforces fail-closed at the tool description level so agents in compute-stratified ecosystems (Mythos $25/$125 per MTok, GPT-5 nano $0.05) all receive the same gating contract.
+- **Regional exchange names**: every MIC code in tool descriptions now reads as "Regional Exchange Name (XMIC)" — e.g. "Shanghai Stock Exchange (XSHG)", "Korea Exchange / KRX Seoul (XKRX)", "Tokyo Stock Exchange / Japan Exchange Group (XJPX)". Driven by the discovery thesis: Asian agent platforms (Dify 136K stars, Coze, AgentScope) and Korean/Indian brokerage MCP servers match on exchange names, not just codes.
+- **inputSchema enums**: confirmed all 28 MICs already present in get_market_status and get_market_schedule enum lists; no change needed.
+- **LLMS_TXT_INDEX**: added "Model-agnostic infrastructure" line at top, "Regulatory alignment" line referencing SEC/CFTC Technical Framework for Tokenized Collateral, x402 autonomous payment line, and a new `## Multi-Oracle Verification` section explaining the three-feed consensus pattern and fail-closed behaviour when feeds disagree.
+- **/.well-known/mcp/server-card.json**: added `model_agnostic: true`, `regulatory_alignment: ["SEC_CFTC_tokenized_collateral", "ISO_10383"]`, and `categories: ["finance", "market-data", "attestation", "verification", "pre-trade-safety", "rwa", "tokenization"]`. Description updated to mention model-agnostic + SEC/CFTC.
+- **4 new tests** (994 → 998): server-card semantic fields, server-card coverage.exchanges == 28, get_market_status description content (model-agnostic, SEC/CFTC, pre-trade safety, MUST NOT execute), tool descriptions name regional exchanges (Shanghai/Korea/Tokyo Stock Exchange).
+- **TEST_COUNT**: bumped 994 → 998 in wrangler.toml.
+- **Live verification**: server-card.json returns model_agnostic/regulatory_alignment/categories live; tools/list returns "Model-agnostic" in description payload.
+- **Deployed**: Worker version 942911e8. Pushed to main (b59e6a2).
+- **Gap**: server-card.json is the agent-facing discovery surface, but the OpenAPI spec (`/openapi.json`) still describes endpoints in human-developer terms — there's no top-level `x-model-agnostic` or `x-regulatory-alignment` extension on the OpenAPI document itself. Agents that consume OpenAPI before MCP (some of the new Asian framework crawlers) won't see the new positioning. Next sprint: lift the same metadata into OpenAPI `info` extensions.
+
 **Website**: 10 HTML pages on Cloudflare Pages (headless-oracle-web). Instant keys + Paddle checkout live.
 **OpenAPI**: 79 paths (+1 /v5/revenue-pulse), 11 semantic tags.
 **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published).
