@@ -1205,6 +1205,16 @@ describe('GET /openapi.json', () => {
 		const response = await fetchWorker('/openapi.json');
 		expect(response.status).toBe(200);
 	});
+
+	it('info block exposes x-model-agnostic and x-regulatory-alignment extensions', async () => {
+		const body = await fetchJSON('/openapi.json');
+		const info = body.info as Record<string, unknown>;
+		expect(info['x-model-agnostic']).toBe(true);
+		const reg = info['x-regulatory-alignment'] as string[];
+		expect(Array.isArray(reg)).toBe(true);
+		expect(reg).toContain('SEC_CFTC_tokenized_collateral');
+		expect(reg).toContain('ISO_10383');
+	});
 });
 
 // ─── Holiday coverage guard (fail-closed) ────────────────────────────────────

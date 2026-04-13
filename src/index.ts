@@ -5198,6 +5198,8 @@ const OPENAPI_SPEC = {
 			'Receipts expire at expires_at — do not act on stale receipts.',
 		contact: { name: 'Headless Oracle', email: 'api@headlessoracle.com', url: 'https://headlessoracle.com' },
 		license: { name: 'MIT', url: 'https://github.com/LembaGang/headless-oracle-v5/blob/main/LICENSE' },
+		'x-model-agnostic':       true,
+		'x-regulatory-alignment': ['SEC_CFTC_tokenized_collateral', 'ISO_10383'],
 	},
 	externalDocs: { description: 'Full documentation for LLMs and agents', url: 'https://headlessoracle.com/llms-full.txt' },
 	servers: [
