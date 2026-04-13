@@ -2370,6 +2370,50 @@ describe('GET /.well-known/mcp/server-card.json', () => {
 		expect(auth).toContain('apiKey');
 		expect(auth).toContain('x402');
 	});
+
+	it('exposes model_agnostic, regulatory_alignment, and category tags', async () => {
+		const body = await fetchJSON('/.well-known/mcp/server-card.json');
+		expect(body).toHaveProperty('model_agnostic', true);
+		const reg = body.regulatory_alignment as string[];
+		expect(Array.isArray(reg)).toBe(true);
+		expect(reg).toContain('SEC_CFTC_tokenized_collateral');
+		expect(reg).toContain('ISO_10383');
+		const cats = body.categories as string[];
+		expect(cats).toContain('finance');
+		expect(cats).toContain('market-data');
+		expect(cats).toContain('attestation');
+		expect(cats).toContain('verification');
+		expect(cats).toContain('pre-trade-safety');
+		expect(cats).toContain('rwa');
+		expect(cats).toContain('tokenization');
+	});
+
+	it('server-card coverage.exchanges reports 28', async () => {
+		const body = await fetchJSON('/.well-known/mcp/server-card.json');
+		const coverage = body.coverage as Record<string, unknown>;
+		expect(coverage.exchanges).toBe(28);
+	});
+});
+
+describe('MCP tool descriptions — semantic upgrade', () => {
+	it('get_market_status description includes model-agnostic and SEC/CFTC language', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		const tools = (body.result as { tools: Array<{ name: string; description: string }> }).tools;
+		const tool  = tools.find((t) => t.name === 'get_market_status')!;
+		expect(tool.description).toMatch(/Model-agnostic/);
+		expect(tool.description).toMatch(/SEC\/CFTC/);
+		expect(tool.description).toMatch(/Pre-trade safety check/i);
+		expect(tool.description).toMatch(/MUST NOT execute/);
+	});
+
+	it('tool descriptions name regional exchanges, not just MIC codes', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		const tools = (body.result as { tools: Array<{ name: string; description: string }> }).tools;
+		const status = tools.find((t) => t.name === 'get_market_status')!;
+		expect(status.description).toMatch(/Shanghai Stock Exchange/);
+		expect(status.description).toMatch(/Korea Exchange/);
+		expect(status.description).toMatch(/Tokyo Stock Exchange/);
+	});
 });
 
 // ─── GET /.well-known/oauth-protected-resource ───────────────────────────────
