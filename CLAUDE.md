@@ -98,11 +98,14 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `GET /v5/keys` — Public key registry + canonical signing spec
 - `GET /v5/health` — Signed liveness probe
 - `GET /v5/briefing` — Daily market intelligence snapshot
-- `GET /openapi.json` — OpenAPI 3.1 spec
-- `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, 5 tools)
+- `GET /v5/pricing` — Machine-readable pricing tiers (sandbox/x402/credits/builder/pro/protocol)
+- `GET /openapi.json` — OpenAPI 3.1 spec (81 paths, `x-model-agnostic` + `x-regulatory-alignment` extensions)
+- `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, 5 tools) — descriptions are model-agnostic + SEC/CFTC-aligned + regional exchange names
 - `POST /v5/sandbox` — Sandbox key via email or x402 (200 calls, 7-day TTL)
 - `GET /v5/audit/digest` — Daily attestation digest with Merkle root
 - `GET /v5/audit/chain` — Hash chain of last N daily digests
+- `GET /v1/verification/multi-oracle-guide` — JSON discovery doc for the Multi-Oracle Consensus standard (spec v1.0.0 — we authored it)
+- `GET /docs/specifications/multi-oracle-consensus-v1` — Full markdown spec (MIT). Aliases: `.md`, `/docs/specs/MULTI-ORACLE-CONSENSUS-v1.md`
 
 ### Authenticated (X-Oracle-Key header)
 - `GET /v5/status?mic=<MIC>` — Signed receipt (receipt_mode: live). Also supports free trial (3/day/IP) and x402 payment.
@@ -144,13 +147,18 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-13 Day 46 semantic upgrade sprint -->
+<!-- Last updated: 2026-04-13 Day 47 context refresh sprint -->
 
-- **Day**: 46 (since project start)
-- **Tests**: 1011/1011 (1008 + 3 x402 payment hardening) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Day**: 47 (since project start)
+- **Tests**: 1011/1011 + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
 - **Worker**: `src/index.ts` ~13,100 lines. API-only — zero HTML.
 - **Worker version**: 35beb439 (x402 payment hardening — flat machine-readable 402 fields + server-card payment section)
-- **OpenAPI**: 81 paths (+2 multi-oracle-consensus-v1 + multi-oracle-guide), 11 semantic tags
+- **OpenAPI**: 81 paths, 11 semantic tags, `x-model-agnostic: true` + `x-regulatory-alignment` extensions on the `info` block
+- **Exchange count**: 28 (23 traditional + XCBT, XNYM, XCBO, XCOI, XBIN). Every surface says 28 — audit complete.
+- **MCP tool descriptions**: model-agnostic positioning + SEC/CFTC tokenized collateral language on all 5 tools; explicit "pre-trade safety check — MUST NOT execute if unreachable" line on `get_market_status`; regional exchange names in descriptions (Shanghai/Korea/Tokyo/etc.) to aid keyword discovery by Asian agent platforms (Dify, Coze, AgentScope)
+- **x402 hardening**: 402 responses now carry flat top-level machine-readable fields (`payment_required`, `payment_method`, `currency`, `network`, `chain_id`, `pricing`, `x402_endpoint`, `pricing_endpoint`, `documentation_url`, `alternative`) so lowest-capability models (GPT-5 nano $0.05/MTok, Gemini Flash-Lite) can parse without walking nested objects. `server-card.json` gained a top-level `payment` section with `autonomous_payment: true`.
+- **Multi-Oracle Consensus spec v1.0.0**: we authored and published the first standard for market-state verification across independent oracle feeds. Served at `/docs/specifications/multi-oracle-consensus-v1` (markdown, MIT) and `/v1/verification/multi-oracle-guide` (JSON). Deliberately versioned `/v1/` — distinct from product `/v5/` — so other oracles can adopt the same path. Defines `majority_with_fail_closed` algorithm, minimum 3 independent feeds, attestation field set, Ed25519/ECDSA-secp256k1/RSA-PSS-2048+ crypto requirements, regulatory alignment (SEC/CFTC tokenized collateral Nov 2025, ESMA, NIST, MAS). HO is `reference_oracles[0]`.
+- **Standards hub (web)**: `headless-oracle-web/standards.html` is live. Agent-facing landing page for the Multi-Oracle Consensus standard, SMA Protocol, MPAS, and APTS.
 - **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Monitoring**: GitHub Actions health-check every 15 min — `.github/workflows/health-check.yml` + `scripts/health-check.mjs`. Verifies 5 endpoints, Ed25519 signatures, TTL window, Pages-vs-Worker classifier, and Paddle revenue events → GH issues. Full design in `.claude/rules/monitors.md`.
@@ -163,7 +171,8 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - **Infrastructure cost**: $15.50/month
 - **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published)
 - **Conversion**: instant keys live, Paddle checkout working, enhanced 402/429 with upgrade paths
-- **402 messaging**: Updated to risk-framing language ("execution system without verified market-state gating")
+- **402 messaging**: Risk-framing language ("execution system without verified market-state gating")
+- **Competitive landscape**: See `.claude/rules/95_competitive_landscape.md` for full threat assessment. No direct competitor does signed market-state. 12–24 month window before Chainlink/Pyth could ship it.
 
 ## How to Work on This Project
 

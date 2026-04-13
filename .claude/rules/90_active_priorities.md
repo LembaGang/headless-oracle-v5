@@ -2,10 +2,27 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue focus. Distribution sprint. Standards authorship sprint live.
-**Day**: 46 (2026-04-13)
+**Phase**: Post-launch. Revenue focus. Standards authorship. Asia-Pacific distribution sprint queued.
+**Day**: 47 (2026-04-13 — context refresh sprint)
 **Test suite**: 1011/1011 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
 **Worker**: src/index.ts ~13,100 lines (API-only, zero HTML). Live version: 35beb439 (x402 payment hardening deployed).
+
+### Day 47 Top Priorities (new)
+
+These are the next moves. They flow from today's four sprints (semantic upgrade, multi-oracle spec v1.0.0, OpenAPI extensions, x402 hardening) — the product is now positioned for Asia-Pacific distribution and standards body outreach. Do them in roughly this order.
+
+1. **MCP directory re-submissions with updated descriptions**. The semantic upgrade (model-agnostic, SEC/CFTC, regional exchange names) only helps if the directory listings carry the new copy. Targets: Smithery, Glama, mcp.so, mcpservers.org, mcpmarket.com, awesome-mcp-servers (PR #343 already open — update description). Pull the new descriptions from `/.well-known/mcp/server-card.json` — do not hand-write.
+2. **Korea Investment Securities MCP co-integration outreach**. KIS operates Korea's largest retail brokerage MCP server and deals exclusively in execution — they have no verified market-state layer. Pitch: "Our pre-trade gate slots in front of your order-placement tool; agents get KIS execution + HO verification in one MCP config." XKRX is already in our 28-exchange set.
+3. **Zerodha / OpenAlgo integration for India**. Zerodha dominates Indian retail; OpenAlgo is the open-source MCP bridge. XBOM + XNSE are already live. Positioning: SEBI is drafting algo trading accountability rules — a signed pre-trade gate is the cleanest audit trail available. Draft an OpenAlgo plugin that wraps HO's `get_market_status` before every order.
+4. **Dify / Coze MCP extension submission for China**. Dify (136K GitHub stars) and Coze (ByteDance) are the dominant Chinese agent frameworks. Neither has a market-state tool. XSHG/XSHE are live with lunch-break handling. Submit as an official MCP extension in both marketplaces.
+5. **AgenticTrading direct MCP integration**. Highest-priority framework target — they ship autonomous multi-exchange execution agents and have publicly flagged the market-state gap. Direct integration PR, not just a docs guide.
+6. **SMA Protocol v1.0 standardization — AAIF / Linux Foundation submission research**. The Multi-Oracle Consensus spec gives us standards-body credibility. Research the AAIF (Agentic AI Foundation) and LF Decentralized Trust submission processes. Goal: get SMA Protocol and Multi-Oracle Consensus listed as reference standards before any incumbent does.
+7. **Singapore FinTech Festival 2026 application** (November deadline). SFF is the single highest-signal fintech-infrastructure venue globally. MAS already runs the world's first agentic-AI governance framework (Jan 2026) — our fail-closed + signed attestation story is on-thesis. Apply as a standards contributor, not a vendor.
+8. **SEBI algo trading compliance positioning for Indian market**. SEBI's draft rules on algo accountability are the clearest regulatory forcing function in Asia. Publish a compliance alignment doc (parallel to `docs/compliance.md`) mapping SEBI requirements to HO's receipts + audit digest + multi-oracle consensus.
+
+### Standing gaps carried from Day 46
+- **Pricing drift**: `build402Payload` hardcodes `"5.00"/"99.00"/"299.00"` while `/v5/pricing` has the tier list. Two paths for the same numbers. Fix: extract a single `PRICING` constant and have both endpoints derive from it. (Already named in the Day 46 gap note.)
+- **Multi-oracle spec is normative-but-unsatisfiable** until at least two more independent implementations ship. Paths forward: (a) seed reference implementations under different operators, or (b) court Polygon.io / TradingHours.com / RedStone to wrap their data in an SMA-compliant signed envelope. Both are distribution moves, not engineering moves.
 
 ### What's Done (Day 46 — x402 payment hardening sprint)
 - **build402Payload**: Added flat top-level machine-readable fields so any agent — regardless of model tier (Mythos $125/MTok, GPT-5 nano $0.05, on down) — can parse the 402 response without walking nested objects. New fields: `payment_required: true`, `payment_method: "x402"`, `currency: "USDC"`, `network: "base"`, `chain_id: 8453`, `pricing` (per_request/credit_pack/builder_monthly/pro_monthly with real values from BUILDER_TIER_DAILY_LIMIT/PRO_TIER_DAILY_LIMIT constants), `x402_endpoint`, `pricing_endpoint`, `documentation_url`, `alternative` (sandbox path). Existing nested `x402` object, `upgrade_paths`, `agent_actions`, and `alternatives` blocks preserved for backward compat.

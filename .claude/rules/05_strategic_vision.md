@@ -53,7 +53,7 @@ More exchanges matter more than richer receipt payloads right now.
 An agent ecosystem with coverage gaps will route around us or build parallel infrastructure.
 Comprehensiveness is the defensible position. Depth comes after coverage.
 
-Target trajectory: 7 exchanges → 30 → 100. Architecture must not collapse under that weight.
+Target trajectory: 28 exchanges (live today) → 50 → 100. Architecture must not collapse under that weight.
 
 ### 2. Discoverability for machines
 Agents don't Google. They need Oracle to be findable through the interfaces they use:
