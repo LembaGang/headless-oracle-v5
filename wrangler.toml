@@ -27,6 +27,7 @@ routes = [
   { pattern = "headlessoracle.com/badge/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/x402", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/specifications/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/verification/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
 ]
 
@@ -36,7 +37,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "999"
+TEST_COUNT = "1008"
 
 # ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
 # Used for circuit breaker halts and emergency market status overrides.

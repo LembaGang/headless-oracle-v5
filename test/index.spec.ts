@@ -10850,6 +10850,77 @@ describe('GET /docs/specifications/cpvr-1', () => {
 	});
 });
 
+// ─── Multi-Oracle Consensus Protocol v1.0.0 ─────────────────────────────────
+
+describe('GET /v1/verification/multi-oracle-guide', () => {
+	it('returns valid JSON with spec_version 1.0.0', async () => {
+		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
+		expect(body.spec_version).toBe('1.0.0');
+	});
+
+	it('declares minimum_oracles = 3 and fail_closed_default = true', async () => {
+		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
+		expect(body.minimum_oracles).toBe(3);
+		expect(body.fail_closed_default).toBe(true);
+		expect(body.consensus_algorithm).toBe('majority_with_fail_closed');
+	});
+
+	it('attestation_format contains all required fields', async () => {
+		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
+		const fmt = body.attestation_format as Record<string, { required: boolean }>;
+		for (const field of ['exchange', 'status', 'timestamp', 'expires_at', 'signature', 'public_key_url', 'oracle_id']) {
+			expect(fmt[field]).toBeDefined();
+			expect(fmt[field].required).toBe(true);
+		}
+	});
+
+	it('reference_oracles is non-empty and lists Headless Oracle as compliant', async () => {
+		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
+		expect(Array.isArray(body.reference_oracles)).toBe(true);
+		expect(body.reference_oracles.length).toBeGreaterThan(0);
+		const ho = body.reference_oracles[0];
+		expect(ho.name).toBe('Headless Oracle');
+		expect(ho.sma_compliant).toBe(true);
+		expect(ho.signature_algorithm).toBe('Ed25519');
+		expect(ho.exchanges).toBe(28);
+	});
+
+	it('cites SEC/CFTC Technical Framework for Tokenized Collateral', async () => {
+		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
+		const aligned = (body.regulatory_alignment as string[]).join(' ');
+		expect(aligned).toContain('SEC/CFTC');
+		expect(aligned).toContain('Tokenized Collateral');
+	});
+
+	it('exposes spec_url pointing to the markdown specification', async () => {
+		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
+		expect(body.spec_url).toBe('https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1');
+	});
+});
+
+describe('GET /docs/specifications/multi-oracle-consensus-v1', () => {
+	it('returns 200 with text/markdown content-type', async () => {
+		const response = await fetchWorker('/docs/specifications/multi-oracle-consensus-v1');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+
+	it('contains the consensus algorithm and minimum oracle count', async () => {
+		const text = await fetchWorker('/docs/specifications/multi-oracle-consensus-v1').then((r) => r.text());
+		expect(text).toContain('Multi-Oracle Consensus Protocol');
+		expect(text).toContain('majority_with_fail_closed');
+		expect(text).toContain('three independent oracle feeds');
+		expect(text).toContain('SEC/CFTC');
+		expect(text).toContain('Signed Market-State Attestation');
+	});
+
+	it('.md variant also works', async () => {
+		const response = await fetchWorker('/docs/specifications/multi-oracle-consensus-v1.md');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/markdown');
+	});
+});
+
 // ─── A2A Agent Card v1 ──────────────────────────────────────────────────────
 
 describe('GET /.well-known/agent-card.json (A2A v1)', () => {

@@ -4603,6 +4603,230 @@ when downstream layers publish compatible proof formats.
 Apache 2.0
 `;
 
+// ─── Multi-Oracle Consensus Protocol v1.0.0 ──────────────────────────────────
+// First published standard for market-state verification across independent
+// oracle feeds. Designed to satisfy the SEC/CFTC Technical Framework for
+// Tokenized Collateral (Nov 2025) requirement for at least three independent
+// oracle feeds with cryptographic attestation. Markdown spec served at
+// /docs/specifications/multi-oracle-consensus-v1; machine-readable JSON
+// guide at /v1/verification/multi-oracle-guide (unauthenticated, public good).
+const MULTI_ORACLE_CONSENSUS_GUIDE_JSON = {
+	spec_version: '1.0.0',
+	spec_url: 'https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1',
+	title: 'Multi-Oracle Consensus Protocol for Market-State Verification',
+	purpose: 'Define how autonomous agents query multiple independent market-state oracles and reach consensus before executing financial transactions.',
+	consensus_algorithm: 'majority_with_fail_closed',
+	minimum_oracles: 3,
+	fail_closed_default: true,
+	consensus_rule: 'Execute only if at least floor(N/2)+1 valid oracle responses agree on status="open". All other outcomes fail closed.',
+	regulatory_alignment: [
+		'SEC/CFTC Technical Framework for Tokenized Collateral (November 2025)',
+		'ESMA algorithmic trading rules',
+		'NIST AI risk management framework',
+		'Singapore MAS agentic AI governance framework',
+	],
+	attestation_format: {
+		exchange:       { type: 'string', description: 'ISO 10383 Market Identifier Code (MIC), e.g. XNYS', required: true },
+		status:         { type: 'enum',   description: 'One of: open, closed, pre_market, after_hours, break, halted, unknown', enum: ['open', 'closed', 'pre_market', 'after_hours', 'break', 'halted', 'unknown'], required: true },
+		timestamp:      { type: 'string', description: 'ISO 8601 UTC instant the attestation was issued', required: true },
+		expires_at:     { type: 'string', description: 'ISO 8601 UTC instant after which the attestation MUST NOT be acted on. Maximum 60 seconds from timestamp.', required: true },
+		signature:      { type: 'string', description: 'Base64-encoded Ed25519 signature (or equivalent algorithm)', required: true },
+		public_key_url: { type: 'string', description: 'HTTPS URL where the oracle\'s signing key can be retrieved', required: true },
+		oracle_id:      { type: 'string', description: 'Globally unique identifier for the oracle provider', required: true },
+	},
+	verification_flow: [
+		'Discover oracle endpoints via MCP, .well-known, registry, or hardcoded config',
+		'Query all configured oracles in parallel with a uniform timeout (recommended 2000ms)',
+		'Verify each signature independently against the canonical payload',
+		'Discard responses where signature is invalid or expires_at has passed',
+		'Apply consensus rule to remaining valid responses',
+		'Proceed only if consensus is "open" and at least 3 valid responses were received',
+		'If consensus cannot be reached, do not trade (fail-closed)',
+	],
+	error_handling: {
+		network_timeout:           'Treat as closed; do not include in valid response set',
+		invalid_signature:         'Discard response and log oracle_id, signature, reason',
+		expired_attestation:       'Discard response',
+		schema_violation:          'Discard response',
+		majority_disagreement:     'Use majority if it favors open; otherwise fail-closed; flag for human review',
+		fewer_than_three_valid:    'Hard floor — do not trade under any circumstances',
+		public_key_fetch_failure:  'Discard response; optionally retry once with backoff',
+		unknown_status_returned:   'Count as a valid vote for unknown (which is not open)',
+	},
+	cryptographic_requirements: {
+		default_algorithm: 'Ed25519',
+		recommended:       ['Ed25519', 'ECDSA-secp256k1'],
+		permitted:         ['RSA-PSS-2048+'],
+		forbidden:         ['SHA-1', 'RSA-1024'],
+		minimum_security_bits: 128,
+	},
+	reference_oracles: [
+		{
+			name: 'Headless Oracle',
+			oracle_id: 'headlessoracle.com',
+			endpoint: 'https://headlessoracle.com/v5/status',
+			mcp_endpoint: 'https://headlessoracle.com/mcp',
+			exchanges: 28,
+			signature_algorithm: 'Ed25519',
+			public_key_url: 'https://headlessoracle.com/v5/keys',
+			receipt_ttl_seconds: 60,
+			fail_closed: true,
+			sma_compliant: true,
+		},
+	],
+	implementation_note: 'A second and third independent oracle implementation are required to satisfy the minimum oracle count in production. This specification exists in part to make it possible for those implementations to interoperate without bilateral coordination.',
+	license: 'MIT',
+	editor: 'Headless Oracle (headlessoracle.com)',
+};
+
+// Multi-oracle consensus protocol — markdown specification.
+// Mirror of docs/specs/MULTI-ORACLE-CONSENSUS-v1.md. Served at
+// /docs/specifications/multi-oracle-consensus-v1.
+const MULTI_ORACLE_CONSENSUS_SPEC_MD = `# Multi-Oracle Consensus Protocol for Market-State Verification
+
+**Version**: 1.0.0
+**Status**: Published Standard
+**License**: MIT
+**Editor**: Headless Oracle (headlessoracle.com)
+**Canonical URL**: https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1
+**Machine-Readable**: https://headlessoracle.com/v1/verification/multi-oracle-guide
+
+## Abstract
+
+This specification defines how an autonomous agent SHOULD query multiple
+independent market-state oracles and reach consensus before executing a
+financial transaction. It is designed to satisfy the SEC/CFTC Technical
+Framework for Tokenized Collateral (November 2025), which requires "at least
+three independent oracle feeds with cryptographic attestation" for asset
+valuation and collateral verification.
+
+This is a verification standard for *market state* — whether an exchange is
+open, closed, halted, in pre-market, after-hours, on a scheduled break, or
+unknown — not for *price feeds*. Price-oracle consensus is out of scope.
+
+## 1. Scope
+
+In scope:
+
+- Verifying whether one or more exchanges are in a tradeable state at a given instant.
+- Reaching agreement across independent oracle providers on that state.
+- Defining the minimum cryptographic and structural requirements an oracle response MUST meet to participate in consensus.
+- Defining the agent-side decision rules that turn N oracle responses into a single execute / do-not-execute outcome.
+
+Out of scope: price discovery, settlement, custody, identity of the oracle operator (covered separately by APTS and MPAS).
+
+## 2. Terminology
+
+The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY in this document are to be interpreted as described in RFC 2119.
+
+**Signed Market-State Attestation (SMA)** — A cryptographically signed statement, issued by an oracle, asserting the state of a single exchange at a single point in time.
+
+**Oracle feed** — An independent oracle endpoint that issues SMAs. Two feeds are independent if they are operated by different entities, signed with different keys, and do not share an upstream data source or signing infrastructure.
+
+**Consensus threshold** — The minimum number of oracle feeds whose valid SMAs must agree on the same market state for the agent to proceed. Defined as \`floor(N/2) + 1\` where N is the number of valid responses.
+
+**Fail-closed default** — The behavior an agent MUST exhibit when consensus cannot be established: treat the market as CLOSED and do not execute the trade.
+
+**UNKNOWN** — A distinct market-state value that an oracle MUST emit when it cannot determine the true state. UNKNOWN is treated as CLOSED for execution purposes but MUST be preserved as UNKNOWN in audit logs.
+
+## 3. Minimum Oracle Count
+
+An agent MUST query at least three independent oracle feeds before any trade execution covered by the SEC/CFTC Technical Framework for Tokenized Collateral. Fewer than three valid responses MUST result in a fail-closed outcome.
+
+## 4. Consensus Algorithm
+
+The agent MUST implement the following algorithm:
+
+1. Query all configured oracle feeds in parallel with a uniform timeout (RECOMMENDED: 2000 ms).
+2. For each response, perform the verification flow defined in section 6.
+3. Discard any response that fails verification or whose \`expires_at\` has passed.
+4. Let \`V\` be the set of remaining valid SMAs. If \`|V| < 3\`, the agent MUST NOT execute the trade.
+5. Group \`V\` by \`status\`. Let \`M\` be the largest group.
+6. If \`|M| >= floor(|V|/2) + 1\` AND every member of \`M\` has \`status = "open"\`, the agent MAY proceed.
+7. In all other cases — including a tied vote, a majority for any non-open status, or unanimous disagreement — the agent MUST NOT execute. The agent SHOULD log the disagreement for human review.
+
+The algorithm is named \`majority_with_fail_closed\`.
+
+## 5. Attestation Format
+
+Each oracle response MUST contain at least:
+
+| Field            | Type    | Description                                                                       |
+|------------------|---------|-----------------------------------------------------------------------------------|
+| \`exchange\`       | string  | ISO 10383 Market Identifier Code (MIC), e.g. \`XNYS\`.                              |
+| \`status\`         | enum    | One of: \`open\`, \`closed\`, \`pre_market\`, \`after_hours\`, \`break\`, \`halted\`, \`unknown\`. |
+| \`timestamp\`      | string  | ISO 8601 UTC instant the attestation was issued.                                  |
+| \`expires_at\`     | string  | ISO 8601 UTC instant after which the attestation MUST NOT be acted on.            |
+| \`signature\`      | string  | Base64-encoded Ed25519 signature (or equivalent).                                 |
+| \`public_key_url\` | string  | HTTPS URL where the oracle's signing key can be retrieved.                        |
+| \`oracle_id\`      | string  | Globally unique identifier for the oracle provider.                               |
+
+The interval \`expires_at - timestamp\` MUST NOT exceed 60 seconds. The \`status\` enum is closed: an oracle MUST NOT emit any value outside this set.
+
+## 6. Verification Flow
+
+For every oracle response, the agent MUST execute the following steps in order. Failure at any step MUST cause the response to be discarded.
+
+1. **Discover** the oracle endpoint via MCP, \`/.well-known/agent.json\`, \`/.well-known/oracle-keys.json\`, a registry, or hardcoded configuration.
+2. **Fetch** the response under the timeout from section 4.
+3. **Parse** the response and confirm every field in section 5 is present and well-formed.
+4. **Retrieve** the public key from \`public_key_url\` (cache MAY be used; TTL no longer than 24 hours).
+5. **Verify** the signature against the canonical payload as defined by the oracle's published signing specification.
+6. **Check freshness** — \`expires_at\` MUST be in the future relative to the agent's current monotonic clock.
+7. **Admit** the response to the consensus pool only if every preceding step succeeded.
+
+## 7. Error Handling
+
+| Condition                                | Required behavior                                              |
+|------------------------------------------|----------------------------------------------------------------|
+| Network timeout                          | Treat as missing; do not include in \`V\`.                       |
+| Invalid signature                        | Discard. Log \`oracle_id\`, \`signature\`, reason.                 |
+| Expired \`expires_at\`                     | Discard.                                                       |
+| Schema violation                         | Discard.                                                       |
+| Disagreement (no clear majority)         | Use majority if it favors \`open\`; otherwise fail-closed.       |
+| Fewer than 3 valid responses             | Do not trade. Hard floor.                                      |
+| Public key fetch failure                 | Discard. Optionally retry once with backoff.                   |
+| Oracle returns \`unknown\`                 | Count as a vote for \`unknown\` (not \`open\`).                    |
+
+Errors MUST NOT be silently swallowed.
+
+## 8. Cryptographic Requirements
+
+The default signature algorithm is Ed25519. Alternates MUST be declared at \`public_key_url\`, MUST be supported by the agent's verifier, and MUST provide at least 128-bit security. ECDSA-secp256k1 and Ed25519 are RECOMMENDED. RSA-PSS with at least 2048-bit keys is permitted. SHA-1 and 1024-bit RSA are forbidden.
+
+## 9. Reference Implementation
+
+Headless Oracle is the first compliant implementation.
+
+| Property                | Value                                              |
+|-------------------------|----------------------------------------------------|
+| \`oracle_id\`             | \`headlessoracle.com\`                               |
+| Endpoint (REST)         | \`https://headlessoracle.com/v5/status\`             |
+| Endpoint (MCP)          | \`https://headlessoracle.com/mcp\`                   |
+| \`public_key_url\`        | \`https://headlessoracle.com/v5/keys\`               |
+| Signature algorithm     | Ed25519                                            |
+| Exchanges               | 28 global venues                                   |
+| Receipt TTL             | 60 seconds                                         |
+| Fail-closed             | Yes — \`unknown\` is always treated as \`closed\`      |
+
+A second and third independent implementation are required to satisfy the minimum oracle count in production.
+
+## 10. Regulatory Alignment
+
+- **SEC/CFTC Technical Framework for Tokenized Collateral** (November 2025) — at least three independent oracle feeds with cryptographic attestation.
+- **ESMA algorithmic trading rules** — algorithms must be explainable and third-party data sources auditable.
+- **NIST AI risk management framework** — cryptographic chains of custody for agent authorization.
+- **Singapore MAS agentic AI governance framework** — fail-closed defaults and attestation-based decisions.
+
+## 11. Versioning
+
+This is version 1.0.0. Backwards-incompatible changes will be published under a new major version at a new URL. Comments and errata: https://github.com/LembaGang/headless-oracle-v5/issues.
+
+## 12. License
+
+This specification is published under the MIT License.
+`;
+
 // Ampersend integration guide — composable market state + spend authorization pattern.
 const AMPERSEND_INTEGRATION_MD = `# Ampersend + Headless Oracle: Composable Pre-Trade Verification
 
@@ -6711,6 +6935,26 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/docs/specifications/multi-oracle-consensus-v1': {
+			get: {
+				tags:        ['Documentation'],
+				summary:     'Multi-Oracle Consensus Protocol v1.0.0 (PUBLISHED STANDARD)',
+				description: 'First published standard for market-state verification across independent oracle feeds. Defines minimum oracle count (3), consensus algorithm (majority_with_fail_closed), attestation format, verification flow, and cryptographic requirements. Aligned with SEC/CFTC Technical Framework for Tokenized Collateral (Nov 2025). License: MIT. text/markdown.',
+				responses: {
+					'200': { description: 'Specification document', content: { 'text/markdown': { schema: { type: 'string' } } } },
+				},
+			},
+		},
+		'/v1/verification/multi-oracle-guide': {
+			get: {
+				tags:        ['Discovery'],
+				summary:     'Multi-Oracle Consensus Protocol — machine-readable guide',
+				description: 'JSON description of the Multi-Oracle Consensus Protocol v1.0.0. Includes consensus algorithm, attestation format, verification flow, error handling, cryptographic requirements, and reference oracle implementations. Unauthenticated — public good.',
+				responses: {
+					'200': { description: 'Multi-oracle consensus guide', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
 		'/docs/integrations/ampersend': {
 			get: {
 				tags:        ['Documentation'],
@@ -7759,6 +8003,16 @@ export default {
 		// ── CPVR-1 spec (markdown) ───────────────────────────────────────────────
 		if (url.pathname === '/docs/specifications/cpvr-1' || url.pathname === '/docs/specifications/cpvr-1.md') {
 			return new Response(CPVR_1_SPEC_MD, {
+				headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8' },
+			});
+		}
+		// ── Multi-Oracle Consensus Protocol v1 (markdown) ────────────────────────
+		if (
+			url.pathname === '/docs/specifications/multi-oracle-consensus-v1' ||
+			url.pathname === '/docs/specifications/multi-oracle-consensus-v1.md' ||
+			url.pathname === '/docs/specs/MULTI-ORACLE-CONSENSUS-v1.md'
+		) {
+			return new Response(MULTI_ORACLE_CONSENSUS_SPEC_MD, {
 				headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8' },
 			});
 		}
@@ -12464,6 +12718,14 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 		// ── GET /v5/pre-trade-stack — machine-readable composable verification stack ─
 		if (url.pathname === '/v5/pre-trade-stack' && request.method === 'GET') {
 			return json(PRE_TRADE_STACK_JSON);
+		}
+
+		// ── GET /v1/verification/multi-oracle-guide ─────────────────────────────
+		// Multi-Oracle Consensus Protocol v1.0.0 — machine-readable guide.
+		// Unauthenticated public-good endpoint. The /v1/ prefix is intentional —
+		// this is a spec-versioned URL, not a Headless Oracle product version.
+		if (url.pathname === '/v1/verification/multi-oracle-guide' && request.method === 'GET') {
+			return json(MULTI_ORACLE_CONSENSUS_GUIDE_JSON);
 		}
 
 		// ── GET /v5/showcase — social proof and reference projects ───────────────────

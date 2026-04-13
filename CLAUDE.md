@@ -147,10 +147,10 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 <!-- Last updated: 2026-04-13 Day 46 semantic upgrade sprint -->
 
 - **Day**: 46 (since project start)
-- **Tests**: 998/998 (994 + 4 semantic upgrade) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
-- **Worker**: `src/index.ts` ~12,800 lines. API-only — zero HTML.
-- **Worker version**: 942911e8 (semantic upgrade — model-agnostic + SEC/CFTC + global exchange names)
-- **OpenAPI**: 79 paths (+1 /v5/revenue-pulse), 11 semantic tags
+- **Tests**: 1008/1008 (998 + 9 multi-oracle consensus + 1 prior bump) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Worker**: `src/index.ts` ~13,100 lines. API-only — zero HTML.
+- **Worker version**: d5bfdaf1 (multi-oracle consensus v1.0.0 — first published market-state verification standard)
+- **OpenAPI**: 81 paths (+2 multi-oracle-consensus-v1 + multi-oracle-guide), 11 semantic tags
 - **x402 payment count**: 1 (settled Day 41)
 - **External revenue**: $0 (no stranger has paid yet)
 - **Monitoring**: GitHub Actions health-check every 15 min — `.github/workflows/health-check.yml` + `scripts/health-check.mjs`. Verifies 5 endpoints, Ed25519 signatures, TTL window, Pages-vs-Worker classifier, and Paddle revenue events → GH issues. Full design in `.claude/rules/monitors.md`.

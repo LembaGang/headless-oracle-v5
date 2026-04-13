@@ -2,10 +2,23 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue focus. Distribution sprint. Monitoring infra in place.
+**Phase**: Post-launch. Revenue focus. Distribution sprint. Standards authorship sprint live.
 **Day**: 46 (2026-04-13)
-**Test suite**: 998/998 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~12,800 lines (API-only, zero HTML). Live version: 942911e8 (semantic upgrade deployed).
+**Test suite**: 1008/1008 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~13,100 lines (API-only, zero HTML). Live version: d5bfdaf1 (multi-oracle consensus v1 deployed).
+
+### What's Done (Day 46 — multi-oracle consensus v1.0.0 sprint)
+- **MULTI-ORACLE-CONSENSUS-v1.md**: full spec written and shipped at `docs/specs/MULTI-ORACLE-CONSENSUS-v1.md`. First published standard for market-state verification across independent oracle feeds. License: MIT. Designed to satisfy SEC/CFTC Technical Framework for Tokenized Collateral (Nov 2025) requirement for ≥3 independent oracle feeds with cryptographic attestation. Defines `majority_with_fail_closed` algorithm, attestation field set (exchange, status, timestamp, expires_at, signature, public_key_url, oracle_id), 7-step verification flow, error handling table, and Ed25519/ECDSA-secp256k1/RSA-PSS-2048+ crypto requirements (SHA-1 and RSA-1024 forbidden).
+- **Markdown route**: served at `/docs/specifications/multi-oracle-consensus-v1` (and `.md` + `/docs/specs/MULTI-ORACLE-CONSENSUS-v1.md` aliases). text/markdown. Mirror of the on-disk file lives in `MULTI_ORACLE_CONSENSUS_SPEC_MD` constant in `src/index.ts`.
+- **JSON discovery endpoint**: `GET /v1/verification/multi-oracle-guide` — unauthenticated public-good. Spec-versioned `/v1/` prefix (deliberately distinct from Headless Oracle's `/v5/` product namespace) so other oracles can adopt the same path. Returns spec_version, consensus_algorithm, minimum_oracles=3, fail_closed_default=true, attestation_format with required fields, verification_flow, error_handling table, cryptographic_requirements, regulatory_alignment array (SEC/CFTC, ESMA, NIST, MAS), and reference_oracles list with Headless Oracle as the first compliant implementation.
+- **Worker route added**: `headlessoracle.com/v1/verification/*` in wrangler.toml. Without this the path was being intercepted by Pages passthrough — caught on first live verify, fixed before final deploy.
+- **OpenAPI**: 79 → 81 paths (+1 spec markdown, +1 JSON guide). Tagged Documentation + Discovery respectively.
+- **9 new tests** (999 → 1008): JSON shape (spec_version 1.0.0), minimum_oracles=3 + fail_closed_default=true + algorithm name, attestation_format required fields presence (all 7), reference_oracles non-empty + Headless Oracle compliant + Ed25519 + 28 exchanges, regulatory_alignment cites SEC/CFTC, spec_url consistency, markdown 200/text-markdown, markdown content checks (algorithm name, "three independent oracle feeds", SEC/CFTC, "Signed Market-State Attestation"), `.md` variant works.
+- **TEST_COUNT**: 999 → 1008 in wrangler.toml.
+- **Live verification**: `curl https://headlessoracle.com/v1/verification/multi-oracle-guide` returns spec_version 1.0.0, minimum_oracles 3, fail_closed_default true, algorithm majority_with_fail_closed, reference_oracles[0].name "Headless Oracle". Markdown spec returns 200 text/markdown.
+- **Deployed**: Worker version d5bfdaf1.
+- **Strategic significance**: Headless Oracle is now the editor of the multi-oracle market-state verification standard, not just one provider within it. Chainlink and Pyth do price-feed consensus; nobody had published a market-state consensus protocol. Publishing first establishes us as the architectural reference for the SEC/CFTC tokenized collateral compliance market.
+- **Gap**: The standard mandates ≥3 independent oracles, and only one currently exists (us). Until at least two more independent implementations ship, the spec is normative-but-unsatisfiable in production. Next move is either (a) seed reference implementations under different operators, or (b) court Polygon.io / TradingHours.com / RedStone to wrap their data in an SMA-compliant signed envelope. Both are distribution moves, not engineering moves.
 
 ### What's Done (Day 46 — semantic upgrade sprint)
 - **MCP tool descriptions**: model-agnostic positioning + SEC/CFTC tokenized collateral language added to all 5 tools (get_market_status, get_market_schedule, list_exchanges, verify_receipt, get_payment_options). Same 5-point WHAT/WHEN/RETURNS/FAILURE/LATENCY structure preserved; content upgraded.
