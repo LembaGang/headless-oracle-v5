@@ -2003,6 +2003,18 @@ const UNAUTH_MCP_STATUS_LIMIT  = 10;   // Unauthenticated get_market_status call
 const BUILDER_TIER_DAILY_LIMIT = 50_000;
 const PRO_TIER_DAILY_LIMIT     = 200_000;
 
+// ─── Canonical pricing table ──────────────────────────────────────────────
+// Single source of truth for dollar amounts. Both build402Payload and
+// /v5/pricing derive from this — don't hardcode prices anywhere else.
+const PRICING = {
+	x402_per_request_usdc: '0.001',
+	credit_pack_usd:       5,
+	builder_monthly_usd:   99,
+	pro_monthly_usd:       299,
+	protocol_monthly_usd:  500,
+	credit_pack_calls:     1000,
+} as const;
+
 // Returns the daily request limit for a given plan. null = unlimited (protocol, internal).
 function getPlanDailyLimit(plan: string): number | null {
 	switch (plan) {
@@ -2551,10 +2563,10 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 		network:            'base',
 		chain_id:           8453,
 		pricing: {
-			per_request:     { amount_usdc: '0.001', units: String(X402_MIN_AMOUNT_UNITS), scheme: 'x402' },
-			credit_pack:     { amount_usd: '5.00',   calls: 1000,   purchase: 'POST /v5/x402/mint' },
-			builder_monthly: { amount_usd: '99.00',  calls_per_day: BUILDER_TIER_DAILY_LIMIT, purchase: 'POST /v5/checkout' },
-			pro_monthly:     { amount_usd: '299.00', calls_per_day: PRO_TIER_DAILY_LIMIT,     purchase: 'POST /v5/checkout' },
+			per_request:     { amount_usdc: PRICING.x402_per_request_usdc,       units: String(X402_MIN_AMOUNT_UNITS), scheme: 'x402' },
+			credit_pack:     { amount_usd:  PRICING.credit_pack_usd.toFixed(2),  calls: PRICING.credit_pack_calls, purchase: 'POST /v5/x402/mint' },
+			builder_monthly: { amount_usd:  PRICING.builder_monthly_usd.toFixed(2), calls_per_day: BUILDER_TIER_DAILY_LIMIT, purchase: 'POST /v5/checkout' },
+			pro_monthly:     { amount_usd:  PRICING.pro_monthly_usd.toFixed(2),     calls_per_day: PRO_TIER_DAILY_LIMIT,     purchase: 'POST /v5/checkout' },
 		},
 		x402_endpoint:      'https://headlessoracle.com/v5/status',
 		pricing_endpoint:   'https://headlessoracle.com/v5/pricing',
@@ -11676,8 +11688,8 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						{
 							id:              'x402',
 							name:            'x402 Per-Request',
-							price_usdc:      '0.001',
-							price_label:     '$0.001 USDC / request',
+							price_usdc:      PRICING.x402_per_request_usdc,
+							price_label:     `$${PRICING.x402_per_request_usdc} USDC / request`,
 							calls_per_day:   null,
 							key_prefix:      null,
 							provision:       'X-Payment header on /v5/status',
@@ -11692,9 +11704,9 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						{
 							id:           'credits',
 							name:         'Credit Pack',
-							price_usd:    5,
-							price_label:  '$5 one-time',
-							calls:        1000,
+							price_usd:    PRICING.credit_pack_usd,
+							price_label:  `$${PRICING.credit_pack_usd} one-time`,
+							calls:        PRICING.credit_pack_calls,
 							key_prefix:   'ho_crd_',
 							provision:    'POST /v5/x402/mint',
 							description:  '1,000 prepaid calls. No expiry. Mint instantly with $5 USDC on Base mainnet.',
@@ -11703,8 +11715,8 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						{
 							id:           'builder',
 							name:         'Builder',
-							price_usd:    99,
-							price_label:  '$99 / month',
+							price_usd:    PRICING.builder_monthly_usd,
+							price_label:  `$${PRICING.builder_monthly_usd} / month`,
 							calls_per_day: BUILDER_TIER_DAILY_LIMIT,
 							key_prefix:   'ho_live_',
 							provision:    'POST /v5/checkout',
@@ -11714,8 +11726,8 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						{
 							id:           'pro',
 							name:         'Pro',
-							price_usd:    299,
-							price_label:  '$299 / month',
+							price_usd:    PRICING.pro_monthly_usd,
+							price_label:  `$${PRICING.pro_monthly_usd} / month`,
 							calls_per_day: PRO_TIER_DAILY_LIMIT,
 							key_prefix:   'ho_live_',
 							provision:    'POST /v5/checkout',
@@ -11725,8 +11737,8 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						{
 							id:           'protocol',
 							name:         'Protocol',
-							price_usd:    500,
-							price_label:  '$500 / month',
+							price_usd:    PRICING.protocol_monthly_usd,
+							price_label:  `$${PRICING.protocol_monthly_usd} / month`,
 							calls_per_day: null,
 							key_prefix:   'ho_live_',
 							provision:    'POST /v5/checkout',
