@@ -2,6 +2,11 @@ name = "headless-oracle-v5"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
+# Embed docs/integrations/*.md as Text modules so we can import them directly.
+rules = [
+  { type = "Text", globs = ["**/*.md"], fallthrough = true }
+]
+
 # ─── Route Strategy ───────────────────────────────────────────────────────────
 # Worker handles ONLY API routes. HTML pages (/, /pricing, /docs, /blog,
 # /status, /verify, /traction, /refund, /upgrade) are served by Cloudflare
@@ -29,6 +34,7 @@ routes = [
   { pattern = "headlessoracle.com/docs/specifications/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/verification/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/docs/integrations/*", zone_name = "headlessoracle.com" },
 ]
 
 [vars]
@@ -37,7 +43,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "1020"
+TEST_COUNT = "1034"
 
 # ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
 # Used for circuit breaker halts and emergency market status overrides.

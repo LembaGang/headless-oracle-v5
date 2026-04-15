@@ -2,6 +2,25 @@ import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
 import { createClient } from '@supabase/supabase-js';
 
+// ─── Integration guides served as text/markdown ──────────────────────────────
+// Wildcard route handler at /docs/integrations/:slug serves these via the
+// INTEGRATION_GUIDES map. Adding a new guide: drop the .md file in
+// docs/integrations/, import it here, register it in INTEGRATION_GUIDES.
+// See wrangler.toml `rules` for the Text module loader.
+import KOREA_INVESTMENT_MCP_MD from '../docs/integrations/korea-investment-mcp.md';
+import AGENTICTRADING_MCP_MD from '../docs/integrations/agentictrading-mcp.md';
+import OPENALGO_ZERODHA_MD from '../docs/integrations/openalgo-zerodha.md';
+import TRADINGAGENTS_RISK_MD from '../docs/integrations/tradingagents-risk.md';
+import COMPOSIO_LISTING_MD from '../docs/integrations/composio-listing.md';
+
+const INTEGRATION_GUIDES: Record<string, string> = {
+  'korea-investment-mcp': KOREA_INVESTMENT_MCP_MD,
+  'agentictrading-mcp': AGENTICTRADING_MCP_MD,
+  'openalgo-zerodha': OPENALGO_ZERODHA_MD,
+  'tradingagents-risk': TRADINGAGENTS_RISK_MD,
+  'composio-listing': COMPOSIO_LISTING_MD,
+};
+
 ed.hashes.sha512 = sha512;
 
 // ─── Ed25519 module-level warm-up ────────────────────────────────────────────
@@ -8177,6 +8196,30 @@ export default {
 			return new Response(AMPERSEND_INTEGRATION_MD, {
 				headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8' },
 			});
+		}
+		// ── Integration guides wildcard ──────────────────────────────────────────
+		// /docs/integrations/:slug[.md] → serve docs/integrations/{slug}.md as
+		// text/markdown. Guides are embedded at build time via Text module imports
+		// (see wrangler.toml `rules` and INTEGRATION_GUIDES map at file top).
+		// Unknown slugs fall through to the Pages passthrough below so existing
+		// integrations served by headless-oracle-web keep working; a request
+		// routed to the Worker for /docs/integrations/* that matches neither the
+		// map nor Pages will 404 downstream.
+		{
+			const m = /^\/docs\/integrations\/([a-z0-9][a-z0-9-]*)(?:\.md)?$/.exec(url.pathname);
+			if (m) {
+				const slug = m[1];
+				const body = INTEGRATION_GUIDES[slug];
+				if (body) {
+					return new Response(body, {
+						headers: {
+							...SECURITY_HEADERS,
+							'Content-Type': 'text/markdown; charset=utf-8',
+							'Cache-Control': 'public, max-age=300',
+						},
+					});
+				}
+			}
 		}
 
 		// ── Pages passthrough ────────────────────────────────────────────────────

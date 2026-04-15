@@ -10993,6 +10993,63 @@ describe('GET /docs/integrations/ampersend', () => {
 	});
 });
 
+// ─── Integration guides wildcard handler ─────────────────────────────────────
+
+describe('GET /docs/integrations/:slug — wildcard handler', () => {
+	const slugs = [
+		{ slug: 'korea-investment-mcp', contains: 'Korea Investment Securities' },
+		{ slug: 'agentictrading-mcp', contains: 'AgenticTrading' },
+		{ slug: 'openalgo-zerodha', contains: 'OpenAlgo' },
+		{ slug: 'tradingagents-risk', contains: 'TradingAgents' },
+		{ slug: 'composio-listing', contains: 'Composio' },
+	];
+
+	for (const { slug, contains } of slugs) {
+		it(`serves ${slug} as text/markdown with 200`, async () => {
+			const response = await fetchWorker(`/docs/integrations/${slug}`);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('Content-Type')).toContain('text/markdown');
+			const text = await response.text();
+			expect(text).toContain(contains);
+		});
+
+		it(`serves ${slug}.md alias as text/markdown with 200`, async () => {
+			const response = await fetchWorker(`/docs/integrations/${slug}.md`);
+			expect(response.status).toBe(200);
+			expect(response.headers.get('Content-Type')).toContain('text/markdown');
+		});
+	}
+
+	it('sets Cache-Control: public, max-age=300 on served guides', async () => {
+		const response = await fetchWorker('/docs/integrations/korea-investment-mcp');
+		expect(response.headers.get('Cache-Control')).toBe('public, max-age=300');
+	});
+
+	it('applies security headers to served guides', async () => {
+		const response = await fetchWorker('/docs/integrations/korea-investment-mcp');
+		// SECURITY_HEADERS include X-Content-Type-Options: nosniff
+		expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+	});
+
+	it('unknown slug falls through (not served as markdown from the map)', async () => {
+		// A slug not in INTEGRATION_GUIDES must not return our markdown payload.
+		// In the test harness the Pages passthrough target is unreachable, so
+		// whatever comes back must not be a 200 text/markdown response from us.
+		const response = await fetchWorker('/docs/integrations/this-guide-does-not-exist');
+		if (response.status === 200) {
+			expect(response.headers.get('Content-Type') || '').not.toContain('text/markdown');
+		}
+	});
+
+	it('does not serve uppercase slugs (regex is lowercase-only)', async () => {
+		const response = await fetchWorker('/docs/integrations/Korea-Investment-MCP');
+		// Must not return our markdown — either 404, 5xx, or Pages passthrough.
+		if (response.status === 200) {
+			expect(response.headers.get('Content-Type') || '').not.toContain('text/markdown');
+		}
+	});
+});
+
 // ─── CPVR-1 Spec ────────────────────────────────────────────────────────────
 
 describe('GET /docs/specifications/cpvr-1', () => {
