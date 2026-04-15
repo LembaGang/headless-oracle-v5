@@ -147,12 +147,13 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-15 Day 48 Smithery score + pricing dedup -->
+<!-- Last updated: 2026-04-15 Day 49 content sprint (docs only, no worker change) -->
 
-- **Day**: 48 (since project start)
+- **Day**: 49 (since project start)
 - **Tests**: 1020/1020 + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
 - **Worker**: `src/index.ts` ~13,300 lines. API-only — zero HTML.
-- **Worker version**: 3c5c8727 (Smithery score fix — MCP prompts + resources declared; pricing dedup via PRICING constant)
+- **Worker version**: 3c5c8727 (unchanged — Day 49 was content-only)
+- **Day 49 content sprint**: 5 integration guides (docs/integrations/korea-investment-mcp, agentictrading-mcp, openalgo-zerodha, tradingagents-risk, composio-listing), 7 registry listings (docs/registry-submissions.md), 4 awesome-list PR entries (docs/awesome-mcp-pr.md), 10 outreach drafts (docs/outreach/day49-messages.md). All reflect April 2026 semantic upgrade positioning. No worker code, no deploy.
 - **MCP prompts**: `pre_trade_check(mic)` and `market_briefing` — structured fail-closed guidance messages via `prompts/list` + `prompts/get`
 - **MCP resources**: `oracle://exchanges/directory` — static 28-exchange directory via `resources/list` + `resources/read`
 - **Smithery**: score target 63 → 80+. smithery.yaml declares prompts/resources/capabilities; license fixed (Commercial → MIT); get_payment_options added to tools list

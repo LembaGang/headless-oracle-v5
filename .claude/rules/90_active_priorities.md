@@ -2,10 +2,30 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue focus. Standards authorship. Asia-Pacific distribution sprint queued.
-**Day**: 48 (2026-04-15 — Smithery score fix + pricing dedup)
+**Phase**: Post-launch. Revenue focus. Standards authorship. Asia-Pacific distribution sprint — content drafted, awaiting human send.
+**Day**: 49 (2026-04-15 — content sprint: 5 integration guides, 7 registry listings, 10 outreach drafts)
 **Test suite**: 1020/1020 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~13,300 lines (API-only, zero HTML). Live version: 3c5c8727.
+**Worker**: src/index.ts ~13,300 lines (API-only, zero HTML). Live version: 3c5c8727 (unchanged).
+
+### What's Done (Day 49 — content sprint, docs only)
+
+- **5 integration guides** under `docs/integrations/`:
+  - `korea-investment-mcp.md` — KIS Trading MCP ↔ HO composition for XKRX, AI Framework Act positioning
+  - `agentictrading-mcp.md` — HO as DAG precondition node before `execute_trade` in AgenticTrading (Open-Finance-Lab)
+  - `openalgo-zerodha.md` — Flask middleware for OpenAlgo + SEBI Feb 2025 5-year audit trail positioning (XBOM/XNSE)
+  - `tradingagents-risk.md` — risk manager agent pre-trade gate for TauricResearch/TradingAgents (ties to PR #523)
+  - `composio-listing.md` — Composio tool registry reference content (5 actions, long description, regulatory alignment)
+- **7 registry listings** (`docs/registry-submissions.md`): paste-ready copy for Official MCP Registry, Smithery, Glama, PulseMCP, mcp.so, mcpservers.org, mcpmarket.com. All use April 2026 semantic upgrade positioning.
+- **4 awesome-list PR entries** (`docs/awesome-mcp-pr.md`): PR-ready markdown matching the exact format of wong2/awesome-mcp-servers, TensorBlock/awesome-mcp-servers (updates existing PR #343), georgezouq/awesome-ai-in-finance, punkpeye/awesome-mcp-servers. Each includes PR title, commit message, and format discipline rules.
+- **10 outreach drafts** (`docs/outreach/day49-messages.md`): short (<280 chars) and long (<200 words) variants for KIS, AgenticTrading, TradingAgents, CrewAI, AutoGen, Zerodha/OpenAlgo/Rajandran R, Alpaca, TradingHours.com, RedStone, Polygon.io. Each references a specific repo/product/statement and includes one concrete link.
+- **Tests**: 1020/1020 (no code changes, content only).
+- **No worker deploy**: content-only sprint. Worker version unchanged at 3c5c8727.
+- **HUMAN TASKS (the whole point of this sprint)**:
+  1. Send the 10 outreach messages — ideally as GitHub issues/PRs/Discussions where the target accepts contributor traffic, DMs where not. Log sends into `docs/distribution/outreach-log.md`.
+  2. Open 4 awesome-list PRs using the entries in `docs/awesome-mcp-pr.md` (wong2, TensorBlock update of PR #343, georgezouq, punkpeye).
+  3. Submit to the 7 registries in `docs/registry-submissions.md`.
+  4. The 5 integration guides are not yet routed through the worker (`docs/integrations/` markdown is not auto-served today — existing integrations are served via embedded string constants in `src/index.ts`). That is an intentional deferral: routing all markdown through a wildcard resolver is a separate architectural decision from writing the content. If any of these guides is linked externally before the routing lands, either (a) add a specific worker route for that file like the existing pattern, or (b) link to the GitHub raw URL.
+- **Gap**: The integration guides live only in git. Agents crawling `headlessoracle.com` cannot discover them via the Worker yet. Next engineering sprint should add a `/docs/integrations/{slug}` wildcard handler that reads from a manifest, so new guides become crawlable without requiring a worker change per file. This is the compounding distribution surface — every guide that isn't crawlable is invisible to the primary consumer.
 
 ### What's Done (Day 48 — Smithery score fix + pricing dedup)
 
