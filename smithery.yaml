@@ -5,7 +5,7 @@
 # After submission, Smithery crawls this file for tool metadata.
 
 name: headless-oracle
-display_name: Headless Oracle — Signed Market Status
+display_name: Headless Oracle
 description: |
   Cryptographically signed real-time market status for 28 global exchanges — equities,
   derivatives (CME, NYMEX, Cboe), and 24/7 crypto (Coinbase, Binance).
@@ -14,9 +14,11 @@ description: |
   SMA Protocol v1.0 compliant. Supports x402 per-request micropayments (0.001 USDC/req on Base).
   Reference implementation for the External State Attestation RFC submitted to the Verifiable Intent specification.
   Verification layer in the autonomous finance stack (Authorization: Verifiable Intent, Execution: BVNK/Mastercard, Verification: Headless Oracle).
-version: "5.0"
+version: "5.0.0"
 homepage: https://headlessoracle.com
-license: Commercial
+documentation: https://headlessoracle.com/docs
+repository: https://github.com/LembaGang/headless-oracle-v5
+license: MIT
 author:
   name: LembaGang
   url: https://headlessoracle.com
@@ -99,6 +101,42 @@ tools:
           type: object
           description: "A signed market receipt object as returned by get_market_status."
           required: true
+
+  - name: get_payment_options
+    description: |
+      Returns upgrade ladder for agents needing higher rate limits or live receipts:
+      sandbox (200 calls free), x402 per-request ($0.001 USDC on Base mainnet),
+      credit packs ($5 = 1000 calls), builder ($99/mo = 50K/day), pro ($299/mo = 200K/day).
+      Always returns 200. No authentication required.
+    parameters: {}
+
+prompts:
+  - name: pre_trade_check
+    description: |
+      Pre-trade safety check for a single exchange. Guides the agent through the fail-closed pattern:
+      fetch a signed market-state receipt, verify the Ed25519 signature, confirm status is OPEN,
+      check the 60-second TTL, and only then proceed with execution. Treats UNKNOWN, HALTED,
+      and CLOSED as a mandatory halt (non-negotiable).
+    arguments:
+      - name: mic
+        description: "ISO 10383 MIC code (e.g. XNYS, XNAS, XLON, XJPX, XKRX, XHKG, XSHG, XBOM, XNSE)."
+        required: true
+
+  - name: market_briefing
+    description: |
+      Global market-state briefing across all 28 supported exchanges. Guides the agent through
+      discovering the exchange directory, fetching current status for each, grouping results into
+      OPEN / CLOSED / HALTED / UNKNOWN buckets, and emitting a fail-closed advisory. Useful at
+      agent startup or before any multi-exchange trading decision.
+    arguments: []
+
+resources:
+  - uri: oracle://exchanges/directory
+    name: exchange_directory
+    description: |
+      Static directory of all 28 supported exchanges with MIC codes, display names, IANA
+      timezones, mic_type (iso|convention), weekend schedules, and lunch-break windows.
+    mimeType: application/json
 
 supported_exchanges:
   - mic: XNYS

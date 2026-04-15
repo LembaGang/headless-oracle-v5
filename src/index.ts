@@ -5427,6 +5427,49 @@ const MCP_TOOLS = [
 	},
 ];
 
+// ─── MCP Prompts ─────────────────────────────────────────────────────────────
+// Pre-built prompt templates that guide agents through the fail-closed pre-trade
+// safety pattern. Exposed via prompts/list and prompts/get. Smithery and other
+// MCP registries score servers higher when they declare prompts alongside tools.
+const MCP_PROMPTS = [
+	{
+		name: 'pre_trade_check',
+		description:
+			'Pre-trade safety check for a single exchange. Guides the agent through the fail-closed pattern: ' +
+			'fetch a signed market-state receipt, verify the Ed25519 signature, confirm status is OPEN, ' +
+			'check the 60-second TTL, and only then proceed with execution. Treats UNKNOWN, HALTED, and CLOSED as a mandatory halt.',
+		arguments: [
+			{
+				name:        'mic',
+				description: 'ISO 10383 MIC code of the exchange to verify (e.g. XNYS, XNAS, XLON, XJPX, XKRX, XHKG, XSHG, XBOM, XNSE).',
+				required:    true,
+			},
+		],
+	},
+	{
+		name: 'market_briefing',
+		description:
+			'Global market-state briefing across all 28 supported exchanges. Guides the agent through ' +
+			'discovering the exchange directory, fetching current status for each, and grouping results into ' +
+			'OPEN / CLOSED / HALTED / UNKNOWN buckets with a fail-closed advisory. Useful at agent startup ' +
+			'or before any multi-exchange trading decision.',
+		arguments: [],
+	},
+];
+
+// ─── MCP Resources ───────────────────────────────────────────────────────────
+// Static resources exposed via resources/list and resources/read. Gives agents
+// a stable, discoverable reference for the supported exchange set without
+// needing to call list_exchanges as a tool.
+const MCP_RESOURCES = [
+	{
+		uri:         'oracle://exchanges/directory',
+		name:        'exchange_directory',
+		description: 'Directory of all 28 supported exchanges — MIC codes, display names, IANA timezones, mic_type (iso|convention), weekend schedules, and lunch breaks.',
+		mimeType:    'application/json',
+	},
+];
+
 // ─── OpenAPI 3.1 Specification ────────────────────────────────────────────────
 
 const OPENAPI_SPEC = {
@@ -7669,10 +7712,94 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		}
 
 		case 'resources/list':
-			return rpcResult({ resources: [] });
+			return rpcResult({ resources: MCP_RESOURCES });
+
+		case 'resources/read': {
+			const rp = params as { uri?: string } | undefined;
+			const uri = rp?.uri ?? '';
+			if (!uri) {
+				return rpcError(-32602, 'Invalid params: uri is required');
+			}
+			if (uri === 'oracle://exchanges/directory') {
+				return rpcResult({
+					contents: [{
+						uri,
+						mimeType: 'application/json',
+						text:     JSON.stringify({
+							exchanges:     SUPPORTED_EXCHANGES,
+							count:         SUPPORTED_EXCHANGES.length,
+							documentation: 'https://headlessoracle.com/v5/exchanges',
+							spec:          'https://headlessoracle.com/v5/keys',
+						}),
+					}],
+				});
+			}
+			return rpcError(-32602, `Unknown resource uri: ${uri}`);
+		}
 
 		case 'prompts/list':
-			return rpcResult({ prompts: [] });
+			return rpcResult({ prompts: MCP_PROMPTS });
+
+		case 'prompts/get': {
+			const pp   = params as { name?: string; arguments?: Record<string, unknown> } | undefined;
+			const pn   = pp?.name ?? '';
+			const pArg = pp?.arguments ?? {};
+			if (!pn) {
+				return rpcError(-32602, 'Invalid params: prompts/get requires a "name" field');
+			}
+			if (pn === 'pre_trade_check') {
+				const micArg = typeof pArg.mic === 'string' ? pArg.mic.toUpperCase() : '';
+				if (!micArg) {
+					return rpcError(-32602, 'Invalid params: pre_trade_check requires argument "mic"');
+				}
+				return rpcResult({
+					description: `Pre-trade safety check for ${micArg}`,
+					messages: [
+						{
+							role: 'user',
+							content: {
+								type: 'text',
+								text:
+									`Perform a fail-closed pre-trade safety check for exchange ${micArg} before executing any order. ` +
+									`Execute these steps in order and abort on any failure:\n\n` +
+									`1. Call the MCP tool get_market_status with { "mic": "${micArg}" }.\n` +
+									`2. Parse the returned JSON receipt and call verify_receipt to confirm the Ed25519 signature is valid.\n` +
+									`3. Confirm receipt.status is exactly "OPEN". Treat "UNKNOWN", "HALTED", and "CLOSED" as a mandatory halt — do not execute.\n` +
+									`4. Confirm receipt.expires_at is in the future (receipts have a 60-second TTL and must not be acted on after expiry).\n` +
+									`5. Confirm receipt.mic equals "${micArg}" and receipt.issuer equals "headlessoracle.com".\n` +
+									`6. Only if all five checks pass, proceed with trade execution. Surface the full receipt in your audit log either way.\n\n` +
+									`This check is non-negotiable. Under SEC/CFTC tokenized collateral guidance and the Multi-Oracle Consensus spec v1.0.0, ` +
+									`an unknown market state must fail closed.`,
+							},
+						},
+					],
+				});
+			}
+			if (pn === 'market_briefing') {
+				return rpcResult({
+					description: 'Global market-state briefing across all 28 supported exchanges',
+					messages: [
+						{
+							role: 'user',
+							content: {
+								type: 'text',
+								text:
+									`Produce a concise briefing of the current global market state across every exchange Headless Oracle supports. ` +
+									`Execute these steps:\n\n` +
+									`1. Call the MCP tool list_exchanges to obtain the current list of supported MIC codes.\n` +
+									`2. For each MIC, call get_market_status and verify the Ed25519 signature with verify_receipt.\n` +
+									`3. Group the results into four buckets: OPEN, CLOSED, HALTED, UNKNOWN.\n` +
+									`4. Highlight every HALTED or UNKNOWN market as an execution blocker — these must be treated as CLOSED under the fail-closed contract.\n` +
+									`5. Note any exchange whose receipt expires_at is within the next 30 seconds and recommend re-fetching before acting.\n` +
+									`6. Return a structured summary with a UTC timestamp and a fail-closed advisory line.\n\n` +
+									`Do not infer OPEN state from a missing or invalid signature. If verification fails, the exchange belongs in UNKNOWN.`,
+							},
+						},
+					],
+				});
+			}
+			return rpcError(-32602, `Unknown prompt name: ${pn}`);
+		}
 
 		default:
 			return rpcError(-32601, `Method not found: ${method}`);
@@ -8215,13 +8342,23 @@ export default {
 				}
 				return json({
 					name:           MCP_SERVER_NAME,
+					display_name:   'Headless Oracle',
 					version:        MCP_SERVER_VERSION,
 					protocol:       MCP_PROTOCOL_VERSION,
-					description:    'Cryptographically signed market status verification for AI agents',
+					description:
+						'Cryptographically signed market-state attestations for 28 global exchanges. ' +
+						'Ed25519-signed receipts with 60-second TTL, fail-closed UNKNOWN→CLOSED contract, ' +
+						'model-agnostic pre-trade safety gate for autonomous trading agents. ' +
+						'SEC/CFTC tokenized collateral aligned. x402 autonomous payments on Base mainnet.',
 					tools:          MCP_TOOLS.map((t) => t.name),
+					prompts:        MCP_PROMPTS.map((p) => p.name),
+					resources:      MCP_RESOURCES.map((r) => r.uri),
+					capabilities:   { tools: true, prompts: true, resources: true },
 					authentication: 'none',
 					sma_compliant:  true,
 					sma_version:    '1.0',
+					homepage:       'https://headlessoracle.com',
+					documentation: 'https://headlessoracle.com/docs',
 				});
 			}
 			if (request.method !== 'POST') {

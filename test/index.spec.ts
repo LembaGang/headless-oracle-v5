@@ -1504,20 +1504,116 @@ describe('POST /mcp', () => {
 		expect(data).toHaveProperty('error', 'UNKNOWN_MIC');
 	});
 
-	it('resources/list → { resources: [] }', async () => {
+	it('resources/list → declares exchange_directory resource', async () => {
 		const body = await postMcpJSON({ jsonrpc: '2.0', id: 8, method: 'resources/list' });
 		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
 		const result = body.result as Record<string, unknown>;
-		expect(result).toHaveProperty('resources');
-		expect(result.resources).toEqual([]);
+		const resources = result.resources as Array<Record<string, unknown>>;
+		expect(Array.isArray(resources)).toBe(true);
+		expect(resources.length).toBeGreaterThanOrEqual(1);
+		const dir = resources.find((r) => r.name === 'exchange_directory');
+		expect(dir).toBeDefined();
+		expect(dir!.uri).toBe('oracle://exchanges/directory');
+		expect(dir!.mimeType).toBe('application/json');
 	});
 
-	it('prompts/list → { prompts: [] }', async () => {
+	it('resources/read oracle://exchanges/directory → returns all 28 exchanges', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 81, method: 'resources/read',
+			params: { uri: 'oracle://exchanges/directory' },
+		});
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
+		const result = body.result as Record<string, unknown>;
+		const contents = result.contents as Array<Record<string, unknown>>;
+		expect(contents[0].uri).toBe('oracle://exchanges/directory');
+		expect(contents[0].mimeType).toBe('application/json');
+		const parsed = JSON.parse(contents[0].text as string) as { exchanges: unknown[]; count: number };
+		expect(parsed.count).toBe(28);
+		expect(parsed.exchanges).toHaveLength(28);
+	});
+
+	it('resources/read without uri → -32602', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 82, method: 'resources/read', params: {} });
+		const err = body.error as { code: number };
+		expect(err.code).toBe(-32602);
+	});
+
+	it('resources/read unknown uri → -32602', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 83, method: 'resources/read',
+			params: { uri: 'oracle://nope' },
+		});
+		const err = body.error as { code: number };
+		expect(err.code).toBe(-32602);
+	});
+
+	it('prompts/list → declares pre_trade_check and market_briefing', async () => {
 		const body = await postMcpJSON({ jsonrpc: '2.0', id: 9, method: 'prompts/list' });
 		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
 		const result = body.result as Record<string, unknown>;
-		expect(result).toHaveProperty('prompts');
-		expect(result.prompts).toEqual([]);
+		const prompts = result.prompts as Array<Record<string, unknown>>;
+		expect(Array.isArray(prompts)).toBe(true);
+		const names = prompts.map((p) => p.name);
+		expect(names).toContain('pre_trade_check');
+		expect(names).toContain('market_briefing');
+		const ptc = prompts.find((p) => p.name === 'pre_trade_check')!;
+		const args = ptc.arguments as Array<Record<string, unknown>>;
+		expect(args[0].name).toBe('mic');
+		expect(args[0].required).toBe(true);
+	});
+
+	it('prompts/get pre_trade_check with mic → returns messages', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 91, method: 'prompts/get',
+			params: { name: 'pre_trade_check', arguments: { mic: 'XNYS' } },
+		});
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
+		const result = body.result as Record<string, unknown>;
+		expect(result).toHaveProperty('description');
+		const messages = result.messages as Array<Record<string, unknown>>;
+		expect(messages.length).toBeGreaterThanOrEqual(1);
+		expect(messages[0].role).toBe('user');
+		const content = messages[0].content as { type: string; text: string };
+		expect(content.type).toBe('text');
+		expect(content.text).toContain('XNYS');
+		expect(content.text).toContain('fail-closed');
+	});
+
+	it('prompts/get market_briefing → returns messages', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 92, method: 'prompts/get',
+			params: { name: 'market_briefing' },
+		});
+		expect(Object.prototype.hasOwnProperty.call(body, 'error')).toBe(false);
+		const result = body.result as Record<string, unknown>;
+		const messages = result.messages as Array<Record<string, unknown>>;
+		const content = messages[0].content as { type: string; text: string };
+		expect(content.text).toContain('list_exchanges');
+		expect(content.text).toContain('UNKNOWN');
+	});
+
+	it('prompts/get without name → -32602', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 93, method: 'prompts/get', params: {} });
+		const err = body.error as { code: number };
+		expect(err.code).toBe(-32602);
+	});
+
+	it('prompts/get pre_trade_check without mic arg → -32602', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 94, method: 'prompts/get',
+			params: { name: 'pre_trade_check', arguments: {} },
+		});
+		const err = body.error as { code: number };
+		expect(err.code).toBe(-32602);
+	});
+
+	it('prompts/get unknown prompt → -32602', async () => {
+		const body = await postMcpJSON({
+			jsonrpc: '2.0', id: 95, method: 'prompts/get',
+			params: { name: 'nonexistent' },
+		});
+		const err = body.error as { code: number };
+		expect(err.code).toBe(-32602);
 	});
 
 	it('GET /mcp → 200 server info (name, version, protocol, tools, sma_compliant)', async () => {
@@ -1536,6 +1632,21 @@ describe('POST /mcp', () => {
 		expect(tools).toContain('get_market_status');
 		expect(tools).toContain('get_market_schedule');
 		expect(tools).toContain('list_exchanges');
+	});
+
+	it('GET /mcp → declares prompts, resources, capabilities, display_name', async () => {
+		const response = await fetchWorker('/mcp');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('display_name', 'Headless Oracle');
+		const prompts = body.prompts as string[];
+		expect(prompts).toContain('pre_trade_check');
+		expect(prompts).toContain('market_briefing');
+		const resources = body.resources as string[];
+		expect(resources).toContain('oracle://exchanges/directory');
+		const caps = body.capabilities as Record<string, boolean>;
+		expect(caps.tools).toBe(true);
+		expect(caps.prompts).toBe(true);
+		expect(caps.resources).toBe(true);
 	});
 
 	it('PUT /mcp → 405 Method Not Allowed', async () => {
