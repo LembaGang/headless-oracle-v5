@@ -147,12 +147,15 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-13 Day 47 context refresh sprint -->
+<!-- Last updated: 2026-04-15 Day 48 Smithery score + pricing dedup -->
 
-- **Day**: 47 (since project start)
-- **Tests**: 1011/1011 + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
-- **Worker**: `src/index.ts` ~13,100 lines. API-only — zero HTML.
-- **Worker version**: 35beb439 (x402 payment hardening — flat machine-readable 402 fields + server-card payment section)
+- **Day**: 48 (since project start)
+- **Tests**: 1020/1020 + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Worker**: `src/index.ts` ~13,300 lines. API-only — zero HTML.
+- **Worker version**: 3c5c8727 (Smithery score fix — MCP prompts + resources declared; pricing dedup via PRICING constant)
+- **MCP prompts**: `pre_trade_check(mic)` and `market_briefing` — structured fail-closed guidance messages via `prompts/list` + `prompts/get`
+- **MCP resources**: `oracle://exchanges/directory` — static 28-exchange directory via `resources/list` + `resources/read`
+- **Smithery**: score target 63 → 80+. smithery.yaml declares prompts/resources/capabilities; license fixed (Commercial → MIT); get_payment_options added to tools list
 - **OpenAPI**: 81 paths, 11 semantic tags, `x-model-agnostic: true` + `x-regulatory-alignment` extensions on the `info` block
 - **Exchange count**: 28 (23 traditional + XCBT, XNYM, XCBO, XCOI, XBIN). Every surface says 28 — audit complete.
 - **MCP tool descriptions**: model-agnostic positioning + SEC/CFTC tokenized collateral language on all 5 tools; explicit "pre-trade safety check — MUST NOT execute if unreachable" line on `get_market_status`; regional exchange names in descriptions (Shanghai/Korea/Tokyo/etc.) to aid keyword discovery by Asian agent platforms (Dify, Coze, AgentScope)

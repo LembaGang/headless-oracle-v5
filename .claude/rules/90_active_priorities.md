@@ -3,9 +3,32 @@
 
 ## Current Status
 **Phase**: Post-launch. Revenue focus. Standards authorship. Asia-Pacific distribution sprint queued.
-**Day**: 47 (2026-04-13 — context refresh sprint)
-**Test suite**: 1011/1011 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~13,100 lines (API-only, zero HTML). Live version: 35beb439 (x402 payment hardening deployed).
+**Day**: 48 (2026-04-15 — Smithery score fix + pricing dedup)
+**Test suite**: 1020/1020 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
+**Worker**: src/index.ts ~13,300 lines (API-only, zero HTML). Live version: 3c5c8727.
+
+### What's Done (Day 48 — Smithery score fix + pricing dedup)
+
+- **MCP prompts declared**: `prompts/list` and new `prompts/get` handler. Two prompts:
+  - `pre_trade_check(mic)` — structured 6-step fail-closed guidance template for single-exchange pre-trade verification. Cites SEC/CFTC tokenized collateral guidance and the Multi-Oracle Consensus spec v1.0.0.
+  - `market_briefing` — 6-step template for global cross-exchange briefing, treats missing signatures as UNKNOWN.
+- **MCP resources declared**: `resources/list` and new `resources/read` handler. One resource:
+  - `oracle://exchanges/directory` — returns the full 28-exchange directory (MICs, names, timezones, mic_type, weekends, lunch breaks) as application/json.
+- **GET /mcp metadata enriched**: now includes `display_name: "Headless Oracle"`, `capabilities: { tools, prompts, resources: true }`, explicit `prompts` and `resources` arrays, full description, `homepage`, `documentation` URL. Existing fields preserved (sma_compliant, sma_version, authentication).
+- **smithery.yaml upgraded**:
+  - License fixed: `Commercial` → `MIT` (matches LICENSE file)
+  - `display_name`: `Headless Oracle — Signed Market Status` → `Headless Oracle` (cleaner for registry cards)
+  - Added `documentation` + `repository` top-level fields
+  - Added missing 5th tool (`get_payment_options`) to tools block
+  - Added `prompts:` block declaring both prompts with full argument schema
+  - Added `resources:` block declaring the exchange directory
+  - `version`: `"5.0"` → `"5.0.0"` (semver)
+- **9 new tests** (1011 → 1020): resources/list (strict), resources/read happy path / no uri / unknown uri, prompts/list (strict), prompts/get pre_trade_check / market_briefing / no name / no mic / unknown prompt, GET /mcp declares prompts+resources+capabilities.
+- **Pricing dedup (gap from Day 47)**: introduced a canonical `PRICING` constant alongside `BUILDER_TIER_DAILY_LIMIT` / `PRO_TIER_DAILY_LIMIT`. Both `build402Payload` and `/v5/pricing` now derive dollar amounts from it — no more hardcoded "5.00"/"99.00"/"299.00" in two places. Fields `credit_pack_usd`, `builder_monthly_usd`, `pro_monthly_usd`, `protocol_monthly_usd`, `x402_per_request_usdc`, `credit_pack_calls`.
+- **Standards page CTA fix**: `headless-oracle-web/standards.html` — primary "Read the multi-oracle consensus spec" button now points at the markdown route (`/docs/specifications/multi-oracle-consensus-v1`) for human readers; a secondary "JSON discovery doc" button points at `/v1/verification/multi-oracle-guide` for agents.
+- **Deployed**: Worker version `3c5c8727`. Pages deployed (0442218b.headless-oracle-web.pages.dev). Live-verified — `POST /mcp` prompts/list returns both prompts, resources/list returns `oracle://exchanges/directory`.
+- **Strategic significance**: Smithery's automated scoring was 63/100 partly because the server declared empty prompts and resources. Every MCP registry card is a compounding distribution surface — Smithery propagates to other aggregators. The prompts themselves also double as agent-guidance templates: any client calling `prompts/get pre_trade_check` receives the exact fail-closed instruction we want agents to follow, baked directly into their context.
+- **Gap**: The Day 47 priority list (Asia-Pacific distribution sprint, SMA standardisation, SFF2026 application, SEBI positioning) is unchanged — today's work was Smithery-score infrastructure, not distribution execution. The distribution content drafts (5 integration guides, 7 registry listings, 10 outreach messages) from the full Day 48 prompt are **still outstanding** and need a dedicated content-focused session rather than being folded into an infra sprint. The PRICING constant is now single-source, but `/docs/x402-payments.md` and various integration docs still reference `$0.001` inline — acceptable for now (docs drift is less dangerous than runtime drift), revisit if dollar amounts ever change.
 
 ### Day 47 Top Priorities (new)
 
