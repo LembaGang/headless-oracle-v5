@@ -202,10 +202,11 @@ How Mike and I collaborate on this codebase now:
 
 - **Brief with full context at task start.** Relevant files, latest test output, recent commit history, and success criteria — up front. Don't make me discover context progressively through tool calls when you could have handed it over in one message.
 - **Expect 1–2 session completion for non-trivial work.** Spec revisions, protocol implementations, multi-file refactors — plan for that horizon. Don't split arbitrarily across more sessions.
-- **Pre-commit gate (run every time, no exceptions):**
-  1. `npm test` — full suite must pass
-  2. No TypeScript errors (the build and tests should catch this, but verify)
-  3. `npx wrangler deploy --dry-run` must succeed
+- **Pre-commit gate (enforced automatically via `.githooks/pre-commit`, no exceptions — including docs-only commits):**
+  1. `npx tsc --noEmit` — zero TypeScript errors
+  2. `npm test` — full suite must pass
+  3. `npx wrangler deploy --dry-run` — bundle + config must validate
+  One-time setup per clone or worktree: `git config core.hooksPath .githooks`. Tests require `.dev.vars`; copy it into any new worktree before the first commit. Do not reach for `--no-verify` — if you believe an exception is warranted, surface it in the conversation first.
 - **Fail-closed posture is load-bearing.** It is the product's defining invariant and it is threaded through the codebase. Any change that introduces a permissive default, silent fallback, "temporary" bypass, or optimistic assumption in an error path must be flagged explicitly before committing. Don't reason it away — surface it.
 - **Commit signing.** Sign commits with the SSH signing key at `~/.ssh/id_ed25519_signing`. Already configured globally — no per-commit setup needed.
 
