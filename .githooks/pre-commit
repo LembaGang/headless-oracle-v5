@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Headless Oracle V5 — uniform pre-commit gate.
+#
+# Enforces the rule declared in CLAUDE.md "Working style (Opus 4.7)":
+#   1. TypeScript must type-check clean
+#   2. Full test suite must pass
+#   3. wrangler deploy --dry-run must succeed
+#
+# Applies to every commit, including docs-only. No opt-out.
+# If you believe an exception is warranted, surface it in the conversation
+# before committing — do not reach for --no-verify.
+#
+# One-time setup per clone/worktree:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+# Guard: tests require .dev.vars. Fail loudly if missing — don't silently
+# pass a commit that couldn't actually run the gate.
+if [ ! -f .dev.vars ]; then
+	echo "[pre-commit] ERROR: .dev.vars is missing." >&2
+	echo "[pre-commit] Copy it from the main checkout (it is gitignored):" >&2
+	echo "[pre-commit]   cp /path/to/main/checkout/.dev.vars ." >&2
+	exit 1
+fi
+
+echo "[pre-commit] (1/3) TypeScript check..."
+npx tsc --noEmit
+
+echo "[pre-commit] (2/3) Test suite..."
+npm test --silent
+
+echo "[pre-commit] (3/3) Wrangler deploy --dry-run..."
+npx wrangler deploy --dry-run >/dev/null
+
+echo "[pre-commit] All three gates passed. Proceeding with commit."

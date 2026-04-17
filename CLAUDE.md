@@ -147,36 +147,43 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-15 Day 49 content sprint (docs only, no worker change) -->
+<!-- Last updated: 2026-04-16 — refresh for Opus 4.7 + active standards work -->
 
-- **Day**: 49 (since project start)
-- **Tests**: 1020/1020 + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Tests**: 1034 main suite (authoritative — `wrangler.toml` TEST_COUNT) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
 - **Worker**: `src/index.ts` ~13,300 lines. API-only — zero HTML.
-- **Worker version**: 3c5c8727 (unchanged — Day 49 was content-only)
-- **Day 49 content sprint**: 5 integration guides (docs/integrations/korea-investment-mcp, agentictrading-mcp, openalgo-zerodha, tradingagents-risk, composio-listing), 7 registry listings (docs/registry-submissions.md), 4 awesome-list PR entries (docs/awesome-mcp-pr.md), 10 outreach drafts (docs/outreach/day49-messages.md). All reflect April 2026 semantic upgrade positioning. No worker code, no deploy.
+- **First Dollar**: achieved 2026-04-03 on Base mainnet — tx `0xeb9da873`, $0.001 USDC, settled via x402 on `/v5/status`. This is the load-bearing proof that an autonomous agent can discover, pay, and verify without human mediation.
+- **Daily operational rhythm**: 308–365 signed receipts/day, 6–16 authenticated calls/day. Traffic is steady, not episodic.
+- **Sustained agent discovery**: Chiark, glama, MCPRegistry, Smithery Connect, codex-mcp-client, AgentSEO, AgentPulse, nothumansearch.ai all probe on their own cadence. No outreach required to keep them warm.
+- **AI crawler coverage**: Meta-ExternalAgent, ClaudeBot, Amazonbot, Googlebot, GPTBot, Applebot all active. Recent 24h window showed a 588% increase in crawl volume — the training-data-as-distribution thesis is working.
 - **MCP prompts**: `pre_trade_check(mic)` and `market_briefing` — structured fail-closed guidance messages via `prompts/list` + `prompts/get`
 - **MCP resources**: `oracle://exchanges/directory` — static 28-exchange directory via `resources/list` + `resources/read`
-- **Smithery**: score target 63 → 80+. smithery.yaml declares prompts/resources/capabilities; license fixed (Commercial → MIT); get_payment_options added to tools list
 - **OpenAPI**: 81 paths, 11 semantic tags, `x-model-agnostic: true` + `x-regulatory-alignment` extensions on the `info` block
-- **Exchange count**: 28 (23 traditional + XCBT, XNYM, XCBO, XCOI, XBIN). Every surface says 28 — audit complete.
-- **MCP tool descriptions**: model-agnostic positioning + SEC/CFTC tokenized collateral language on all 5 tools; explicit "pre-trade safety check — MUST NOT execute if unreachable" line on `get_market_status`; regional exchange names in descriptions (Shanghai/Korea/Tokyo/etc.) to aid keyword discovery by Asian agent platforms (Dify, Coze, AgentScope)
-- **x402 hardening**: 402 responses now carry flat top-level machine-readable fields (`payment_required`, `payment_method`, `currency`, `network`, `chain_id`, `pricing`, `x402_endpoint`, `pricing_endpoint`, `documentation_url`, `alternative`) so lowest-capability models (GPT-5 nano $0.05/MTok, Gemini Flash-Lite) can parse without walking nested objects. `server-card.json` gained a top-level `payment` section with `autonomous_payment: true`.
-- **Multi-Oracle Consensus spec v1.0.0**: we authored and published the first standard for market-state verification across independent oracle feeds. Served at `/docs/specifications/multi-oracle-consensus-v1` (markdown, MIT) and `/v1/verification/multi-oracle-guide` (JSON). Deliberately versioned `/v1/` — distinct from product `/v5/` — so other oracles can adopt the same path. Defines `majority_with_fail_closed` algorithm, minimum 3 independent feeds, attestation field set, Ed25519/ECDSA-secp256k1/RSA-PSS-2048+ crypto requirements, regulatory alignment (SEC/CFTC tokenized collateral Nov 2025, ESMA, NIST, MAS). HO is `reference_oracles[0]`.
-- **Standards hub (web)**: `headless-oracle-web/standards.html` is live. Agent-facing landing page for the Multi-Oracle Consensus standard, SMA Protocol, MPAS, and APTS.
-- **x402 payment count**: 1 (settled Day 41)
-- **External revenue**: $0 (no stranger has paid yet)
+- **Exchange count**: 28 (23 traditional + XCBT, XNYM, XCBO, XCOI, XBIN). Every surface says 28.
+- **x402 hardening**: 402 responses carry flat top-level machine-readable fields (`payment_required`, `payment_method`, `currency`, `network`, `chain_id`, `pricing`, `x402_endpoint`, `pricing_endpoint`, `documentation_url`, `alternative`) so lowest-capability models can parse without walking nested objects. `server-card.json` has a top-level `payment` section with `autonomous_payment: true`.
+- **Multi-Oracle Consensus spec v1.0.0**: we authored it. Served at `/docs/specifications/multi-oracle-consensus-v1` (markdown, MIT) and `/v1/verification/multi-oracle-guide` (JSON). Versioned `/v1/` so other oracles can adopt the same path. HO is `reference_oracles[0]`.
+- **Standards hub (web)**: `headless-oracle-web/standards.html` is live.
 - **Monitoring**: GitHub Actions health-check every 15 min — `.github/workflows/health-check.yml` + `scripts/health-check.mjs`. Verifies 5 endpoints, Ed25519 signatures, TTL window, Pages-vs-Worker classifier, and Paddle revenue events → GH issues. Full design in `.claude/rules/monitors.md`.
-- **Active PRs**: TradingAgents #523, ai-hedge-fund #564, a0-plugins #193, awesome-mcp-servers #343, ampersend #11
-- **Evaluators**: DataCamp (warmest), Chiark 85/100, CacheFly/Glama, MCPScoreboard 100/100, YellowMCP, AgentDiscoveryIndex, Amazon San Jose, Latitude.sh, Indiana University, Drexel University
-- **npm users**: 4 independent (South Africa, Italy, Germany, Indiana University)
-- **Auth calls trend**: 3 → 8 → 14 → 19 (weeks 11–14)
-- **Weekly unique MCP clients**: 65 (Week 14)
-- **Returning clients**: 12 and growing
-- **Infrastructure cost**: $15.50/month
-- **SDKs**: packages/sdk-typescript + packages/sdk-python (ready, not published)
-- **Conversion**: instant keys live, Paddle checkout working, enhanced 402/429 with upgrade paths
-- **402 messaging**: Risk-framing language ("execution system without verified market-state gating")
-- **Competitive landscape**: See `.claude/rules/95_competitive_landscape.md` for full threat assessment. No direct competitor does signed market-state. 12–24 month window before Chainlink/Pyth could ship it.
+- **Infrastructure cost**: ~$15.50/month
+- **Competitive landscape**: See `.claude/rules/95_competitive_landscape.md`. No direct competitor ships signed market-state. 12–24 month window before Chainlink/Pyth could.
+
+## Active standards work
+
+Two coordinated sibling PRs at `agent-intent/verifiable-intent` define the environment-constraint contract for autonomous agents. HO is the reference implementation for the market-state half.
+
+- **PR #9 (ours)** — proposes `environment.market_state` as a constraint block. Agents declare acceptable market-state conditions up front; the runtime enforces them against signed attestations before executing. **v0.2 lands 2026-04-17.**
+- **PR #22 (Douglas Borthwick)** — sibling proposal for `environment.wallet_state`. Same structural pattern applied to wallet/treasury state.
+- **Shared architecture** — both PRs use a common `max_attestation_age` field, the RFC 8725 §3.1 algorithm-agility framework for signing, and a fail-closed posture (unknown or expired attestation → refuse to proceed).
+
+### Spec-conformance guardrails (LOAD-BEARING)
+
+Any code change that affects **any of the following must be flagged before committing**:
+
+- The SMA receipt format (field names, types, ordering)
+- Signature canonicalization (alphabetical sort, JSON.stringify with no whitespace)
+- Ed25519 signing primitives (`@noble/ed25519`, CryptoKey caching, canonical payload construction)
+- `/v5/demo` or `/v5/status` response shape or semantics
+
+Breaking spec conformance while PR #9 is in review destroys the reference-implementation argument. If you believe a change is required, surface it explicitly with a rationale and the conformance impact — do not commit silently.
 
 ## How to Work on This Project
 
@@ -188,6 +195,20 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 6. Deploy: `npm run deploy`
 7. Live-verify: curl the changed endpoints
 8. Update this file's "Current State" section
+
+## Working style (Opus 4.7)
+
+How Mike and I collaborate on this codebase now:
+
+- **Brief with full context at task start.** Relevant files, latest test output, recent commit history, and success criteria — up front. Don't make me discover context progressively through tool calls when you could have handed it over in one message.
+- **Expect 1–2 session completion for non-trivial work.** Spec revisions, protocol implementations, multi-file refactors — plan for that horizon. Don't split arbitrarily across more sessions.
+- **Pre-commit gate (enforced automatically via `.githooks/pre-commit`, no exceptions — including docs-only commits):**
+  1. `npx tsc --noEmit` — zero TypeScript errors
+  2. `npm test` — full suite must pass
+  3. `npx wrangler deploy --dry-run` — bundle + config must validate
+  One-time setup per clone or worktree: `git config core.hooksPath .githooks`. Tests require `.dev.vars`; copy it into any new worktree before the first commit. Do not reach for `--no-verify` — if you believe an exception is warranted, surface it in the conversation first.
+- **Fail-closed posture is load-bearing.** It is the product's defining invariant and it is threaded through the codebase. Any change that introduces a permissive default, silent fallback, "temporary" bypass, or optimistic assumption in an error path must be flagged explicitly before committing. Don't reason it away — surface it.
+- **Commit signing.** Sign commits with the SSH signing key at `~/.ssh/id_ed25519_signing`. Already configured globally — no per-commit setup needed.
 
 ## What NOT to Do
 
@@ -248,6 +269,13 @@ Primary consumer: autonomous agents, not human developers.
 If no, the interface is not done.
 
 Full strategic context: `.claude/rules/05_strategic_vision.md`
+
+## Strategic context
+
+- **Reference-implementation positioning.** HO is positioning as *the* reference implementation for `environment.market_state` in the Verifiable Intent standard (Mastercard/Google initiative). Every architectural choice should strengthen that claim.
+- **Acquisition target priority (in order).** Cloudflare → Coinbase → Mastercard. Each has a distinct story: Cloudflare owns the edge layer we already live on, Coinbase owns the x402 rails the payment path depends on, Mastercard owns the standard the market-state constraint sits inside.
+- **Standards adoption > feature velocity.** A shipped feature moves the product one step. A standard we're cited in moves the category around us. When the two conflict, standards adoption wins — because acquisition positioning follows standard adoption, not feature count.
+- **Long-term thesis.** HO is the trust layer for autonomous financial agents. Fail-closed signed attestations, verifiable by any consumer, issued by an operator whose economic incentives are aligned with correctness rather than coverage.
 
 ## DST Calendar — Critical Dates 2026
 - **March 8**: US spring forward (EST→EDT) — XNYS, XNAS

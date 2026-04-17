@@ -2378,10 +2378,11 @@ async function verifyX402ViaFacilitator(
 			console.error(JSON.stringify({ event: 'FACILITATOR_SETTLE_REJECTED', status: settleRes.status, reason, body_keys: Object.keys(settleBody) }));
 			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_SETTLE_REJECTED: ${reason}` };
 		}
-		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleBody.txHash ?? 'n/a' }));
+		const settleTxHash = settleBody.txHash as string | undefined;
+		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleTxHash ?? 'n/a' }));
 		// Track payment stats for /v5/payment-proof — best-effort (errors swallowed)
 		try {
-			const _facilTxHash = settleBody.txHash ?? '';
+			const _facilTxHash = settleTxHash ?? '';
 			const countStr     = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
 			const count        = parseInt(countStr ?? '0', 10) || 0;
 			const nowIso       = new Date().toISOString();
@@ -2392,7 +2393,7 @@ async function verifyX402ViaFacilitator(
 			await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
 			await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
 		} catch { /* best-effort */ }
-		return { valid: true, status: 'payment-accepted', txHash: settleBody.txHash };
+		return { valid: true, status: 'payment-accepted', txHash: settleTxHash };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'unknown';
 		console.error('x402 facilitator /settle error:', msg);
@@ -8092,7 +8093,7 @@ async function runHaltMonitor(env: Env): Promise<void> {
 	// For each exchange, compare current schedule-based status against last known state.
 	// If changed, fire webhooks to all registered subscribers for that MIC.
 	// Uses schedule-based status (not halt-monitor results) — more broadly applicable.
-	const webhookDeliveries: Promise<void>[] = [];
+	const webhookDeliveries: ReturnType<typeof deliverWebhook>[] = [];
 
 	for (const [mic, config] of Object.entries(MARKET_CONFIGS)) {
 		let currentStatus: string;
@@ -8338,7 +8339,7 @@ export default {
 			}
 			// Link header for llms.txt discovery (llmstxt.org convention).
 			// 402 responses get payment + instant-key Link; both are additive.
-			const llmsLink = status === 402
+			const llmsLink: Record<string, string> = status === 402
 				? { 'Link': '</v5/keys/instant>; rel="payment"; method="POST", </v5/why-not-free>; rel="payment", </llms.txt>; rel="llms-txt"', 'X-X402-Foundation': 'compatible' }
 				: { 'Link': '</llms.txt>; rel="llms-txt"' };
 			return new Response(JSON.stringify(responseBody), {
@@ -8457,7 +8458,7 @@ export default {
 					// Key-based auth path (steps 1–3): MASTER → BETA → Supabase lookup
 					const auth = await checkApiKey(apiKey, env);
 					if (!auth.allowed) {
-						const authHeaders = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
+						const authHeaders: Record<string, string> = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 						const authBody = auth.status === 402
 							? { error: auth.error, message: auth.message, upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }
 							: { error: auth.error, message: auth.message };
@@ -8973,7 +8974,7 @@ export default {
 				}
 				const batchAuth = await checkApiKey(apiKey, env);
 				if (!batchAuth.allowed) {
-					const batchAuthHeaders = batchAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
+					const batchAuthHeaders: Record<string, string> = batchAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 					const batchAuthBody = batchAuth.body ?? (batchAuth.status === 402
 						? { error: batchAuth.error, message: batchAuth.message, upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }
 						: { error: batchAuth.error, message: batchAuth.message });
@@ -9798,8 +9799,11 @@ export default {
 				// Insert into Supabase api_keys table (non-blocking — KV is source of truth for auth)
 				if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+					// Supabase builder returns PromiseLike (no .catch). Wrap in Promise.resolve
+					// so ctx.waitUntil (which requires Promise) accepts it, and use the
+					// two-argument .then form to handle both fulfilled and rejected states.
 					ctx.waitUntil(
-						supabase.from('api_keys').insert({
+						Promise.resolve(supabase.from('api_keys').insert({
 							id:                    crypto.randomUUID(),
 							key_hash:              mintKeyHash,
 							key_prefix:            keyPrefix,
@@ -9813,9 +9817,9 @@ export default {
 							if (dbErr && (dbErr as unknown as Record<string, string>).code !== '23505') {
 								console.error(`X402_MINT_DB_ERROR: ${dbErr.message}`);
 							}
-						}).catch((e: unknown) => {
+						}, (e: unknown) => {
 							console.error(`X402_MINT_DB_EXCEPTION: ${e instanceof Error ? e.message : String(e)}`);
-						}),
+						})),
 					);
 				}
 
@@ -10325,7 +10329,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				}
 				const accountAuth = await checkApiKey(apiKey, env);
 				if (!accountAuth.allowed) {
-					const accountAuthHeaders = accountAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
+					const accountAuthHeaders: Record<string, string> = accountAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 					return json({ error: accountAuth.error, message: accountAuth.message }, accountAuth.status, accountAuthHeaders);
 				}
 
@@ -10723,20 +10727,23 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 			// Embeds a live /v5/schedule?mic=XLON result for verification.
 			// Not signed — this is educational, not a trading primitive.
 			if (url.pathname === '/v5/dst-risk') {
-				// Fetch live schedule for XLON to embed as verified_schedule
+				// Fetch live schedule for XLON to embed as verified_schedule.
+				// NB: MARKET_CONFIGS is a Record keyed by MIC; getScheduleStatus and
+				// getNextSession both take (mic: string, now: Date), and NextSession
+				// returns snake_case ISO 8601 strings (next_open / next_close).
 				let xlonSchedule: Record<string, unknown> | null = null;
 				try {
-					const xlon = MARKET_CONFIGS.find(m => m.mic === 'XLON');
+					const xlon = MARKET_CONFIGS['XLON'];
 					if (xlon) {
-						const { nextOpen, nextClose } = getNextSession(xlon, now);
+						const next = getNextSession('XLON', now);
 						xlonSchedule = {
 							mic: 'XLON',
 							name: xlon.name,
 							timezone: xlon.timezone,
 							queried_at: now.toISOString(),
-							current_status: getScheduleStatus(xlon, now).status,
-							next_open: nextOpen ? nextOpen.toISOString() : null,
-							next_close: nextClose ? nextClose.toISOString() : null,
+							current_status: getScheduleStatus('XLON', now).status,
+							next_open: next?.next_open ?? null,
+							next_close: next?.next_close ?? null,
 							lunch_break: xlon.lunchBreak ?? null,
 							note: 'Live schedule computed using IANA timezone Europe/London (DST-aware)',
 						};
