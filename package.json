@@ -22,7 +22,7 @@
 		"@vitest/coverage-istanbul": "~3.2.0",
 		"fast-check": "^4.6.0",
 		"typescript": "^5.5.2",
-		"viem": "^2.47.10",
+		"viem": "^2.47.17",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.64.0"
 	},
