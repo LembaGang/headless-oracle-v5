@@ -6143,56 +6143,32 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/stack': {
 			get: {
-				summary:     'Autonomous finance stack positioning',
-				description: 'Returns the three-layer autonomous finance stack showing where Headless Oracle fits: ' +
-					'Authorization (Verifiable Intent), Execution (BVNK), and Verification (Headless Oracle SMA). ' +
-					'No authentication required.',
+				summary:      'Deprecated — alias for /v5/pre-trade-stack',
+				description:  'Deprecated. Returns the Composable Pre-Trade Verification Pattern v2.0 payload (same as /v5/pre-trade-stack) wrapped in a deprecation envelope. New integrations SHOULD use /v5/pre-trade-stack directly. This endpoint will continue to respond during the deprecation window but may be removed in a future major version.',
+				tags:         ['Discovery'],
+				deprecated:   true,
+				'x-successor': '/v5/pre-trade-stack',
 				responses: {
 					'200': {
-						description: 'Stack positioning document',
-						content: { 'application/json': { schema: {
-							type: 'object',
-							required: ['stack', 'description', 'reference_implementation'],
-							properties: {
-								stack: {
+						description: 'Deprecation envelope + Pattern v2.0 payload. See /v5/pre-trade-stack for the canonical schema.',
+						content: {
+							'application/json': {
+								schema: {
 									type: 'object',
-									required: ['layer_1', 'layer_2', 'layer_3'],
 									properties: {
-										layer_1: {
+										_deprecated: {
 											type: 'object',
-											required: ['name', 'standard', 'url'],
 											properties: {
-												name:     { type: 'string', example: 'Authorization' },
-												standard: { type: 'string', example: 'Mastercard Verifiable Intent' },
-												url:      { type: 'string', format: 'uri', example: 'https://verifiableintent.dev' },
-											},
-										},
-										layer_2: {
-											type: 'object',
-											required: ['name', 'standard', 'url'],
-											properties: {
-												name:     { type: 'string', example: 'Execution' },
-												standard: { type: 'string', example: 'BVNK Layer1 / Mastercard' },
-												url:      { type: 'string', format: 'uri', example: 'https://bvnk.com' },
-											},
-										},
-										layer_3: {
-											type: 'object',
-											required: ['name', 'standard', 'url'],
-											properties: {
-												name:       { type: 'string', example: 'Verification' },
-												standard:   { type: 'string', example: 'Headless Oracle SMA Protocol v1.0' },
-												url:        { type: 'string', format: 'uri', example: 'https://headlessoracle.com' },
-												rfc:        { type: 'string', format: 'uri' },
-												compliance: { type: 'string', format: 'uri' },
+												note:             { type: 'string' },
+												replacement:      { type: 'string', format: 'uri' },
+												replacement_path: { type: 'string' },
 											},
 										},
 									},
+									additionalProperties: true,
 								},
-								description:              { type: 'string' },
-								reference_implementation: { type: 'string', format: 'uri', example: 'https://headlessoracle.com/v5/compliance' },
 							},
-						} } },
+						},
 					},
 				},
 			},
@@ -12005,34 +11981,29 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				return json(result);
 			}
 
-			// ── POST /v5/credits/purchase — buy prepaid credits via x402 ─
-			// -- GET /v5/stack -- autonomous finance stack positioning
-				// Public endpoint. No auth required. Returns three-layer stack positioning.
-				if (url.pathname === '/v5/stack') {
-					return json({
-						stack: {
-							layer_1: {
-								name:     'Authorization',
-								standard: 'Mastercard Verifiable Intent',
-								url:      'https://verifiableintent.dev',
-							},
-							layer_2: {
-								name:     'Execution',
-								standard: 'BVNK Layer1 / Mastercard',
-								url:      'https://bvnk.com',
-							},
-							layer_3: {
-								name:       'Verification',
-								standard:   'Headless Oracle SMA Protocol v1.0',
-								url:        'https://headlessoracle.com',
-								rfc:        'https://github.com/agent-intent/verifiable-intent/pulls',
-								compliance: 'https://headlessoracle.com/v5/compliance',
-							},
+			// -- GET /v5/stack -- deprecated alias for /v5/pre-trade-stack
+			// Returns the Composable Pre-Trade Verification Pattern v2.0 payload wrapped
+			// in a deprecation envelope. The old 3-layer "autonomous finance stack" framing
+			// is retired per Decision 2 Path C — HO is the reference implementation of
+			// environment.market_state inside the Verifiable Intent environment.* family,
+			// not a peer layer alongside Verifiable Intent and BVNK.
+			if (url.pathname === '/v5/stack') {
+				return json(
+					{
+						_deprecated: {
+							note:             'Deprecated endpoint. Returns Composable Pre-Trade Verification Pattern v2.0 content; new integrations should use /v5/pre-trade-stack.',
+							replacement:      'https://headlessoracle.com/v5/pre-trade-stack',
+							replacement_path: '/v5/pre-trade-stack',
 						},
-						description: 'Headless Oracle provides the verification layer in the autonomous finance stack. When an agent has authorization (Verifiable Intent) and payment rails (BVNK), it still needs cryptographic proof the market was open at execution time.',
-						reference_implementation: 'https://headlessoracle.com/v5/compliance',
-					});
-				}
+						...PRE_TRADE_STACK_JSON,
+					},
+					200,
+					{
+						'Deprecation': 'true',
+						'Link':        '</v5/pre-trade-stack>; rel="successor-version"',
+					},
+				);
+			}
 
 				if (url.pathname === '/v5/credits/purchase') {
 				if (request.method !== 'POST') {

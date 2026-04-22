@@ -10612,23 +10612,37 @@ describe('/v5/funnel — auth and params', () => {
 
 // ─── /v5/stack — response format ────────────────────────────────────────────
 
-describe('/v5/stack', () => {
-	it('returns 200 with stack layers', async () => {
+describe('GET /v5/stack — deprecated alias', () => {
+	it('returns 200', async () => {
 		const res = await fetchWorker('/v5/stack');
 		expect(res.status).toBe(200);
-		const body = await res.json() as Record<string, unknown>;
-		const stack = body.stack as Record<string, unknown>;
-		expect(stack.layer_1).toBeDefined();
-		expect(stack.layer_2).toBeDefined();
-		expect(stack.layer_3).toBeDefined();
-		expect(body.description).toBeDefined();
 	});
 
-	it('layer_3 references Headless Oracle', async () => {
+	it('includes deprecation envelope pointing to /v5/pre-trade-stack', async () => {
 		const body = await fetchJSON('/v5/stack');
-		const stack = body.stack as Record<string, Record<string, unknown>>;
-		expect(stack.layer_3.standard).toContain('Headless Oracle');
-		expect(stack.layer_3.compliance).toContain('headlessoracle.com');
+		const dep = body._deprecated as { note: string; replacement: string; replacement_path: string };
+		expect(dep).toBeDefined();
+		expect(dep.replacement).toBe('https://headlessoracle.com/v5/pre-trade-stack');
+		expect(dep.replacement_path).toBe('/v5/pre-trade-stack');
+		expect(dep.note).toContain('Deprecated');
+		expect(dep.note).toContain('v2.0');
+	});
+
+	it('returns Pattern v2.0 payload alongside deprecation envelope', async () => {
+		const body = await fetchJSON('/v5/stack');
+		expect(body.spec_version).toBe('2.0');
+		expect(body.type).toBe('deployment_pattern');
+		expect(body.normative_specifications).toBeDefined();
+		expect(Array.isArray(body.steps)).toBe(true);
+		expect((body.steps as unknown[]).length).toBe(5);
+	});
+
+	it('sets deprecation HTTP headers', async () => {
+		const res = await fetchWorker('/v5/stack');
+		expect(res.headers.get('Deprecation')).toBe('true');
+		const link = res.headers.get('Link') ?? '';
+		expect(link).toContain('rel="successor-version"');
+		expect(link).toContain('/v5/pre-trade-stack');
 	});
 });
 
