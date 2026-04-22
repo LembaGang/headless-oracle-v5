@@ -3404,6 +3404,44 @@ Allow: /v5/pre-trade-stack
 Disallow:
 `;
 
+// ============================================================================
+// Shared framing constants — referenced across multiple discovery surfaces.
+// When updating framing, update here, then migrate references.
+// Added 2026-04-22 as part of standards-framing cleanup.
+// ============================================================================
+
+const ENV_FAMILY_FRAMING_SHORT =
+  "Reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. Composes with environment.wallet_state for multi-venue mandates.";
+
+const ENV_FAMILY_FRAMING_SECTION = `## Role in the Verifiable Intent Environment.* Family
+
+Headless Oracle is the reference implementation of \`environment.market_state\`, a verification constraint in the Verifiable Intent environment.* family. The environment.* family defines execution-environment preconditions that must hold before an autonomous agent commits to a transaction — where \`environment.market_state\` attests that a trading venue is in an executable state, and sibling types such as \`environment.wallet_state\` attest that the wallet holding the collateral is in an expected state. Shared disciplines across the family include fail-closed semantics, JWKS caching, composition over conjunction, and register conventions for type identity.
+
+The specification is in coordinated drafting across PR #9 (\`environment.market_state\`, https://github.com/agent-intent/verifiable-intent/pull/9) and PR #22 (\`environment.wallet_state\`, https://github.com/agent-intent/verifiable-intent/pull/22) on the upstream \`agent-intent/verifiable-intent\` repository.`;
+
+const REGULATORY_DIRECTION_SHORT =
+  "Provides cryptographic venue-state attestation consistent with emerging regulatory direction on tokenized collateral and digital-asset derivatives (CFTC Staff Letter 25-39, Dec 2025; SEC Project Blueprint on Tokenized Collateral, Nov 2025). Final CFTC rulemaking expected Aug 2026.";
+
+const REGULATORY_DIRECTION_PARAGRAPH =
+  "Regulatory direction on tokenized collateral and digital-asset derivatives is moving toward cryptographic attestation, multiple independent oracles, and verifiable data provenance as technical primitives. CFTC Staff Letter 25-39 (December 2025) provides technology-neutral guidance on tokenized collateral; the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025) discusses oracle governance and signed attestations as architectural building blocks. Final CFTC rulemaking on tokenized collateral is expected by August 2026. Signed Market-State Attestations provide the cryptographic evidence regulated parties need to incorporate authentic, timely venue state into their own compliance frameworks as the regulatory picture crystallizes.";
+
+const REGULATORY_REFERENCES_STRUCTURED = [
+  {
+    body: "CFTC",
+    id: "Staff Letter 25-39",
+    title: "Tokenized Collateral Guidance",
+    date: "2025-12-08",
+    url: "https://www.cftc.gov/csl/25-39/download"
+  },
+  {
+    body: "SEC Crypto Task Force",
+    id: "Project Blueprint",
+    title: "Tokenized Collateral",
+    date: "2025-11-27",
+    url: "https://www.sec.gov/files/project-blueprint-tokenized-collateral-112725.pdf"
+  }
+];
+
 // ─── llms.txt (spec-compliant index) ─────────────────────────────────────────
 // Follows the llmstxt.org convention: title, blockquote summary, brief
 // description, then sections with markdown links. Concise — the index file
