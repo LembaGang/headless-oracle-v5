@@ -11693,10 +11693,11 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 			// No auth required. Designed to be polled by CI pipelines and evaluation tools.
 			if (url.pathname === '/v5/compliance') {
 				return json({
-					standard:         'Agent Pre-Trade Safety Standard v1.0',
+					standard:         'environment.market_state (Verifiable Intent environment.* constraint family); APTS v1.0 check vocabulary preserved for citation continuity',
 					oracle:           'Headless Oracle v5',
 					version:          'v5.0',
-					last_verified:    '2026-03-29T00:00:00Z',
+					last_verified:    new Date().toISOString(),
+					check_vocabulary: 'APTS v1.0 — 6 pre-trade safety checks. Predecessor working-spec name retained for citation continuity; concepts incorporated into environment.market_state (Verifiable Intent environment.* family).',
 					checks: [
 						{
 							check:    'APTS-001',
@@ -11736,14 +11737,29 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						},
 					],
 					sma_spec_version: '1.0',
+					sma_status:       'retired_working_spec_name; concepts incorporated into environment.market_state (Verifiable Intent environment.* family)',
 					sma_spec_url:     'https://github.com/LembaGang/sma-protocol/blob/master/SPEC.md',
 					verify_sdk:       'https://npmjs.com/package/@headlessoracle/verify',
 					standard_url:     'https://github.com/LembaGang/agent-pretrade-safety-standard/blob/master/STANDARD.md',
-					rfc: {
-						title:     'External State Attestation for Verifiable Intent',
-						url:       'https://github.com/agent-intent/verifiable-intent/pulls',
-						spec_url:  'https://headlessoracle.com/docs/rfc',
-						submitted: '2026-03-17',
+					standard_status:  'retired_brand; check vocabulary preserved',
+					spec_family: {
+						name:          'Verifiable Intent environment.* constraint family',
+						role:          'reference implementation of environment.market_state',
+						upstream_repo: 'agent-intent/verifiable-intent',
+						pull_requests: [
+							{
+								constraint: 'environment.market_state',
+								pr:         9,
+								url:        'https://github.com/agent-intent/verifiable-intent/pull/9',
+								status:     'coordinated drafting',
+							},
+							{
+								constraint: 'environment.wallet_state',
+								pr:         22,
+								url:        'https://github.com/agent-intent/verifiable-intent/pull/22',
+								status:     'coordinated drafting',
+							},
+						],
 					},
 				});
 			}
