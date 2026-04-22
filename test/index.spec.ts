@@ -2497,8 +2497,14 @@ describe('GET /.well-known/mcp/server-card.json', () => {
 		expect(body).toHaveProperty('model_agnostic', true);
 		const reg = body.regulatory_alignment as string[];
 		expect(Array.isArray(reg)).toBe(true);
-		expect(reg).toContain('SEC_CFTC_tokenized_collateral');
+		expect(reg).toContain('CFTC_SL_25_39');
+		expect(reg).toContain('SEC_project_blueprint_tokenized_collateral');
 		expect(reg).toContain('ISO_10383');
+		// Structured references present as sibling field
+		expect(Array.isArray(body.regulatory_references)).toBe(true);
+		expect((body.regulatory_references as unknown[]).length).toBeGreaterThanOrEqual(2);
+		// Fabricated framework name must not appear anywhere in the body
+		expect(JSON.stringify(body)).not.toContain('SEC/CFTC Technical Framework');
 		const cats = body.categories as string[];
 		expect(cats).toContain('finance');
 		expect(cats).toContain('market-data');

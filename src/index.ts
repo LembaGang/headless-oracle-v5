@@ -9638,18 +9638,17 @@ export default {
 				return json({
 					name:           'Headless Oracle',
 					version:        'v5.0',
-					description:    'Ed25519-signed market-state attestations for 28 global exchanges. ' +
-						'Pre-trade verification gate for autonomous financial agents. Model-agnostic — works identically for any AI model tier. ' +
-						'Check if any exchange is open or closed right now — NYSE, NASDAQ, London, Tokyo, Hong Kong, and 22 more. ' +
-						'Handles DST transitions, exchange holidays, lunch breaks, and circuit breaker detection. ' +
-						'Fail-closed: if state is unknown, agents halt. 60-second TTL signed receipts. ' +
-						'SEC/CFTC multi-oracle attestation compliant (Technical Framework for Tokenized Collateral). ' +
-						'MCP tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt, get_payment_options. ' +
+					description:    'Headless Oracle — reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. ' +
+						'Provides Ed25519-signed market-state attestations for 28 global exchanges with 60-second TTL. ' +
+						'Autonomous agents gate trade execution on cryptographically verified venue state; fail-closed UNKNOWN. ' +
+						'Composes with environment.wallet_state for multi-venue mandates. ' +
+						'MCP tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt. ' +
 						'REST API + x402 micropayments ($0.001 USDC on Base mainnet). ' +
-						'Layer 1 of the composable pre-trade verification stack. ' +
-						'DST-aware holiday calendar, market state API, exchange hours, trading schedule, pre-trade check.',
+						'Handles DST transitions, exchange holidays, lunch breaks, and circuit breaker detection. ' +
+						'Consistent with emerging regulatory direction on tokenized collateral (CFTC Staff Letter 25-39, Dec 2025; SEC Project Blueprint on Tokenized Collateral, Nov 2025).',
 					model_agnostic:       true,
-					regulatory_alignment: ['SEC_CFTC_tokenized_collateral', 'ISO_10383'],
+					regulatory_alignment: ['CFTC_SL_25_39', 'SEC_project_blueprint_tokenized_collateral', 'ISO_10383'],
+					regulatory_references: REGULATORY_REFERENCES_STRUCTURED,
 					categories:           ['finance', 'market-data', 'attestation', 'verification', 'pre-trade-safety', 'rwa', 'tokenization'],
 					mcp_endpoint:   'https://headlessoracle.com/mcp',
 					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt'],
@@ -9663,7 +9662,11 @@ export default {
 					protocols:      ['MCP-2024-11-05', 'A2A', 'x402', 'OAuth2'],
 					transports:     ['http', 'sse'],
 					fail_closed:    true,
-					reliability:    { uptime_sla: '99.9%', p95_latency_ms: 200 },
+					reliability:    {
+						uptime_sla:     '99.9%',
+						p95_latency_ms: 200,
+						slo_endpoint:   'https://headlessoracle.com/v5/slo', // authoritative source; SLA values reflect current SLO
+					},
 					verification:   { algorithm: 'Ed25519', key_endpoint: 'https://api.headlessoracle.com/v5/keys' },
 					coverage:       {
 						exchanges: SUPPORTED_EXCHANGES.length,
@@ -9698,11 +9701,25 @@ export default {
 						pricing_endpoint:   'https://headlessoracle.com/v5/pricing',
 						documentation_url:  'https://headlessoracle.com/docs/x402-payments',
 					},
-					sma_protocol_version:  'RFC-001-draft',
-					sma_note:              'SMA = Signed Market Attestation (not Simple Moving Average). Receipts are Ed25519-signed, 60-second TTL, fail-closed.',
+					// Primary: Verifiable Intent environment.* constraint family
+					verifiable_intent: {
+						family:        'environment.*',
+						upstream_repo: 'agent-intent/verifiable-intent',
+						role:          'reference implementation of environment.market_state',
+						pull_requests: [
+							{ constraint: 'environment.market_state', pr: 9,  url: 'https://github.com/agent-intent/verifiable-intent/pull/9',  status: 'coordinated drafting' },
+							{ constraint: 'environment.wallet_state', pr: 22, url: 'https://github.com/agent-intent/verifiable-intent/pull/22', status: 'coordinated drafting' },
+						],
+					},
 					conformance_vectors:   'https://api.headlessoracle.com/v5/conformance-vectors',
-					mpas_spec:             'https://github.com/LembaGang/mpas-spec',
-					mpas_version:          '1.0',
+					// Predecessor specs (brand-retired, concepts preserved in environment.* family)
+					predecessor_specs: {
+						note:          'SMA, APTS, and MPAS were earlier working-spec names for concepts now incorporated into the Verifiable Intent environment.* family. Preserved for citation continuity; brand names retired.',
+						sma_protocol:  'https://github.com/LembaGang/sma-protocol',
+						apts_standard: 'https://github.com/LembaGang/agent-pretrade-safety-standard',
+						mpas_spec:     'https://github.com/LembaGang/mpas-spec',
+					},
+					sma_disambiguation:    'SMA denotes Signed Market Attestation, not Simple Moving Average',
 					dst_aware:             true,
 					discovery_url:         'https://headlessoracle.com/.well-known/mcp/server-card.json',
 					skill_url:             'https://headlessoracle.com/skill.md',
