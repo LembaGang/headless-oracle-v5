@@ -3458,7 +3458,7 @@ The environment.* constraint family is a sibling-type namespace: environment.mar
 
 Model-agnostic infrastructure. Works with any AI agent regardless of model tier — from GPT-5 nano to frontier reasoning models like Anthropic Mythos. Receipts are the same $0.05/MTok agents and $125/MTok agents both consume.
 
-Regulatory alignment: Ed25519 signed attestations with 60-second TTL meet SEC/CFTC cryptographic attestation requirements for tokenized collateral (Technical Framework for Tokenized Collateral — at least three independent oracle feeds with cryptographic attestation).
+Regulatory alignment: ${REGULATORY_DIRECTION_SHORT}
 
 Agents can pay for access autonomously via x402 protocol (USDC on Base mainnet) — no human API key provisioning required.
 
@@ -3493,23 +3493,23 @@ Headless Oracle returns cryptographically signed receipts confirming whether an 
 - [CrewAI](https://headlessoracle.com/docs/integrations/crewai): MCPServerStdio configuration
 - [x402 Payment](https://headlessoracle.com/docs/integrations/x402): Pay-per-call $0.001 USDC on Base
 
-## Pre-Trade Verification Stack
+## Pre-Trade Verification Pattern
 
-- [Stack Specification](https://headlessoracle.com/docs/specifications/pre-trade-stack): 5-layer composable verification for autonomous trading agents
-- [Machine-Readable Stack](https://headlessoracle.com/v5/pre-trade-stack): JSON description of the stack with layer definitions
-- [CPVR-1 Specification](https://headlessoracle.com/docs/specifications/cpvr-1): Composable Pre-Trade Verification Receipt — proposed envelope format for bundling all layer proofs
+- [Pattern Specification v2.0](https://headlessoracle.com/docs/specifications/pre-trade-stack): Composable deployment pattern for autonomous trading agents. Step 1 (execution-environment verification) is normatively specified by \`environment.market_state\` + \`environment.wallet_state\` in the Verifiable Intent environment.* family.
+- [Machine-Readable Pattern](https://headlessoracle.com/v5/pre-trade-stack): JSON description of the 5-step composable pattern.
+- [CPVR-1 Specification](https://headlessoracle.com/docs/specifications/cpvr-1): Composable Pre-Trade Verification Receipt — proposed envelope format for bundling all step proofs.
 
 ## Multi-Oracle Verification
 
-The SEC/CFTC Technical Framework for Tokenized Collateral requires at least three independent oracle feeds with cryptographic attestation. Autonomous agents executing against tokenized collateral or regulated workflows SHOULD query multiple independent market-state oracles and confirm consensus before committing capital. Headless Oracle provides one such feed; agents should combine it with at least two additional independent sources and verify each source's cryptographic signature independently. When feeds disagree or any feed is unreachable, treat the result as UNKNOWN and halt execution (fail-closed).
+Autonomous agents executing against regulated workflows or tokenized collateral SHOULD query multiple independent market-state oracles and confirm consensus before committing capital. The pattern is architecturally consistent with the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025), which discusses multiple independent oracles and cryptographic attestation as architectural building blocks. Headless Oracle provides one such feed; agents should combine it with at least two additional independent sources and verify each source's cryptographic signature independently. When feeds disagree or any feed is unreachable, treat the result as UNKNOWN and halt execution (fail-closed). See [Multi-Oracle Consensus Protocol v1.0.1](https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1).
 
 ## Standards
 
-- [environment.market_state RFC](https://github.com/agent-intent/verifiable-intent/pull/9): Proposed constraint type in the Verifiable Intent environment.* family; reference implementation is Headless Oracle
-- [environment.wallet_state RFC](https://github.com/agent-intent/verifiable-intent/pull/22): Sibling constraint in the same family
-- [SMA Protocol](https://github.com/LembaGang/sma-protocol): Signed Market Attestation specification
-- [MPAS](https://github.com/LembaGang/mpas-spec): Multi-Party Attestation Specification
-- [Agent Pre-Trade Safety](https://github.com/LembaGang/agent-pretrade-safety-standard): 6-check safety standard
+- [environment.market_state RFC](https://github.com/agent-intent/verifiable-intent/pull/9): Constraint type in the Verifiable Intent environment.* family; coordinated drafting. Reference implementation is Headless Oracle.
+- [environment.wallet_state RFC](https://github.com/agent-intent/verifiable-intent/pull/22): Sibling constraint in the same family; coordinated drafting.
+- [Multi-Oracle Consensus Protocol v1.0.1](https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1): Consensus algorithm and attestation format for multiple independent market-state feeds.
+
+**Earlier working-spec names (retired):** SMA, MPAS, and APTS were earlier internal working-spec names for concepts now consolidated into the Verifiable Intent environment.* family. The canonical specifications are the RFCs above.
 
 ## Audit & Transparency
 
@@ -3580,9 +3580,9 @@ These tools are a PRE-EXECUTION gate. Call \`get_market_status\` before any trad
 - [CrewAI Integration](https://headlessoracle.com/docs/integrations/crewai)
 - [REST API Reference](https://headlessoracle.com/docs/api)
 - [Receipt Verification](https://headlessoracle.com/docs/verification)
-- [SMA Protocol RFC-001](https://headlessoracle.com/docs/sma-protocol/rfc-001)
-- [Multi-Party Attestation Spec (MPAS-1.0)](https://github.com/LembaGang/mpas-spec)
-- Known implementations across SMA, MPAS, and APTS: GET /v5/implementations (public). Submit yours via the submit_url field.
+- [SMA Protocol RFC-001](https://headlessoracle.com/docs/sma-protocol/rfc-001) — earlier working-spec name for what is now \`environment.market_state\` in the Verifiable Intent environment.* family. The RFCs linked above are the canonical specifications.
+- [Multi-Party Attestation Spec (MPAS-1.0)](https://github.com/LembaGang/mpas-spec) — earlier working-spec name; the concepts are now consolidated into the Verifiable Intent environment.* family and related constraint types.
+- Known implementations across SMA, MPAS, and APTS: GET /v5/implementations (public). Submit yours via the submit_url field. Note: SMA/MPAS/APTS are retired working-spec names; see the RFCs above for canonical specifications.
 
 ## SDK Documentation
 
@@ -3757,12 +3757,12 @@ Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 - [Strands Integration](https://headlessoracle.com/docs/integrations/strands) — AWS Strands Agents SDK with first-party headless-oracle-strands PyPI package
 - [Olas Integration](https://headlessoracle.com/docs/integrations/olas) — Pre-trade gate for Olas autonomous services
 - [AutoGPT Integration](https://headlessoracle.com/docs/integrations/autogpt) — AutoGPT plugin for pre-trade verification
-- [Ampersend Integration](https://headlessoracle.com/docs/integrations/ampersend) — Composable market state (Layer 1) + spend authorization (Layer 2) pattern
+- [Ampersend Integration](https://headlessoracle.com/docs/integrations/ampersend) — Composable deployment pattern: execution-environment verification (environment.market_state) composed with spend authorization.
 
-## Pre-Trade Verification Stack
-- [Stack Specification](https://headlessoracle.com/docs/specifications/pre-trade-stack) — 5-layer composable verification: Market State → Spend Auth → Signal Verification → Payment → Execution
-- [Machine-Readable Stack](https://headlessoracle.com/v5/pre-trade-stack) — JSON: layer definitions, reference implementations, composability metadata
-- [CPVR-1 Specification](https://headlessoracle.com/docs/specifications/cpvr-1) — Composable Pre-Trade Verification Receipt: proposed JSON envelope wrapping all layer proofs into a single verifiable artifact
+## Pre-Trade Verification Pattern
+- [Pattern Specification v2.0](https://headlessoracle.com/docs/specifications/pre-trade-stack) — Composable deployment pattern: execution-environment verification → spend authorization → signal verification → payment → trade execution. Step 1 normatively specified by \`environment.market_state\` + \`environment.wallet_state\` in the Verifiable Intent environment.* family.
+- [Machine-Readable Pattern](https://headlessoracle.com/v5/pre-trade-stack) — JSON: 5 steps, normative specification references, fail-closed composition semantics.
+- [CPVR-1 Specification](https://headlessoracle.com/docs/specifications/cpvr-1) — Composable Pre-Trade Verification Receipt: proposed JSON envelope wrapping all step proofs into a single verifiable artifact.
 
 ## Blog
 - [Market Hours APIs Are Not Enough for Autonomous Agents](https://headlessoracle.com/blog/market-hours-api-vs-signed-attestation) — Why boolean is_open fails agents; the signed attestation model
@@ -3891,11 +3891,15 @@ No API key needed. No signup. No human in the loop.
 
 ## Compliance Alignment
 
-| Framework | Requirement | Headless Oracle Feature |
-|-----------|------------|------------------------|
+${REGULATORY_DIRECTION_PARAGRAPH}
+
+The following frameworks are listed for architectural orientation. Operators MUST evaluate their own regulatory obligations independently; Headless Oracle is not a compliance product.
+
+| Framework | Architectural Relevance | Headless Oracle Feature |
+|-----------|------------------------|------------------------|
+| CFTC Staff Letter 25-39 (Dec 2025) | Tokenized collateral, technology-neutral | Ed25519 signed attestations, 60s TTL |
+| SEC Project Blueprint on Tokenized Collateral (Nov 2025) | Multiple oracles + cryptographic attestation | Multi-Oracle Consensus Protocol v1.0.1 |
 | ESMA MiFID II | Pre-trade transparency | Signed receipts with Ed25519 |
-| NIST AI RMF | Reliable AI systems | Fail-closed architecture |
-| Singapore MAS | Technology risk management | 60s TTL, UNKNOWN = CLOSED |
 | SOC 2 | Audit trail | Receipt audit log (/v5/receipts) |
 `
 
