@@ -1390,18 +1390,18 @@ describe('POST /mcp', () => {
 		expect(text).toBe('');
 	});
 
-	it('tools/list → 5 tools with names, descriptions, and inputSchema', async () => {
+	it('tools/list → 4 tools with names, descriptions, and inputSchema', async () => {
 		const body = await postMcpJSON({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
 		const result = body.result as Record<string, unknown>;
 		const tools = result.tools as Array<Record<string, unknown>>;
-		expect(tools).toHaveLength(5);
+		expect(tools).toHaveLength(4);
 
 		const names = tools.map((t) => t.name as string);
 		expect(names).toContain('get_market_status');
 		expect(names).toContain('get_market_schedule');
 		expect(names).toContain('list_exchanges');
-		expect(names).toContain('verify_receipt');
 		expect(names).toContain('get_payment_options');
+		expect(names).not.toContain('verify_receipt');
 
 		for (const tool of tools) {
 			expect(typeof tool.description).toBe('string');
@@ -2479,13 +2479,13 @@ describe('GET /.well-known/mcp/server-card.json', () => {
 		expect(typeof body.description).toBe('string');
 	});
 
-	it('lists all 4 MCP tools including verify_receipt', async () => {
+	it('lists 3 MCP tools', async () => {
 		const body  = await fetchJSON('/.well-known/mcp/server-card.json');
 		const tools = body.tools as string[];
 		expect(tools).toContain('get_market_status');
 		expect(tools).toContain('get_market_schedule');
 		expect(tools).toContain('list_exchanges');
-		expect(tools).toContain('verify_receipt');
+		expect(tools).not.toContain('verify_receipt');
 	});
 
 	it('lists all authentication schemes', async () => {
@@ -3035,116 +3035,6 @@ describe('POST /mcp — auth_calls / unauth_calls telemetry', () => {
 		expect(res.status).toBe(200);
 		const after = parseInt((await env.ORACLE_TELEMETRY.get(`zero_auth_mcp_requests:${today}`)) ?? '0', 10);
 		expect(after).toBeGreaterThan(before);
-	});
-});
-
-// ─── MCP tool: verify_receipt ────────────────────────────────────────────────
-
-describe('POST /mcp — verify_receipt tool', () => {
-	// Helper: sign a payload the same way the server does (alphabetical key sort)
-	async function signReceipt(payload: Record<string, string>, privKeyHex: string): Promise<string> {
-		const sorted: Record<string, string> = {};
-		for (const key of Object.keys(payload).sort()) sorted[key] = payload[key];
-		const canonical = JSON.stringify(sorted);
-		const msgBytes  = new TextEncoder().encode(canonical);
-		// Use WebCrypto to import and sign with the test private key
-		// Noble ed25519 is not directly importable in tests — use fetch to /v5/demo as a real signed receipt source
-		void privKeyHex; // unused — we'll fetch a real receipt instead
-		return canonical; // placeholder — see below
-	}
-	void signReceipt; // suppress unused warning
-
-	async function callVerify(receipt: unknown) {
-		const res = await fetchWorker('/mcp', {
-			method:  'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body:    JSON.stringify({
-				jsonrpc: '2.0', id: 1, method: 'tools/call',
-				params: { name: 'verify_receipt', arguments: { receipt } },
-			}),
-		});
-		const body = await res.json() as { result?: { content?: Array<{ text: string }> } };
-		return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
-	}
-
-	it('valid unexpired receipt → valid: true, expired: false', async () => {
-		// Fetch a real signed receipt from /v5/demo — it has a genuine Ed25519 signature
-		const demoRes  = await fetchWorker('/v5/demo?mic=XNYS');
-		const receipt  = await demoRes.json() as Record<string, unknown>;
-		expect(receipt.signature).toBeTruthy();
-
-		const result = await callVerify(receipt);
-		expect(result.valid).toBe(true);
-		expect(result.expired).toBe(false);
-		expect(result.reason).toBe('SIGNATURE_VALID');
-		expect(result.mic).toBe('XNYS');
-	});
-
-	it('valid signature but expires_at in past → valid: true, expired: true', async () => {
-		// Fetch a real receipt then backdate its expires_at — signature still covers original field value
-		// so we must re-sign. Instead: fetch receipt, tweak expires_at to past, verify the flag logic.
-		// Since we can't re-sign in tests without the private key, we test via a receipt with past expires_at
-		// by building one from /v5/demo and manually setting expires_at — signature will be INVALID but
-		// we verify the expired flag is set. For a clean test use the actual demo receipt and check
-		// that fresh receipts are NOT expired.
-		const demoRes = await fetchWorker('/v5/demo?mic=XNYS');
-		const receipt = await demoRes.json() as Record<string, unknown>;
-
-		// Tamper only expires_at — signature will fail, but we can verify the expired path independently
-		// by checking: a receipt with expires_at in the past AND invalid sig returns expired: true
-		const expiredReceipt = { ...receipt, expires_at: '2020-01-01T00:00:00.000Z' };
-		const result = await callVerify(expiredReceipt);
-		// Signature is invalid (we changed a signed field) AND it's expired
-		expect(result.expired).toBe(true);
-		expect(result.expires_at).toBe('2020-01-01T00:00:00.000Z');
-	});
-
-	it('tampered receipt (signature from different payload) → valid: false', async () => {
-		const demoRes = await fetchWorker('/v5/demo?mic=XNYS');
-		const receipt = await demoRes.json() as Record<string, unknown>;
-
-		// Tamper the status field — signature no longer matches payload
-		const tampered = { ...receipt, status: 'OPEN_TAMPERED' };
-		const result   = await callVerify(tampered);
-		expect(result.valid).toBe(false);
-		expect(result.reason).toBe('INVALID_SIGNATURE');
-	});
-
-	it('missing signature field → valid: false, reason: MALFORMED_RECEIPT', async () => {
-		const result = await callVerify({ mic: 'XNYS', status: 'OPEN' }); // no signature
-		expect(result.valid).toBe(false);
-		expect(result.reason).toBe('MALFORMED_RECEIPT');
-	});
-
-	it('null receipt argument → valid: false, reason: MALFORMED_RECEIPT', async () => {
-		const result = await callVerify(null);
-		expect(result.valid).toBe(false);
-		expect(result.reason).toBe('MALFORMED_RECEIPT');
-	});
-
-	it('string receipt argument → valid: false, reason: MALFORMED_RECEIPT', async () => {
-		const result = await callVerify('not-an-object');
-		expect(result.valid).toBe(false);
-		expect(result.reason).toBe('MALFORMED_RECEIPT');
-	});
-
-	it('malformed hex signature (wrong length) → valid: false, reason: MALFORMED_RECEIPT', async () => {
-		// Ed25519 signatures must be exactly 64 bytes (128 hex chars). A shorter string will
-		// cause ed.verify() to throw, which the handler catches and maps to MALFORMED_RECEIPT.
-		const result = await callVerify({ mic: 'XNYS', status: 'OPEN', expires_at: new Date(Date.now() + 60000).toISOString(), signature: 'deadbeef' });
-		expect(result.valid).toBe(false);
-		expect(result.reason).toBe('MALFORMED_RECEIPT');
-	});
-
-	it('verify_receipt with missing receipt param → -32602', async () => {
-		const res  = await fetchWorker('/mcp', {
-			method:  'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'verify_receipt', arguments: {} } }),
-		});
-		const body = await res.json() as { error?: { code: number; message: string } };
-		expect(res.status).toBe(200);
-		expect(body.error?.code).toBe(-32602);
 	});
 });
 
@@ -8790,7 +8680,9 @@ describe('GET /.well-known/mcp-servers.json', () => {
 		expect(server.mcp_endpoint).toBe('https://headlessoracle.com/mcp');
 		expect(server.fail_closed).toBe(true);
 		expect(Array.isArray(server.tools)).toBe(true);
-		expect((server.tools as Array<{name: string}>).length).toBe(5);
+		expect((server.tools as Array<{name: string}>).length).toBe(4);
+		const toolNames = (server.tools as Array<{name: string}>).map((t) => t.name);
+		expect(toolNames).not.toContain('verify_receipt');
 	});
 
 	it('includes coverage with 28 exchanges and updated_at timestamp', async () => {

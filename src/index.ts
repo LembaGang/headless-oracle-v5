@@ -2714,7 +2714,7 @@ function buildUpgradePaths(options?: { include_paid?: boolean }): unknown[] {
 	return paths;
 }
 
-// Shared Ed25519 receipt verification logic — used by verify_receipt MCP tool and POST /v5/verify.
+// Shared Ed25519 receipt verification logic — used by POST /v5/verify.
 async function verifyReceiptLogic(
 	receipt: Record<string, unknown> | undefined,
 	pubKeyHex: string | undefined,
@@ -3471,7 +3471,6 @@ Headless Oracle returns cryptographically signed receipts confirming whether an 
 - [get_market_status](https://headlessoracle.com/mcp): Check if an exchange is open with signed Ed25519 receipt
 - [get_market_schedule](https://headlessoracle.com/mcp): Next open/close times, holidays, lunch breaks
 - [list_exchanges](https://headlessoracle.com/mcp): All 28 supported exchanges with MIC codes
-- [verify_receipt](https://headlessoracle.com/mcp): Verify an existing receipt's Ed25519 signature
 
 ## API Endpoints
 
@@ -3552,7 +3551,8 @@ These tools are a PRE-EXECUTION gate. Call \`get_market_status\` before any trad
 - \`get_market_status\` — pre-trade verification, pre-execution gate, safe-to-trade check, safe-to-execute check before any financial transaction or capital commitment. Include the \`signature\` (attestation_ref) in x402 payment flows for an auditable pre-trade verification chain.
 - \`get_market_schedule\` — check market hours, trading hours, exchange operating hours, holiday calendar, early closes, and session timing before committing capital
 - \`list_exchanges\` — discover all 28 supported MIC codes at agent startup before calling get_market_status
-- \`verify_receipt\` — verify Ed25519 cryptographic proof on a receipt received from another agent before acting on it
+
+Receipt verification is a REST-only surface. Verify Ed25519 signatures offline with \`@headlessoracle/verify\` (npm), or via \`POST /v5/verify\` for a REST round-trip. Do not expect a \`verify_receipt\` MCP tool.
 
 - ALWAYS verify \`expires_at\` before trusting a receipt — receipts expire after 60 seconds
 - NEVER execute against \`CLOSED\`, \`HALTED\`, or \`UNKNOWN\` status — all three mean HALT ALL EXECUTION
@@ -3740,7 +3740,7 @@ Upgrade: https://headlessoracle.com/upgrade
 Server card: GET https://headlessoracle.com/.well-known/mcp/server-card.json
 Protocol: MCP-2024-11-05
 Endpoint: POST https://headlessoracle.com/mcp
-Tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt
+Tools: get_market_status, get_market_schedule, list_exchanges
 Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 
 ## IDE Setup Guides
@@ -3913,7 +3913,7 @@ author: Headless Oracle
 license: Apache-2.0
 tags: [finance, api, security, tools, agents]
 triggers: [market status, pre-trade check, exchange open, trading gate, NYSE, NASDAQ, exchange hours, XNYS, XNAS, XLON, XJPX, market oracle]
-allowed_tools: [get_market_status, get_market_schedule, list_exchanges, verify_receipt]
+allowed_tools: [get_market_status, get_market_schedule, list_exchanges]
 ---
 # Headless Oracle — Agent Integration Guide
 
@@ -4302,7 +4302,8 @@ Available tools:
 - \`get_market_status\` — signed receipt (OPEN/CLOSED/HALTED/UNKNOWN) for any MIC
 - \`get_market_schedule\` — next open/close times in UTC
 - \`list_exchanges\` — directory of all 28 supported exchanges
-- \`verify_receipt\` — Ed25519 signature verification in-worker
+
+Receipt verification is REST-only: use \`@headlessoracle/verify\` (npm) for offline Ed25519 verification, or \`POST /v5/verify\` for a REST round-trip.
 
 ## Audit & Transparency
 
@@ -5107,7 +5108,10 @@ verification gate.
 }
 \`\`\`
 
-Tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt
+Tools: get_market_status, get_market_schedule, list_exchanges
+
+Receipt verification is REST-only: use @headlessoracle/verify (npm) for
+offline Ed25519 verification, or POST /v5/verify for a REST round-trip.
 
 ## How to use (REST)
 GET https://headlessoracle.com/v5/status?mic=XNYS
@@ -5120,8 +5124,9 @@ GET https://headlessoracle.com/v5/status?mic=XNYS
 - HALTED status MUST be treated as CLOSED
 - Receipts expire after 60 seconds — do not cache or reuse stale receipts
 - The Ed25519 signature in each receipt is a cryptographic proof
-- Always call verify_receipt to confirm signature before acting on receipt
-  contents in high-stakes workflows
+- Verify Ed25519 signatures offline using @headlessoracle/verify, or via
+  POST /v5/verify REST endpoint, before acting on receipt contents in
+  high-stakes workflows
 
 ## Exchanges covered
 XNYS, XNAS, XLON, XPAR, XJPX, XHKG, XASX, XBOM, XNSE, XSES, XKRX,
@@ -5548,30 +5553,6 @@ const MCP_TOOLS = [
 			'RETURNS: { exchanges: Array<{ mic: string, name: string, timezone: string, mic_type: "iso"|"convention" }> } — 28 entries. ' +
 			'Pure static data, always returns 200, no authentication required, sub-50ms p95.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'verify_receipt',
-		description:
-			'Verifies the Ed25519 cryptographic signature on a Headless Oracle Signed Market Attestation receipt — confirms it is a genuine pre-trade verification attestation and has not been tampered with. ' +
-			'Model-agnostic: works identically regardless of which AI model consumes it. ' +
-			'SEC/CFTC multi-oracle attestation compliant: use this to verify one of the independent oracle feeds required for tokenized collateral workflows. ' +
-			'Note: SMA denotes Signed Market Attestation, not Simple Moving Average. ' +
-			'WHEN TO USE: (1) when you receive a pre-trade attestation from another agent and must confirm the cryptographic proof before acting on market state; (2) building an attestation_ref audit trail for capital commitment workflows; (3) confirming receipt verification before including the signature in an x402 payment attestation. ' +
-			'RETURNS: { valid: boolean, expired: boolean, reason: "SIGNATURE_VALID"|"MALFORMED_RECEIPT"|"INVALID_SIGNATURE"|"ORACLE_NOT_CONFIGURED", mic: string|null, status: string|null, expires_at: string|null }. ' +
-			'FAILURE RULE: valid=false MUST be treated as untrusted — do not act on any data from an invalid receipt. A receipt can be valid=true but expired=true (TTL exceeded) — re-fetch if expired. ' +
-			'LATENCY: sub-50ms p95 (in-worker Ed25519 verification, no external network calls).',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				receipt: {
-					type:                 'object',
-					description:          'The complete signed receipt object as returned by get_market_status or /v5/status. Must include the signature field (hex-encoded Ed25519).',
-					additionalProperties: true,
-				},
-			},
-			required:             ['receipt'],
-			additionalProperties: false,
-		},
 	},
 	{
 		name: 'get_payment_options',
@@ -6853,7 +6834,7 @@ const OPENAPI_SPEC = {
 			post: {
 				tags:        ['Verification'],
 				summary:     'Verify Ed25519 receipt signature (REST)',
-				description: 'Public endpoint. Accepts a signed market receipt and verifies the Ed25519 signature in-worker. Returns validity, expiry status, and reason. Shares logic with the verify_receipt MCP tool.',
+				description: 'Public endpoint. Accepts a signed market receipt and verifies the Ed25519 signature in-worker. Returns validity, expiry status, and reason. Offline verification via @headlessoracle/verify is also supported and MAY be preferred by agents that don\'t need a REST round-trip.',
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {
@@ -7528,8 +7509,8 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 				'WHEN TO USE get_market_status: (1) before any trade, payment, or DeFi transaction; (2) before committing capital in any automated workflow; (3) when you need cryptographic proof of market state for audit trails or attestation_ref in x402 payment flows; (4) when checking whether a market is in a holiday closure, early close, or circuit breaker halt. ' +
 				'WHEN TO USE get_market_schedule: for planning trade execution windows, verifying exchange operating hours and trading hours, checking holiday calendars, scheduling market-dependent tasks. ' +
 				'WHEN TO USE list_exchanges: at agent startup to discover all 28 supported MIC codes before calling get_market_status. ' +
-				'WHEN TO USE verify_receipt: when you receive a pre-trade verification receipt from another agent and must confirm the Ed25519 signature before acting on it. ' +
 				'WHEN TO USE get_payment_options: when you need to understand available payment and authentication options before making a paid request. ' +
+				'Receipt verification is a REST-only surface: use @headlessoracle/verify (npm) for offline Ed25519 verification, or POST /v5/verify. ' +
 				'MANDATORY SAFETY RULE: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately (fail-closed, non-negotiable). ' +
 				'Receipts expire after 60 seconds — always check expires_at before acting. ' +
 				'Public key for independent verification: /.well-known/oracle-keys.json',
@@ -7695,7 +7676,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			}
 
 			// Per-tool telemetry: global counter + per-client tools object (best-effort, non-blocking)
-			const MCP_TRACKED_TOOLS = ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt', 'get_payment_options'];
+			const MCP_TRACKED_TOOLS = ['get_market_status', 'get_market_schedule', 'list_exchanges', 'get_payment_options'];
 			if (MCP_TRACKED_TOOLS.includes(name)) {
 				incrementKvCounter(`mcp_tool:${name}:${today}`, env, ctx);
 				// Per-client tool count: increment the tools object in the client's KV record
@@ -7824,17 +7805,6 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 				});
 			}
 
-			if (name === 'verify_receipt') {
-				if (args.receipt === undefined) {
-					return rpcError(-32602, 'Invalid params: receipt is required');
-				}
-				const receipt = args.receipt as Record<string, unknown> | undefined;
-				const result  = await verifyReceiptLogic(receipt, env.ED25519_PUBLIC_KEY);
-				return rpcResult({
-					content: [{ type: 'text', text: JSON.stringify(result) }],
-				});
-			}
-
 			if (name === 'get_payment_options') {
 				const options = buildPaymentOptions();
 				return rpcResult({
@@ -7897,7 +7867,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 									`Perform a fail-closed pre-trade safety check for exchange ${micArg} before executing any order. ` +
 									`Execute these steps in order and abort on any failure:\n\n` +
 									`1. Call the MCP tool get_market_status with { "mic": "${micArg}" }.\n` +
-									`2. Parse the returned JSON receipt and call verify_receipt to confirm the Ed25519 signature is valid.\n` +
+									`2. Parse the returned JSON receipt and verify the Ed25519 signature offline with @headlessoracle/verify, or POST the receipt to /v5/verify for a REST round-trip.\n` +
 									`3. Confirm receipt.status is exactly "OPEN". Treat "UNKNOWN", "HALTED", and "CLOSED" as a mandatory halt — do not execute.\n` +
 									`4. Confirm receipt.expires_at is in the future (receipts have a 60-second TTL and must not be acted on after expiry).\n` +
 									`5. Confirm receipt.mic equals "${micArg}" and receipt.issuer equals "headlessoracle.com".\n` +
@@ -7921,7 +7891,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 									`Produce a concise briefing of the current global market state across every exchange Headless Oracle supports. ` +
 									`Execute these steps:\n\n` +
 									`1. Call the MCP tool list_exchanges to obtain the current list of supported MIC codes.\n` +
-									`2. For each MIC, call get_market_status and verify the Ed25519 signature with verify_receipt.\n` +
+									`2. For each MIC, call get_market_status and verify the Ed25519 signature offline with @headlessoracle/verify (or via POST /v5/verify).\n` +
 									`3. Group the results into four buckets: OPEN, CLOSED, HALTED, UNKNOWN.\n` +
 									`4. Highlight every HALTED or UNKNOWN market as an execution blocker — these must be treated as CLOSED under the fail-closed contract.\n` +
 									`5. Note any exchange whose receipt expires_at is within the next 30 seconds and recommend re-fetching before acting.\n` +
@@ -9369,17 +9339,15 @@ export default {
 
 					// MCP per-tool counts (best-effort, unsigned informational field)
 					const healthToday = now.toISOString().slice(0, 10);
-					const [hts, htsc, htl, htv] = await Promise.all([
+					const [hts, htsc, htl] = await Promise.all([
 						env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${healthToday}`).catch(() => null),
 						env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${healthToday}`).catch(() => null),
 						env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${healthToday}`).catch(() => null),
-						env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${healthToday}`).catch(() => null),
 					]);
 					const healthMcpToolsToday = {
 						get_market_status:   parseInt(hts  ?? '0', 10) || 0,
 						get_market_schedule: parseInt(htsc ?? '0', 10) || 0,
 						list_exchanges:      parseInt(htl  ?? '0', 10) || 0,
-						verify_receipt:      parseInt(htv  ?? '0', 10) || 0,
 					};
 
 					return withRateLimitWarning(json({
@@ -9577,7 +9545,6 @@ export default {
 							{ name: 'get_market_status',   description: 'Ed25519-signed market state receipt (OPEN/CLOSED/HALTED/UNKNOWN)' },
 							{ name: 'get_market_schedule',  description: 'Next open/close times in UTC, DST-aware' },
 							{ name: 'list_exchanges',       description: 'All 28 supported exchanges with MIC codes' },
-							{ name: 'verify_receipt',       description: 'Verify Ed25519 signature and TTL on a signed receipt' },
 							{ name: 'get_payment_options',  description: 'Upgrade ladder: sandbox → x402 → credits → Builder' },
 						],
 						coverage: {
@@ -9624,7 +9591,7 @@ export default {
 						'Provides Ed25519-signed market-state attestations for 28 global exchanges with 60-second TTL. ' +
 						'Autonomous agents gate trade execution on cryptographically verified venue state; fail-closed UNKNOWN. ' +
 						'Composes with environment.wallet_state for multi-venue mandates. ' +
-						'MCP tools: get_market_status, get_market_schedule, list_exchanges, verify_receipt. ' +
+						'MCP tools: get_market_status, get_market_schedule, list_exchanges. Receipt verification is REST-only (POST /v5/verify) or offline via @headlessoracle/verify. ' +
 						'REST API + x402 micropayments ($0.001 USDC on Base mainnet). ' +
 						'Handles DST transitions, exchange holidays, lunch breaks, and circuit breaker detection. ' +
 						'Consistent with emerging regulatory direction on tokenized collateral (CFTC Staff Letter 25-39, Dec 2025; SEC Project Blueprint on Tokenized Collateral, Nov 2025).',
@@ -9633,7 +9600,7 @@ export default {
 					regulatory_references: REGULATORY_REFERENCES_STRUCTURED,
 					categories:           ['finance', 'market-data', 'attestation', 'verification', 'pre-trade-safety', 'rwa', 'tokenization'],
 					mcp_endpoint:   'https://headlessoracle.com/mcp',
-					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges', 'verify_receipt'],
+					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges'],
 					authentication: ['bearer', 'apiKey', 'x402'],
 					homepage:       'https://headlessoracle.com',
 					docs:           'https://headlessoracle.com/docs',
@@ -11290,18 +11257,16 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 							batch_combos_today: number;
 							zero_auth_mcp_requests_today: number;
 						};
-						// Tool counts are not in the cache — fetch live (4 KV gets, cheap)
-						const [cToolStatusRaw, cToolScheduleRaw, cToolListRaw, cToolVerifyRaw] = await Promise.all([
+						// Tool counts are not in the cache — fetch live (3 KV gets, cheap)
+						const [cToolStatusRaw, cToolScheduleRaw, cToolListRaw] = await Promise.all([
 							env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${today}`).catch(() => null),
 							env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${today}`).catch(() => null),
 							env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${today}`).catch(() => null),
-							env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${today}`).catch(() => null),
 						]);
 						const cachedToolsToday = {
 							get_market_status:   parseInt(cToolStatusRaw   ?? '0', 10) || 0,
 							get_market_schedule: parseInt(cToolScheduleRaw ?? '0', 10) || 0,
 							list_exchanges:      parseInt(cToolListRaw     ?? '0', 10) || 0,
-							verify_receipt:      parseInt(cToolVerifyRaw   ?? '0', 10) || 0,
 						};
 						return json({
 							exchanges_covered:             SUPPORTED_EXCHANGES.length,
@@ -11333,7 +11298,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 
 				// Acquisition telemetry counters (best-effort — zeros on KV miss)
 				const [batchComboKeysRaw, authCallsRaw, unauthCallsRaw, sandboxCapsRaw, zeroAuthMcpRaw,
-					mcpToolStatusRaw, mcpToolScheduleRaw, mcpToolListRaw, mcpToolVerifyRaw] = await Promise.all([
+					mcpToolStatusRaw, mcpToolScheduleRaw, mcpToolListRaw] = await Promise.all([
 					env.ORACLE_TELEMETRY.list({ prefix: `batch_combo:` }).then(r => r.keys.filter(k => k.name.endsWith(`:${today}`))).catch(() => [] as Array<{ name: string }>),
 					env.ORACLE_TELEMETRY.get(`auth_calls:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`unauth_calls:${today}`).catch(() => null),
@@ -11342,7 +11307,6 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${today}`).catch(() => null),
-					env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${today}`).catch(() => null),
 				]);
 				const batchCombosToday    = batchComboKeysRaw.length;
 				const authCalls           = parseInt(authCallsRaw    ?? '0', 10) || 0;
@@ -11356,7 +11320,6 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					get_market_status:    parseInt(mcpToolStatusRaw   ?? '0', 10) || 0,
 					get_market_schedule:  parseInt(mcpToolScheduleRaw ?? '0', 10) || 0,
 					list_exchanges:       parseInt(mcpToolListRaw     ?? '0', 10) || 0,
-					verify_receipt:       parseInt(mcpToolVerifyRaw   ?? '0', 10) || 0,
 				};
 
 				return json({
@@ -11948,7 +11911,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 
 			// ── POST /v5/verify — REST Ed25519 receipt verification ─────────
 			// Public, no auth. Accepts a signed receipt, returns verification result.
-			// Shares verifyReceiptLogic() with the verify_receipt MCP tool.
+			// REST-only verifier; offline verification via @headlessoracle/verify also supported.
 			if (url.pathname === '/v5/verify') {
 				let receipt: Record<string, unknown> | undefined;
 
@@ -12638,17 +12601,15 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 				const weekRaw   = await env.ORACLE_TELEMETRY.get(weekKey).catch(() => null);
 
 				// MCP per-tool counts for today
-				const [hToolStatusRaw, hToolScheduleRaw, hToolListRaw, hToolVerifyRaw] = await Promise.all([
+				const [hToolStatusRaw, hToolScheduleRaw, hToolListRaw] = await Promise.all([
 					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_status:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`mcp_tool:get_market_schedule:${today}`).catch(() => null),
 					env.ORACLE_TELEMETRY.get(`mcp_tool:list_exchanges:${today}`).catch(() => null),
-					env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${today}`).catch(() => null),
 				]);
 				const hToolCounts = {
 					get_market_status:   parseInt(hToolStatusRaw   ?? '0', 10) || 0,
 					get_market_schedule: parseInt(hToolScheduleRaw ?? '0', 10) || 0,
 					list_exchanges:      parseInt(hToolListRaw     ?? '0', 10) || 0,
-					verify_receipt:      parseInt(hToolVerifyRaw   ?? '0', 10) || 0,
 				};
 
 				const openGaps: string[] = [];
@@ -12682,7 +12643,6 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					`- get_market_status: ${hToolCounts.get_market_status}`,
 					`- get_market_schedule: ${hToolCounts.get_market_schedule}`,
 					`- list_exchanges: ${hToolCounts.list_exchanges}`,
-					`- verify_receipt: ${hToolCounts.verify_receipt}`,
 					``,
 					`## Returning Clients`,
 					returningSection,

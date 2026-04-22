@@ -30,7 +30,8 @@ Available tools:
 | `get_market_status` | Returns signed receipt: OPEN / CLOSED / HALTED / UNKNOWN | `mic` (e.g. "XNYS") |
 | `get_market_schedule` | Next open/close times in UTC + lunch breaks | `mic` |
 | `list_exchanges` | All 28 supported exchanges with timezones | none |
-| `verify_receipt` | Verify an Ed25519-signed receipt in-worker | `receipt` (JSON object) |
+
+Receipt verification is REST-only: use `@headlessoracle/verify` (npm) for offline Ed25519 verification, or `POST /v5/verify` for a REST round-trip.
 
 ## REST API (fallback)
 

@@ -19,14 +19,17 @@ market state before committing capital or executing financial operations.
 - Receipts expire after 60 seconds — do not cache or reuse stale receipts
 - The Ed25519 signature in each receipt is a cryptographic proof — include
   the attestation_ref in any downstream payment or audit records
-- Always call verify_receipt to confirm signature before acting on receipt
-  contents in high-stakes workflows
+- Verify Ed25519 signatures offline using @headlessoracle/verify, or via
+  POST /v5/verify REST endpoint, before acting on receipt contents in
+  high-stakes workflows
 
 ## Available Tools
 - get_market_status: Single exchange market state with signed receipt
 - get_market_schedule: Next open/close times, holiday flags, lunch windows
 - list_exchanges: All 28 supported exchanges with MIC codes and timezones
-- verify_receipt: Verify an existing receipt's Ed25519 signature
+
+Receipt verification is REST-only: @headlessoracle/verify (npm) for offline
+Ed25519 verification, or POST /v5/verify for a REST round-trip.
 
 ## Integration with x402 Payment Flows
 Include the attestation_ref from the receipt in the x402 payment attestation

@@ -240,15 +240,6 @@ describe('MCP per-tool telemetry', () => {
 		expect(parseInt(raw!, 10)).toBeGreaterThan(0);
 	});
 
-	it('verify_receipt call increments mcp_tool:verify_receipt counter', async () => {
-		const today = new Date().toISOString().slice(0, 10);
-		// Malformed receipt — tool records the call before returning error
-		await mcpCall('verify_receipt', { receipt: { signature: '0000', mic: 'XNYS' } });
-		const raw = await env.ORACLE_TELEMETRY.get(`mcp_tool:verify_receipt:${today}`);
-		expect(raw).not.toBeNull();
-		expect(parseInt(raw!, 10)).toBeGreaterThan(0);
-	});
-
 	it('get_market_schedule call increments mcp_tool:get_market_schedule counter', async () => {
 		const today = new Date().toISOString().slice(0, 10);
 		await mcpCall('get_market_schedule', { mic: 'XNYS' });
@@ -274,7 +265,6 @@ describe('MCP per-tool telemetry', () => {
 		expect(typeof tools.get_market_status).toBe('number');
 		expect(typeof tools.get_market_schedule).toBe('number');
 		expect(typeof tools.list_exchanges).toBe('number');
-		expect(typeof tools.verify_receipt).toBe('number');
 	});
 
 	it('/v5/handoff includes MCP tool breakdown section', async () => {
@@ -283,6 +273,5 @@ describe('MCP per-tool telemetry', () => {
 		const text = await res.text();
 		expect(text).toContain('MCP Tool Calls Today');
 		expect(text).toContain('get_market_status:');
-		expect(text).toContain('verify_receipt:');
 	});
 });
