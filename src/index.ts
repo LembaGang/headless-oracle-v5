@@ -3410,9 +3410,13 @@ Disallow:
 // points to /llms-full.txt for comprehensive documentation.
 const LLMS_TXT_INDEX = `# Headless Oracle
 
-> Ed25519-signed market-state attestations for 28 global exchanges.
-> Pre-trade verification gate for autonomous financial agents.
+> Reference implementation of environment.market_state, the execution-environment verification constraint in the Verifiable Intent environment.* family.
+> Ed25519-signed market-state attestations for 28 global exchanges. 60-second TTL. Fail-closed.
 > MCP server + REST API + x402 micropayments.
+
+Execution-environment verification for autonomous financial agents. At Layer 3 of a Verifiable Intent mandate, an agent holding a valid L2 credential still needs cryptographic proof that the market it is about to execute into is actually open. Amount validation at L2 is not evidence of market state at L3. Headless Oracle provides that evidence as a signed receipt.
+
+The environment.* constraint family is a sibling-type namespace: environment.market_state covers exchange-session state, and environment.wallet_state covers on-chain payment-source state. Both specs share the same fail-closed posture, JWKS caching discipline, cross-spec composition semantics, and family-wide register conventions — the result of coordinated drafting across sibling reference implementations rather than isolated per-type work.
 
 Model-agnostic infrastructure. Works with any AI agent regardless of model tier — from GPT-5 nano to frontier reasoning models like Anthropic Mythos. Receipts are the same $0.05/MTok agents and $125/MTok agents both consume.
 
@@ -3463,6 +3467,8 @@ The SEC/CFTC Technical Framework for Tokenized Collateral requires at least thre
 
 ## Standards
 
+- [environment.market_state RFC](https://github.com/agent-intent/verifiable-intent/pull/9): Proposed constraint type in the Verifiable Intent environment.* family; reference implementation is Headless Oracle
+- [environment.wallet_state RFC](https://github.com/agent-intent/verifiable-intent/pull/22): Sibling constraint in the same family
 - [SMA Protocol](https://github.com/LembaGang/sma-protocol): Signed Market Attestation specification
 - [MPAS](https://github.com/LembaGang/mpas-spec): Multi-Party Attestation Specification
 - [Agent Pre-Trade Safety](https://github.com/LembaGang/agent-pretrade-safety-standard): 6-check safety standard
@@ -3487,6 +3493,18 @@ const LLMS_FULL_TXT = `# Headless Oracle
 > Cryptographically signed market state verification for autonomous financial agents. Ed25519-signed receipts ("SMA receipts") for 28 global exchanges — equities, derivatives, and 24/7 crypto. MCP-native, A2A-discoverable, x402-payable, fail-closed. UNKNOWN always means CLOSED.
 
 **In this documentation, SMA denotes "Signed Market Attestation" — not the statistical "Simple Moving Average" used in technical analysis.**
+
+## Role in the Verifiable Intent Environment.* Family
+
+Headless Oracle is the reference implementation of environment.market_state, a proposed constraint type in the Verifiable Intent (VI) specification's environment.* namespace. The environment.* family addresses a class of vulnerability in autonomous Layer 3 (L3) execution: an agent holding a valid L2 credential whose amount and identity constraints were checked at issuance can still execute into an environment whose real-world state has changed — for example, a market that has since closed, halted, or entered a circuit-breaker state.
+
+At L3 verification time, the agent obtains a signed attestation from a verified oracle and presents it to the verifier alongside the L2 credential. The verifier independently re-verifies the attestation's signature, freshness (max_attestation_age), and subject binding (the MIC, for market_state; the wallet address, for wallet_state). If any check fails — including oracle uncertainty (UNKNOWN status) — execution is refused. This is the fail-closed posture shared across the family.
+
+The sibling constraint type, environment.wallet_state, applies the same fetch-verify-at-L3 pattern to on-chain payment-source state: an agent with a valid VI credential whose amount constraints were checked at L2 can still execute into a wallet that has been drained or unwound between L2 issuance and L3 verification. The two types share a common specification discipline — normative freshness windows (§4.6), algorithm agility (§4.7), field scope declaration (§4.8), composition semantics for mixed pass/fail outcomes (§5.5), JWKS caching and rotation (§6.8), and cross-chain temporal consistency where applicable (§6.9).
+
+A valid environment.market_state attestation for XNYS does not attest to the state of XLON; verifiers must check each participating venue independently. A valid environment.market_state attestation does not attest to wallet solvency; a multi-venue mandate spanning both exchange session state and on-chain wallet state must carry attestations for both constraint types, and the family's conjunction semantics (§5.5) apply: any failed environment.* constraint refuses L3.
+
+For the full specifications, see the [environment.market_state RFC](https://github.com/agent-intent/verifiable-intent/pull/9) and [environment.wallet_state RFC](https://github.com/agent-intent/verifiable-intent/pull/22).
 
 ## Instructions for Autonomous Agents
 
