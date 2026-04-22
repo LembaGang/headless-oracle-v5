@@ -4148,7 +4148,7 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 - \`GET /openapi.json\` — OpenAPI 3.1 machine-readable spec
 - \`GET /v5/health\` — signed liveness probe (verify oracle is up before a batch)
 - \`GET /v5/schedule?mic=XNYS\` — next open/close times, lunch breaks, public holidays
-- \`GET /v5/compliance\` — APTS v1.0 compliance self-report (6 pre-trade safety checks)
+- \`GET /v5/compliance\` — machine-readable compliance self-report (6 pre-trade safety checks)
 - \`GET /v5/conformance-vectors\` — 5 live-signed test vectors for SDK verification (no auth)
 - \`GET /v5/archive?mic=XNYS&date=YYYY-MM-DD\` — historical receipt archive (Builder+ 30-day)
 - \`GET /v5/stream?mic=XNYS\` — SSE stream of signed receipts every 30s (auth required)
@@ -4159,13 +4159,22 @@ SDKs: npm install @headlessoracle/verify | go get github.com/LembaGang/headless-
 
 ## Compliance Standards
 
-Headless Oracle conforms to two open standards. Agents can verify conformance programmatically:
+Headless Oracle is the reference implementation of \`environment.market_state\` in the Verifiable Intent environment.* constraint family.
 
-**Agent Pre-Trade Safety Standard (APTS) v1.0** — 6 pre-trade checks every autonomous agent should perform before execution. Check: \`GET /v5/compliance\` returns all 6 with \`status: "pass"\`.
+**Primary specifications (coordinated drafting):**
+- environment.market_state — [PR #9 on agent-intent/verifiable-intent](https://github.com/agent-intent/verifiable-intent/pull/9)
+- environment.wallet_state — [PR #22 on agent-intent/verifiable-intent](https://github.com/agent-intent/verifiable-intent/pull/22)
 
-**Signed Market Attestation (SMA) Protocol v1.0** — vendor-neutral format for cryptographically attested market state. All receipts are SMA-compliant: alphabetically-sorted compact JSON signed with Ed25519.
+**Compliance self-report endpoint:**
+- GET /v5/compliance — machine-readable compliance state
 
-SMA conformance means: any independent verifier with the public key can validate receipts without calling Oracle again.
+**Predecessor specifications (brand-retired, concepts preserved):**
+
+SMA (Signed Market Attestation), APTS (Agent Pre-Trade Safety Standard), and MPAS (Multi-Party Attestation Aggregation) were earlier working-spec names for concepts now incorporated into the Verifiable Intent environment.* family. Preserved for citation continuity; brand names retired.
+
+- https://github.com/LembaGang/sma-protocol
+- https://github.com/LembaGang/agent-pretrade-safety-standard
+- https://github.com/LembaGang/mpas-spec
 
 ## Listings
 
@@ -4182,7 +4191,7 @@ SMA conformance means: any independent verifier with the public key can validate
 // using the Ampersend CLI (`ampersend fetch`).
 const AMPERSEND_SKILL_MD = `---
 name: headless-oracle
-description: Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.
+description: Reference implementation of environment.market_state (Verifiable Intent environment.* family). Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.
 metadata:
   x402:
     endpoint: https://headlessoracle.com/v5/status
@@ -4199,7 +4208,7 @@ metadata:
 
 # Headless Oracle
 
-Headless Oracle provides cryptographically signed market-state receipts for 28 global exchanges. Every receipt is Ed25519-signed with a 60-second TTL — a verifiable pre-trade attestation that the agent checked market state before executing.
+Headless Oracle is the reference implementation of \`environment.market_state\` in the Verifiable Intent environment.* constraint family — the cryptographic attestation primitive for autonomous agents verifying venue state before trade execution. It provides cryptographically signed market-state receipts for 28 global exchanges. Every receipt is Ed25519-signed with a 60-second TTL — a verifiable pre-trade attestation that the agent checked market state before executing.
 
 **Critical safety rule**: \`UNKNOWN\` and \`HALTED\` MUST be treated as \`CLOSED\` — halt all execution immediately.
 
@@ -5131,17 +5140,15 @@ any trade execution. Full integration guide with batch checks, audit
 trail patterns, and multi-exchange verification:
 https://headlessoracle.com/docs/integrations/claude-managed-agents
 
-## Pre-Trade Verification Stack
-Headless Oracle is Layer 1 of the composable pre-trade verification stack:
-1. Market State Gate (Headless Oracle) — is the exchange open?
-2. Spend Authorization (Ampersend) — is the agent authorized?
-3. Signal Verification (VeroQ) — is the signal accurate?
-4. Payment (x402) — execute with cryptographic proof
-5. Trade Execution — place the order with all proofs attached
+## Pre-Trade Verification Pattern
 
-Full spec: https://headlessoracle.com/docs/specifications/pre-trade-stack
-Machine-readable: https://headlessoracle.com/v5/pre-trade-stack
-CPVR-1 (composite receipt format): https://headlessoracle.com/docs/specifications/cpvr-1
+Headless Oracle implements \`environment.market_state\` — the execution-environment verification constraint in the Verifiable Intent environment.* family. It composes with adjacent verification steps (spend authorization, signal verification, payment) as described in the Composable Pre-Trade Verification Pattern:
+
+https://headlessoracle.com/docs/specifications/pre-trade-stack
+
+Environment.* family specifications:
+- environment.market_state: https://github.com/agent-intent/verifiable-intent/pull/9
+- environment.wallet_state: https://github.com/agent-intent/verifiable-intent/pull/22
 
 ## Discovery endpoints
 - MCP: https://headlessoracle.com/mcp
