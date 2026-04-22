@@ -4966,27 +4966,39 @@ This specification is published under the MIT License.
 // Ampersend integration guide — composable market state + spend authorization pattern.
 const AMPERSEND_INTEGRATION_MD = `# Ampersend + Headless Oracle: Composable Pre-Trade Verification
 
+Headless Oracle and Ampersend are complementary verification services for autonomous trading agents:
+
+- **Headless Oracle** — cryptographically signed market-state attestations. Reference implementation of [\`environment.market_state\`](https://github.com/agent-intent/verifiable-intent/pull/9) in the Verifiable Intent environment.* family. 28 exchanges, Ed25519 signatures, 60-second TTL.
+- **Ampersend** — policy-bound spend authorization for autonomous agents. Human-in-the-loop for high-value actions.
+
+This guide shows how to compose the two: fetch a signed HO receipt proving the market is open, then submit it to Ampersend as cryptographic evidence when requesting Spend Authorization.
+
 ## Why Market State Must Come Before Spend Authorization
 
-An agent requesting spend authorization for a trade on a closed exchange
-is wasting compute, authorization bandwidth, and — if approved — creating
-a pending order that will fail or queue unpredictably.
+An agent requesting Spend Authorization for a trade on a closed exchange is wasting compute, authorization bandwidth, and — if approved — creating a pending order that will fail or queue unpredictably. Fetching the HO receipt first short-circuits that waste: if the market is not \`OPEN\`, the Spend Authorization request is never issued, and no order is ever placed. This is fail-closed by design.
 
-The composable pattern:
+## Integration Flow
 
-1. **Headless Oracle** (Layer 1) — Is the exchange open? Signed receipt.
-2. **Ampersend** (Layer 2) — Is the agent authorized to spend? Policy check.
-3. **Execute** — Place the order with both proofs attached.
+\`\`\`
+Agent
+  │
+  ├─► Fetch HO receipt           (environment.market_state attestation)
+  │     └─ Verify Ed25519 signature, status, expires_at
+  │
+  ├─► Submit to Ampersend        (with HO receipt as evidence)
+  │     └─ Ampersend returns Spend Authorization (or denial)
+  │
+  └─► Execute trade              (with both proofs attached)
+\`\`\`
 
-If Layer 1 returns anything other than \`OPEN\`, Layer 2 is never called.
-This is fail-closed by design.
+If the HO receipt is not \`OPEN\`, stop. Ampersend is never called.
 
 ## Two-Step Verification Pattern
 
 \`\`\`typescript
 import { verify } from '@headlessoracle/verify';
 
-// Step 1: Market State Gate (Headless Oracle)
+// Step 1: Fetch and verify the market-state attestation
 const marketRes = await fetch('https://headlessoracle.com/v5/status?mic=XNYS', {
   headers: { 'X-Oracle-Key': process.env.ORACLE_KEY }
 });
@@ -4999,8 +5011,8 @@ if (receipt.status !== 'OPEN') {
   return;
 }
 
-// Step 2: Spend Authorization (Ampersend)
-// Include the HO receipt as evidence that market state was verified
+// Step 2: Request Spend Authorization from Ampersend
+// Include the HO receipt as cryptographic evidence
 const auth = await ampersendClient.requestAuthorization({
   action: 'BUY',
   asset: 'AAPL',
@@ -5020,7 +5032,7 @@ const auth = await ampersendClient.requestAuthorization({
 
 if (!auth.authorized) return;
 
-// Step 3: Execute with both proofs
+// Step 3: Execute with both proofs attached
 await executeTrade({
   asset: 'AAPL',
   side: 'BUY',
@@ -5030,8 +5042,7 @@ await executeTrade({
 
 ## Batch Verification
 
-For multi-exchange portfolios, verify all markets before requesting
-batch spend authorization:
+For multi-exchange portfolios, verify all markets before requesting batch Spend Authorization:
 
 \`\`\`typescript
 const batch = await fetch(
@@ -5048,9 +5059,14 @@ const auth = await ampersend.requestAuthorization({
 });
 \`\`\`
 
+## Where This Fits
+
+See [Composable Pre-Trade Verification Pattern](https://headlessoracle.com/docs/specifications/pre-trade-stack) for the full multi-step verification pattern that this integration is one example of. The market-state step is normatively specified by [\`environment.market_state\`](https://github.com/agent-intent/verifiable-intent/pull/9) in the Verifiable Intent environment.* family; Spend Authorization is a vendor-specific concern, with Ampersend as one example implementation.
+
 ## Links
 
-- [Pre-Trade Stack Spec](https://headlessoracle.com/docs/specifications/pre-trade-stack) — Full 5-layer specification
+- [Composable Pre-Trade Verification Pattern](https://headlessoracle.com/docs/specifications/pre-trade-stack) — Full deployment pattern
+- [\`environment.market_state\` RFC (PR #9)](https://github.com/agent-intent/verifiable-intent/pull/9) — Normative spec that Headless Oracle implements
 - [Ampersend](https://github.com/edgeandnode/ampersend) — Agent spend control
 - [Headless Oracle](https://headlessoracle.com) — Market state verification
 `;
