@@ -4500,7 +4500,22 @@ JSON: \`GET https://headlessoracle.com/v5/pre-trade-stack\`
 // proofs into a single verifiable artifact. Served at /docs/specifications/cpvr-1.
 const CPVR_1_SPEC_MD = `# CPVR-1: Composable Pre-Trade Verification Receipt
 
-**Version**: 1.0 | **Status**: PROPOSAL — Seeking Community Feedback | **License**: Apache 2.0
+---
+
+> **DEPRECATED — Superseded by Verifiable Intent environment.* family.**
+>
+> CPVR-1 was an early proposal for a composite pre-trade verification receipt format, tied to the now-deprecated "4-layer Pre-Trade Stack" narrative. The concepts in CPVR-1 are being incorporated into the Verifiable Intent environment.* constraint family, specifically \`environment.market_state\` ([PR #9](https://github.com/agent-intent/verifiable-intent/pull/9)) and \`environment.wallet_state\` ([PR #22](https://github.com/agent-intent/verifiable-intent/pull/22)).
+>
+> **For current specification work, see:**
+> - [/docs/specifications/pre-trade-stack](https://headlessoracle.com/docs/specifications/pre-trade-stack) — Composable Pre-Trade Verification Pattern (v2.0)
+> - [\`environment.market_state\` PR #9](https://github.com/agent-intent/verifiable-intent/pull/9)
+> - [\`environment.wallet_state\` PR #22](https://github.com/agent-intent/verifiable-intent/pull/22)
+>
+> This document is preserved for historical reference.
+
+---
+
+**Version**: 1.0 | **Status**: DEPRECATED (2026-04-22) — See banner above | **License**: Apache 2.0
 
 ## Abstract
 
@@ -4697,11 +4712,15 @@ verified; CPVR-1 defines *how the results are packaged*.
 
 ## Status
 
-**PROPOSAL** — This specification is seeking community feedback. The format
-has not yet been implemented end-to-end. We propose this as a starting
+**DEPRECATED (2026-04-22)** — See the deprecation banner at the top of this document. The original proposal status and text below are preserved for historical reference.
+
+**PROPOSAL** — This specification was seeking community feedback. The format
+had not yet been implemented end-to-end. We proposed it as a starting
 point for discussion among providers of pre-trade verification services.
 
 ## Reference Implementation
+
+See the deprecation banner at the top of this document for the current canonical specifications in the Verifiable Intent environment.* family. The content below is preserved for historical reference.
 
 Headless Oracle receipts already conform to the Layer 1 format. The
 \\\`receipt\\\` object in Layer 1 maps directly to the existing Ed25519-signed

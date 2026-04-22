@@ -11063,11 +11063,12 @@ describe('GET /docs/specifications/cpvr-1', () => {
 		expect(response.headers.get('Content-Type')).toContain('text/markdown');
 	});
 
-	it('contains CPVR-1 spec content', async () => {
+	it('contains CPVR-1 spec content with deprecation banner', async () => {
 		const text = await fetchWorker('/docs/specifications/cpvr-1').then((r) => r.text());
 		expect(text).toContain('CPVR-1');
 		expect(text).toContain('Composable Pre-Trade Verification Receipt');
-		expect(text).toContain('PROPOSAL');
+		expect(text).toContain('DEPRECATED');
+		expect(text).toContain('environment.market_state');
 		expect(text).toContain('composite_hash');
 	});
 
