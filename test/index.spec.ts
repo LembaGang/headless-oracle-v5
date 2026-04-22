@@ -3499,6 +3499,17 @@ describe('POST /v5/keys/request', () => {
 			// email must contain the ho_free_ key
 			expect(resendCalled).toBe(true);
 			expect(capturedEmailHtml).toContain('ho_free_');
+			// Regression-lock: canonical links must remain in the email template
+			expect(capturedEmailHtml).toContain('docs/specifications/pre-trade-stack');
+			expect(capturedEmailHtml).toContain('Composable Pre-Trade Verification Pattern v2.0');
+			expect(capturedEmailHtml).toContain('environment.market_state');
+			expect(capturedEmailHtml).toContain('verifiable-intent/pull/9');
+			expect(capturedEmailHtml).toContain('verifiable-intent/pull/22');
+			// Retired framing must NOT appear
+			expect(capturedEmailHtml).not.toContain('External State Attestation RFC');
+			expect(capturedEmailHtml).not.toContain('autonomous finance stack');
+			expect(capturedEmailHtml).not.toContain('/v5/stack');  // now deprecated; email must not link here
+			expect(capturedEmailHtml).not.toContain('framework today');  // time-drift phrasing
 			// KV must have an entry for the key hash
 			const allKeys = await env.ORACLE_API_KEYS.list();
 			// At least one entry should be a free-plan key created during this test

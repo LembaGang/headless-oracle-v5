@@ -11516,8 +11516,8 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 <ul>
   <li><a href="https://headlessoracle.com/docs/integrations/datacamp-workspace">DataLab / Jupyter integration guide</a> — most comprehensive walkthrough</li>
   <li><a href="https://headlessoracle.com/docs">Full documentation</a></li>
-  <li><a href="https://headlessoracle.com/v5/stack">Where Oracle fits in the autonomous finance stack</a></li>
-  <li><a href="https://github.com/agent-intent/verifiable-intent/pulls">External State Attestation RFC</a> — the protocol we submitted to Mastercard's Verifiable Intent framework today</li>
+  <li><a href="https://headlessoracle.com/docs/specifications/pre-trade-stack">Composable Pre-Trade Verification Pattern v2.0</a> — where Headless Oracle fits as the reference implementation of environment.market_state</li>
+  <li>Verifiable Intent environment.* constraint family: <a href="https://github.com/agent-intent/verifiable-intent/pull/9">environment.market_state (PR #9)</a> and <a href="https://github.com/agent-intent/verifiable-intent/pull/22">environment.wallet_state (PR #22)</a> — the constraint specifications Headless Oracle implements</li>
 </ul>
 
 <p><strong>When you hit the free tier limit (500 req/day):</strong><br>
