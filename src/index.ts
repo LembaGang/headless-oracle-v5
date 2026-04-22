@@ -4324,166 +4324,167 @@ const SKILL_MD_ETAG     = `"${fnv1a32(SKILL_MD)}"`;
 const SKILL_MD_LAST_MOD = new Date().toUTCString();         // RFC 7231 HTTP-date format
 const DEPLOY_DATE       = new Date().toISOString().slice(0, 10); // YYYY-MM-DD for spec_version
 
-// ─── Pre-Trade Verification Stack ────────────────────────────────────────────
-// Defines the composable 5-layer pre-trade verification stack for autonomous
-// trading agents. Headless Oracle = Layer 1 (market state gate). JSON version
-// served at /v5/pre-trade-stack for machine discovery.
+// ─── Pre-Trade Verification Pattern v2.0 ─────────────────────────────────────
+// Composable deployment pattern in which specific execution-environment
+// constraints (Verifiable Intent environment.* family) and adjacent
+// authorization, signal, and payment verification steps compose into a
+// gating sequence before any financial transaction executes. Step 1 is
+// normatively specified by environment.market_state (PR #9) composing with
+// environment.wallet_state (PR #22). This is a deployment pattern, not a
+// protocol. JSON version served at /v5/pre-trade-stack.
 const PRE_TRADE_STACK_JSON = {
-	spec_version: '1.0',
-	title: 'The Composable Pre-Trade Verification Stack for Autonomous Trading Agents',
-	description: 'Five independent verification layers that an autonomous agent must pass before executing any financial transaction. Each layer is fail-closed, independently verifiable, and designed for machine consumption.',
+	spec_version: '2.0',
 	spec_url: 'https://headlessoracle.com/docs/specifications/pre-trade-stack',
-	layers: [
+	title: 'The Composable Pre-Trade Verification Pattern for Autonomous Trading Agents',
+	type: 'deployment_pattern',
+	normative_specifications: {
+		step_1: {
+			name: 'environment.market_state',
+			family: 'Verifiable Intent environment.* constraint family',
+			repo: 'agent-intent/verifiable-intent',
+			pr: 9,
+			url: 'https://github.com/agent-intent/verifiable-intent/pull/9',
+			status: 'coordinated drafting',
+			reference_implementation: 'https://headlessoracle.com',
+		},
+		step_1_composable: {
+			name: 'environment.wallet_state',
+			family: 'Verifiable Intent environment.* constraint family',
+			repo: 'agent-intent/verifiable-intent',
+			pr: 22,
+			url: 'https://github.com/agent-intent/verifiable-intent/pull/22',
+			status: 'coordinated drafting',
+		},
+	},
+	steps: [
 		{
-			layer: 1,
-			name: 'Market State Gate',
-			question: 'Is the target exchange currently open for trading?',
-			provider: 'Headless Oracle',
-			protocol: 'Ed25519-signed market-state receipt, 60-second TTL',
-			fail_closed: true,
-			fail_behavior: 'Any state other than OPEN halts the entire stack',
-			endpoints: {
-				mcp: 'https://headlessoracle.com/mcp',
-				rest: 'https://headlessoracle.com/v5/status',
-				discovery: 'https://headlessoracle.com/.well-known/agent.json',
-			},
-			coverage: '28 global exchanges (equities, derivatives, 24/7 crypto)',
-			url: 'https://headlessoracle.com',
+			step: 1,
+			name: 'execution_environment_verification',
+			question: 'Is the execution environment in an expected state?',
+			normative_spec: 'environment.market_state (composes with environment.wallet_state)',
+			reference_implementation: 'https://headlessoracle.com',
 		},
 		{
-			layer: 2,
-			name: 'Spend Authorization',
-			question: 'Is the agent authorized to spend this amount on this trade?',
-			provider: 'Ampersend (or equivalent)',
-			protocol: 'Policy-bound authorization, human-in-the-loop for high-value actions',
-			fail_closed: true,
-			fail_behavior: 'Unauthorized spend requests halt execution',
-			composable_with_layer_1: 'Market state receipt signature serves as evidence in authorization request',
-			url: 'https://github.com/edgeandnode/ampersend',
+			step: 2,
+			name: 'spend_authorization',
+			question: 'Is the agent authorized to commit this amount of capital?',
+			example_protocols: ['policy-bound authorization frameworks'],
 		},
 		{
-			layer: 3,
-			name: 'Signal Verification',
+			step: 3,
+			name: 'signal_verification',
 			question: 'Is the trading signal factually accurate?',
-			provider: 'VeroQ (or equivalent)',
-			protocol: 'Claim verification against live market data',
-			fail_closed: true,
-			fail_behavior: 'Unverified signals halt execution',
-			url: 'https://veroq.ai',
+			example_protocols: ['claim-verification services'],
 		},
 		{
-			layer: 4,
-			name: 'Payment',
-			question: 'Can the payment be executed with cryptographic proof?',
-			provider: 'x402 Protocol (or equivalent)',
-			protocol: 'On-chain USDC payment on Base with transaction-level proof',
-			fail_closed: true,
-			fail_behavior: 'Failed payment halts execution',
-			url: 'https://www.x402.org/',
+			step: 4,
+			name: 'payment',
+			question: 'Can payment execute with cryptographic proof?',
+			example_protocols: ['x402 (HTTP 402 with on-chain USDC on Base)'],
 		},
 		{
-			layer: 5,
-			name: 'Trade Execution',
-			question: 'Execute the trade with all verification proofs attached',
-			provider: 'Application-specific',
-			protocol: 'Exchange APIs, DeFi protocols',
-			fail_closed: true,
-			fail_behavior: 'Execution failure is logged with all layer proofs for audit',
-			prerequisites: ['market_state_receipt', 'spend_authorization', 'signal_verification', 'payment_proof'],
+			step: 5,
+			name: 'trade_execution',
+			question: 'Submit the order with all prior-step proofs attached for audit.',
 		},
 	],
-	why_layer_1_is_foundation: 'Market state is the only layer where failure mode is deterministic and externally verifiable. All other layers depend on the market being open. You cannot authorize spend on a closed exchange, verify a signal for a halted market, or execute a payment for an unplaceable trade.',
-	reference_implementations: {
-		layer_1: { name: 'Headless Oracle', url: 'https://headlessoracle.com', protocol: 'Ed25519 signed receipts, MCP, REST, x402' },
-		layer_2: { name: 'Ampersend', url: 'https://github.com/edgeandnode/ampersend', protocol: 'A2A, policy-bound authorization' },
-		layer_3: { name: 'VeroQ', url: 'https://veroq.ai', protocol: 'AI claim verification' },
-		layer_4: { name: 'x402 Protocol', url: 'https://www.x402.org/', protocol: 'HTTP 402, on-chain USDC' },
-	},
-	integration_guide: 'https://headlessoracle.com/docs/integrations/ampersend',
+	fail_closed: true,
+	pattern_property: 'Each step\'s proof composes into the next. If any step fails, subsequent steps are skipped and the trade is halted.',
+	license: 'Apache-2.0',
 };
 
 // Pre-trade stack spec served at /docs/specifications/pre-trade-stack (text/markdown).
-const PRE_TRADE_STACK_SPEC_MD = `# The Composable Pre-Trade Verification Stack for Autonomous Trading Agents
+const PRE_TRADE_STACK_SPEC_MD = `# The Composable Pre-Trade Verification Pattern for Autonomous Trading Agents
 
-**Version**: 1.0 | **Status**: Draft Specification | **License**: Apache 2.0
+**Version**: 2.0 | **Status**: Draft | **License**: Apache 2.0
 
 ## Abstract
 
-Autonomous trading agents need layered verification before executing trades.
-Capability without verification is liability. This specification defines a
-composable pre-trade verification stack — five independent layers that an
-autonomous agent MUST pass through before executing any financial transaction.
+Autonomous trading agents need layered verification before executing trades. This document describes a composable pre-trade verification pattern — a deployment pattern in which specific execution-environment constraints (Verifiable Intent environment.* family) and adjacent authorization, signal, and payment verification steps compose into a gating sequence that must pass before any financial transaction executes.
 
-## The Problem: Agents With Money and No Safety Rails
+This is a deployment pattern, not a protocol. The normative specifications are published separately: \`environment.market_state\` and \`environment.wallet_state\` in the Verifiable Intent environment.* family, and vendor-specific protocols referenced below.
 
-An autonomous trading agent with exchange access, a funded wallet, and no
-pre-trade verification will execute trades during market closures, circuit
-breaker halts, and based on unverified signals. Each failure mode is
-independently dangerous. Together, they represent systemic risk.
-
-## The Stack
+## The Pattern
 
 \`\`\`
 ┌─────────────────────────────────────────────────┐
-│  Layer 5: Trade Execution                       │
+│  5. Trade Execution                             │
+│  └─ Order submission with full proof chain      │
 ├─────────────────────────────────────────────────┤
-│  Layer 4: Payment (x402 or equivalent)          │
+│  4. Payment                                     │
+│  └─ e.g. x402, on-chain USDC with tx proof      │
 ├─────────────────────────────────────────────────┤
-│  Layer 3: Signal Verification (VeroQ or equiv.) │
+│  3. Signal Verification                         │
+│  └─ e.g. claim verification against live data   │
 ├─────────────────────────────────────────────────┤
-│  Layer 2: Spend Authorization (Ampersend or eq.)│
+│  2. Spend Authorization                         │
+│  └─ e.g. policy-bound, human-in-loop auth       │
 ├─────────────────────────────────────────────────┤
-│  Layer 1: Market State Gate (Headless Oracle)   │
-│  Ed25519-signed, fail-closed. UNKNOWN = CLOSED. │
+│  1. Execution-Environment Verification          │
+│  └─ environment.market_state (this step)        │
+│     environment.wallet_state (composable)       │
 └─────────────────────────────────────────────────┘
 \`\`\`
 
-If any layer fails, all subsequent layers are skipped and the trade is halted.
+Each step's proof composes into the next. If any step fails, subsequent steps are skipped and the trade is halted.
 
-### Layer 1 — Market State Gate (Headless Oracle)
+## Step 1 — Execution-Environment Verification
 
-**Question**: Is the target exchange currently open for trading?
-**Protocol**: Ed25519-signed receipt, 60-second TTL.
-**States**: OPEN, CLOSED, HALTED, UNKNOWN. Only OPEN proceeds.
-**Coverage**: 28 global exchanges (equities, derivatives, 24/7 crypto).
-**Endpoints**: MCP (\`npx headless-oracle-mcp\`), REST (\`/v5/status\`), x402 ($0.001 USDC).
-**Why Layer 1**: Every subsequent layer depends on the market being open.
+**Specification:** Verifiable Intent environment.* family. Normative specifications for \`environment.market_state\` ([PR #9](https://github.com/agent-intent/verifiable-intent/pull/9)) and \`environment.wallet_state\` ([PR #22](https://github.com/agent-intent/verifiable-intent/pull/22)), both in coordinated drafting on the upstream \`agent-intent/verifiable-intent\` repository.
 
-### Layer 2 — Spend Authorization (Ampersend or equivalent)
+**Question:** Is the execution environment in an expected state? Is the venue open? Is the wallet solvent and uncompromised?
 
-**Question**: Is the agent authorized to spend this amount?
-**Protocol**: Policy-bound authorization. Human-in-the-loop for high-value actions.
-**Composable**: Layer 1 receipt signature serves as evidence in authorization request.
+**Protocol:** Cryptographically signed constraint attestations with finite TTL, fail-closed semantics, composable via conjunction.
 
-### Layer 3 — Signal Verification (VeroQ or equivalent)
+**Reference implementation of environment.market_state:** [Headless Oracle](https://headlessoracle.com). 28 venues, Ed25519 signing, 60-second TTL.
 
-**Question**: Is the trading signal factually accurate?
-**Protocol**: Claim verification against live market data.
+## Step 2 — Spend Authorization
 
-### Layer 4 — Payment (x402 or equivalent)
+**Question:** Is the agent authorized to commit this amount of capital?
 
-**Question**: Can the payment be executed with cryptographic proof?
-**Protocol**: On-chain USDC on Base with transaction-level proof.
+**Example protocols:** Policy-bound authorization frameworks such as Ampersend.
 
-### Layer 5 — Trade Execution
+## Step 3 — Signal Verification
 
-Execute the order with all layer proofs attached for audit trail.
+**Question:** Is the trading signal factually accurate?
 
-## Why Layer 1 Must Be Fail-Closed
+**Example protocols:** Claim-verification services such as VeroQ.
 
-1. Markets have objective state — open or closed is a fact, not a judgment.
-2. All other layers depend on market state.
-3. Fail-closed prevents the worst outcomes (capital loss vs. opportunity cost).
-4. 60-second TTL forces re-verification before every execution window.
+## Step 4 — Payment
 
-## Reference Implementations
+**Question:** Can payment execute with cryptographic proof?
 
-| Layer | Implementation | Protocol |
-|-------|---------------|----------|
-| 1 | [Headless Oracle](https://headlessoracle.com) | Ed25519 receipts, MCP, REST, x402 |
-| 2 | [Ampersend](https://github.com/edgeandnode/ampersend) | A2A, policy-bound auth |
-| 3 | [VeroQ](https://veroq.ai) | AI claim verification |
-| 4 | [x402](https://www.x402.org/) | HTTP 402, on-chain USDC |
+**Example protocols:** x402 (HTTP 402 with on-chain USDC on Base).
+
+## Step 5 — Trade Execution
+
+Submit the order with all prior-step proofs attached for audit.
+
+## Why Step 1 Must Be Fail-Closed
+
+1. Execution-environment state (venue open/closed, wallet solvent/not) is objective — attestable as fact, not judgment.
+2. All subsequent steps depend on it.
+3. Fail-closed bounds the worst outcome to opportunity cost rather than capital loss.
+4. Finite TTL on the environment attestation forces re-verification before every execution window.
+
+## Relationship to Other Specifications
+
+This pattern references — it does not redefine — the following normative specifications:
+
+| Concern | Specification | Status |
+|---|---|---|
+| \`environment.market_state\` | Verifiable Intent environment.* family, [PR #9](https://github.com/agent-intent/verifiable-intent/pull/9) | Coordinated drafting |
+| \`environment.wallet_state\` | Verifiable Intent environment.* family, [PR #22](https://github.com/agent-intent/verifiable-intent/pull/22) | Coordinated drafting |
+| x402 payments | [x402.org](https://www.x402.org/) | Linux Foundation, live |
+| Spend authorization | Vendor-specific (e.g. Ampersend) | Integration examples |
+| Signal verification | Vendor-specific (e.g. VeroQ) | Integration examples |
+
+## Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 2.0 | 2026-04-22 | Repositioned from "named 4-layer stack" to "composable deployment pattern". Step 1 now references \`environment.market_state\` in the Verifiable Intent environment.* family as the normative specification. Vendor-specific integrations (Ampersend, VeroQ) demoted to example protocols. |
+| 1.0 | 2026-03 | Initial draft. |
 
 ## Machine-Readable Discovery
 

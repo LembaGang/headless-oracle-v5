@@ -10937,29 +10937,32 @@ describe('Redirect routes — coverage', () => {
 // ─── Pre-Trade Verification Stack ────────────────────────────────────────────
 
 describe('GET /v5/pre-trade-stack', () => {
-	it('returns 200 with 5 layers and Layer 1 is Headless Oracle', async () => {
+	it('returns 200 with 5 steps and step 1 is execution-environment verification', async () => {
 		const body = await fetchJSON('/v5/pre-trade-stack');
-		expect(body.spec_version).toBe('1.0');
-		expect(body.layers).toHaveLength(5);
-		expect(body.layers[0].layer).toBe(1);
-		expect(body.layers[0].name).toBe('Market State Gate');
-		expect(body.layers[0].provider).toBe('Headless Oracle');
-		expect(body.layers[0].fail_closed).toBe(true);
+		expect(body.spec_version).toBe('2.0');
+		expect(body.type).toBe('deployment_pattern');
+		expect(body.steps).toHaveLength(5);
+		expect(body.steps[0].step).toBe(1);
+		expect(body.steps[0].name).toBe('execution_environment_verification');
+		expect(body.steps[0].reference_implementation).toBe('https://headlessoracle.com');
+		expect(body.fail_closed).toBe(true);
 	});
 
-	it('includes reference implementations for all layers', async () => {
+	it('references environment.market_state and environment.wallet_state as normative specs', async () => {
 		const body = await fetchJSON('/v5/pre-trade-stack');
-		const refs = body.reference_implementations as Record<string, { name: string }>;
-		expect(refs.layer_1.name).toBe('Headless Oracle');
-		expect(refs.layer_2.name).toBe('Ampersend');
-		expect(refs.layer_3.name).toBe('VeroQ');
-		expect(refs.layer_4.name).toBe('x402 Protocol');
+		const specs = body.normative_specifications as Record<string, { name: string; pr: number; url: string; family: string }>;
+		expect(specs.step_1.name).toBe('environment.market_state');
+		expect(specs.step_1.pr).toBe(9);
+		expect(specs.step_1.family).toContain('Verifiable Intent');
+		expect(specs.step_1_composable.name).toBe('environment.wallet_state');
+		expect(specs.step_1_composable.pr).toBe(22);
 	});
 
-	it('Layer 2 (Ampersend) references composability with Layer 1', async () => {
+	it('step 2 lists policy-bound authorization as example protocol', async () => {
 		const body = await fetchJSON('/v5/pre-trade-stack');
-		const layer2 = body.layers[1];
-		expect(layer2.composable_with_layer_1).toContain('receipt signature');
+		const step2 = body.steps[1];
+		expect(step2.name).toBe('spend_authorization');
+		expect(step2.example_protocols).toContain('policy-bound authorization frameworks');
 	});
 });
 
@@ -10970,10 +10973,11 @@ describe('GET /docs/specifications/pre-trade-stack', () => {
 		expect(response.headers.get('Content-Type')).toContain('text/markdown');
 	});
 
-	it('contains 5-layer stack description', async () => {
+	it('describes the composable pattern and references environment.market_state', async () => {
 		const text = await fetchWorker('/docs/specifications/pre-trade-stack').then((r) => r.text());
-		expect(text).toContain('Layer 1');
-		expect(text).toContain('Market State Gate');
+		expect(text).toContain('Composable Pre-Trade Verification Pattern');
+		expect(text).toContain('environment.market_state');
+		expect(text).toContain('environment.wallet_state');
 		expect(text).toContain('Ampersend');
 		expect(text).toContain('VeroQ');
 	});
