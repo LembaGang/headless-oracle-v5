@@ -11083,9 +11083,9 @@ describe('GET /docs/specifications/cpvr-1', () => {
 // ─── Multi-Oracle Consensus Protocol v1.0.0 ─────────────────────────────────
 
 describe('GET /v1/verification/multi-oracle-guide', () => {
-	it('returns valid JSON with spec_version 1.0.0', async () => {
+	it('returns valid JSON with spec_version 1.0.1', async () => {
 		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
-		expect(body.spec_version).toBe('1.0.0');
+		expect(body.spec_version).toBe('1.0.1');
 	});
 
 	it('declares minimum_oracles = 3 and fail_closed_default = true', async () => {
@@ -11115,11 +11115,21 @@ describe('GET /v1/verification/multi-oracle-guide', () => {
 		expect(ho.exchanges).toBe(28);
 	});
 
-	it('cites SEC/CFTC Technical Framework for Tokenized Collateral', async () => {
+	it('cites CFTC Staff Letter 25-39 and SEC Project Blueprint in regulatory_references', async () => {
 		const body = await fetchJSON('/v1/verification/multi-oracle-guide');
-		const aligned = (body.regulatory_alignment as string[]).join(' ');
-		expect(aligned).toContain('SEC/CFTC');
-		expect(aligned).toContain('Tokenized Collateral');
+		const refs = body.regulatory_references as Array<{body: string; id: string; title: string; date: string; url: string}>;
+		expect(Array.isArray(refs)).toBe(true);
+		expect(refs.length).toBeGreaterThanOrEqual(2);
+		const cftc = refs.find(r => r.body === 'CFTC' && r.id === 'Staff Letter 25-39');
+		expect(cftc).toBeDefined();
+		expect(cftc?.url).toContain('cftc.gov');
+		const sec = refs.find(r => r.body === 'SEC Crypto Task Force' && r.id === 'Project Blueprint');
+		expect(sec).toBeDefined();
+		expect(sec?.url).toContain('sec.gov');
+
+		// Also assert the legacy fabricated name is NOT present anywhere
+		const serialized = JSON.stringify(body);
+		expect(serialized).not.toContain('SEC/CFTC Technical Framework');
 	});
 
 	it('exposes spec_url pointing to the markdown specification', async () => {
@@ -11140,7 +11150,8 @@ describe('GET /docs/specifications/multi-oracle-consensus-v1', () => {
 		expect(text).toContain('Multi-Oracle Consensus Protocol');
 		expect(text).toContain('majority_with_fail_closed');
 		expect(text).toContain('three independent oracle feeds');
-		expect(text).toContain('SEC/CFTC');
+		expect(text).toContain('CFTC Staff Letter 25-39');
+		expect(text).toContain('Project Blueprint on Tokenized Collateral');
 		expect(text).toContain('Signed Market-State Attestation');
 	});
 
