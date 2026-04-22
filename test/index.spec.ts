@@ -11201,9 +11201,10 @@ describe('GET /.well-known/agent-card.json (A2A v1)', () => {
 
 	it('includes pre_trade_stack reference', async () => {
 		const body = await fetchJSON('/.well-known/agent-card.json');
-		const stack = body.pre_trade_stack as { layer: number; role: string };
-		expect(stack.layer).toBe(1);
-		expect(stack.role).toBe('Market State Gate');
+		const stack = body.pre_trade_stack as { role: string; pattern: string; composes_with: Record<string, unknown> };
+		expect(stack.role).toBe('execution-environment verification (environment.market_state)');
+		expect(stack.pattern).toBe('Composable Pre-Trade Verification Pattern (v2.0)');
+		expect(stack.composes_with).toBeDefined();
 	});
 
 	it('includes tags array for discovery', async () => {

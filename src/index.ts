@@ -5167,7 +5167,7 @@ const AGENT_JSON = {
 	agentVersion:      '5.0.0',
 	name:              'Headless Oracle',
 	version:           'v5.0',
-	description:       'Layer 1 of the composable pre-trade verification stack. Provides Ed25519-signed market-state receipts (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges. Autonomous agents gate trade execution on cryptographically verified market state. Fail-closed: UNKNOWN always means CLOSED.',
+	description:       'Reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. Provides Ed25519-signed market-state receipts (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges. Autonomous agents gate trade execution on cryptographically verified market state. Composes with environment.wallet_state for multi-venue mandates. Fail-closed: UNKNOWN always means CLOSED.',
 	url:               'https://headlessoracle.com',
 	provider: {
 		organization: 'LembaGang',
@@ -5184,7 +5184,9 @@ const AGENT_JSON = {
 		pushNotifications:      false,
 		stateTransitionHistory: false,
 	},
-	// A2A authSchemes array — multiple auth mechanisms supported
+	// A2A v1 auth declaration. The `authentication` field below (5206-5209) is retained
+	// for backward compatibility with older agent runtimes that consume the v0 shape.
+	// Both fields intentionally coexist; they describe the same underlying auth methods.
 	authSchemes: [
 		{
 			scheme:      'api_key',
@@ -5241,11 +5243,11 @@ const AGENT_JSON = {
 		{
 			id:          'verify_receipt',
 			name:        'Verify Receipt Signature',
-			description: 'Verifies Ed25519 cryptographic proof on a Signed Market Attestation receipt — confirms genuine pre-trade verification attestation (attestation_ref), receipt authenticity, and signature validity for audit trails and x402 payment flows.',
-			tags:        ['finance', 'verification', 'cryptography', 'trust'],
-			examples:    ['Verify this market receipt before processing the payment'],
-			inputModes:  ['application/json'],
-			outputModes: ['application/json'],
+			description: 'Verifies Ed25519 cryptographic proof on a Signed Market Attestation receipt — confirms genuine pre-trade verification attestation, receipt authenticity, and signature validity. REST endpoint for test harnesses and SDK authors; agents SHOULD prefer offline verification with the published public key.',
+			endpoint:    '/v5/verify',
+			method:      'POST',
+			auth:        false,
+			tags:        ['finance', 'verification', 'cryptography', 'trust', 'rest-only'],
 		},
 		{
 			id:          'get_sandbox_key',
@@ -5326,17 +5328,27 @@ const AGENT_JSON = {
 		free_tier_daily_limit: FREE_TIER_DAILY_LIMIT,
 	},
 	standards: {
-		sma_version:           '1.0',
-		sma_protocol_version:  'RFC-001-draft',
-		apts_version:          '1.0',
-		sma_spec:              'https://github.com/LembaGang/sma-protocol',
-		apts_spec:             'https://github.com/LembaGang/agent-pretrade-safety-standard',
-		verifiable_intent_rfc: 'https://github.com/agent-intent/verifiable-intent/pulls',
-		conformance_vectors:   'https://api.headlessoracle.com/v5/conformance-vectors',
-		mpas_spec:             'https://github.com/LembaGang/mpas-spec',
-		mpas_version:          '1.0',
-		sma_disambiguation:      'SMA denotes Signed Market Attestation, not Simple Moving Average',
+		// Primary: Verifiable Intent environment.* constraint family
+		verifiable_intent: {
+			family:        'environment.*',
+			upstream_repo: 'agent-intent/verifiable-intent',
+			role:          'reference implementation of environment.market_state',
+			pull_requests: [
+				{ constraint: 'environment.market_state', pr: 9,  url: 'https://github.com/agent-intent/verifiable-intent/pull/9',  status: 'coordinated drafting' },
+				{ constraint: 'environment.wallet_state', pr: 22, url: 'https://github.com/agent-intent/verifiable-intent/pull/22', status: 'coordinated drafting' },
+			],
+		},
+		// Predecessor specs (brand-retired, concepts preserved in environment.* family)
+		predecessor_specs: {
+			note:          'SMA, APTS, and MPAS were earlier working-spec names for concepts now incorporated into the Verifiable Intent environment.* family. Preserved for citation continuity; brand names retired.',
+			sma_protocol:  'https://github.com/LembaGang/sma-protocol',
+			apts_standard: 'https://github.com/LembaGang/agent-pretrade-safety-standard',
+			mpas_spec:     'https://github.com/LembaGang/mpas-spec',
+		},
+		// Interoperability
+		conformance_vectors:      'https://api.headlessoracle.com/v5/conformance-vectors',
 		implementations_registry: 'https://headlessoracle.com/v5/implementations',
+		sma_disambiguation:       'SMA denotes Signed Market Attestation, not Simple Moving Average',
 	},
 	dst_aware:           true,
 	discovery_url:       'https://headlessoracle.com/.well-known/agent.json',
@@ -5344,11 +5356,16 @@ const AGENT_JSON = {
 	erc8004:             '8453:38413',
 	ampersend:           'https://app.ampersend.ai/agents/headless-oracle',
 	pre_trade_stack: {
-		spec_url:        'https://headlessoracle.com/docs/specifications/pre-trade-stack',
-		json_url:        'https://headlessoracle.com/v5/pre-trade-stack',
-		layer:           1,
-		role:            'Market State Gate',
-		composable_with: ['Ampersend (Layer 2: Spend Authorization)', 'VeroQ (Layer 3: Signal Verification)', 'x402 (Layer 4: Payment)'],
+		spec_url: 'https://headlessoracle.com/docs/specifications/pre-trade-stack',
+		json_url: 'https://headlessoracle.com/v5/pre-trade-stack',
+		pattern:  'Composable Pre-Trade Verification Pattern (v2.0)',
+		role:     'execution-environment verification (environment.market_state)',
+		composes_with: {
+			environment_wallet_state: 'https://github.com/agent-intent/verifiable-intent/pull/22',
+			spend_authorization:      'vendor-specific integration examples (e.g. Ampersend)',
+			signal_verification:      'vendor-specific integration examples (e.g. VeroQ)',
+			payment:                  'x402 (Linux Foundation)',
+		},
 	},
 	mcp: {
 		endpoint:         'https://headlessoracle.com/mcp',
