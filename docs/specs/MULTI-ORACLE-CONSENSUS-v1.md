@@ -1,20 +1,29 @@
 # Multi-Oracle Consensus Protocol for Market-State Verification
 
-**Version**: 1.0.0
+**Version**: 1.0.1 (errata correction, 2026-04-22)
 **Status**: Published Standard
 **License**: MIT
 **Editor**: Headless Oracle (headlessoracle.com)
 **Canonical URL**: https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1
 **Machine-Readable**: https://headlessoracle.com/v1/verification/multi-oracle-guide
 
+**Changelog**: v1.0.1 removes references in Sections 3 and 10 to a
+regulatory framework name that did not correspond to a specific
+published document. Replaced with citations to CFTC Staff Letter 25-39
+(December 2025) and the SEC Crypto Task Force Project Blueprint on
+Tokenized Collateral (November 2025), both of which are
+government-published. Section 10 ESMA/NIST/MAS references removed
+pending independent verification.
+
 ## Abstract
 
 This specification defines how an autonomous agent SHOULD query multiple
 independent market-state oracles and reach consensus before executing a
-financial transaction. It is designed to satisfy the SEC/CFTC Technical
-Framework for Tokenized Collateral (November 2025), which requires "at least
-three independent oracle feeds with cryptographic attestation" for asset
-valuation and collateral verification.
+financial transaction. It establishes a minimum-oracle-count threshold
+and a fail-closed consensus algorithm consistent with the architectural
+direction in emerging regulatory guidance on tokenized collateral (CFTC
+Staff Letter 25-39, December 2025; SEC Crypto Task Force Project
+Blueprint on Tokenized Collateral, November 2025).
 
 This is a verification standard for *market state* — whether an exchange is
 open, closed, halted, in pre-market, after-hours, on a scheduled break, or
@@ -69,10 +78,13 @@ purposes but MUST be preserved as UNKNOWN in audit logs.
 
 ## 3. Minimum Oracle Count
 
-An agent MUST query at least three independent oracle feeds before any
-trade execution covered by the SEC/CFTC Technical Framework for Tokenized
-Collateral. Fewer than three valid responses MUST result in a fail-closed
-outcome.
+An agent MUST query at least three independent oracle feeds before
+executing any trade where venue-state verification is load-bearing for
+capital safety. Fewer than three valid responses MUST result in a
+fail-closed outcome. This threshold reflects standard Byzantine-fault-
+tolerance practice (tolerance of one faulty feed in three) and is
+consistent with the architectural direction in the SEC Crypto Task
+Force's Project Blueprint on Tokenized Collateral (November 2025).
 
 The agent MAY query more than three; the consensus rule scales with N.
 
@@ -193,25 +205,23 @@ coordination.
 
 ## 10. Regulatory Alignment
 
-This specification is designed to satisfy:
+This specification is architecturally consistent with emerging regulatory
+direction on tokenized collateral and algorithmic execution:
 
-- **SEC/CFTC Technical Framework for Tokenized Collateral** (November 2025)
-  — the requirement for at least three independent oracle feeds with
-  cryptographic attestation for asset valuation.
-- **ESMA algorithmic trading rules** — the requirement that algorithms be
-  explainable and that third-party data sources be auditable.
-- **NIST AI risk management framework** — the requirement for cryptographic
-  chains of custody for agent authorization decisions.
-- **Singapore MAS agentic AI governance framework** — fail-closed defaults
-  and attestation-based decision making.
+- **CFTC Staff Letter 25-39** (December 2025) — technology-neutral
+  guidance on tokenized collateral; final rulemaking expected August 2026.
+- **SEC Crypto Task Force Project Blueprint on Tokenized Collateral**
+  (November 2025) — discusses multiple independent oracles and
+  cryptographic attestation as architectural building blocks.
 
-Compliance with this specification is necessary but not sufficient for any
-of the above frameworks. Operators are responsible for satisfying any
-additional requirements specific to their jurisdiction and use case.
+Where this specification uses RFC 2119 MUST/SHOULD language, the
+normative force derives from the specification itself, not from any
+external regulatory document. Operators MUST evaluate their own
+regulatory obligations independently.
 
 ## 11. Versioning and Changes
 
-This is version 1.0.0. Backwards-incompatible changes will be published
+This is version 1.0.1 (errata correction from v1.0.0). Backwards-incompatible changes will be published
 under a new major version at a new URL. The current version will continue
 to be served at its canonical URL.
 
