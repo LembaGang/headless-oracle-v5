@@ -1212,8 +1212,12 @@ describe('GET /openapi.json', () => {
 		expect(info['x-model-agnostic']).toBe(true);
 		const reg = info['x-regulatory-alignment'] as string[];
 		expect(Array.isArray(reg)).toBe(true);
-		expect(reg).toContain('SEC_CFTC_tokenized_collateral');
+		expect(reg).toContain('CFTC_SL_25_39');
+		expect(reg).toContain('SEC_project_blueprint_tokenized_collateral');
 		expect(reg).toContain('ISO_10383');
+		expect(Array.isArray(info['x-regulatory-references'])).toBe(true);
+		expect((info['x-regulatory-references'] as unknown[]).length).toBeGreaterThanOrEqual(2);
+		expect(JSON.stringify(info)).not.toContain('SEC/CFTC Technical Framework');
 	});
 });
 

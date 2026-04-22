@@ -5641,8 +5641,9 @@ const OPENAPI_SPEC = {
 			'Receipts expire at expires_at — do not act on stale receipts.',
 		contact: { name: 'Headless Oracle', email: 'api@headlessoracle.com', url: 'https://headlessoracle.com' },
 		license: { name: 'MIT', url: 'https://github.com/LembaGang/headless-oracle-v5/blob/main/LICENSE' },
-		'x-model-agnostic':       true,
-		'x-regulatory-alignment': ['SEC_CFTC_tokenized_collateral', 'ISO_10383'],
+		'x-model-agnostic':        true,
+		'x-regulatory-alignment':  ['CFTC_SL_25_39', 'SEC_project_blueprint_tokenized_collateral', 'ISO_10383'],
+		'x-regulatory-references': REGULATORY_REFERENCES_STRUCTURED,
 	},
 	externalDocs: { description: 'Full documentation for LLMs and agents', url: 'https://headlessoracle.com/llms-full.txt' },
 	servers: [
@@ -6121,17 +6122,15 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/compliance': {
 			get: {
-				summary:     'APTS compliance declaration',
-				description: 'Machine-readable proof that Headless Oracle satisfies the Agent Pre-Trade Safety Standard v1.0. ' +
-					'All 6 APTS checks documented with evidence. No authentication required. ' +
-					'Suitable for CI pipelines and MCP evaluation tools.',
+				summary:     'Compliance declaration (environment.market_state family)',
+				description: 'Machine-readable compliance self-report. Documents the 6 pre-trade safety checks (APTS v1.0 check vocabulary, preserved for citation continuity) that Headless Oracle satisfies as the reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. No authentication required. Suitable for CI pipelines and MCP evaluation tools.',
 				responses: {
 					'200': {
 						description: 'Compliance document',
 						content: { 'application/json': { schema: {
 							type: 'object',
 							properties: {
-								standard:      { type: 'string', example: 'Agent Pre-Trade Safety Standard v1.0' },
+								standard:      { type: 'string', example: 'environment.market_state (Verifiable Intent environment.* constraint family); APTS v1.0 check vocabulary preserved for citation continuity' },
 								oracle:        { type: 'string' },
 								version:       { type: 'string' },
 								last_verified: { type: 'string', format: 'date-time' },
@@ -6297,7 +6296,7 @@ const OPENAPI_SPEC = {
 		'/v5/implementations': {
 			get: {
 				summary:     'Standards implementations registry',
-				description: 'Returns known implementations of SMA, MPAS, and APTS open standards. No authentication required. Submit your own via the submit_url field.',
+				description: 'Returns known implementations of environment.market_state (Verifiable Intent environment.* family) and its predecessor working-spec protocols (SMA, MPAS, APTS — brand-retired, concepts preserved). No authentication required. Submit your own via the submit_url field.',
 				responses: {
 					'200': {
 						description: 'Implementations registry',
@@ -7128,7 +7127,7 @@ const OPENAPI_SPEC = {
 			get: {
 				tags:        ['Discovery'],
 				summary:     'Composable pre-trade verification stack (JSON)',
-				description: 'Machine-readable description of the 5-layer composable pre-trade verification stack for autonomous trading agents. Headless Oracle = Layer 1 (Market State Gate). Includes layer definitions, reference implementations, and composability metadata.',
+				description: 'Machine-readable description of the Composable Pre-Trade Verification Pattern v2.0 — a deployment pattern in which environment.market_state and adjacent verification steps (spend authorization, signal verification, payment) compose into a gating sequence for autonomous trading agents. References environment.market_state and environment.wallet_state as normative specifications in the Verifiable Intent environment.* family.',
 				responses: {
 					'200': { description: 'Pre-trade stack definition', content: { 'application/json': { schema: { type: 'object' } } } },
 				},
@@ -7138,7 +7137,7 @@ const OPENAPI_SPEC = {
 			get: {
 				tags:        ['Documentation'],
 				summary:     'Pre-trade verification stack specification',
-				description: '5-layer composable verification spec: Market State Gate (Layer 1) → Spend Authorization → Signal Verification → Payment → Trade Execution. text/markdown.',
+				description: 'Composable Pre-Trade Verification Pattern v2.0. Deployment pattern: execution-environment verification (environment.market_state) → spend authorization → signal verification → payment → trade execution. text/markdown.',
 				responses: {
 					'200': { description: 'Specification document', content: { 'text/markdown': { schema: { type: 'string' } } } },
 				},
@@ -7157,8 +7156,8 @@ const OPENAPI_SPEC = {
 		'/docs/specifications/multi-oracle-consensus-v1': {
 			get: {
 				tags:        ['Documentation'],
-				summary:     'Multi-Oracle Consensus Protocol v1.0.0 (PUBLISHED STANDARD)',
-				description: 'First published standard for market-state verification across independent oracle feeds. Defines minimum oracle count (3), consensus algorithm (majority_with_fail_closed), attestation format, verification flow, and cryptographic requirements. Aligned with SEC/CFTC Technical Framework for Tokenized Collateral (Nov 2025). License: MIT. text/markdown.',
+				summary:     'Multi-Oracle Consensus Protocol v1.0.1 (Published Standard)',
+				description: 'First published standard for market-state verification across independent oracle feeds. Defines minimum oracle count (3), consensus algorithm (majority_with_fail_closed), attestation format, verification flow, and cryptographic requirements. Architecturally consistent with emerging regulatory direction on tokenized collateral (CFTC Staff Letter 25-39, December 2025; SEC Crypto Task Force Project Blueprint on Tokenized Collateral, November 2025). License: MIT. text/markdown.',
 				responses: {
 					'200': { description: 'Specification document', content: { 'text/markdown': { schema: { type: 'string' } } } },
 				},
@@ -7178,7 +7177,7 @@ const OPENAPI_SPEC = {
 			get: {
 				tags:        ['Documentation'],
 				summary:     'Ampersend integration guide',
-				description: 'Composable pattern: Headless Oracle (Layer 1: market state) + Ampersend (Layer 2: spend authorization). Code examples, batch verification, MCP integration.',
+				description: 'Integration recipe: Headless Oracle (environment.market_state reference implementation) + Ampersend (spend authorization service). Code examples, batch verification, MCP integration.',
 				responses: {
 					'200': { description: 'Integration guide', content: { 'text/markdown': { schema: { type: 'string' } } } },
 				},
