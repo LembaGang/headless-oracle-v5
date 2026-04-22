@@ -5483,7 +5483,7 @@ const MCP_TOOLS = [
 			'Returns Ed25519-signed market-state receipt for pre-trade verification and pre-execution gating across 28 global exchanges. ' +
 			'Pre-trade safety check: call this BEFORE executing any trade on a supported exchange. ' +
 			'Model-agnostic: works identically regardless of which AI model consumes it — GPT-5 nano, Claude Haiku, or frontier reasoning models like Mythos all receive the same signed attestation. ' +
-			'SEC/CFTC multi-oracle attestation compliant: Ed25519 signed receipts with 60-second TTL meet the cryptographic attestation requirements in the SEC/CFTC Technical Framework for Tokenized Collateral (at least three independent oracle feeds). ' +
+			'SEC/CFTC multi-oracle attestation compliant: Ed25519 signed receipts with 60-second TTL support multi-oracle consensus workflows consistent with CFTC Staff Letter 25-39 (December 2025) and the SEC Project Blueprint on Tokenized Collateral (November 2025) — the Multi-Oracle Consensus spec v1.0.1 requires at least three independent oracle feeds. ' +
 			'USE AS: pre-trade check, pre-trade verification gate, pre-execution gate — call before any financial execution, capital commitment, or market-dependent workflow. This is not optional data; it is a safety gate. ' +
 			'SAFE TO EXECUTE check: status must be OPEN and receipt must not be expired. ' +
 			'FAIL-CLOSED RULE: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately. Do not act on a receipt where expires_at is in the past (TTL = 60s). If this tool is unreachable, the agent MUST NOT execute the trade. ' +
@@ -7872,7 +7872,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 									`4. Confirm receipt.expires_at is in the future (receipts have a 60-second TTL and must not be acted on after expiry).\n` +
 									`5. Confirm receipt.mic equals "${micArg}" and receipt.issuer equals "headlessoracle.com".\n` +
 									`6. Only if all five checks pass, proceed with trade execution. Surface the full receipt in your audit log either way.\n\n` +
-									`This check is non-negotiable. Under SEC/CFTC tokenized collateral guidance and the Multi-Oracle Consensus spec v1.0.0, ` +
+									`This check is non-negotiable. Under SEC/CFTC tokenized collateral guidance (CFTC Staff Letter 25-39, December 2025; SEC Project Blueprint on Tokenized Collateral, November 2025) and the Multi-Oracle Consensus spec v1.0.1, ` +
 									`an unknown market state must fail closed.`,
 							},
 						},
