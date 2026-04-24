@@ -1823,6 +1823,66 @@ async function recordPaddleRevenueEvent(env: Env, evt: PaddleRevenueEvent): Prom
 	}
 }
 
+// ─── Durable x402 mint audit log ─────────────────────────────────────────────
+// Mirrors recordPaddleRevenueEvent in KV shape, diverges on async pattern:
+// - Uses ctx.waitUntil so /v5/x402/mint returns the api_key fast (user is
+//   waiting). Log write is fire-and-forget from the caller's perspective.
+// - Falls through to awaited write when ctx.waitUntil is unavailable (test
+//   harness compatibility — mirrors the Block 1 incrementCreditsUsage pattern).
+//
+// Key layout (all in ORACLE_TELEMETRY):
+//   x402_mint_count                        lifetime counter, no TTL
+//   x402_mint_count:{tier}                 per-tier lifetime counter, no TTL
+//   x402_mint_last_at                      ISO timestamp of most recent mint
+//   x402_mint_log:{ISO}                    JSON blob, 30-day TTL, listable
+//
+// Rationale: the replay-protection record (x402_used_tx:{hash}) is durable
+// for 365 days but is just "1" — insufficient for audit-grade reconstruction
+// of "who paid us, when, for what tier, which key did they get." This log
+// closes that gap.
+type X402MintEvent = {
+	tx_hash:             string;
+	network:             string;
+	tier:                string;
+	amount_units:        string;
+	amount_usdc:         string;
+	key_hash:            string;
+	key_prefix:          string;
+	email:               string | null;
+	payer:               string | null;
+	block_timestamp_sec: number | null;
+	payment_address:     string;
+};
+async function recordX402MintEvent(env: Env, ctx: ExecutionContext, evt: X402MintEvent): Promise<void> {
+	if (!env.ORACLE_TELEMETRY) return;
+	const ts   = new Date().toISOString();
+	const blob = JSON.stringify({ ...evt, ts });
+	const putP = (async () => {
+		try {
+			const [countStr, tierStr] = await Promise.all([
+				env.ORACLE_TELEMETRY.get('x402_mint_count').catch(() => null),
+				env.ORACLE_TELEMETRY.get(`x402_mint_count:${evt.tier}`).catch(() => null),
+			]);
+			const count     = parseInt(countStr ?? '0', 10) || 0;
+			const tierCount = parseInt(tierStr  ?? '0', 10) || 0;
+			await Promise.all([
+				env.ORACLE_TELEMETRY.put('x402_mint_count',                 String(count + 1)),
+				env.ORACLE_TELEMETRY.put(`x402_mint_count:${evt.tier}`,     String(tierCount + 1)),
+				env.ORACLE_TELEMETRY.put('x402_mint_last_at',               ts),
+				env.ORACLE_TELEMETRY.put(`x402_mint_log:${ts}`, blob, { expirationTtl: 60 * 60 * 24 * 30 }),
+			]);
+			console.log(JSON.stringify({ event: 'X402_MINT_EVENT', tier: evt.tier, tx_hash: evt.tx_hash, amount_usdc: evt.amount_usdc, key_prefix: evt.key_prefix, payer: evt.payer, ts }));
+		} catch (err) {
+			console.error(`X402_MINT_RECORD_FAILED: ${(err as Error).message}`);
+		}
+	})();
+	if (typeof ctx?.waitUntil === 'function') {
+		ctx.waitUntil(putP);
+	} else {
+		await putP;
+	}
+}
+
 // ─── Paddle Webhook Signature Verification ────────────────────────────────────
 // Paddle signs webhooks with HMAC-SHA256 using the webhook secret.
 // Header format: "ts=<timestamp>;h1=<hex_signature>"
@@ -2502,7 +2562,7 @@ async function verifyX402MintPayment(
 	paymentAddress: string,
 	minAmountUnits: bigint,
 	env: Env,
-): Promise<{ valid: boolean; detail?: string; amountPaid?: bigint }> {
+): Promise<{ valid: boolean; detail?: string; amountPaid?: bigint; from?: string; blockTimestampSec?: number }> {
 	const txHashLower = txHash.toLowerCase();
 	if (!/^0x[0-9a-f]{64}$/.test(txHashLower)) {
 		return { valid: false, detail: 'INVALID_TX_HASH' };
@@ -2562,9 +2622,15 @@ async function verifyX402MintPayment(
 		return { valid: false, detail: `TRANSACTION_EXPIRED: ${ageSeconds}s old, max ${X402_MINT_MAX_AGE_SECONDS}s` };
 	}
 
+	// Payer address — normalised from the Transfer event's `from` topic (32-byte
+	// left-padded, last 40 chars are the address). Surfaced so the durable mint
+	// log can record "who paid us" for forensic / acquirer-DD reconstruction.
+	const fromTopic = transferLog.topics[1];
+	const from      = fromTopic ? ('0x' + fromTopic.slice(-40)).toLowerCase() : undefined;
+
 	// Mark as used — 365-day TTL so the same tx can never be replayed to mint a second key
 	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 86_400 * 365 }).catch(() => {});
-	return { valid: true, amountPaid };
+	return { valid: true, amountPaid, from, blockTimestampSec };
 }
 
 // Build the x402 payment payload for a 402 response.
@@ -9983,6 +10049,24 @@ export default {
 					has_email:    !!email,
 				}));
 
+				// Durable audit log — non-blocking via ctx.waitUntil (user is waiting
+				// for the api_key, log write is pure telemetry). Failed writes log but
+				// do not fail the mint. See recordX402MintEvent for rationale.
+				const _mintAmountUnits = verification.amountPaid ?? 0n;
+				await recordX402MintEvent(env, ctx, {
+					tx_hash:             txHash.toLowerCase(),
+					network:             network || 'base-mainnet',
+					tier,
+					amount_units:        _mintAmountUnits.toString(),
+					amount_usdc:         (Number(_mintAmountUnits) / 1_000_000).toFixed(2),
+					key_hash:            mintKeyHash,
+					key_prefix:          keyPrefix,
+					email:               email ?? null,
+					payer:               verification.from ?? null,
+					block_timestamp_sec: verification.blockTimestampSec ?? null,
+					payment_address:     env.ORACLE_PAYMENT_ADDRESS,
+				});
+
 				return json({
 					api_key:        keyValue,
 					tier,
@@ -11812,6 +11896,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					paddleCountStr, paddleLastAt,
 					builderStr, proStr, protocolStr, creditsStr,
 					x402CountStr, x402FirstAt, x402LastAt,
+					x402MintCountStr, x402MintBuilderStr, x402MintProStr, x402MintLastAt,
 				] = await Promise.all([
 					env.ORACLE_TELEMETRY.get('paddle_revenue_count').catch(() => null),
 					env.ORACLE_TELEMETRY.get('paddle_revenue_last_at').catch(() => null),
@@ -11822,6 +11907,10 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
 					env.ORACLE_TELEMETRY.get('x402_first_payment_at').catch(() => null),
 					env.ORACLE_TELEMETRY.get('x402_last_payment_at').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_mint_count').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_mint_count:builder').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_mint_count:pro').catch(() => null),
+					env.ORACLE_TELEMETRY.get('x402_mint_last_at').catch(() => null),
 				]);
 				// List recent events (most recent 50 — KV list returns lexicographic
 				// order, which matches ISO timestamp order, so we reverse for desc).
@@ -11830,6 +11919,14 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_event:', limit: 200 });
 					const blobs  = await Promise.all(listed.keys.slice(-50).reverse().map((k) => env.ORACLE_TELEMETRY.get(k.name)));
 					recent = blobs.filter((b): b is string => !!b).map((b) => JSON.parse(b) as Record<string, unknown>);
+				} catch { /* fail-safe to empty list */ }
+				// Same pattern for x402 mint events — durable audit log written by
+				// recordX402MintEvent (30-day TTL, listable).
+				let x402MintRecent: Array<Record<string, unknown>> = [];
+				try {
+					const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'x402_mint_log:', limit: 200 });
+					const blobs  = await Promise.all(listed.keys.slice(-50).reverse().map((k) => env.ORACLE_TELEMETRY.get(k.name)));
+					x402MintRecent = blobs.filter((b): b is string => !!b).map((b) => JSON.parse(b) as Record<string, unknown>);
 				} catch { /* fail-safe to empty list */ }
 				return json({
 					paddle: {
@@ -11847,6 +11944,13 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 						lifetime_count:   parseInt(x402CountStr ?? '0', 10) || 0,
 						first_payment_at: x402FirstAt ?? null,
 						last_payment_at:  x402LastAt  ?? null,
+						mint_lifetime_count: parseInt(x402MintCountStr ?? '0', 10) || 0,
+						mint_by_tier: {
+							builder: parseInt(x402MintBuilderStr ?? '0', 10) || 0,
+							pro:     parseInt(x402MintProStr     ?? '0', 10) || 0,
+						},
+						mint_last_at:  x402MintLastAt ?? null,
+						recent_mints:  x402MintRecent,
 					},
 				});
 			}

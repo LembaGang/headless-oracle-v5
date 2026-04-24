@@ -20,8 +20,12 @@ async function fetchW(path: string, options: RequestInit = {}): Promise<Response
 const TEST_ADDR = '0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3';
 const VALID_STATUSES = ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'];
 
-function mockMintRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number): () => void {
+function mockMintRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number, payerAddress?: string): () => void {
 	const original = globalThis.fetch;
+	// Default payer matches the long-standing hardcoded value so existing tests
+	// continue to pass without modification. Pass payerAddress explicitly when a
+	// test wants to assert the payer field lands in the durable mint log.
+	const payer20 = (payerAddress ?? '0xabcdef1234567890abcdef1234567890abcdef12').slice(2).toLowerCase();
 	globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 		const url = typeof input === 'string' ? input : (input as Request).url;
 		if (url === 'https://mainnet.base.org') {
@@ -36,7 +40,7 @@ function mockMintRpc(recipientAddress: string, amountUnits: string, blockTimesta
 							address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
 							topics: [
 								'0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
-								'0x000000000000000000000000abcdef1234567890abcdef1234567890abcdef12',
+								'0x000000000000000000000000' + payer20,
 								'0x000000000000000000000000' + recipientAddress.slice(2).toLowerCase(),
 							],
 							data: '0x' + BigInt(amountUnits).toString(16).padStart(64, '0'),
@@ -95,6 +99,68 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			expect(parsed).toHaveProperty('source', 'x402_onchain');
 		} finally {
 			restore();
+		}
+	});
+
+	it('successful mint writes x402_mint_log entry with full payment detail', async () => {
+		// Unique tx so we can locate this test's entry even if earlier mint tests
+		// in the same file have already populated the x402_mint_log: keyspace.
+		const txHash = '0x' + 'bc'.repeat(32);
+		const payer  = '0x' + 'f'.repeat(40);
+		const blockTs = Math.floor(Date.now() / 1000) - 45;
+		const restore = mockMintRpc(TEST_ADDR, '99000000', blockTs, payer);
+		try {
+			const res = await fetchW('/v5/x402/mint', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder', network: 'base-mainnet' }),
+			});
+			expect(res.status).toBe(200);
+
+			// Locate this test's log entry by tx_hash — KV may carry entries from
+			// earlier mint tests in the same file. fetchW calls
+			// waitOnExecutionContext, so the ctx.waitUntil write has landed.
+			const logList = await env.ORACLE_TELEMETRY.list({ prefix: 'x402_mint_log:' });
+			expect(logList.keys.length).toBeGreaterThanOrEqual(1);
+			const blobs = await Promise.all(logList.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name)));
+			const parsed = blobs
+				.filter((b): b is string => !!b)
+				.map((b) => JSON.parse(b) as Record<string, unknown>)
+				.find((p) => p.tx_hash === txHash.toLowerCase());
+			expect(parsed).toBeTruthy();
+			expect(parsed!.tx_hash).toBe(txHash.toLowerCase());
+			expect(parsed!.tier).toBe('builder');
+			expect(parsed!.amount_units).toBe('99000000');
+			expect(parsed!.amount_usdc).toBe('99.00');
+			expect(parsed!.network).toBe('base-mainnet');
+			expect(typeof parsed!.key_prefix).toBe('string');
+			expect((parsed!.key_prefix as string).startsWith('ho_live_')).toBe(true);
+			expect(typeof parsed!.key_hash).toBe('string');
+			expect((parsed!.key_hash as string).length).toBe(64); // sha256 hex
+			expect(parsed!.payer).toBe(payer.toLowerCase());
+			expect(parsed!.block_timestamp_sec).toBe(blockTs);
+			expect(parsed!.payment_address).toBe(TEST_ADDR);
+			expect(typeof parsed!.ts).toBe('string');
+
+			// Companion counters exist after the mint. Use >=1 because earlier
+			// tests in this describe block may also have minted builder keys.
+			const lifetime = await env.ORACLE_TELEMETRY.get('x402_mint_count');
+			expect(parseInt(lifetime ?? '0', 10)).toBeGreaterThanOrEqual(1);
+			const tierCount = await env.ORACLE_TELEMETRY.get('x402_mint_count:builder');
+			expect(parseInt(tierCount ?? '0', 10)).toBeGreaterThanOrEqual(1);
+			const lastAt = await env.ORACLE_TELEMETRY.get('x402_mint_last_at');
+			expect(lastAt).not.toBeNull();
+		} finally {
+			restore();
+			// Clean up this test's log entries + counters. Removing all
+			// x402_mint_log: entries is acceptable because no subsequent test in
+			// this file asserts against accumulated state.
+			const toDelete = await env.ORACLE_TELEMETRY.list({ prefix: 'x402_mint_log:' });
+			for (const k of toDelete.keys) await env.ORACLE_TELEMETRY.delete(k.name);
+			await env.ORACLE_TELEMETRY.delete('x402_mint_count');
+			await env.ORACLE_TELEMETRY.delete('x402_mint_count:builder');
+			await env.ORACLE_TELEMETRY.delete('x402_mint_count:pro');
+			await env.ORACLE_TELEMETRY.delete('x402_mint_last_at');
 		}
 	});
 
