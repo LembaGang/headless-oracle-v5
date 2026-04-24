@@ -8205,6 +8205,35 @@ describe('Paddle credit packs — auth layer', () => {
 		}
 	});
 
+	it('credits key with balance > 0 → decrements balance, increments credits_usage counter, and allows request', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const creditsKey  = 'ho_crd_' + 'e'.repeat(64);
+		const creditsHash = await sha256Hex(creditsKey);
+		const testDate    = '2026-03-16';
+		const counterKey  = `credits_usage:${creditsHash}:${testDate}`;
+		await env.ORACLE_API_KEYS.put(creditsHash, JSON.stringify({
+			tier: 'credits', status: 'active', balance: 10, created_at: new Date().toISOString(),
+		}));
+
+		try {
+			// fetchWorker already calls waitOnExecutionContext, so waitUntil writes
+			// (including the credits_usage counter) complete before this resolves.
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': creditsKey } });
+			expect(res.status).toBe(200);
+
+			// Balance must be decremented by 1
+			const updated = JSON.parse((await env.ORACLE_API_KEYS.get(creditsHash)) ?? '{}') as { balance: number };
+			expect(updated.balance).toBe(9);
+
+			// credits_usage counter must be incremented to '1'
+			const counter = await env.ORACLE_TELEMETRY.get(counterKey);
+			expect(counter).toBe('1');
+		} finally {
+			await env.ORACLE_API_KEYS.delete(creditsHash);
+			await env.ORACLE_TELEMETRY.delete(counterKey);
+		}
+	});
+
 	it('credits key with balance=0 → 402 CREDITS_EXHAUSTED', async () => {
 		const creditsKey  = 'ho_crd_' + 'b'.repeat(64);
 		const creditsHash = await sha256Hex(creditsKey);

@@ -3000,9 +3000,28 @@ async function getDailyUsage(keyHash: string, env: Env): Promise<number> {
 	return stored ? parseInt(stored, 10) : 0;
 }
 
+// Get the number of credit consumptions recorded today for a credits-tier key.
+// Paid credits-tier keys mutate a balance atomically during auth; this counter
+// mirrors the free_usage shape so paying customers have the same per-day
+// observability as free-tier keys.
+async function getCreditsUsage(keyHash: string, env: Env): Promise<number> {
+	const key    = `credits_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
+	const stored = await env.ORACLE_TELEMETRY.get(key).catch(() => null);
+	return stored ? parseInt(stored, 10) : 0;
+}
+
 // Increment the daily usage counter for a free tier key (non-blocking).
 function incrementDailyUsage(keyHash: string, env: Env, ctx: ExecutionContext, current: number): void {
 	const key  = `free_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
+	const putP = env.ORACLE_TELEMETRY.put(key, String(current + 1), { expirationTtl: 25 * 3600 }).catch(() => {});
+	if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
+}
+
+// Increment the daily credits-usage counter for a credits-tier key (non-blocking).
+// Called AFTER the atomic balance decrement in checkApiKey() has succeeded, so a
+// write here is a record of a credit that was actually consumed.
+function incrementCreditsUsage(keyHash: string, env: Env, ctx: ExecutionContext, current: number): void {
+	const key  = `credits_usage:${keyHash}:${new Date().toISOString().slice(0, 10)}`;
 	const putP = env.ORACLE_TELEMETRY.put(key, String(current + 1), { expirationTtl: 25 * 3600 }).catch(() => {});
 	if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(putP);
 }
@@ -7647,6 +7666,12 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 				}), { status: 200, headers: MCP_RESPONSE_HEADERS });
 			}
 			incrementDailyUsage(_mcpKeyHash, env, ctx, mcpDailyUsage);
+		} else if (_mcpPlan === 'credits') {
+			// Credits tier — balance was already decremented atomically in checkApiKey().
+			// Mirror the credits_usage counter write we do for REST so MCP-originated
+			// consumption is equally observable.
+			const mcpCreditsUsage = await getCreditsUsage(_mcpKeyHash, env);
+			incrementCreditsUsage(_mcpKeyHash, env, ctx, mcpCreditsUsage);
 		}
 	}
 
@@ -8666,6 +8691,13 @@ export default {
 						}
 						}
 						incrementDailyUsage(paidKeyHash, env, ctx, paidUsage);
+					// ── Credits tier — balance already decremented in checkApiKey(). Record
+					// the consumption in a daily counter so paying customers have the same
+					// per-day observability as free_usage gives free-tier keys. ──
+					} else if (auth.plan === 'credits') {
+						const creditsKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
+						const creditsUsage   = await getCreditsUsage(creditsKeyHash, env);
+						incrementCreditsUsage(creditsKeyHash, env, ctx, creditsUsage);
 					}
 				} else {
 					// No API key — trial path → x402 payment path → 402 gate
@@ -9105,6 +9137,12 @@ export default {
 						return json({ error: 'RATE_LIMITED', message: `${batchAuth.plan} plan daily limit (${paidBatchLimit.toLocaleString()} req/day) reached. Upgrade at headlessoracle.com/upgrade` }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 					}
 					incrementDailyUsage(paidBatchKeyHash, env, ctx, paidBatchUsage);
+				// ── Credits tier — balance already decremented in checkApiKey(). Record
+				// the consumption so batch calls are observable the same way /v5/status is.
+				} else if (batchAuth.plan === 'credits') {
+					const creditsBatchKeyHash = batchAuth.keyHash ?? await sha256Hex(apiKey);
+					const creditsBatchUsage   = await getCreditsUsage(creditsBatchKeyHash, env);
+					incrementCreditsUsage(creditsBatchKeyHash, env, ctx, creditsBatchUsage);
 				}
 
 				const micsParam = url.searchParams.get('mics');
@@ -10502,7 +10540,8 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					return json({ error: usageAuth.error, message: usageAuth.message }, usageAuth.status);
 				}
 
-				const isFree   = usageAuth.plan === 'free';
+				const isFree    = usageAuth.plan === 'free';
+				const isCredits = usageAuth.plan === 'credits';
 				const keyHash  = await sha256Hex(apiKey);
 				const keyPrefix = apiKey.length >= 14 ? apiKey.substring(0, 14) : apiKey;
 
@@ -10533,6 +10572,38 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					// Credit balance
 					const credits = await getCreditBalance(keyHash, env);
 					creditBalance = credits.balance;
+				} else if (isCredits) {
+					// Today's consumption — credits_usage mirrors free_usage for paying customers.
+					requestsToday = await getCreditsUsage(keyHash, env);
+
+					// This month's consumption — sum every daily key under the month prefix.
+					const today    = new Date();
+					const yearStr  = String(today.getUTCFullYear());
+					const monthStr = String(today.getUTCMonth() + 1).padStart(2, '0');
+					try {
+						const monthList = await env.ORACLE_TELEMETRY.list({ prefix: `credits_usage:${keyHash}:${yearStr}-${monthStr}` });
+						if (monthList.keys.length > 0) {
+							const monthValues = await Promise.all(
+								monthList.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name).catch(() => null)),
+							);
+							for (const v of monthValues) {
+								if (v) requestsThisMonth += parseInt(v, 10) || 0;
+							}
+						}
+					} catch { /* KV error — leave at 0 */ }
+
+					// Credits-tier balance lives on the ORACLE_API_KEYS record, not the
+					// telemetry credits:{hash} key (that's the separate free-tier overflow
+					// system). Read the auth record to surface remaining balance.
+					if (env.ORACLE_API_KEYS) {
+						const rec = await env.ORACLE_API_KEYS.get(keyHash).catch(() => null);
+						if (rec) {
+							try {
+								const parsed = JSON.parse(rec) as { balance?: number };
+								creditBalance = parsed.balance ?? 0;
+							} catch { /* leave at 0 */ }
+						}
+					}
 				}
 
 				// rate_limit_resets_at: midnight UTC today (next day 00:00:00Z)
