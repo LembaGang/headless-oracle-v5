@@ -1,5 +1,9 @@
 # Composio Listing — Headless Oracle
 
+**Status:** Submission status not verified — reference content for planned
+submission. Composio constants shown below will become available once listing
+is approved.
+
 Reference content for the Headless Oracle tool submission to
 [Composio](https://composio.dev). Composio is a unified toolkit for AI agents
 that exposes 100+ tools via a single integration layer.
@@ -53,11 +57,16 @@ Finance / Market Data
 
 ## Authentication
 
-- **No auth**: sandbox endpoints, 3 free trial calls/day/IP
-- **API key** (`X-Oracle-Key` header): free tier 500/day, paid tiers via Paddle
-- **x402** (`X-Payment` header): autonomous per-request payment on Base mainnet
+- **Sandbox access**: 200 calls over 7 days via email registration, or $0.001 USDC via x402 for 10 agent-native credits (no email).
+- **Trial**: 3 receipts per day per IP on `/v5/status` (no auth, no email, no payment).
+- **API key** (`X-Oracle-Key` header): free tier 500/day, paid tiers via Paddle.
+- **x402** (`X-Payment` header): autonomous per-request payment on Base mainnet.
 
 ## Sample usage (Composio Python SDK)
+
+> Note: The `App.HEADLESS_ORACLE` identifier and action constants shown below
+> become available once the Composio listing is approved. Until then, treat
+> this as the target integration shape.
 
 ```python
 from composio import ComposioToolSet, App

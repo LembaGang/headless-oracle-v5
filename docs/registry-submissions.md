@@ -9,6 +9,8 @@ exchange names for Asian discoverability.
 
 ## 1. Official MCP Registry (modelcontextprotocol/servers)
 
+**Status:** Submission status not verified — reference copy.
+
 **Name**: Headless Oracle
 **Short description**: Signed, fail-closed market-state attestations for 28 global exchanges. Pre-trade safety check for autonomous trading agents.
 **Long description**:
@@ -37,6 +39,8 @@ exchange names for Asian discoverability.
 
 ## 2. Smithery (update existing listing)
 
+**Status:** Submission status not verified — reference copy.
+
 **Display name**: Headless Oracle
 **Version**: 5.0.0
 **License**: MIT
@@ -46,10 +50,10 @@ exchange names for Asian discoverability.
 **Description**:
 
 > Model-agnostic, signed, fail-closed market-state attestations for 28 global
-> exchanges. Parseable by every frontier model (GPT-5.x, Claude 4.x, Gemini
-> 3.x, Grok 4.x) down to GPT-5 nano. Regulatory alignment: SEC/CFTC tokenized
-> collateral (Nov 2025), ESMA algorithmic trading, NIST cryptographic chains
-> of custody, Singapore MAS agentic AI governance.
+> exchanges. Parseable across frontier-model tiers without requiring top-tier
+> reasoning. Regulatory alignment: SEC/CFTC tokenized collateral (Nov 2025),
+> ESMA algorithmic trading, NIST cryptographic chains of custody, Singapore
+> MAS agentic AI governance.
 
 **Tools**: 5 (`get_market_status`, `get_market_schedule`, `list_exchanges`, `verify_receipt`, `get_payment_options`)
 **Prompts**: 2 (`pre_trade_check`, `market_briefing`)
@@ -59,6 +63,8 @@ exchange names for Asian discoverability.
 ---
 
 ## 3. Glama
+
+**Status:** Submission status not verified — reference copy.
 
 **Name**: Headless Oracle
 **Description**: Signed market-state attestations for 28 global exchanges. Ed25519, 60s TTL, fail-closed UNKNOWN → CLOSED, x402 native payment. Reference implementation of Multi-Oracle Consensus spec v1.0.0.
@@ -71,6 +77,8 @@ exchange names for Asian discoverability.
 ---
 
 ## 4. PulseMCP
+
+**Status:** Submission status not verified — reference copy.
 
 **Server name**: Headless Oracle
 **Short description**: Signed pre-trade market-state attestations for autonomous trading agents. 28 exchanges.
@@ -87,6 +95,8 @@ exchange names for Asian discoverability.
 ---
 
 ## 5. mcp.so
+
+**Status:** Submission status not verified — reference copy.
 
 **Name**: Headless Oracle
 **Author**: LembaGang
@@ -107,10 +117,12 @@ exchange names for Asian discoverability.
 
 ## 6. mcpservers.org
 
+**Status:** Submission status not verified — reference copy.
+
 **Name**: Headless Oracle
 **Slug**: headless-oracle
 **Category**: Finance
-**Maintainer**: LembaGang (mike@headlessoracle.com)
+**Maintainer**: LembaGang
 **Description**: Pre-trade safety check for autonomous trading agents. Signed market-state attestations for 28 global exchanges. Fail-closed, Ed25519, x402 payment.
 **Endpoint**: https://headlessoracle.com/mcp
 **Repository**: https://github.com/LembaGang/headless-oracle-v5
@@ -120,6 +132,8 @@ exchange names for Asian discoverability.
 ---
 
 ## 7. mcpmarket.com
+
+**Status:** Submission status not verified — reference copy.
 
 **Title**: Headless Oracle — Signed Market-State Attestations
 **One-liner**: The pre-trade safety primitive for autonomous trading agents.
@@ -148,4 +162,4 @@ exchange names for Asian discoverability.
 - **Server card**: https://headlessoracle.com/.well-known/mcp/server-card.json
 - **Agent card (A2A)**: https://headlessoracle.com/.well-known/agent.json
 - **License**: MIT
-- **Maintainer contact**: mike@headlessoracle.com
+- **Maintainer contact**: see https://headlessoracle.com/contact

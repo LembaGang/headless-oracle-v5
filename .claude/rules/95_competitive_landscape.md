@@ -8,7 +8,7 @@ The short version: **no direct competitor ships signed, fail-closed market-state
 
 ## Tier 1 — Biggest threat: could ship this in months
 
-### Chainlink (~$6.5B market cap)
+### Chainlink
 - **What they do**: Price feeds, NAV (net asset value), Proof of Reserve, CCIP cross-chain messaging.
 - **What they don't do**: Market state. No signed "is XNYS open right now?" primitive.
 - **Why they're the biggest threat**: Institutional relationships they already have — Swift, DTCC, Euroclear, ANZ, SBI. If any tokenized-collateral customer asks Chainlink for a market-state feed to satisfy the SEC/CFTC Technical Framework for Tokenized Collateral (Nov 2025), Chainlink can build it in months. They have the oracle network, the signing infrastructure, the trust, and the distribution.
@@ -19,12 +19,12 @@ The short version: **no direct competitor ships signed, fail-closed market-state
   - Ed25519 signatures agents can verify offline
   - x402 native payment path
   - A published multi-oracle consensus standard (v1.0.0) that names the architecture any entrant now has to match
-- **Defensive move**: Be the established, cited reference before Chainlink realises the market exists. The multi-oracle consensus spec is explicitly designed to make any new entrant — including Chainlink — adopt *our* architectural vocabulary.
+- **Defensive move**: Be the established, cited reference before Chainlink realises the market exists. The multi-oracle consensus spec provides the architectural vocabulary any new entrant — including Chainlink — will need to adopt to interoperate.
 
-### Pyth Network (~$250M market cap)
-- **What they do**: Sub-second price feeds, 120+ first-party publishers (Jane Street, Virtu, Two Sigma, etc.), 500+ feeds, already ships an MCP server.
+### Pyth Network
+- **What they do**: Sub-second price feeds, 120+ first-party publishers, 500+ feeds, already ships an MCP server.
 - **What they don't do**: Market state. No signed "open/closed/halted" primitive. No circuit-breaker handling. No fail-closed contract.
-- **Why they're a threat**: They already have an MCP server — distribution surface is built. Adding a `get_market_status` tool is a weekend of engineering. Their first-party publisher model gives them exchange-adjacent data nobody else has.
+- **Why they're a threat**: They already have an MCP server — distribution surface is built. Adding a `get_market_status` tool is a small engineering lift for them — the question is whether they choose to. Their first-party publisher model gives them exchange-adjacent data nobody else has.
 - **What we ship that they don't**: Fail-closed semantics, 60s receipt TTL, cryptographic chain of custody for agent authorization (the NIST Feb 2026 requirement), and coverage of exchanges where Pyth has no publisher.
 - **Defensive move**: Establish "market state" as an architecturally distinct layer from "price feeds" in every comms surface we own. Price and state are not the same primitive — state requires fail-closed, price does not.
 
@@ -34,9 +34,9 @@ The short version: **no direct competitor ships signed, fail-closed market-state
 
 ### RedStone
 - **What they do**: Modular oracle network, on-demand price feeds.
-- **Signal**: A RedStone co-founder publicly flagged the "weekend gap" problem — agents trading on stale weekend data against stale oracle prices. This is exactly the failure mode our fail-closed contract prevents.
+- **Signal**: RedStone has publicly flagged the "weekend gap" problem — agents trading on stale weekend data against stale oracle prices. This is exactly the failure mode our fail-closed contract prevents.
 - **Status**: Has **not** productized a market-state solution. Identified the problem out loud; hasn't shipped the fix.
-- **Opportunity**: Courting RedStone to wrap their feeds in an SMA-compliant signed envelope would give us a second independent implementation of the multi-oracle consensus spec, which we currently need to make the standard satisfiable in production.
+- **Opportunity**: One path to a second independent implementation: a partnership with RedStone (or similar) to wrap their feeds in an SMA-compliant signed envelope. Two more independent implementations are what the multi-oracle consensus spec currently needs to be satisfiable in production.
 
 ---
 
@@ -55,7 +55,7 @@ The short version: **no direct competitor ships signed, fail-closed market-state
 
 ### EODHD MCP server
 - **What it is**: 77 tools including exchange trading hours.
-- **Difference**: Schedule-only. **No cryptographic verification, no real-time state, no fail-closed, no halt handling, no DST correctness story.** An agent using EODHD for market hours would sail straight into a circuit-breaker halt or phantom DST hour.
+- **Difference**: Schedule-only. **No cryptographic verification, no real-time state, no fail-closed, no halt handling, no DST correctness story.** An agent using EODHD alone for market hours has no signal when a circuit-breaker halt or DST transition invalidates the schedule.
 - **Threat level**: Low. They've covered "what are the hours" but not "is the market actually open right now, and can I prove it." Useful existence proof that the category is in demand.
 
 ---
@@ -63,7 +63,7 @@ The short version: **no direct competitor ships signed, fail-closed market-state
 ## Tier 4 — Complementary, not competitive
 
 ### Korean / Indian MCP servers
-Korea Investment Securities, Zerodha, OpenAlgo, and several others ship brokerage / execution-focused MCP servers. These are trading and order-placement tools. **None of them verify market state before executing.** An agent using any of them today is exposed to exactly the failure modes our pre-trade gate prevents.
+Korea Investment Securities, Zerodha, OpenAlgo, and several others ship brokerage / execution-focused MCP servers. These are trading and order-placement tools. **None of them verify market state before executing** — the failure-mode surface our pre-trade gate closes.
 
 **Positioning**: Integration partners, not competitors. The pitch is "our pre-trade verification gate + your execution tool = safe agentic trading" as one MCP config. See Day 47 priorities 2–4.
 
@@ -79,7 +79,7 @@ Korea Investment Securities, Zerodha, OpenAlgo, and several others ship brokerag
 6. **x402 autonomous payment path** — agents self-fund on Base mainnet, no human in the loop
 7. **Multi-Oracle Consensus spec v1.0.0** — we authored the standard for market-state verification across independent feeds; HO is `reference_oracles[0]`
 8. **SEC/CFTC tokenized collateral alignment** — surfaced in OpenAPI `x-regulatory-alignment`, server-card, and multi-oracle guide
-9. **Model-agnostic MCP tool descriptions** — parseable by GPT-5 nano ($0.05/MTok) through Mythos ($125/MTok); no tier dependency
+9. **Model-agnostic MCP tool descriptions** — parseable across the full spectrum of frontier-model tiers without requiring top-tier reasoning
 
 ---
 
@@ -88,7 +88,7 @@ Korea Investment Securities, Zerodha, OpenAlgo, and several others ship brokerag
 **12–24 months** before any incumbent fills this gap. The structural advantages that extend that window:
 
 - **Standards authorship**: we published the first multi-oracle consensus spec. Any incumbent who ships market-state has to either cite us or fork the standard — both outcomes advantage us.
-- **Distribution compounding**: 65 weekly unique MCP clients, 5+ registry listings, 10+ evaluator platforms, 4 framework integrations already shipped. Late entrants start from zero.
+- **Distribution compounding**: 65 weekly unique MCP clients, 5+ registry listings, 10+ evaluator platforms, 4 framework integrations already shipped (as of Week 14 2026 — figures evolve). Late entrants start from zero.
 - **Fail-closed as a brand**: we are the only oracle whose public contract is "return UNKNOWN as CLOSED." Any competitor who ships later has to either match this contract (and cite us) or explicitly choose a different trust model (and explain why).
 - **Receipt format stability**: every day the receipt schema stays unchanged is a day it moves closer to being frozen in model training data.
 

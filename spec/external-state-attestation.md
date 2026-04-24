@@ -1,3 +1,14 @@
+> **Archived — pre-RFC draft.** This document is the original
+> pre-registration draft from 2026-03-17. The canonical, current
+> location of the `environment.market_state` constraint type is
+> [PR #9 on agent-intent/verifiable-intent](https://github.com/agent-intent/verifiable-intent/pull/9).
+> Do not cite this file as the normative specification; cite the PR
+> (or the registry entry once merged). The content below is retained
+> for historical reference only; notably, the exchange count and MIC
+> list have grown since 2026-03-17.
+
+---
+
 # Verifiable Intent — External State Attestation Constraint Proposal
 
 **Type identifier**: `environment.market_state`
