@@ -1,6 +1,6 @@
 import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { edgeCaseCount, clearOverrideCache, clearApiKeyCache } from '../src';
+import worker, { edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek } from '../src';
 
 // Clear module-level caches before every test so that tests which
 // set KV values always read from KV rather than stale in-memory entries.
@@ -5550,6 +5550,84 @@ describe('Session Q: Weekly digest cron', () => {
 		// Cleanup
 		await env.ORACLE_TELEMETRY.delete(`mcp_clients:${today}:aabbcc`);
 		await env.ORACLE_TELEMETRY.delete(`mcp_clients:${today}:ddeeff`);
+	});
+
+	it('weekly digest with zero mcp_clients writes sentinel', async () => {
+		const isoWeek   = getISOWeek(new Date());
+		const digestKey = `weekly_digest:${isoWeek}`;
+		// Remove any digest entry written by earlier tests for this same week.
+		await env.ORACLE_TELEMETRY.delete(digestKey);
+		// Ensure no mcp_clients:* entries exist — other tests may have seeded
+		// them and forgotten to clean up, which would steer the cron onto the
+		// happy path instead of the sentinel path.
+		const existing = await env.ORACLE_TELEMETRY.list({ prefix: 'mcp_clients:' });
+		for (const k of existing.keys) await env.ORACLE_TELEMETRY.delete(k.name);
+
+		try {
+			const ctrl = createScheduledController({ scheduledTime: Date.now(), cron: '0 9 * * 1' });
+			const ctx  = createExecutionContext();
+			await worker.scheduled(ctrl, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			const raw = await env.ORACLE_TELEMETRY.get(digestKey);
+			expect(raw).not.toBeNull();
+			const parsed = JSON.parse(raw!) as Record<string, unknown>;
+			expect(parsed.status).toBe('no_mcp_activity_observed');
+			expect(parsed.unique_clients).toBe(0);
+			expect(parsed.total_requests).toBe(0);
+			expect(parsed.total_keys_matched).toBe(0);
+			expect(parsed.records_sampled).toBe(0);
+			expect(parsed.new_clients).toBe(0);
+			expect(parsed.returning_clients).toBe(0);
+			expect(parsed.top_client_asn).toBeNull();
+			expect(parsed.week).toBe(isoWeek);
+			expect(typeof parsed.sampled_at).toBe('string');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(digestKey);
+		}
+	});
+
+	it('weekly digest aggregates all clients when set exceeds former 100-cap', async () => {
+		const isoWeek   = getISOWeek(new Date());
+		const digestKey = `weekly_digest:${isoWeek}`;
+		await env.ORACLE_TELEMETRY.delete(digestKey);
+		// Clear pre-existing mcp_clients entries from other tests so the
+		// assertion against seedCount is exact rather than an >= approximation.
+		const preExisting = await env.ORACLE_TELEMETRY.list({ prefix: 'mcp_clients:' });
+		for (const k of preExisting.keys) await env.ORACLE_TELEMETRY.delete(k.name);
+
+		const today      = new Date().toISOString().slice(0, 10);
+		const seedCount  = 120;
+		const seededKeys: string[] = [];
+		for (let i = 0; i < seedCount; i++) {
+			const hash = `test${i.toString().padStart(4, '0')}${'f'.repeat(56)}`.slice(0, 64);
+			const key  = `mcp_clients:${today}:${hash}`;
+			await env.ORACLE_TELEMETRY.put(
+				key,
+				JSON.stringify({ request_count: 1, asn_org: 'TEST-ASN', country: 'US', city: 'Test City' }),
+			);
+			seededKeys.push(key);
+		}
+
+		try {
+			const ctrl = createScheduledController({ scheduledTime: Date.now(), cron: '0 9 * * 1' });
+			const ctx  = createExecutionContext();
+			await worker.scheduled(ctrl, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			const raw = await env.ORACLE_TELEMETRY.get(digestKey);
+			expect(raw).not.toBeNull();
+			const parsed = JSON.parse(raw!) as Record<string, unknown>;
+			expect(parsed.total_keys_matched).toBe(seedCount);
+			expect(parsed.records_sampled).toBe(seedCount);
+			expect(parsed.unique_clients).toBe(seedCount);
+			expect(parsed.total_requests).toBe(seedCount);
+			// Sentinel marker must NOT be present on the happy path.
+			expect(parsed.status).toBeUndefined();
+		} finally {
+			for (const key of seededKeys) await env.ORACLE_TELEMETRY.delete(key);
+			await env.ORACLE_TELEMETRY.delete(digestKey);
+		}
 	});
 });
 

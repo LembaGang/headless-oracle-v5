@@ -3254,7 +3254,7 @@ function consumeCredit(keyHash: string, credits: CreditRecord, env: Env, ctx: Ex
 
 // ─── ISO week utility ────────────────────────────────────────────────────────
 
-function getISOWeek(date: Date): string {
+export function getISOWeek(date: Date): string {
 	const d      = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
 	const dayNum = d.getUTCDay() || 7;
 	d.setUTCDate(d.getUTCDate() + 4 - dayNum);
@@ -3269,24 +3269,64 @@ function getISOWeek(date: Date): string {
 
 async function runWeeklyDigest(env: Env): Promise<void> {
 	try {
-		const allKeys = await env.ORACLE_TELEMETRY.list({ prefix: 'mcp_clients:' });
-		if (allKeys.keys.length === 0) {
-			console.log(JSON.stringify({ event: 'WEEKLY_DIGEST', week: getISOWeek(new Date()), unique_clients: 0, total_requests: 0 }));
+		// TODO(future-block): mcp_clients:* TTL is 48h, so the "7-day window"
+		// filter below is effectively "past 2 days." See 04_telemetry_guide.md
+		// for context and decision history.
+		//
+		// Paginate the prefix list so we never silently truncate at the KV
+		// list() default 1000-key page limit. With 48h TTL and current volume
+		// we rarely cross a single page, but pagination is the right shape
+		// now that the 100-row slice cap has been removed.
+		const allKeys: Array<{ name: string }> = [];
+		let cursor: string | null = null;
+		while (true) {
+			const listOpts: KVNamespaceListOptions = { prefix: 'mcp_clients:' };
+			if (cursor !== null) listOpts.cursor = cursor;
+			const page = await env.ORACLE_TELEMETRY.list(listOpts);
+			allKeys.push(...page.keys);
+			if (page.list_complete) break;
+			cursor = page.cursor;
+		}
+		if (allKeys.length === 0) {
+			// Sentinel digest — distinguishes "cron ran, no activity" from
+			// "cron never ran" (absence of weekly_digest:{isoWeek} key).
+			// Shape mirrors the normal-path digest field-for-field plus a
+			// `status` marker that is present ONLY on this path.
+			const isoWeek  = getISOWeek(new Date());
+			const sentinel = {
+				week:               isoWeek,
+				status:             'no_mcp_activity_observed',
+				unique_clients:     0,
+				total_requests:     0,
+				new_clients:        0,
+				returning_clients:  0,
+				top_client_asn:     null,
+				total_keys_matched: 0,
+				records_sampled:    0,
+				sampled_at:         new Date().toISOString(),
+			};
+			await env.ORACLE_TELEMETRY.put(
+				`weekly_digest:${isoWeek}`,
+				JSON.stringify(sentinel),
+				{ expirationTtl: 90 * 86400 },
+			);
+			console.log(JSON.stringify({ event: 'WEEKLY_DIGEST_SENTINEL', week: isoWeek }));
 			return;
 		}
 
 		// Parse key structure: mcp_clients:{date}:{clientHash}
 		// Only process past 7 days
 		const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-		const recentKeys   = allKeys.keys.filter((k) => {
+		const recentKeys   = allKeys.filter((k) => {
 			const parts = k.name.split(':');
 			return parts.length === 3 && parts[1] >= sevenDaysAgo;
 		});
 
-		// Limit to 100 fetches to avoid overload
-		const sample  = recentKeys.slice(0, 100);
+		// Fetch values for all filtered keys — no cap. Pagination above
+		// ensures we have the full list; Workers cron has 30s CPU budget,
+		// a few hundred parallel KV gets completes in ~1-2s.
 		const records = await Promise.all(
-			sample.map((k) => env.ORACLE_TELEMETRY.get(k.name).catch(() => null)),
+			recentKeys.map((k) => env.ORACLE_TELEMETRY.get(k.name).catch(() => null)),
 		);
 
 		// Aggregate metrics
@@ -3294,10 +3334,10 @@ async function runWeeklyDigest(env: Env): Promise<void> {
 		let totalRequests    = 0;
 		const asnRequestMap  = new Map<string, number>();
 
-		for (let i = 0; i < sample.length; i++) {
+		for (let i = 0; i < recentKeys.length; i++) {
 			const raw = records[i];
 			if (!raw) continue;
-			const parts      = sample[i].name.split(':');
+			const parts      = recentKeys[i].name.split(':');
 			const date        = parts[1];
 			const clientHash  = parts[2];
 			const parsed      = JSON.parse(raw) as { request_count?: number; asn_org?: string };
@@ -3317,6 +3357,7 @@ async function runWeeklyDigest(env: Env): Promise<void> {
 		const newClients       = [...clientDateMap.entries()].filter(([, dates]) => dates.size === 1).length;
 		const returningClients = [...clientDateMap.entries()].filter(([, dates]) => dates.size > 1).length;
 		const topClientAsn     = [...asnRequestMap.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+		const recordsSampled   = records.filter((r) => r !== null).length;
 
 		const isoWeek = getISOWeek(new Date());
 		const digest  = {
@@ -3325,6 +3366,8 @@ async function runWeeklyDigest(env: Env): Promise<void> {
 			total_requests:     totalRequests,
 			new_clients:        newClients,
 			returning_clients:  returningClients,
+			total_keys_matched: recentKeys.length,
+			records_sampled:    recordsSampled,
 			top_client_asn:     topClientAsn,
 			sampled_at:         new Date().toISOString(),
 		};
@@ -12770,9 +12813,11 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					? `${Math.round((hAuthCalls / (hAuthCalls + hUnauthCalls)) * 100)}%`
 					: 'n/a';
 
-				// Weekly digest
-				const weekNum   = Math.ceil((now.getUTCDate() - now.getUTCDay() + 1 + 6) / 7);
-				const weekKey   = `weekly_digest:${today.slice(0, 4)}-W${String(weekNum).padStart(2, '0')}`;
+				// Weekly digest — key format and week-number source must match
+				// runWeeklyDigest's writer exactly. Previously used an inline
+				// formula plus a "YYYY-WWW" reader format that never matched the
+				// writer's "YYYY-WW", so weekRaw was always null.
+				const weekKey   = `weekly_digest:${getISOWeek(now)}`;
 				const weekRaw   = await env.ORACLE_TELEMETRY.get(weekKey).catch(() => null);
 
 				// MCP per-tool counts for today
