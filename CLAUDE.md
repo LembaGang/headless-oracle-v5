@@ -165,6 +165,7 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - **Monitoring**: GitHub Actions health-check every 15 min — `.github/workflows/health-check.yml` + `scripts/health-check.mjs`. Verifies 5 endpoints, Ed25519 signatures, TTL window, Pages-vs-Worker classifier, and Paddle revenue events → GH issues. Full design in `.claude/rules/monitors.md`.
 - **Infrastructure cost**: ~$15.50/month
 - **Competitive landscape**: See `.claude/rules/95_competitive_landscape.md`. No direct competitor ships signed market-state. 12–24 month window before Chainlink/Pyth could.
+- **Verification SDKs (republished 2026-05-04)**: `@headlessoracle/verify@1.0.2` on npm and `headless-oracle@0.1.1` on PyPI. Both ship the canonicalization fix that aligns the consumer-side payload reconstruction with `/v5/keys → canonical_payload_spec`. Prior versions (1.0.1 / 0.1.0) silently produced `INVALID_SIGNATURE` on every real receipt for ~2 months and must not be recommended. Tags `v1.0.2` (commit `542762f`) and `v0.1.1` (commit `7e5e159`) are SSH-signed and pushed. Three sibling framework packages on PyPI (`headless-oracle-strands`, `headless-oracle-crewai`, `headless-oracle-langchain`) are thin REST wrappers, do not depend on `headless_oracle`, and are unaffected.
 
 ## Active standards work
 
@@ -291,8 +292,8 @@ Full strategic context: `.claude/rules/05_strategic_vision.md`
 | Agent Pre-Trade Safety Standard | github.com/LembaGang/agent-pretrade-safety-standard |
 | MPAS Spec | github.com/LembaGang/mpas-spec |
 | Halt Simulator | github.com/LembaGang/halt-simulator |
-| Python SDK | PyPI: `headless-oracle` |
-| JS Verify SDK | npm: `@headlessoracle/verify` |
+| Python SDK | PyPI: `headless-oracle` (0.1.1) |
+| JS Verify SDK | npm: `@headlessoracle/verify` (1.0.2) |
 | Go SDK | github.com/LembaGang/headless-oracle-go |
 | MCP stdio package | npm: `headless-oracle-mcp` |
 | Setup tool | npm: `headless-oracle-setup` |
