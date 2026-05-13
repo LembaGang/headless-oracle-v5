@@ -3512,6 +3512,30 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
+  <url>
+    <loc>https://headlessoracle.com/standards</loc>
+    <lastmod>2026-05-13</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/essays/</loc>
+    <lastmod>2026-05-13</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/essays/environment-internet-draft</loc>
+    <lastmod>2026-05-13</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://headlessoracle.com/essays/trust-primitive</loc>
+    <lastmod>2026-04-28</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
 </urlset>`;
 
 const ROBOTS_TXT = `User-agent: *
@@ -3529,6 +3553,8 @@ Allow: /v5/keys
 Allow: /v5/health
 Allow: /mics.json
 Allow: /v5/pre-trade-stack
+Allow: /essays/
+Allow: /standards
 Disallow:
 `;
 
