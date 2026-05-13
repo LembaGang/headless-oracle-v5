@@ -62,6 +62,7 @@ Still requires explicit confirmation in the message:
 | `.dev.vars` | Local dev/test secrets (test-only keypair, NOT production) |
 | `vitest.config.mts` | Points to `wrangler.toml` (NOT wrangler.jsonc) |
 | `.claude/rules/` | Persistent rules that survive context compaction |
+| `.claude/website-inventory.md` | Historical website-state inventory dated 2026-05-04. Reconciled against live site state 2026-05-13 — every item it listed has been addressed. Kept as a reference artefact, not an action list. |
 | `docs/` | Organized: architecture/, api/, operations/, legal/, business/, security/, integrations/, distribution/, blog/ |
 | `CHANGELOG.md` | Keep a Changelog format — major milestones |
 | `.github/actions/market-gate/` | Reusable GitHub Action for CI/CD market checks |
@@ -147,10 +148,13 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-04-16 — refresh for Opus 4.7 + active standards work -->
+<!-- Last updated: 2026-05-13 — post-IETF-I-D-announcement deploy -->
 
-- **Tests**: 1034 main suite (authoritative — `wrangler.toml` TEST_COUNT) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
-- **Worker**: `src/index.ts` ~13,300 lines. API-only — zero HTML.
+- **Tests**: 1027 main suite (authoritative — `wrangler.toml` TEST_COUNT) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
+- **Worker**: `src/index.ts` ~13,300 lines. API-only — zero HTML. Live version: `be0c8f19` (deployed 2026-05-13 with `/essays/` and `/standards` added to `SITEMAP_XML` and `ROBOTS_TXT`).
+- **IETF Internet-Draft (2026-05-11)**: `draft-borthwick-msebenzi-environment-state-00` filed on the Independent Submission / Informational track. 43 pages. Co-authored with Douglas Borthwick (InsumerAPI). Family-definition spec for the `environment.*` constraint family — the layer above `environment.market_state` (HO, PR #9) and `environment.wallet_state` (InsumerAPI, PR #22). Live at <https://datatracker.ietf.org/doc/draft-borthwick-msebenzi-environment-state/>. Citable, archived, expires 2026-11-11 (re-file or evolve before then). This is the load-bearing artefact making HO the named reference implementation for the family rather than one of many candidates.
+- **Essay infrastructure (2026-05-13)**: `headlessoracle.com/essays/` index + two HTML-rendered essays live — `/essays/environment-internet-draft` (announcement of the I-D filing, v1.0.0, May 13) and `/essays/trust-primitive` (architectural argument for environment-state attestation, v1.6.4, April 28). Each page carries full OG/Twitter/canonical/article metadata. Canonical markdown sources live at `github.com/headlessoracle/essays`; tagged releases (`v1.0.0-environment-internet-draft-2026-05-13`, `v1.6.4-2026-04-28`) are SSH-signed. Served by Cloudflare Pages via `public/essays/<slug>/index.html` pass-through (no worker route). Sitemap + robots both list the paths.
+- **Site-wide og-image.png (2026-05-13)**: `https://headlessoracle.com/og-image.png` now returns 200 image/png (1200×630, 28.85 KB) instead of the pre-existing text/html SPA fallback. Closes the broken-preview-card gap that affected every page advertising the URL. Type-only composition (HEADLESS ORACLE wordmark, signed-market-state tagline, Ed25519 / 28 exchanges / fail-closed / 60s TTL footer). Generated via PowerShell + System.Drawing (no new deps).
 - **First Dollar**: achieved 2026-04-03 on Base mainnet — tx `0xeb9da873`, $0.001 USDC, settled via x402 on `/v5/status`. This is the load-bearing proof that an autonomous agent can discover, pay, and verify without human mediation.
 - **Daily operational rhythm**: 308–365 signed receipts/day, 6–16 authenticated calls/day. Traffic is steady, not episodic.
 - **Sustained agent discovery**: Chiark, glama, MCPRegistry, Smithery Connect, codex-mcp-client, AgentSEO, AgentPulse, nothumansearch.ai all probe on their own cadence. No outreach required to keep them warm.
@@ -169,11 +173,12 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 
 ## Active standards work
 
-Two coordinated sibling PRs at `agent-intent/verifiable-intent` define the environment-constraint contract for autonomous agents. HO is the reference implementation for the market-state half.
+Three coordinated artefacts define the environment-constraint contract for autonomous agents: an IETF Internet-Draft for the family/vocabulary layer, and two sibling PRs at `agent-intent/verifiable-intent` for the individual constraint types. HO is the named reference implementation for the market-state member.
 
-- **PR #9 (ours)** — proposes `environment.market_state` as a constraint block. Agents declare acceptable market-state conditions up front; the runtime enforces them against signed attestations before executing. **v0.2 lands 2026-04-17.**
-- **PR #22 (Douglas Borthwick)** — sibling proposal for `environment.wallet_state`. Same structural pattern applied to wallet/treasury state.
-- **Shared architecture** — both PRs use a common `max_attestation_age` field, the RFC 8725 §3.1 algorithm-agility framework for signing, and a fail-closed posture (unknown or expired attestation → refuse to proceed).
+- **IETF I-D (filed 2026-05-11)** — `draft-borthwick-msebenzi-environment-state-00`. Family-definition specification: membership criterion (failure mode must be gating), family-wide vocabulary (`attestation_url`, `max_attestation_age`, field-scope taxonomy), composition discipline (conjunction-with-completeness), register discipline, security considerations, IANA registry mechanics. Independent Submission / Informational. Expires 2026-11-11 — re-file or evolve before then.
+- **PR #9 (ours)** — `environment.market_state` constraint type. Current revision `v0.5.10-draft` (May 2026). Agents declare acceptable market-state conditions up front; the runtime enforces them against signed HO attestations before executing.
+- **PR #22 (Douglas Borthwick, InsumerAPI)** — sibling `environment.wallet_state` constraint type. Current revision `v0.6.5-draft`. Same structural pattern applied to on-chain payment-source state across 33 chains.
+- **Shared architecture** — all three artefacts use a common `max_attestation_age` freshness field, the RFC 8725 §3.1 algorithm-agility framework for signing, JWKS-discovered trust roots, and a fail-closed posture (unknown or expired attestation → refuse to proceed). Family-wide prose is byte-identical across PR #9 and PR #22 on the shared sections.
 
 ### Spec-conformance guardrails (LOAD-BEARING)
 
@@ -208,6 +213,7 @@ How Mike and I collaborate on this codebase now:
   2. `npm test` — full suite must pass
   3. `npx wrangler deploy --dry-run` — bundle + config must validate
   One-time setup per clone or worktree: `git config core.hooksPath .githooks`. Tests require `.dev.vars`; copy it into any new worktree before the first commit. Do not reach for `--no-verify` — if you believe an exception is warranted, surface it in the conversation first.
+- **Documented bypass class (2026-05-13).** On 2026-05-13 the worker pre-commit hook hung 40+ min on `getaddrinfo(): #11001 No such host is known.` for `sahqfuyneoeqczupmysu.supabase.co` — vitest-pool-workers making real DNS calls instead of mocking Supabase. This is the same flake-class as the "65 pre-existing Windows EBUSY failures" already documented in this file. Two commits used `--no-verify` after explicit MBeenzi approval: `59d9099` (sitemap/robots constants) and the documentation commit that landed this note. The exception class is: **pure string-constant or markdown-only edits with zero logic, route, or test surface, when the hook is failing on documented environment-flake symptoms.** Bypass requires (a) explicit approval per change, (b) the commit message stating the change is docs/data-only, naming the change, and naming the bypass reason. The next worker commit that touches logic or routes must wait for the test env to be fixed — the bypass class does not extend to those.
 - **Fail-closed posture is load-bearing.** It is the product's defining invariant and it is threaded through the codebase. Any change that introduces a permissive default, silent fallback, "temporary" bypass, or optimistic assumption in an error path must be flagged explicitly before committing. Don't reason it away — surface it.
 - **Commit signing.** Sign commits with the SSH signing key at `~/.ssh/id_ed25519_signing`. Already configured globally — no per-commit setup needed.
 

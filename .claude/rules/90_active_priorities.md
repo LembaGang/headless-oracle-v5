@@ -2,10 +2,46 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-launch. Revenue focus. Standards authorship. Asia-Pacific distribution sprint — content drafted, awaiting human send.
-**Day**: 49 (2026-04-15 — content sprint: 5 integration guides, 7 registry listings, 10 outreach drafts)
-**Test suite**: 1020/1020 passing + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund)
-**Worker**: src/index.ts ~13,300 lines (API-only, zero HTML). Live version: 3c5c8727 (unchanged).
+**Phase**: Post-IETF-I-D-filing. Announcement posts being drafted in current strategic session — LinkedIn + X go out today or tomorrow (2026-05-13 / 2026-05-14). Site polish for the announcement is shipped. Standards authorship is the load-bearing positioning; engineering velocity is now in service of that.
+**Day**: 77 (2026-05-13 — IETF I-D announcement deploy: essay infra + site-wide og-image + sitemap/robots hygiene)
+**Test suite**: 1027/1027 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). No new tests today — docs/data only.
+**Worker**: src/index.ts ~13,300 lines (API-only, zero HTML). Live version: `be0c8f19` (deployed 2026-05-13 — added `/essays/` and `/standards` to SITEMAP_XML and ROBOTS_TXT).
+
+### What's Done (Day 77 — IETF I-D announcement deploy)
+
+- **IETF Internet-Draft filed 2026-05-11**: `draft-borthwick-msebenzi-environment-state-00` live at <https://datatracker.ietf.org/doc/draft-borthwick-msebenzi-environment-state/>. 43 pages, Independent Submission / Informational track, co-authored with Douglas Borthwick (InsumerAPI). Family-definition spec for the `environment.*` constraint family. Expires 2026-11-11. Documented in `CLAUDE.md → Current State` and `CLAUDE.md → Active standards work`. This is the artefact that makes HO the named reference implementation rather than one of many candidates.
+- **Essay infrastructure on headlessoracle.com**: `/essays/` index + two HTML-rendered essays now live — `/essays/environment-internet-draft` (announcement of the I-D filing, v1.0.0) and `/essays/trust-primitive` (architectural argument, v1.6.4). Each page carries full OG/Twitter/canonical/article metadata. Canonical markdown sources at `github.com/headlessoracle/essays`. Commits: `e468b05` (essays repo, tag `v1.0.0-environment-internet-draft-2026-05-13`, SSH-signed) and `65b81df` (headless-oracle-web).
+- **Site-wide og-image.png shipped**: `https://headlessoracle.com/og-image.png` returns 200 image/png (1200×630, 28.85 KB) instead of the pre-existing text/html SPA fallback. Closes the broken-preview-card gap that affected every page advertising the URL. Generated via PowerShell + System.Drawing (no new deps). Commits `b1de21d` + `6e78a0e` on headless-oracle-web.
+- **Homepage + traction.html "I-D Filed · May 11, 2026" badges**: clickable, link to `/essays/environment-internet-draft`. Replaces the "Verifiable Intent RFC: submitted (March 17 2026)" framing flagged as stale in the prior session's inventory. Bonus fix on traction.html: removed JS that was overwriting the static badge text from the `/v5/traction` API field on page load.
+- **Standards page card updated** (prior session, 2026-05-12): the "forthcoming IETF Internet-Draft" card on `/standards` now reads "filed · May 11, 2026" with a clickable link to the datatracker.
+- **Worker SITEMAP_XML + ROBOTS_TXT include essays + standards**: commit `59d9099` (SSH-signed). Deployed worker version `be0c8f19`. Live-verified — `/sitemap.xml` now lists `/essays/`, `/essays/environment-internet-draft`, `/essays/trust-primitive`, `/standards`; `/robots.txt` has explicit `Allow: /essays/` and `Allow: /standards`. **Committed with `--no-verify`** after explicit MBeenzi approval — the worker pre-commit hook had hung 40+ min on `getaddrinfo(): #11001 No such host is known.` for the Supabase URL inside vitest-pool-workers (environment flake, unrelated to the change). See `CLAUDE.md → Documented bypass class (2026-05-13)` for the policy.
+- **`.claude/website-inventory.md` reconciled**: every item it listed (Liability Receipt terminology, PEM framing, `7 venues` typo, stale DST countdown, og-image gap) is now closed. File kept as a historical artefact with a reconciliation banner at the top. Next session should not act on it without re-verifying live state first.
+- **Documentation updated** (this commit): `CLAUDE.md → Current State`, `CLAUDE.md → Active standards work`, `CLAUDE.md → Working style → Documented bypass class`, `CLAUDE.md → File Layout` (inventory note), this file's `Current Status` block, and the website-inventory banner.
+
+### In flight today (2026-05-13)
+
+- **LinkedIn + X announcement posts** for the I-D filing — being drafted in the current strategic session. Will link to `https://headlessoracle.com/essays/environment-internet-draft` as canonical URL. Both surfaces ship today or 2026-05-14. Not yet posted.
+
+### Strategic carry-forward (sourced from session prompt 2026-05-13, not previously in this file)
+
+These items were named by MBeenzi as active strategic priorities outside the engineering active-list. They are captured here so the next session — strategic or engineering — has them in view. They are not currently sourced from any committed doc; if any has shifted status since the prompt was authored, the strategic memory file or MBeenzi is the source of truth.
+
+- **SA tax counsel retention** — 30-day window opened 2026-05-09, clock is running.
+- **Delaware C-corp parent target** — June 2026 reincorporation target.
+- **Borthwick MOU** — narrow scope, 1-pager, only when drafted with text (per Borthwick's 2026-05-06 reply).
+- **US-based technical advisor recruitment** — sub-1% equity grant, "VP Standards" title.
+- **Cloudflare outbound** — Rita Kozlov, Sunil Pai, Dane Knecht per strategic plan.
+- **`environment.market_state` registration as a named VI constraint** — via Pablo Fourez (Mastercard CDO). Consent-required intro through Borthwick.
+- **MCP server + 4 agent-framework adapters in 4 weeks** — OpenAI Agents SDK, Google ADK, Vercel AI SDK, LangChain.
+- **Paradigm + a16z crypto Seed conversations** — as a competitive-process floor.
+- **One network-logo pilot mention** — Mastercard / Visa TAP / Coinbase x402 Bazaar; pick one and earn the cite.
+
+### New items surfaced today (2026-05-13)
+
+- **Per-essay OG images** — current `og-image.png` is site-wide and minimum-viable (type-only, single tagline). When promotional capacity allows, render a distinct OG image per essay so social cards differentiate visually. Low priority; the current image is shipped and serves all pages.
+- **"Essays" in global nav — deferred** — nav is hand-copied across 11 pages with at least three styling patterns (active-page, slate-style, footer-style with no class). Adding "Essays" cleanly is ~22 distinct edits with variance risk. Revisit during a nav-templating sprint; until then, discovery path is standards → "Read the announcement →" inline link → essay → essays index.
+- **Worker test environment fix — BLOCKING for next logic commit** — vitest-pool-workers makes real DNS requests to `sahqfuyneoeqczupmysu.supabase.co` instead of mocking, causing the pre-commit hook to hang 40+ min and fail. Today's two `--no-verify` commits are within the documented bypass class (docs/data-only). The next worker commit that touches logic, routes, or test surface must wait for this to be fixed. Likely root cause: a Supabase client construction path in `src/index.ts` not wrapped in a mock guard during vitest, or a vitest-pool-workers config gap. Diagnose and fix before the next logic sprint.
+- **Sitemap/robots indexing window** — Google/Bing crawl `/sitemap.xml` on their own schedule (typically within hours for known sites, up to a few days). Essays should appear in search indexes within the standard window; no action required, but worth noting if a search-discoverability question arises.
 
 ### What's Done (Day 49 — content sprint, docs only)
 
