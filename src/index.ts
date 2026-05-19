@@ -175,6 +175,25 @@ async function sha256Hex(input: string): Promise<string> {
 	return toHex(new Uint8Array(hash));
 }
 
+// ─── JWK helpers (RFC 7515 §2 base64url + RFC 7638 thumbprint) ───────────────
+// Used exclusively by /.well-known/jwks.json for RFC 7517 key discovery.
+// No new dependencies: Web Crypto's crypto.subtle.digest covers SHA-256 and
+// the worker runtime already exposes btoa.
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+	let binary = '';
+	for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+	return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function ed25519JwkThumbprint(xBase64Url: string): Promise<string> {
+	// RFC 7638 §3.2: for OKP keys the required members in lexicographic order
+	// are crv, kty, x. Serialize with no whitespace, SHA-256, base64url-encode.
+	const canonical = `{"crv":"Ed25519","kty":"OKP","x":"${xBase64Url}"}`;
+	const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+	return bytesToBase64Url(new Uint8Array(hash));
+}
+
 // ─── Market Configuration ────────────────────────────────────────────────────
 //
 // All times are LOCAL to the exchange timezone.
@@ -3794,7 +3813,8 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/conformance-vectors | GET | No | 5 live-signed canonical test vectors | { vectors: [{name, receipt, canonical_payload, public_key}] } |
 | /mcp | POST | No (optional Bearer) | MCP Streamable HTTP (JSON-RPC 2.0) | JSON-RPC response |
 | /openapi.json | GET | No | OpenAPI 3.1 machine-readable spec | OpenAPI document |
-| /.well-known/oracle-keys.json | GET | No | RFC 8615 key discovery | Key lifecycle metadata |
+| /.well-known/oracle-keys.json | GET | No | RFC 8615 key discovery (hex public_key — source of truth for deployed SDKs) | Key lifecycle metadata + jwks_uri |
+| /.well-known/jwks.json | GET | No | RFC 7517 JWKSet for JOSE-aware verifiers — discovery-only in this release | application/jwk-set+json |
 | /.well-known/agent.json | GET | No | A2A Agent Card | A2A agent capabilities |
 | /.well-known/mcp/server-card.json | GET | No | MCP server card | Tool list, reliability, coverage |
 | /.well-known/security.txt | GET | No | RFC 9116 security contact | Contact, Expires, Preferred-Languages |
@@ -3888,7 +3908,8 @@ Upgrade: https://headlessoracle.com/upgrade
 ## Discovery Endpoints
 - [Agent Card (A2A)](https://headlessoracle.com/.well-known/agent.json)
 - [MCP Server Card](https://headlessoracle.com/.well-known/mcp/server-card.json)
-- [Oracle Public Keys (JWKS)](https://headlessoracle.com/.well-known/oracle-keys.json)
+- [Oracle Public Keys (hex, RFC 8615)](https://headlessoracle.com/.well-known/oracle-keys.json) — source of truth for deployed SDKs
+- [JWKS (RFC 7517)](https://headlessoracle.com/.well-known/jwks.json) — discovery-only in this release; receipts do not yet carry a kid. Deployed SDKs (@headlessoracle/verify, headless-oracle) continue to verify against oracle-keys.json. JOSE-aware verifiers may use this endpoint for key discovery; kid-aware receipt verification is planned for a future major release.
 
 ## MCP Integration
 Server card: GET https://headlessoracle.com/.well-known/mcp/server-card.json
@@ -6051,10 +6072,27 @@ const OPENAPI_SPEC = {
 			get: {
 				summary:     'RFC 8615 key discovery',
 				description: 'Standard well-known URI for Ed25519 public key discovery (RFC 8615). ' +
-					'Returns active signing key(s) with lifecycle metadata. No authentication required. ' +
-					'Use /v5/keys for the full canonical payload specification.',
+					'Returns active signing key(s) with lifecycle metadata. The hex `public_key` field ' +
+					'is the source of truth for deployed SDKs (@headlessoracle/verify, headless-oracle). ' +
+					'`jwks_uri` points at the RFC 7517 JWKS form for JOSE-aware verifiers. ' +
+					'No authentication required. Use /v5/keys for the full canonical payload specification.',
 				responses: {
 					'200': { description: 'Active signing key(s)', content: { 'application/json': { schema: { type: 'object' } } } },
+				},
+			},
+		},
+		'/.well-known/jwks.json': {
+			get: {
+				summary:     'RFC 7517 JWKSet (discovery-only)',
+				description: 'JSON Web Key Set (RFC 7517) form of the active Ed25519 signing key for ' +
+					'JOSE-aware verifiers. Single-key set; each key carries an RFC 7638 thumbprint as ' +
+					'`kid`. Discovery-only in this release — receipts do not yet carry `kid`, so deployed ' +
+					'SDKs continue to verify against /.well-known/oracle-keys.json (hex `public_key`). ' +
+					'kid-aware receipt verification is planned for a future major release. ' +
+					'Content-Type: application/jwk-set+json. Cache-Control: public, max-age=300.',
+				responses: {
+					'200': { description: 'JWKSet with the active signing key', content: { 'application/jwk-set+json': { schema: { type: 'object' } } } },
+					'500': { description: 'Public key not configured — CONFIGURATION_ERROR' },
 				},
 			},
 		},
@@ -9569,6 +9607,8 @@ export default {
 				// RFC 8615 standard key-discovery URI. Agents and web infrastructure that follow
 				// RFC 8615 look here before checking service-specific paths like /v5/keys.
 				// Returns active-key data without the canonical_payload_spec to stay minimal.
+				// `jwks_uri` points at the RFC 7517 JWKS form for JOSE-aware verifiers; the legacy
+				// hex `public_key` field remains the source of truth for deployed SDKs.
 				return json({
 					keys: [{
 						key_id:      env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -9581,10 +9621,46 @@ export default {
 						valid_from:  env.PUBLIC_KEY_VALID_FROM  || '2026-01-01T00:00:00Z',
 						valid_until: env.PUBLIC_KEY_VALID_UNTIL || null,
 					}],
-					issuer:  'headlessoracle.com',
-					service: 'headless-oracle',
-					spec:    'https://headlessoracle.com/openapi.json',
+					issuer:   'headlessoracle.com',
+					service:  'headless-oracle',
+					spec:     'https://headlessoracle.com/openapi.json',
+					jwks_uri: 'https://headlessoracle.com/.well-known/jwks.json',
 				}, 200, { 'Cache-Control': 'public, max-age=86400' });
+			}
+			if (url.pathname === '/.well-known/jwks.json') {
+				// RFC 7517 JWKSet — discovery-only in this release. Single-key set.
+				// Deployed SDKs continue to verify against /.well-known/oracle-keys.json
+				// (hex `public_key`); JOSE-aware consumers can pivot here. Receipts do not
+				// yet carry `kid`, so this endpoint is for key discovery only — verifiers
+				// can match against the single active key without selecting by kid.
+				const pubKeyHex = env.ED25519_PUBLIC_KEY || '';
+				if (!pubKeyHex) {
+					return json({
+						error:   'CONFIGURATION_ERROR',
+						message: 'Public key not configured. Treat as UNKNOWN.',
+					}, 500);
+				}
+				const xB64u = bytesToBase64Url(fromHex(pubKeyHex));
+				const kid   = await ed25519JwkThumbprint(xB64u);
+				const jwks  = {
+					keys: [{
+						kty:     'OKP',
+						crv:     'Ed25519',
+						x:       xB64u,
+						kid,
+						use:     'sig',
+						alg:     'EdDSA',
+						key_ops: ['verify'],
+					}],
+				};
+				return new Response(JSON.stringify(jwks), {
+					status:  200,
+					headers: {
+						...corsHeaders,
+						'Content-Type':  'application/jwk-set+json',
+						'Cache-Control': 'public, max-age=300',
+					},
+				});
 			}
 			if (url.pathname === '/openapi.json') {
 				return json(OPENAPI_SPEC);

@@ -2277,7 +2277,78 @@ describe('GET /.well-known/oracle-keys.json', () => {
 		expect(wkKey.public_key).toBe(v5Key.public_key);
 		expect(wkKey.key_id).toBe(v5Key.key_id);
 	});
+
+	it('exposes jwks_uri pointing at the new JWKS endpoint', async () => {
+		const body = await fetchJSON('/.well-known/oracle-keys.json');
+		expect(body).toHaveProperty('jwks_uri', 'https://headlessoracle.com/.well-known/jwks.json');
+	});
 });
+
+// ─── GET /.well-known/jwks.json (RFC 7517 JWKS discovery) ────────────────────
+// Discovery-only in this release: deployed SDKs continue to verify against
+// /.well-known/oracle-keys.json (hex public_key). See SUMMARY.md for the
+// deferred kid-in-receipt migration.
+
+describe('GET /.well-known/jwks.json', () => {
+	it('returns 200 application/jwk-set+json with Cache-Control public max-age=300', async () => {
+		const response = await fetchWorker('/.well-known/jwks.json');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toBe('application/jwk-set+json');
+		expect(response.headers.get('Cache-Control')).toBe('public, max-age=300');
+	});
+
+	it('returns a JWKSet with exactly one OKP/Ed25519 key', async () => {
+		const body = await fetchJSON('/.well-known/jwks.json');
+		expect(body).toHaveProperty('keys');
+		const keys = body.keys as Array<Record<string, unknown>>;
+		expect(Array.isArray(keys)).toBe(true);
+		expect(keys.length).toBe(1);
+		const key = keys[0];
+		expect(key.kty).toBe('OKP');
+		expect(key.crv).toBe('Ed25519');
+		expect(key.use).toBe('sig');
+		expect(key.alg).toBe('EdDSA');
+		expect(key.key_ops).toEqual(['verify']);
+		expect(typeof key.x).toBe('string');
+		expect(typeof key.kid).toBe('string');
+	});
+
+	it('x matches base64url(no-pad) of the active hex public key', async () => {
+		// Test keypair from .dev.vars — must match what the worker is loading.
+		const expectedX = '-K949WPoqmmLNbCyURzUMKjEqm95YFNLsrfiLZtKP7g';
+		const body = await fetchJSON('/.well-known/jwks.json');
+		const key = (body.keys as Array<Record<string, unknown>>)[0];
+		expect(key.x).toBe(expectedX);
+	});
+
+	it('kid is the RFC 7638 thumbprint of the canonical OKP JWK', async () => {
+		// Expected = base64url-no-pad( SHA-256( '{"crv":"Ed25519","kty":"OKP","x":"<x>"}' ) )
+		// Computed once with Node crypto against the .dev.vars test public key.
+		// If this fails after a keypair rotation, recompute and update the literal.
+		const expectedKid = 'id8Q65wQUOn9lWtAe__JwqChpIAL38N8GDQbqrRngBM';
+		const body = await fetchJSON('/.well-known/jwks.json');
+		const key = (body.keys as Array<Record<string, unknown>>)[0];
+		expect(key.kid).toBe(expectedKid);
+	});
+
+	it('x byte-decodes to the same 32 bytes as the hex public_key on oracle-keys.json', async () => {
+		const [jwks, wellKnown] = await Promise.all([
+			fetchJSON('/.well-known/jwks.json'),
+			fetchJSON('/.well-known/oracle-keys.json'),
+		]);
+		const jwksKey = (jwks.keys     as Array<Record<string, unknown>>)[0];
+		const wkKey   = (wellKnown.keys as Array<Record<string, unknown>>)[0];
+		const xB64u   = jwksKey.x as string;
+		// Decode base64url → bytes → hex, compare against the hex source of truth.
+		const b64 = xB64u.replace(/-/g, '+').replace(/_/g, '/') + '=='.slice(0, (4 - xB64u.length % 4) % 4);
+		const bin = atob(b64);
+		const bytes = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+		const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+		expect(hex).toBe(wkKey.public_key);
+	});
+});
+
 // ─── GET /.well-known/x402.json ────────────────────────────────────────────────────────────────────
 
 describe('GET /.well-known/x402.json', () => {
