@@ -2597,6 +2597,134 @@ describe('GET /.well-known/mcp/server-card.json', () => {
 	});
 });
 
+// ─── Agent Readiness Stack — static discovery surface ────────────────────────
+
+describe('GET /.well-known/mcp (extensionless alias)', () => {
+	it('returns 200 with application/json content-type', async () => {
+		const res = await fetchWorker('/.well-known/mcp');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('returns the same payload as /.well-known/mcp.json', async () => {
+		const a = await fetchJSON('/.well-known/mcp');
+		const b = await fetchJSON('/.well-known/mcp.json');
+		expect(a.name).toBe(b.name);
+		expect(a.mcp_endpoint).toBe(b.mcp_endpoint);
+		expect(a).toEqual(b);
+	});
+});
+
+describe('Agent Skills discovery (agentskills.io 0.2.0)', () => {
+	it('GET /.well-known/agent-skills/index.json returns 200 application/json', async () => {
+		const res = await fetchWorker('/.well-known/agent-skills/index.json');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+	});
+
+	it('index declares $schema, version 0.2.0, and 5 skills', async () => {
+		const body = await fetchJSON('/.well-known/agent-skills/index.json');
+		expect(body.$schema).toBe('https://schemas.agentskills.io/discovery/0.2.0/schema.json');
+		expect(body.version).toBe('0.2.0');
+		const skills = body.skills as Array<unknown>;
+		expect(Array.isArray(skills)).toBe(true);
+		expect(skills.length).toBe(5);
+	});
+
+	it('each skill entry has the required 0.2.0 fields with valid shapes', async () => {
+		const body = await fetchJSON('/.well-known/agent-skills/index.json');
+		const skills = body.skills as Array<Record<string, unknown>>;
+		for (const s of skills) {
+			expect(s.name as string).toMatch(/^[a-z0-9][a-z0-9-]{0,63}$/);
+			expect(s.type).toBe('skill-md');
+			expect(typeof s.description).toBe('string');
+			expect(s.url as string).toMatch(/^https:\/\/headlessoracle\.com\/\.well-known\/agent-skills\/.+\/SKILL\.md$/);
+			expect(s.digest as string).toMatch(/^sha256:[0-9a-f]{64}$/);
+		}
+	});
+
+	it('index digest matches the SHA-256 of the served SKILL.md bytes', async () => {
+		const body   = await fetchJSON('/.well-known/agent-skills/index.json');
+		const skills = body.skills as Array<{ name: string; digest: string }>;
+		const entry  = skills.find((s) => s.name === 'verify-receipt')!;
+		const md     = await fetchWorker('/.well-known/agent-skills/verify-receipt/SKILL.md').then((r) => r.text());
+		const buf    = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(md));
+		const hex    = Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+		expect(entry.digest).toBe('sha256:' + hex);
+	});
+
+	it.each(['verify-receipt', 'read-market-state', 'subscribe-halts', 'pay-with-x402', 'mcp-tool-catalog'])(
+		'GET /.well-known/agent-skills/%s/SKILL.md returns 200 text/markdown', async (name) => {
+			const res = await fetchWorker(`/.well-known/agent-skills/${name}/SKILL.md`);
+			expect(res.status).toBe(200);
+			expect(res.headers.get('Content-Type')).toContain('text/markdown');
+			const body = await res.text();
+			expect(body).toContain(`name: ${name}`);
+		},
+	);
+
+	it('unknown skill name returns 404', async () => {
+		const res = await fetchWorker('/.well-known/agent-skills/does-not-exist/SKILL.md');
+		expect(res.status).toBe(404);
+	});
+});
+
+describe('GET /.well-known/api-catalog (RFC 9727 linkset)', () => {
+	it('returns 200 with application/linkset+json content-type', async () => {
+		const res = await fetchWorker('/.well-known/api-catalog');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/linkset+json');
+	});
+
+	it('body is an RFC 9727 linkset with anchored service-desc links', async () => {
+		const body    = await fetchJSON('/.well-known/api-catalog');
+		const linkset = body.linkset as Array<Record<string, unknown>>;
+		expect(Array.isArray(linkset)).toBe(true);
+		expect(linkset.length).toBeGreaterThan(0);
+		const first = linkset[0];
+		expect(typeof first.anchor).toBe('string');
+		expect(Array.isArray(first['service-desc'])).toBe(true);
+	});
+});
+
+describe('Agent directory (soft-404 trap fix)', () => {
+	it('GET /agent-directory.json returns 200 application/json, not the Pages HTML soft-404', async () => {
+		const res = await fetchWorker('/agent-directory.json');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+		const body = await res.json() as Record<string, unknown>;
+		expect(Array.isArray(body.agents)).toBe(true);
+	});
+
+	it('GET /.well-known/agent-directory.json returns the identical payload', async () => {
+		const a = await fetchJSON('/agent-directory.json');
+		const b = await fetchJSON('/.well-known/agent-directory.json');
+		expect(a).toEqual(b);
+		const agents = a.agents as Array<Record<string, unknown>>;
+		expect(agents[0].agent_card).toBe('/.well-known/agent-card.json');
+	});
+});
+
+describe('robots.txt — Content Signals + explicit bot allows', () => {
+	it('declares Cloudflare Content Signals', async () => {
+		const body = await fetchWorker('/robots.txt').then((r) => r.text());
+		expect(body).toContain('Content-Signal: ai-train=no, ai-input=yes, search=yes');
+	});
+
+	it('explicitly allows agent + AI crawlers', async () => {
+		const body = await fetchWorker('/robots.txt').then((r) => r.text());
+		expect(body).toContain('User-agent: AgenstryBot');
+		expect(body).toContain('User-agent: Open402DirectoryCrawler');
+		expect(body).toContain('User-agent: GPTBot');
+	});
+
+	it('preserves existing Allow directives (additive diff)', async () => {
+		const body = await fetchWorker('/robots.txt').then((r) => r.text());
+		expect(body).toContain('Allow: /llms.txt');
+		expect(body).toContain('Allow: /.well-known/');
+	});
+});
+
 describe('MCP tool descriptions — semantic upgrade', () => {
 	it('get_market_status description includes model-agnostic and SEC/CFTC language', async () => {
 		const body = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });

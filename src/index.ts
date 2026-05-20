@@ -3558,6 +3558,7 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 </urlset>`;
 
 const ROBOTS_TXT = `User-agent: *
+Content-Signal: ai-train=no, ai-input=yes, search=yes
 Allow: /llms.txt
 Allow: /llms-full.txt
 Allow: /SKILL.md
@@ -3575,6 +3576,30 @@ Allow: /v5/pre-trade-stack
 Allow: /essays/
 Allow: /standards
 Disallow:
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: AgenstryBot
+Allow: /
+
+User-agent: Open402DirectoryCrawler
+Allow: /
+
+User-agent: YellowMCP-HealthChecker
+Allow: /
 `;
 
 // ============================================================================
@@ -5619,6 +5644,290 @@ const AGENT_JSON = {
 		unknown_means:   'CLOSED — halt all execution',
 		receipt_ttl_sec: 60,
 	},
+};
+
+// ─── Agent Skills (agentskills.io discovery 0.2.0) ───────────────────────────
+// Five skill-md documents served at /.well-known/agent-skills/{name}/SKILL.md,
+// indexed at /.well-known/agent-skills/index.json. Bodies are authored without
+// backtick fences (4-space-indented code blocks) so they live safely inside JS
+// template literals. Digests in the index are computed at request time from the
+// exact served bytes (see handler) so they cannot drift from the content.
+
+const SKILL_VERIFY_RECEIPT_MD = `---
+name: verify-receipt
+description: Verify a Headless Oracle Ed25519-signed market-state receipt offline using @headlessoracle/verify (JavaScript) or the headless-oracle Python SDK. Confirms the receipt is authentic, unexpired, and safe to act on.
+version: 1.0.0
+author: Headless Oracle
+license: Apache-2.0
+tags: [verification, ed25519, cryptography, pre-trade, fail-closed]
+---
+# Skill: Verify a Headless Oracle Receipt
+
+## Goal
+Confirm that a signed market-state receipt from Headless Oracle is genuine before acting on it. Verification is offline: you do not need to call Headless Oracle to check a signature.
+
+## When to use
+- You received a receipt (from /v5/status, /v5/demo, /v5/batch, or the MCP get_market_status tool) and must confirm it was issued by Headless Oracle and not tampered with.
+- You are gating execution (a trade, a payment, a capital commitment) on market state and need cryptographic proof, not a bare HTTP 200.
+
+## Trust anchor
+- Algorithm: Ed25519.
+- Active public key (hex): 03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178
+- Key registry (human + machine): https://headlessoracle.com/v5/keys
+- RFC 8615 discovery: https://headlessoracle.com/.well-known/oracle-keys.json
+- RFC 7517 JWKS: https://headlessoracle.com/.well-known/jwks.json
+
+## Canonical payload (what is signed)
+The signature covers every receipt field EXCEPT signature itself. To reconstruct the signed bytes:
+1. Take the receipt object and remove the signature field.
+2. Sort the remaining keys alphabetically.
+3. JSON.stringify with no whitespace.
+4. Verify the hex Ed25519 signature over those UTF-8 bytes with the public key above.
+
+The exact field list is published at /v5/keys under canonical_payload_spec. Read it from there; do not hand-roll the field list.
+
+## JavaScript (recommended)
+Install: npm install @headlessoracle/verify
+
+    import { verify } from '@headlessoracle/verify';
+
+    const result = await verify(receipt, {
+      publicKey: '03dc27993a2c90856cdeb45e228ac065f18f69f0933c917b2336c1e75712f178',
+    });
+    if (!result.valid || result.expired) {
+      // FAIL CLOSED: treat as UNKNOWN, do not execute.
+    }
+
+## Python
+Install: pip install headless-oracle
+
+    from headless_oracle import verify
+    result = verify(receipt)  # fetches the key from the registry, or pass public_key=...
+    if not result.valid or result.expired:
+        raise SystemExit("receipt not trustworthy - halt")
+
+## Fail-closed rules (non-negotiable)
+- A receipt that fails signature verification means UNKNOWN. UNKNOWN = CLOSED.
+- A receipt past its expires_at (60-second TTL) is stale. Re-fetch; do not act on it.
+- A status of UNKNOWN or HALTED both mean: do not execute.
+
+## Related
+- read-market-state: how to fetch a receipt in the first place.
+- mcp-tool-catalog: verify_receipt is also an MCP tool and a REST endpoint at POST /v5/verify.
+`;
+
+const SKILL_READ_MARKET_STATE_MD = `---
+name: read-market-state
+description: Query the Headless Oracle market-state oracle for any of 28 global exchanges and receive an Ed25519-signed OPEN/CLOSED/HALTED/UNKNOWN receipt. Use as a pre-trade gate before any market-dependent action.
+version: 1.0.0
+author: Headless Oracle
+license: Apache-2.0
+tags: [market-data, pre-trade, finance, exchange-hours, fail-closed]
+---
+# Skill: Read Market State
+
+## Goal
+Determine whether an exchange is OPEN, CLOSED, HALTED, or UNKNOWN right now, with a signed receipt you can verify and forward.
+
+## Coverage
+28 exchanges by ISO 10383 MIC code: XNYS (NYSE), XNAS (NASDAQ), XLON (London), XJPX (Tokyo), XHKG (Hong Kong), XSES (Singapore), XSHG/XSHE (Shanghai/Shenzhen), XKRX (Korea), XBOM/XNSE (India), and more, plus 24/7 venues XCOI (Coinbase) and XBIN (Binance). Full list: GET https://headlessoracle.com/v5/exchanges or https://headlessoracle.com/mics.json
+
+## Two ways to call
+
+### MCP tool
+Call get_market_status with { "mic": "XNYS" }. See the mcp-tool-catalog skill for connection details. Returns the same signed receipt as REST.
+
+### REST
+- Public free trial (3/day/IP, no key): GET https://headlessoracle.com/v5/demo?mic=XNYS
+- Authenticated: GET https://headlessoracle.com/v5/status?mic=XNYS with header X-Oracle-Key: <key>, or pay per call with x402 (see pay-with-x402).
+- Batch: GET https://headlessoracle.com/v5/batch?mics=XNYS,XLON,XJPX
+
+Example:
+
+    curl "https://headlessoracle.com/v5/demo?mic=XNYS"
+
+Response shape:
+
+    {
+      "mic": "XNYS",
+      "status": "OPEN",
+      "timestamp": "2026-05-20T15:00:00.000Z",
+      "expires_at": "2026-05-20T15:01:00.000Z",
+      "issuer": "headlessoracle.com",
+      "key_id": "key_2026_v1",
+      "receipt_mode": "demo",
+      "schema_version": "v5.0",
+      "signature": "<hex Ed25519>"
+    }
+
+## Acting on the result
+- OPEN: normal trading session. Safe to proceed after verifying the signature (see verify-receipt).
+- CLOSED: outside session hours, weekend, holiday, or lunch break. Do not execute.
+- HALTED: a circuit breaker or manual halt is active. Do not execute.
+- UNKNOWN: the oracle could not determine state. Treat as CLOSED. Do not execute.
+
+## Freshness
+Every receipt has a 60-second TTL (expires_at). Re-fetch before each decision; never cache a receipt past expires_at.
+
+## Related
+- verify-receipt: verify the signature before trusting the status.
+- subscribe-halts: get pushed a signed event when state changes, instead of polling.
+`;
+
+const SKILL_SUBSCRIBE_HALTS_MD = `---
+name: subscribe-halts
+description: Subscribe to a live stream of signed Headless Oracle market-state events over Server-Sent Events (SSE), so an agent is notified the moment an exchange opens, closes, or halts instead of polling.
+version: 1.0.0
+author: Headless Oracle
+license: Apache-2.0
+tags: [streaming, sse, halts, real-time, pre-trade]
+---
+# Skill: Subscribe to Halt and State-Change Notifications
+
+## Goal
+Receive a signed receipt the moment an exchange changes state (notably a HALTED transition), without polling /v5/status on a timer.
+
+## Endpoint
+GET https://headlessoracle.com/v5/stream?mic=XNYS
+- Transport: Server-Sent Events (text/event-stream).
+- Auth: required. Send X-Oracle-Key: <key>.
+- Backed by a per-MIC StreamCoordinator Durable Object.
+
+## Event protocol
+- event: market_status emitted on a heartbeat (about every 30 seconds) and on change. data is a full signed receipt (same shape and verification as read-market-state).
+- event: halted emitted when the exchange enters HALTED; the stream then closes. This is the terminal signal an execution agent must react to.
+
+Example (Node):
+
+    const res = await fetch('https://headlessoracle.com/v5/stream?mic=XNYS', {
+      headers: { 'X-Oracle-Key': process.env.HO_KEY },
+    });
+    const reader = res.body.getReader();
+    // parse SSE frames: lines beginning "event:" then "data:"
+    // on event: halted -> stop all execution for XNYS immediately
+
+## Fail-closed rules
+- On event: halted, treat the venue as CLOSED and halt execution. Do not wait for confirmation.
+- If the stream drops or errors, assume UNKNOWN until you re-establish it or fetch a fresh signed receipt. UNKNOWN = CLOSED.
+- Verify the signature on each streamed receipt exactly as for a polled one (see verify-receipt).
+
+## Related
+- read-market-state: one-shot pull instead of a stream.
+- verify-receipt: every streamed receipt is independently verifiable.
+`;
+
+const SKILL_PAY_WITH_X402_MD = `---
+name: pay-with-x402
+description: Pay for Headless Oracle paid endpoints autonomously with USDC on Base (x402, eip155:8453) - no human, no subscription. Covers the 402 challenge, the X-Payment header, and replay rules.
+version: 1.0.0
+author: Headless Oracle
+license: Apache-2.0
+tags: [x402, payments, usdc, base, autonomous, micropayments]
+---
+# Skill: Pay for Access with x402
+
+## Goal
+Let an autonomous agent pay per request for Headless Oracle, on-chain, with no API key and no human in the loop.
+
+## What you need
+- A wallet on Base mainnet holding USDC.
+- Network: Base, eip155:8453, chain_id 8453.
+- Asset: USDC at 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.
+- Price: 0.001 USDC per request = 1000 units (USDC has 6 decimals).
+- Discovery document: https://headlessoracle.com/.well-known/x402.json
+
+## Flow
+1. Call the paid endpoint with no key, e.g. GET https://headlessoracle.com/v5/status?mic=XNYS
+2. If payment is required you receive HTTP 402 with machine-readable details: flat top-level fields (payment_method, network, chain_id, currency, pricing, x402_endpoint) plus a nested x402 object.
+3. Construct and sign the on-chain USDC transfer / authorization for 1000 units to the payTo address in the 402 body.
+4. Retry the same request with the payment in the X-Payment header (raw JSON or base64-encoded JSON are both accepted).
+5. On success you receive HTTP 200 with the signed receipt and a Payment-Response header.
+
+Retry example:
+
+    curl "https://headlessoracle.com/v5/status?mic=XNYS" \\
+      -H "X-Payment: <base64-or-raw-json-payment>"
+
+## Rules
+- Each transaction can be used once. A reused tx hash is rejected (replay protection).
+- Payments older than 300 seconds are rejected. Pay and retry promptly.
+- A 402 is an instruction, not a dead end: pay and retry.
+- If you cannot pay, the free trial (3/day/IP) and the sandbox key (200 calls, 7-day) are alternatives - see the 402 body's agent_upgrade_paths.
+
+## Related
+- read-market-state: the endpoint you are paying to call.
+- The canonical x402 discovery is /.well-known/x402.json.
+`;
+
+const SKILL_MCP_TOOL_CATALOG_MD = `---
+name: mcp-tool-catalog
+description: Connect to the Headless Oracle MCP server and use its tools (get_market_status, get_market_schedule, list_exchanges, verify_receipt, get_payment_options) for pre-trade market-state verification.
+version: 1.0.0
+author: Headless Oracle
+license: Apache-2.0
+tags: [mcp, tools, agents, pre-trade, integration]
+---
+# Skill: Use the Headless Oracle MCP Server
+
+## Goal
+Wire an MCP-capable agent (Claude Desktop, Cursor, Cline, Windsurf, or any MCP client) to Headless Oracle and call its market-state tools.
+
+## Connect
+
+### Remote (Streamable HTTP)
+- Endpoint: POST https://headlessoracle.com/mcp
+- Protocol version: 2024-11-05
+- No auth required for tool calls (anonymous reads). Optional OAuth 2.0 bearer and X-Oracle-Key are accepted for higher limits.
+
+### Local (stdio)
+- Package: npx headless-oracle-mcp
+- Claude Desktop / Cursor config: command "npx", args ["-y", "headless-oracle-mcp"].
+
+Full machine-readable server card: https://headlessoracle.com/.well-known/mcp/server-card.json
+
+## Tools
+- get_market_status { mic }: Ed25519-signed OPEN/CLOSED/HALTED/UNKNOWN receipt. The pre-trade gate. UNKNOWN/HALTED = CLOSED.
+- get_market_schedule { mic }: next open/close UTC times, holidays, lunch breaks, DST-aware.
+- list_exchanges {}: directory of all 28 exchanges with MIC codes and timezones. Call at startup.
+- verify_receipt { receipt }: confirm an Ed25519 signature in-server (offline verification with the published key is preferred for agents).
+- get_payment_options {}: the upgrade ladder (sandbox, x402, credits, Builder).
+
+## Usage pattern
+1. At startup, call list_exchanges to learn supported MICs.
+2. Before any market-dependent action, call get_market_status for the relevant MIC.
+3. If status is not OPEN, do not execute.
+4. Optionally verify the receipt signature (see verify-receipt) and forward it as an audit artifact.
+
+## Related
+- read-market-state: the same status check over REST.
+- verify-receipt: verify what the tools return.
+- pay-with-x402: fund higher-volume access.
+`;
+
+// Registry: drives both the index (/.well-known/agent-skills/index.json) and the
+// per-skill SKILL.md routes. name must be lowercase alphanumeric + hyphens (1-64).
+const AGENT_SKILLS: Array<{ name: string; description: string; body: string }> = [
+	{ name: 'verify-receipt',    description: 'Verify a Headless Oracle Ed25519-signed receipt offline (JS or Python SDK) before acting on market state.', body: SKILL_VERIFY_RECEIPT_MD },
+	{ name: 'read-market-state', description: 'Query the 28-exchange oracle for a signed OPEN/CLOSED/HALTED/UNKNOWN receipt as a pre-trade gate.',        body: SKILL_READ_MARKET_STATE_MD },
+	{ name: 'subscribe-halts',   description: 'Subscribe over SSE to signed market-state events and react the moment an exchange halts.',                   body: SKILL_SUBSCRIBE_HALTS_MD },
+	{ name: 'pay-with-x402',     description: 'Pay for paid Headless Oracle endpoints autonomously with USDC on Base via x402.',                            body: SKILL_PAY_WITH_X402_MD },
+	{ name: 'mcp-tool-catalog',  description: 'Connect to the Headless Oracle MCP server and use its five market-state tools.',                             body: SKILL_MCP_TOOL_CATALOG_MD },
+];
+
+// Agent-directory payload — shared by /agent-directory.json (worker-routed) and
+// /.well-known/agent-directory.json (well-known wildcard). Directory crawlers
+// (e.g. AgenstryBot) probe both. Single source so the two never diverge.
+const AGENT_DIRECTORY_JSON = {
+	agents: [{
+		name:         'headless-oracle',
+		url:          'https://headlessoracle.com',
+		agent_card:   '/.well-known/agent-card.json',
+		mcp:          '/.well-known/mcp/server-card.json',
+		api_catalog:  '/.well-known/api-catalog',
+		agent_skills: '/.well-known/agent-skills/index.json',
+		x402:         '/.well-known/x402.json',
+		jwks:         '/.well-known/jwks.json',
+	}],
 };
 
 // ─── MCP (Model Context Protocol) ────────────────────────────────────────────
@@ -9765,6 +10074,68 @@ export default {
 				return json(AGENT_JSON);
 			}
 
+			// ── Agent Skills discovery index (agentskills.io 0.2.0) ────────────────
+			// Lists the skill-md documents below. Digests are computed at request time
+			// from the exact served bytes, so they cannot drift from the content.
+			if (url.pathname === '/.well-known/agent-skills/index.json') {
+				const skills = await Promise.all(AGENT_SKILLS.map(async (s) => ({
+					name:        s.name,
+					type:        'skill-md',
+					description: s.description,
+					url:         `https://headlessoracle.com/.well-known/agent-skills/${s.name}/SKILL.md`,
+					digest:      `sha256:${await sha256Hex(s.body)}`,
+				})));
+				return json({
+					$schema: 'https://schemas.agentskills.io/discovery/0.2.0/schema.json',
+					version: '0.2.0',
+					skills,
+				}, 200, { 'Cache-Control': 'public, max-age=300' });
+			}
+			// Per-skill SKILL.md — /.well-known/agent-skills/{name}/SKILL.md
+			{
+				const skillMatch = /^\/\.well-known\/agent-skills\/([a-z0-9][a-z0-9-]*)\/SKILL\.md$/.exec(url.pathname);
+				if (skillMatch) {
+					const skill = AGENT_SKILLS.find((s) => s.name === skillMatch[1]);
+					if (skill) {
+						return new Response(skill.body, {
+							headers: {
+								...SECURITY_HEADERS,
+								'Content-Type':  'text/markdown; charset=utf-8',
+								'Cache-Control': 'public, max-age=300',
+							},
+						});
+					}
+				}
+			}
+
+			// ── RFC 9727 API catalog (RFC 9264 linkset) ────────────────────────────
+			// Harvested from AGENT_JSON.rest_api.endpoints. Each API anchors to the
+			// shared OpenAPI service-desc, docs, pricing meta, and health status.
+			if (url.pathname === '/.well-known/api-catalog') {
+				const origin  = 'https://headlessoracle.com';
+				const linkset = AGENT_JSON.rest_api.endpoints.map((e) => ({
+					anchor:         `${origin}${e.path}`,
+					'service-desc': [{ href: `${origin}/openapi.json`, type: 'application/json' }],
+					'service-doc':  [{ href: `${origin}/docs`,         type: 'text/html' }],
+					'service-meta': [{ href: `${origin}/v5/pricing`,   type: 'application/json' }],
+					status:         [{ href: `${origin}/v5/health`,    type: 'application/json' }],
+				}));
+				return json({ linkset }, 200, {
+					'Content-Type':  'application/linkset+json',
+					'Cache-Control': 'public, max-age=3600',
+					'Link':          '<https://www.rfc-editor.org/info/rfc9727>; rel="profile"',
+				});
+			}
+
+			// ── Agent directory ────────────────────────────────────────────────────
+			// Served at both /agent-directory.json (worker route, see wrangler.toml)
+			// and /.well-known/agent-directory.json (well-known wildcard). Replaces the
+			// prior soft-404 where /agent-directory.json fell through to the Pages SPA
+			// and returned 200 text/html.
+			if (url.pathname === '/agent-directory.json' || url.pathname === '/.well-known/agent-directory.json') {
+				return json(AGENT_DIRECTORY_JSON, 200, { 'Cache-Control': 'public, max-age=300' });
+			}
+
 			// Self-describing MCP registry feed — machine-readable, auto-updateable listing metadata.
 			// Registries (PulseMCP, Glama, etc.) can poll this to sync tool/exchange counts
 			// without requiring a manual re-submission every time metadata changes.
@@ -9830,9 +10201,11 @@ export default {
 				}, 200, { 'Cache-Control': 'public, max-age=300' });
 			}
 
-			// RFC-standard MCP discovery alias — agents that probe /.well-known/mcp.json
-			// before /.well-known/mcp/server-card.json get the same payload.
-			if (url.pathname === '/.well-known/mcp.json' || url.pathname === '/.well-known/mcp/server-card.json') {
+			// RFC-standard MCP discovery alias — agents that probe /.well-known/mcp,
+			// /.well-known/mcp.json, or /.well-known/mcp/server-card.json all get the same
+			// payload. The extensionless /.well-known/mcp form is what some directory
+			// crawlers (e.g. AgenstryBot) probe first; serving it avoids a discovery 404.
+			if (url.pathname === '/.well-known/mcp' || url.pathname === '/.well-known/mcp.json' || url.pathname === '/.well-known/mcp/server-card.json') {
 				return json({
 					name:           'Headless Oracle',
 					version:        'v5.0',
