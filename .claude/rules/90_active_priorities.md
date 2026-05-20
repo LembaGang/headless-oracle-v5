@@ -2,10 +2,29 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-IETF-I-D-filing. Announcement posts being drafted in current strategic session — LinkedIn + X go out today or tomorrow (2026-05-13 / 2026-05-14). Site polish for the announcement is shipped. Standards authorship is the load-bearing positioning; engineering velocity is now in service of that.
-**Day**: 77 (2026-05-13 — IETF I-D announcement deploy: essay infra + site-wide og-image + sitemap/robots hygiene)
-**Test suite**: 1027/1027 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). No new tests today — docs/data only.
-**Worker**: src/index.ts ~13,300 lines (API-only, zero HTML). Live version: `be0c8f19` (deployed 2026-05-13 — added `/essays/` and `/standards` to SITEMAP_XML and ROBOTS_TXT).
+**Phase**: Post-IETF-I-D-filing. Agent-readiness discovery surface shipped 2026-05-20. Standards authorship remains the load-bearing positioning; engineering velocity is in service of that.
+**Day**: 84 (2026-05-20 — Agent Readiness Stack ship: well-known discovery surface + robots Content-Signals)
+**Test suite**: 1056/1056 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). +19 tests today (agent-readiness discovery endpoints).
+**Worker**: src/index.ts ~13,700 lines (API-only, zero HTML). Live version: `dde5c165` (deployed 2026-05-20 — Agent Readiness Stack).
+
+### What's Done (Day 84 — Agent Readiness Stack, 2026-05-20)
+
+Shipped the static agent-discovery surface (commits `54700a0` + `5639a23`, worker `dde5c165`, pushed to main, both SSH-signed). Gate green: tsc 0 / npm test 1056 / wrangler dry-run 0. **No signing, canonical-payload, or x402-settlement changes — route additions only.** Live-verified against production. **Audit log of record: `AGENT_READINESS.md`.**
+
+- **`/.well-known/mcp`** — extensionless alias to the MCP server card (was 404; AgenstryBot probes the extensionless form first).
+- **Agent Skills (agentskills.io 0.2.0)** — `/.well-known/agent-skills/index.json` + 5 `SKILL.md` docs: `verify-receipt`, `read-market-state`, `subscribe-halts`, `pay-with-x402`, `mcp-tool-catalog`. Index digests computed at request time from the served bytes (drift-proof; test-enforced).
+- **`/.well-known/api-catalog`** — RFC 9727 / RFC 9264 linkset harvested from `AGENT_JSON.rest_api.endpoints`.
+- **`/agent-directory.json`** (+ worker route in `wrangler.toml`) and **`/.well-known/agent-directory.json`** — fixes the prior 200 `text/html` Pages soft-404 on `/agent-directory.json` (an agent was getting a success code with an HTML body).
+- **robots.txt** — Cloudflare `Content-Signal: ai-train=no, ai-input=yes, search=yes` + explicit `Allow` for ClaudeBot, GPTBot, OAI-SearchBot, PerplexityBot, ChatGPT-User, AgenstryBot, Open402DirectoryCrawler, YellowMCP-HealthChecker. Existing directives preserved.
+- **Deferred**: root `/` `Link` headers — root is Pages-served; needs a `_headers` file in `headless-oracle-web` (AGENT_READINESS.md §7).
+- **Flagged, not fixed**: the CLAUDE.md / `02_architecture_map.md` "catch-all" routing claim is inaccurate (FIXME left in CLAUDE.md; AGENT_READINESS.md §8); robots.txt `Sitemap:` directive still absent (AGENT_READINESS.md §10).
+
+### Next engineering priorities (added 2026-05-20)
+
+These are two **separate** items surfaced by the Agent Readiness ship. Do not conflate them.
+
+- **(a) Agenstry MCP conformance investigation.** The public Agenstry profile (`agenstry.com/agents/headlessoracle.com`) shows **35/100 grade F**, attributed to JSON-RPC endpoint validation failure and a missing `protocolVersion` declaration on `POST /mcp` — despite a 10/10 agent card and 100% uptime. Last crawl 2026-05-18, so today's discovery surface is not yet reflected. Investigate whether the JSON-RPC `initialize` handshake response is missing `protocolVersion` in its `result` object (discovery surfaces declare `2024-11-05` correctly; the gap, if real, is in the live `initialize` response). **Do not touch handler logic until the root cause is confirmed** — this is a spec-conformance guardrail surface.
+- **(b) Discovery-surface signing (the standing gap from this ship).** Every `.well-known` document, the agent-skills digests, the api-catalog, and the agent-card payload trace to one signing identity an agent must take on trust. Receipts are Ed25519-signed; the discovery surface that *points to* them is not — at agent scale, a MITM-tampered discovery document is a real attack surface. Investigate a JWS envelope or detached-signature pattern using the existing Ed25519 key (`kid 8lN8jsy9MHN7aqttziG6W3wBs0wVvdCfHi_eBoTqbBc`) for at least the agent-skills index and the api-catalog. **Defer** until A2A/MCP standardize a discovery-surface signing convention, or until acquirer-diligence pressure forces the call — building ahead of the standard risks a throwaway format.
 
 ### What's Done (Day 77 — IETF I-D announcement deploy)
 
