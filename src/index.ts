@@ -3557,7 +3557,9 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </url>
 </urlset>`;
 
-const ROBOTS_TXT = `User-agent: *
+const ROBOTS_TXT = `Sitemap: https://headlessoracle.com/sitemap.xml
+
+User-agent: *
 Content-Signal: ai-train=no, ai-input=yes, search=yes
 Allow: /llms.txt
 Allow: /llms-full.txt

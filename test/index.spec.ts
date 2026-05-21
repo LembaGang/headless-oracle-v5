@@ -2723,6 +2723,12 @@ describe('robots.txt — Content Signals + explicit bot allows', () => {
 		expect(body).toContain('Allow: /llms.txt');
 		expect(body).toContain('Allow: /.well-known/');
 	});
+
+	it('declares the sitemap exactly once', async () => {
+		const body = await fetchWorker('/robots.txt').then((r) => r.text());
+		const matches = body.match(/Sitemap: https:\/\/headlessoracle\.com\/sitemap\.xml/g) ?? [];
+		expect(matches).toHaveLength(1);
+	});
 });
 
 describe('MCP tool descriptions — semantic upgrade', () => {
