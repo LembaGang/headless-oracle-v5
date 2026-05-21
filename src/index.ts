@@ -7837,7 +7837,7 @@ const SECURITY_HEADERS = {
 const MCP_RESPONSE_HEADERS = {
 	...SECURITY_HEADERS,
 	'Content-Type':                 'application/json; charset=utf-8',
-	'MCP-Version':                  MCP_PROTOCOL_VERSION,
+	'MCP-Protocol-Version':         MCP_PROTOCOL_VERSION,
 	'Access-Control-Allow-Origin':  '*',
 	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 	'Access-Control-Allow-Headers': 'Content-Type, Authorization',

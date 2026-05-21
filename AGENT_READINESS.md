@@ -152,3 +152,13 @@ Not done in this change because it lives in `headless-oracle-web`, outside the s
 - **robots.txt `Sitemap:` directive.** The scanner's Discoverability check looks for a `Sitemap` line in robots.txt. `/sitemap.xml` is served, but robots.txt does not reference it. The brief specified only Content-Signal + bot allows for robots.txt, so a `Sitemap:` line was not added. Recommend adding `Sitemap: https://headlessoracle.com/sitemap.xml` in a follow-up.
 - **Per-essay / per-surface OG images** (tracked elsewhere) — unrelated.
 - **Re-validate** the Agent Skills index against the published 0.2.0 JSON Schema once `schemas.agentskills.io` is reachable.
+
+---
+
+## 11. Agenstry A2A mismatch (2026-05-21)
+
+The §5 "out-of-scope finding" framing was wrong. Agenstry re-crawled `headlessoracle.com` on **2026-05-21 00:32:22** and held the score at **35/100 (grade F)**. Inspecting Agenstry's published rubric shows it grades the domain as an **A2A (Agent-to-Agent) agent, not an MCP server**: the two failing criteria are *Live JSON-RPC* (5/25, "body isn't a valid JSON-RPC 2.0 A2A response — the probe requires implementing `message/send`") and *Protocol Version* (0/10, "missing required `protocolVersion` declaration" — the A2A *AgentCard* field, Major.Minor format). Both are A2A-protocol concepts. The F grade therefore reflects **A2A non-conformance, not MCP non-conformance**.
+
+The MCP endpoint was verified spec-compliant against MCP **2024-11-05** the same day via `curl` against production: `POST /mcp` `initialize` → 200 with `result.protocolVersion: "2024-11-05"`, `serverInfo`, and `capabilities` all present; `tools/list` → 200 with a valid `ListToolsResult` (4 tools). There is no missing-`protocolVersion` gap in the MCP `initialize` response. Agenstry's `message/send` probe lands on a method HO does not implement: it returns `405` at the AgentCard `url` (apex root) and a valid-envelope JSON-RPC `-32601 "Method not found: message/send"` at `/mcp` — correct behaviour for an MCP server that does not speak A2A.
+
+**Decision: do not implement A2A at this time.** Headless Oracle is an MCP server; the AgentCard at `/.well-known/agent.json` is descriptive metadata, not a commitment to serve the A2A JSON-RPC method surface. Adopting A2A (`message/send` handler, AgentCard `protocolVersion`, JWS/uptime criteria) is a **separate strategic question** — whether HO should present as a first-class A2A agent — and is deliberately deferred, not treated as a bug. The only change shipped from this investigation is a true-MCP-spec alignment unrelated to A2A: the MCP HTTP response header was corrected from the non-standard `MCP-Version` to the spec name `MCP-Protocol-Version` (`src/index.ts`), body field unchanged.

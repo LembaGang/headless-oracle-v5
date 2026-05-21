@@ -1371,7 +1371,7 @@ describe('POST /mcp', () => {
 	it('initialize → 200 with protocolVersion, serverInfo, and capabilities.tools', async () => {
 		const response = await postMcp({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
 		expect(response.status).toBe(200);
-		expect(response.headers.get('MCP-Version')).toBe('2024-11-05');
+		expect(response.headers.get('MCP-Protocol-Version')).toBe('2024-11-05');
 
 		const body = await response.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('jsonrpc', '2.0');
@@ -1381,6 +1381,13 @@ describe('POST /mcp', () => {
 		expect(serverInfo).toHaveProperty('name', 'headless-oracle');
 		const capabilities = result.capabilities as Record<string, unknown>;
 		expect(capabilities).toHaveProperty('tools');
+	});
+
+	it('responds with the spec-compliant MCP-Protocol-Version header', async () => {
+		const response = await postMcp({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+		expect(response.headers.get('MCP-Protocol-Version')).toBe('2024-11-05');
+		// The pre-2025 non-standard header name must not be served.
+		expect(response.headers.get('MCP-Version')).toBeNull();
 	});
 
 	it('notifications/initialized → 202 with empty body', async () => {
