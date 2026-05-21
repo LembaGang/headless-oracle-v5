@@ -2,10 +2,19 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: Post-IETF-I-D-filing. Agent-readiness discovery surface shipped 2026-05-20. Standards authorship remains the load-bearing positioning; engineering velocity is in service of that.
-**Day**: 84 (2026-05-20 — Agent Readiness Stack ship: well-known discovery surface + robots Content-Signals)
-**Test suite**: 1056/1056 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). +19 tests today (agent-readiness discovery endpoints).
-**Worker**: src/index.ts ~13,700 lines (API-only, zero HTML). Live version: `dde5c165` (deployed 2026-05-20 — Agent Readiness Stack).
+**Phase**: Post-IETF-I-D-filing. Agent Readiness Stack fully shipped (2026-05-20 discovery surface + 2026-05-21 follow-ups; loose ends closed). Standards authorship remains the load-bearing positioning; engineering velocity is in service of that.
+**Day**: 85 (2026-05-21 — three small follow-ups: robots Sitemap directive, MCP-Protocol-Version header, Agenstry A2A audit log)
+**Test suite**: 1058/1058 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). +2 since the Agent Readiness ship (May 21 follow-ups).
+**Worker**: src/index.ts ~13,700 lines (API-only, zero HTML). Live version: `e381e5e4` (deployed 2026-05-21 — May 21 follow-ups).
+
+### What's Done (Day 85 — May 21 follow-ups, 2026-05-21)
+
+May 21 — three small follow-ups landed. Sitemap directive, MCP-Protocol-Version header, Agenstry A2A finding documented as audit-log §11. No A2A implementation planned. Discovery-surface signing remains deferred.
+
+- **robots.txt `Sitemap:` directive** (commit `10304ed`, worker `24dcc8c5`) — `Sitemap: https://headlessoracle.com/sitemap.xml` now declared in `ROBOTS_TXT`. Closes the AGENT_READINESS.md §10 Discoverability follow-up. +1 test (1056 → 1057).
+- **MCP-Protocol-Version response header fix** (commit `6cb332e`) — `POST /mcp` HTTP response header corrected from the non-standard `MCP-Version` to the spec name `MCP-Protocol-Version`; body field unchanged. +1 test (1057 → 1058).
+- **Agenstry A2A finding** (AGENT_READINESS.md §11) — the §5 "out-of-scope finding" was reframed after the 2026-05-21 re-crawl: Agenstry grades HO as an **A2A agent, not an MCP server**, so the 35/100 F reflects A2A non-conformance, not MCP. MCP is spec-compliant against `2024-11-05`. **No A2A implementation planned**; discovery-surface signing (the standing gap) **remains deferred**. Audit-log entry only — the only code change from the investigation is the header fix above.
+- This entry is a docs-only commit; the two worker changes (`10304ed`, `6cb332e`) were already committed, gated, and deployed (`e381e5e4`).
 
 ### What's Done (Day 84 — Agent Readiness Stack, 2026-05-20)
 
@@ -17,13 +26,13 @@ Shipped the static agent-discovery surface (commits `54700a0` + `5639a23`, worke
 - **`/agent-directory.json`** (+ worker route in `wrangler.toml`) and **`/.well-known/agent-directory.json`** — fixes the prior 200 `text/html` Pages soft-404 on `/agent-directory.json` (an agent was getting a success code with an HTML body).
 - **robots.txt** — Cloudflare `Content-Signal: ai-train=no, ai-input=yes, search=yes` + explicit `Allow` for ClaudeBot, GPTBot, OAI-SearchBot, PerplexityBot, ChatGPT-User, AgenstryBot, Open402DirectoryCrawler, YellowMCP-HealthChecker. Existing directives preserved.
 - **Deferred**: root `/` `Link` headers — root is Pages-served; needs a `_headers` file in `headless-oracle-web` (AGENT_READINESS.md §7).
-- **Flagged, not fixed**: the CLAUDE.md / `02_architecture_map.md` "catch-all" routing claim is inaccurate (FIXME left in CLAUDE.md; AGENT_READINESS.md §8); robots.txt `Sitemap:` directive still absent (AGENT_READINESS.md §10).
+- **Flagged, not fixed**: the CLAUDE.md / `02_architecture_map.md` "catch-all" routing claim is inaccurate (FIXME left in CLAUDE.md; AGENT_READINESS.md §8). (The robots.txt `Sitemap:` directive flagged here, AGENT_READINESS.md §10, **shipped 2026-05-21** — commit `10304ed`; see Day 85 above.)
 
 ### Next engineering priorities (added 2026-05-20)
 
 These are two **separate** items surfaced by the Agent Readiness ship. Do not conflate them.
 
-- **(a) Agenstry MCP conformance investigation.** The public Agenstry profile (`agenstry.com/agents/headlessoracle.com`) shows **35/100 grade F**, attributed to JSON-RPC endpoint validation failure and a missing `protocolVersion` declaration on `POST /mcp` — despite a 10/10 agent card and 100% uptime. Last crawl 2026-05-18, so today's discovery surface is not yet reflected. Investigate whether the JSON-RPC `initialize` handshake response is missing `protocolVersion` in its `result` object (discovery surfaces declare `2024-11-05` correctly; the gap, if real, is in the live `initialize` response). **Do not touch handler logic until the root cause is confirmed** — this is a spec-conformance guardrail surface.
+- **(a) Agenstry conformance — RESOLVED 2026-05-21 (AGENT_READINESS.md §11).** Root cause confirmed after the 2026-05-21 re-crawl: Agenstry grades the domain as an **A2A agent, not an MCP server**. The two failing criteria — *Live JSON-RPC* (requires an A2A `message/send` handler) and *Protocol Version* (the A2A AgentCard field) — are A2A concepts. The MCP endpoint is spec-compliant against `2024-11-05` (`initialize` returns `result.protocolVersion`, `serverInfo`, `capabilities`; `tools/list` returns a valid 4-tool result), so the 35/100 F reflects A2A non-conformance, not an MCP gap. **Decision: do not implement A2A** — the AgentCard is descriptive metadata, not a commitment to serve A2A's JSON-RPC method surface; presenting HO as a first-class A2A agent is a separate strategic question, deliberately deferred. The only code change from the investigation: MCP HTTP response header corrected `MCP-Version` → spec-name `MCP-Protocol-Version` (commit `6cb332e`), body field unchanged.
 - **(b) Discovery-surface signing (the standing gap from this ship).** Every `.well-known` document, the agent-skills digests, the api-catalog, and the agent-card payload trace to one signing identity an agent must take on trust. Receipts are Ed25519-signed; the discovery surface that *points to* them is not — at agent scale, a MITM-tampered discovery document is a real attack surface. Investigate a JWS envelope or detached-signature pattern using the existing Ed25519 key (`kid 8lN8jsy9MHN7aqttziG6W3wBs0wVvdCfHi_eBoTqbBc`) for at least the agent-skills index and the api-catalog. **Defer** until A2A/MCP standardize a discovery-surface signing convention, or until acquirer-diligence pressure forces the call — building ahead of the standard risks a throwaway format.
 
 ### What's Done (Day 77 — IETF I-D announcement deploy)

@@ -149,7 +149,7 @@ Not done in this change because it lives in `headless-oracle-web`, outside the s
 
 ## 10. Recommended follow-ups (out of this change's scope — flagged, not silently fixed)
 
-- **robots.txt `Sitemap:` directive.** The scanner's Discoverability check looks for a `Sitemap` line in robots.txt. `/sitemap.xml` is served, but robots.txt does not reference it. The brief specified only Content-Signal + bot allows for robots.txt, so a `Sitemap:` line was not added. Recommend adding `Sitemap: https://headlessoracle.com/sitemap.xml` in a follow-up.
+- **robots.txt `Sitemap:` directive.** The scanner's Discoverability check looks for a `Sitemap` line in robots.txt. `Sitemap: https://headlessoracle.com/sitemap.xml` was **shipped 2026-05-21, commit `10304ed`** (worker `24dcc8c5`) — robots.txt now references the served `/sitemap.xml`.
 - **Per-essay / per-surface OG images** (tracked elsewhere) — unrelated.
 - **Re-validate** the Agent Skills index against the published 0.2.0 JSON Schema once `schemas.agentskills.io` is reachable.
 
