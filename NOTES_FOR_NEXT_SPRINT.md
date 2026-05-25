@@ -45,3 +45,15 @@ not the real total. TEST_COUNT was updated manually this sprint (1058 → 1064) 
 avoid this. Fix would be to match the `Tests` line specifically, e.g.
 `grep -oP 'Tests\s+\K\d+(?= passed)'` or `tail -1` on the filtered matches. Out of
 scope for the 5xx sprint (CI tooling, not a 5xx source).
+
+## Doc drift observed during doc-sync sprint (2026-05-25)
+
+- `.claude/rules/90_active_priorities.md` **Current Status** block (lines ~7–8)
+  still shows `1058/1058` test count and worker `e381e5e4`. The doc-sync sprint
+  was scoped to only the DNS-hang note in that file, so these were left stale.
+  Should be bumped to `1064` and worker `9eddfc9d-…` in a follow-up. (CLAUDE.md's
+  Current State section *was* synced to 1064 / `9eddfc9d` / HEAD `a43bb6b`.)
+- The doc-sync prompt assumed the CLAUDE.md worker version was `dde5c165`; the
+  actual stale value was `e381e5e4` (the May 21 deploy). Updated to `9eddfc9d-…`
+  regardless — noting only that `dde5c165` was never the live-version string in
+  CLAUDE.md's Current State.
