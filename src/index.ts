@@ -2227,6 +2227,7 @@ async function verifyX402Payment(
 				method:  'eth_getTransactionReceipt',
 				params:  [txHash],
 			}),
+			signal:  AbortSignal.timeout(5000),
 		});
 		const rpcData = await rpcRes.json() as { result: EthReceipt | null };
 		receipt = rpcData.result;
@@ -2263,6 +2264,7 @@ async function verifyX402Payment(
 				method:  'eth_getBlockByNumber',
 				params:  [receipt.blockNumber, false],
 			}),
+			signal:  AbortSignal.timeout(5000),
 		});
 		const blockData = await blockRes.json() as { result: { timestamp: string } | null };
 		if (blockData.result?.timestamp) {
@@ -2600,6 +2602,7 @@ async function verifyX402MintPayment(
 			method:  'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHashLower] }),
+			signal:  AbortSignal.timeout(5000),
 		});
 		const rpcData = await rpcRes.json() as { result: EthReceipt | null };
 		receipt = rpcData.result;
@@ -2629,6 +2632,7 @@ async function verifyX402MintPayment(
 			method:  'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body:    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getBlockByNumber', params: [receipt.blockNumber, false] }),
+			signal:  AbortSignal.timeout(5000),
 		});
 		const blockData = await blockRes.json() as { result: { timestamp: string } | null };
 		if (blockData.result?.timestamp) blockTimestampSec = parseInt(blockData.result.timestamp, 16);
@@ -8822,6 +8826,16 @@ export default {
 			_p === '/docs' || _p === '/docs/' || _p.startsWith('/docs/') ||
 			_p === '/blog' || _p === '/blog/' || _p.startsWith('/blog/')
 		) {
+			// api.headlessoracle.com shares this Worker but has NO Cloudflare Pages
+			// origin. Falling into the fetch(request) passthrough below sends the
+			// request to a dead origin and returns 522. Mirror the www → bare-domain
+			// redirect (top of fetch) for the api subdomain so HTML paths land on the
+			// host that actually serves them. API paths are not in this list, so they
+			// continue to be handled directly on api.headlessoracle.com.
+			if (url.hostname === 'api.headlessoracle.com') {
+				url.hostname = 'headlessoracle.com';
+				return Response.redirect(url.toString(), 301);
+			}
 			return fetch(request);
 		}
 

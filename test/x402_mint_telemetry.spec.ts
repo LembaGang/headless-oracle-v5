@@ -341,3 +341,73 @@ describe('MCP per-tool telemetry', () => {
 		expect(text).toContain('get_market_status:');
 	});
 });
+
+// ─── Base RPC fetch timeout discipline (mint path) ───────────────────────────
+// verifyX402MintPayment's two Base mainnet JSON-RPC fetches must carry
+// AbortSignal.timeout(5000) so a hung Base RPC endpoint cannot stall the Worker
+// (an unbounded fetch is a 5xx source — see ZONE_5XX_INVESTIGATION_2026-05-22.md).
+// We assert the signal is present rather than simulating a real network timeout.
+describe('verifyX402MintPayment — Base RPC fetches carry AbortSignal.timeout(5000)', () => {
+	// Capturing variant of mockMintRpc — records the init.signal passed to each
+	// https://mainnet.base.org call so we can inspect the abort signal.
+	function captureMintRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number) {
+		const original = globalThis.fetch;
+		const calls: Array<{ method: string; signal: unknown }> = [];
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const url = typeof input === 'string' ? input : (input as Request).url;
+			if (url === 'https://mainnet.base.org') {
+				const body = JSON.parse((init?.body as string) ?? '{}') as { method: string };
+				calls.push({ method: body.method, signal: init?.signal });
+				if (body.method === 'eth_getTransactionReceipt') {
+					return new Response(JSON.stringify({
+						result: {
+							status: '0x1',
+							to: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+							blockNumber: '0x1234',
+							logs: [{
+								address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+								topics: [
+									'0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+									'0x000000000000000000000000abcdef1234567890abcdef1234567890abcdef12',
+									'0x000000000000000000000000' + recipientAddress.slice(2).toLowerCase(),
+								],
+								data: '0x' + BigInt(amountUnits).toString(16).padStart(64, '0'),
+							}],
+						},
+					}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				}
+				if (body.method === 'eth_getBlockByNumber') {
+					return new Response(JSON.stringify({
+						result: { timestamp: '0x' + blockTimestamp.toString(16) },
+					}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				}
+			}
+			if (url.includes('api.resend.com')) return new Response(JSON.stringify({ id: 'x' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			if (url.includes('supabase.co'))    return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			return original(input, init);
+		};
+		return { calls, restore: () => { globalThis.fetch = original; } };
+	}
+
+	it('passes a timeout signal to both mint RPC calls (eth_getTransactionReceipt + eth_getBlockByNumber)', async () => {
+		const txHash = '0x' + 'd4'.repeat(32);
+		const nowSec = Math.floor(Date.now() / 1000);
+		const cap    = captureMintRpc(TEST_ADDR, '99000000', nowSec - 30);
+		try {
+			const res = await fetchW('/v5/x402/mint', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder' }),
+			});
+			expect(res.status).toBe(200);
+		} finally {
+			cap.restore();
+		}
+		const receiptCall = cap.calls.find((c) => c.method === 'eth_getTransactionReceipt');
+		const blockCall   = cap.calls.find((c) => c.method === 'eth_getBlockByNumber');
+		expect(receiptCall).toBeDefined();
+		expect(blockCall).toBeDefined();
+		expect(receiptCall!.signal).toBeInstanceOf(AbortSignal); // src/index.ts:2599
+		expect(blockCall!.signal).toBeInstanceOf(AbortSignal);   // src/index.ts:2628
+	});
+});

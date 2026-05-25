@@ -4886,6 +4886,112 @@ describe('x402 — payment verification', () => {
 	});
 });
 
+// ─── api.headlessoracle.com subdomain routing ────────────────────────────────
+// The api subdomain shares this Worker but has NO Cloudflare Pages origin.
+// HTML paths must NOT fall into the fetch(request) Pages passthrough (a dead
+// origin → 522). They redirect to the bare domain, mirroring the www → bare
+// redirect at the top of fetch(). API paths continue to be served directly.
+describe('api.headlessoracle.com subdomain — HTML paths redirect, API paths served', () => {
+	async function fetchUrl(fullUrl: string, options: RequestInit = {}): Promise<Response> {
+		const request = new Request<unknown, IncomingRequestCfProperties>(fullUrl, options);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		return response;
+	}
+
+	it('redirects /pricing to the bare domain (301) instead of the dead Pages origin', async () => {
+		const res = await fetchUrl('https://api.headlessoracle.com/pricing');
+		expect(res.status).toBe(301);
+		expect(res.headers.get('Location')).toBe('https://headlessoracle.com/pricing');
+	});
+
+	it('redirects /docs/quickstart to the bare domain (301)', async () => {
+		const res = await fetchUrl('https://api.headlessoracle.com/docs/quickstart');
+		expect(res.status).toBe(301);
+		expect(res.headers.get('Location')).toBe('https://headlessoracle.com/docs/quickstart');
+	});
+
+	it('still serves API path /v5/health with 200 (regression — API paths unaffected)', async () => {
+		const res = await fetchUrl('https://api.headlessoracle.com/v5/health');
+		expect(res.status).toBe(200);
+	});
+
+	it('redirect target matches the www → bare-domain behaviour', async () => {
+		const apiRes = await fetchUrl('https://api.headlessoracle.com/pricing');
+		const wwwRes = await fetchUrl('https://www.headlessoracle.com/pricing');
+		expect(apiRes.status).toBe(301);
+		expect(wwwRes.status).toBe(301);
+		expect(apiRes.headers.get('Location')).toBe(wwwRes.headers.get('Location'));
+		expect(apiRes.headers.get('Location')).toBe('https://headlessoracle.com/pricing');
+	});
+});
+
+// ─── Base RPC fetch timeout discipline ───────────────────────────────────────
+// The per-request x402 verifier's two Base mainnet JSON-RPC fetches must carry
+// AbortSignal.timeout(5000) so a hung Base RPC endpoint cannot stall the Worker
+// (an unbounded fetch is a 5xx source — see ZONE_5XX_INVESTIGATION_2026-05-22.md).
+// We assert the signal is present rather than simulating a real network timeout.
+describe('Base RPC fetches (verifyX402Payment) carry AbortSignal.timeout(5000)', () => {
+	// Capturing variant of mockBaseRpc — records the init.signal passed to each
+	// https://mainnet.base.org call so we can inspect the abort signal.
+	function captureBaseRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number) {
+		const original = globalThis.fetch;
+		const calls: Array<{ method: string; signal: unknown }> = [];
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const url = typeof input === 'string' ? input : (input as Request).url;
+			if (url === 'https://mainnet.base.org') {
+				const body = JSON.parse((init?.body as string) ?? '{}') as { method: string };
+				calls.push({ method: body.method, signal: init?.signal });
+				if (body.method === 'eth_getTransactionReceipt') {
+					return new Response(JSON.stringify({
+						result: {
+							status: '0x1',
+							to: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+							blockNumber: '0x1234',
+							logs: [{
+								address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+								topics: [
+									'0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+									'0x000000000000000000000000abcdef1234567890abcdef1234567890abcdef12',
+									'0x000000000000000000000000' + recipientAddress.slice(2).toLowerCase(),
+								],
+								data: '0x' + BigInt(amountUnits).toString(16).padStart(64, '0'),
+							}],
+						},
+					}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				}
+				if (body.method === 'eth_getBlockByNumber') {
+					return new Response(JSON.stringify({
+						result: { timestamp: '0x' + blockTimestamp.toString(16) },
+					}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				}
+			}
+			return original(input, init);
+		};
+		return { calls, restore: () => { globalThis.fetch = original; } };
+	}
+
+	it('passes a timeout signal to both RPC calls (eth_getTransactionReceipt + eth_getBlockByNumber)', async () => {
+		const txHash  = '0x' + 'c3'.repeat(32);
+		const key     = 'ho_free_' + 'r'.repeat(64);
+		const hash    = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const nowSec  = Math.floor(Date.now() / 1000);
+		const cap     = captureBaseRpc(TEST_PAYMENT_ADDRESS, '1000', nowSec - 10);
+		const payment = JSON.stringify({ txHash, network: 'base-mainnet', amount: '1000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+		const res     = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+		cap.restore();
+		expect(res.status).toBe(200);
+		const receiptCall = cap.calls.find((c) => c.method === 'eth_getTransactionReceipt');
+		const blockCall   = cap.calls.find((c) => c.method === 'eth_getBlockByNumber');
+		expect(receiptCall).toBeDefined();
+		expect(blockCall).toBeDefined();
+		expect(receiptCall!.signal).toBeInstanceOf(AbortSignal); // src/index.ts:2222
+		expect(blockCall!.signal).toBeInstanceOf(AbortSignal);   // src/index.ts:2258
+	});
+});
+
 describe('x402 — credit balance and consumption', () => {
 	it('GET /v5/credits/balance returns 0 for key with no credits', async () => {
 		const key = 'ho_free_' + 'k'.repeat(64);
