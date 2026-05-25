@@ -4,8 +4,8 @@
 ## Current Status
 **Phase**: Post-IETF-I-D-filing. Agent Readiness Stack fully shipped (2026-05-20 discovery surface + 2026-05-21 follow-ups; loose ends closed). Standards authorship remains the load-bearing positioning; engineering velocity is in service of that.
 **Day**: 85 (2026-05-21 — three small follow-ups: robots Sitemap directive, MCP-Protocol-Version header, Agenstry A2A audit log)
-**Test suite**: 1058/1058 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). +2 since the Agent Readiness ship (May 21 follow-ups).
-**Worker**: src/index.ts ~13,700 lines (API-only, zero HTML). Live version: `e381e5e4` (deployed 2026-05-21 — May 21 follow-ups).
+**Test suite**: 1064/1064 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). +6 since the May 21 follow-ups (5xx fix sprint, a43bb6b).
+**Worker**: src/index.ts ~13,700 lines (API-only, zero HTML). Live version: `9eddfc9d-27e1-4f29-bc0a-23ff92d7ee9c` (deployed 2026-05-25 — 5xx fix sprint; HEAD `a43bb6b`).
 
 ### What's Done (Day 85 — May 21 follow-ups, 2026-05-21)
 
