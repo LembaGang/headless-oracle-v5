@@ -1909,6 +1909,86 @@ describe('GET /v5/pricing', () => {
 	});
 });
 
+// ─── GET /v5/pricing — per-tier lock-in (didit-7day-reframe Phase 1) ─────────
+// Codifies the exact dollar amounts and quotas of each public tier so future
+// pricing drift is caught by CI. The expectations here mirror what the
+// /pricing HTML page advertises — Sandbox 200/7d free, Free 500/day, x402
+// 0.001 USDC/request, Credits $5/1000 calls, Builder $99/50k/day, Pro
+// $299/200k/day, Protocol $500+/unlimited.
+
+describe('GET /v5/pricing — per-tier lock-in', () => {
+	it('sandbox tier: $0, 200 calls over 7 days', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const sandbox = tiers.find(t => t.id === 'sandbox')!;
+		expect(sandbox.price_usd).toBe(0);
+		expect(sandbox.calls).toBe(200);
+		expect(sandbox.duration).toBe('7 days');
+		expect(sandbox.provision).toBe('POST /v5/sandbox');
+	});
+
+	it('free tier: $0, 500 calls per day, instant key', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const free = tiers.find(t => t.id === 'free')!;
+		expect(free.price_usd).toBe(0);
+		expect(free.calls_per_day).toBe(500);
+		expect(free.key_prefix).toBe('ho_free_');
+	});
+
+	it('x402 tier: 0.001 USDC per request on Base mainnet', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const x402 = tiers.find(t => t.id === 'x402')!;
+		expect(x402.price_usdc).toBe('0.001');
+		expect(x402.network).toBe('base');
+		expect(x402.chain_id).toBe(8453);
+		expect(x402.usdc_amount_units).toBe('1000');
+	});
+
+	it('credits tier: $5 one-time for 1000 calls', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const credits = tiers.find(t => t.id === 'credits')!;
+		expect(credits.price_usd).toBe(5);
+		expect(credits.calls).toBe(1000);
+		expect(credits.key_prefix).toBe('ho_crd_');
+	});
+
+	it('builder tier: $99/month for 50,000 calls/day', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const builder = tiers.find(t => t.id === 'builder')!;
+		expect(builder.price_usd).toBe(99);
+		expect(builder.calls_per_day).toBe(50_000);
+	});
+
+	it('pro tier: $299/month for 200,000 calls/day', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const pro = tiers.find(t => t.id === 'pro')!;
+		expect(pro.price_usd).toBe(299);
+		expect(pro.calls_per_day).toBe(200_000);
+	});
+
+	it('protocol tier: $500/month floor, unlimited calls', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<Record<string, unknown>>;
+		const protocol = tiers.find(t => t.id === 'protocol')!;
+		expect(protocol.price_usd).toBe(500);
+		expect(protocol.calls_per_day).toBeNull();
+	});
+
+	it('top-level x402 metadata block matches per-request price', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const x402meta = body.x402 as Record<string, unknown>;
+		expect(x402meta.amount_usdc).toBe('0.001');
+		expect(x402meta.network).toBe('base');
+		expect(x402meta.chain_id).toBe(8453);
+		expect(x402meta.payment_discovery).toBe('/.well-known/x402.json');
+	});
+});
+
 // ─── MCP fast path — no telemetry KV for protocol handshake methods ──────────
 
 describe('MCP fast path — no ORACLE_TELEMETRY write for handshake methods', () => {
