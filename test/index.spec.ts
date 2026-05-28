@@ -1989,6 +1989,53 @@ describe('GET /v5/pricing — per-tier lock-in', () => {
 	});
 });
 
+// ─── MCP stdio install snippet — discovery / docs parity (didit-7day-reframe Phase 3) ─
+// The "one-prompt MCP install" snippet on docs.html and the quickstart page
+// uses `npx headless-oracle-mcp`. The same package name and install command
+// are advertised by /.well-known/mcp-servers.json and /v5/metrics/public.
+// These tests lock the discovery side so the docs and the discovery surface
+// can't drift apart silently. If you rename or retire the npm package, both
+// these tests fail — and that's the signal to update the HTML too.
+
+describe('MCP stdio install snippet — discovery parity', () => {
+	it('/.well-known/mcp-servers.json advertises headless-oracle-mcp as the stdio package', async () => {
+		const body = await fetchJSON('/.well-known/mcp-servers.json');
+		const servers = body.servers as Array<Record<string, unknown>>;
+		const ho = servers.find(s => s.name === 'headless-oracle')!;
+		expect(ho).toBeDefined();
+		expect(ho.stdio_package).toBe('headless-oracle-mcp');
+		expect(ho.stdio_package_registry).toBe('npm');
+		expect((ho.transport as string[])).toContain('stdio');
+	});
+
+	it('/.well-known/mcp-servers.json publishes the npx install command', async () => {
+		const body = await fetchJSON('/.well-known/mcp-servers.json');
+		const servers = body.servers as Array<Record<string, unknown>>;
+		const ho = servers.find(s => s.name === 'headless-oracle')!;
+		const install = ho.install as Record<string, unknown>;
+		expect(install.npx).toBe('npx headless-oracle-mcp');
+		expect(install.npm).toBe('npm install -g headless-oracle-mcp');
+	});
+
+	it('/.well-known/mcp-servers.json gives client-ready Claude Desktop and Cursor configs', async () => {
+		const body = await fetchJSON('/.well-known/mcp-servers.json');
+		const servers = body.servers as Array<Record<string, unknown>>;
+		const ho = servers.find(s => s.name === 'headless-oracle')!;
+		const clients = ho.clients as Record<string, { command: string; args: string[] }>;
+		expect(clients.claude_desktop.command).toBe('npx');
+		expect(clients.claude_desktop.args).toEqual(['-y', 'headless-oracle-mcp']);
+		expect(clients.cursor.command).toBe('npx');
+		expect(clients.cursor.args).toEqual(['-y', 'headless-oracle-mcp']);
+	});
+
+	it('/v5/metrics/public install field matches the package name', async () => {
+		const body = await fetchJSON('/v5/metrics/public');
+		expect(body.install).toBe('npx headless-oracle-mcp');
+		const ecosystem = body.ecosystem_listings as Record<string, unknown>;
+		expect(ecosystem.npm).toBe('headless-oracle-mcp');
+	});
+});
+
 // ─── MCP fast path — no telemetry KV for protocol handshake methods ──────────
 
 describe('MCP fast path — no ORACLE_TELEMETRY write for handshake methods', () => {
