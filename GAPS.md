@@ -344,6 +344,64 @@ Option 1 is the correct immediate fix. Option 2 requires careful idempotency han
 
 ---
 
+## GAP-017 — Supabase fetches lack `AbortSignal.timeout` + workerd-Windows async-io bug breaks local gate
+**Priority**: HIGH (blocks local pre-commit gate on Windows; production unaffected)
+**Status**: OPEN — identified 2026-06-02
+
+**Symptom set.** Locally on Windows on 2026-06-02, four tests in `test/index.spec.ts` time out at 5000ms even when run individually, on `main` HEAD `59c975b` with no working-tree changes, on both Node 24.13.0 and Node 22.14.0, after a fresh `npm ci`:
+- `In-memory API key cache > second auth call uses in-memory cache — same result as KV`
+- `Security headers on all responses > GET /v5/status with API key includes X-Attestation-Mode: live`
+- `Ed25519 signing — cryptographic correctness > different receipt_modes produce different signatures (demo vs live)`
+- `/v5/batch — additional coverage > batch with 3 MICs returns correct count` (`test/index.spec.ts:11101`)
+
+The vitest reporter mislabels the timeout line as `test/index.spec.ts:9499:31` — a separate vitest source-map / pool-workers reporter bug.
+
+**Genuine production gate (CI) is GREEN.** GitHub Actions CI run `26397564284` on `main` HEAD `59c975b` (re-run 2026-06-02 11:25 UTC): **1064 tests passed, duration 20.38s**, on Linux + Node 22 + npm ci from lockfile. The CI "actual test count (2)" annotation is a flawed `grep -oP '\d+(?= passed)' | head -1` in `.github/workflows/ci.yml:52` that captures the FIRST `N passed` (test FILES) rather than the actual tests count. The summary in the same log is `1050 + 14 = 1064 tests, all green`. **The local-Windows failure is not a code regression.**
+
+**Root cause — two layers.**
+
+**(1) Code-level latent defect (production).** Supabase fetches in `insertReceiptAudit` (`src/index.ts:1781`), `updateKeyUsage`, the `checkApiKey` step-5 Supabase fallback, and other Supabase-touching paths do NOT have `AbortSignal.timeout()`. This is the same discipline gap a43bb6b ("fix(routing,rpc): api.headlessoracle.com passthrough + Base RPC timeouts", 2026-05-25) closed for four Base RPC fetches at `src/index.ts:2222, 2258, 2599, 2628`. Without timeouts, a hung Supabase upstream can stall any request that triggers an audit/key-update path. Latent in production because Supabase is healthy.
+
+**(2) Local environment trigger — workerd Windows async-io bug.** Local `.dev.vars` `SUPABASE_URL` points at the real project hostname `https://sahqfuyneoeqczupmysu.supabase.co`. Local network state on 2026-06-02 has the configured DNS server `103.86.96.100` (VPN) unreachable; `nslookup sahqfuyneoeqczupmysu.supabase.co` times out. CLAUDE.md noted on 2026-05-25 the same hostname fast-failed `#11001 No such host is known`, so the gate was green that day. **Swapping `.dev.vars` `SUPABASE_URL` to CI's placeholder `https://test-placeholder.supabase.co` (verified locally as fast-NXDOMAIN) does NOT fix the gate** — workerd then logs `kj/async-io-win32.c++:805: failed: getaddrinfo(): #11001 No such host is known.; params.host = test-placeholder.supabase.co` immediately, followed by `workerd/io/io-context.c++:435: info: uncaught exception; exception = workerd/jsg/...value.h:1480: failed: jsg.Error: internal error`. The DNS error is fast, but the subsequent jsg.Error breaks the request pathway in a way `insertReceiptAudit`'s `try/catch` does not catch. **CI is unaffected because Linux workerd (`kj/async-io-unix.c++`) handles the same NXDOMAIN cleanly.** The bug is in workerd's Windows-specific async-io error propagation.
+
+**Why this matters for `main`.** The production worker is unaffected — production hits a real, reachable Supabase. The local Windows pre-commit gate is broken until either workerd's Windows bug is fixed upstream, or local tests are run in a Linux environment — see GAP-019.
+
+**Fixes — separate PRs, do NOT bundle with calibration commits.**
+
+1. **Code hardening (production-correct):** add `AbortSignal.timeout(2000)` to every Supabase fetch the worker makes (`insertReceiptAudit`, `updateKeyUsage`, `recordPaddleRevenueEvent` if relevant, `checkApiKey` step-5). The Supabase JS client uses `globalThis.fetch`; either pass `global: { fetch: timeoutFetch }` to `createClient`, or replace `await supabase.from(...).insert(...)` with a hand-rolled `fetch` to the REST endpoint with `signal: AbortSignal.timeout(...)`. Match the discipline a43bb6b set for Base RPC.
+
+2. **Test-stability fix:** mock the Supabase client globally in `test/index.spec.ts` setup so no real HTTPS goes out. Closes the long-standing flake-class CLAUDE.md → Documented bypass class (2026-05-13) named ("vitest-pool-workers making real DNS calls instead of mocking Supabase").
+
+3. **Local dev env fix:** GAP-019 — run the gate in WSL/Linux to match CI.
+
+**Decision logged 2026-06-02:** the prose-only calibration commit (correcting "reference implementation" → "proposed reference implementation" across worker string constants and `docs/investor-one-pager.md`) was deferred from this session rather than bypassed. CI is the trusted gate; calibration ships through a green Linux/CI gate, not a Windows-broken local gate. Calibration preserved in working tree on `main`, `stash@{1}: v5-calibration-for-main`, and `C:/Users/User/AppData/Local/Temp/v5-calibration-backup.patch` (170 lines).
+
+---
+
+## GAP-019 — Set up WSL/Linux dev env so local test gate matches CI environment
+**Priority**: MEDIUM — unblocks local pre-commit gate; foundation for shipping commits past GAP-017
+**Status**: OPEN — identified 2026-06-02
+
+**Why.** The local Windows pre-commit gate is broken by GAP-017 (workerd Windows async-io bug raises `jsg.Error: internal error` after DNS NXDOMAIN that Linux workerd handles cleanly). CI on Linux (`actions/setup-node@v5` with `node-version-file: '.nvmrc'` → Node 22 → npm ci from lockfile) genuinely passes 1064/1064 in ~20s. Future commits should land through a Linux test runtime that mirrors CI exactly, not through a broken Windows gate that pressures bypasses.
+
+**Setup target.** WSL2 (Ubuntu) on this Windows machine, configured with:
+1. fnm (or any Node version manager) reading `.nvmrc` → Node 22.x
+2. Git configured with the same SSH signing key (`~/.ssh/id_ed25519_signing`) for commit signing
+3. `git config core.hooksPath .githooks` (matches the repo's existing pre-commit gate convention)
+4. Repo cloned at `~/headless-oracle-v5` with `.dev.vars` populated from the Windows version (sensitive — copy by hand, not via cross-FS mount)
+
+**Acceptance test.** Inside WSL on `main` HEAD `59c975b` with no changes:
+
+```
+npx tsc --noEmit && npx vitest run && npx wrangler deploy --dry-run
+```
+
+All three exit 0, vitest summary reports 1064 tests passing.
+
+**Carry-over from 2026-06-02 session.** The prose-only calibration commit deferred from this session is preserved in three durable forms: working tree on `main` (modified-unstaged on `src/index.ts` + `docs/investor-one-pager.md`), `stash@{1}: v5-calibration-for-main`, and a 170-line patch at `C:/Users/User/AppData/Local/Temp/v5-calibration-backup.patch`. Next session, with WSL gate green, the calibration ships through a clean local gate, then through CI on push.
+
+---
+
 ## Closed Gaps (reference)
 
 | Gap | Resolution | Date |
