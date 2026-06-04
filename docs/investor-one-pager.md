@@ -6,7 +6,7 @@ Headless Oracle is the signed market-state primitive for autonomous financial ag
 
 ## The Market
 
-Autonomous finance is assembling its stack in real time. Mastercard acquired BVNK for $1.8B this week. The Verifiable Intent framework is live. Every layer of that stack needs verified market state before execution. We submitted the External State Attestation RFC to the Verifiable Intent repo today — positioning Headless Oracle as the verification layer in the stack.
+Autonomous finance is assembling its stack. Mastercard's agreed acquisition of BVNK — programmable stablecoin payment rails, for up to $1.8B — brings on-chain settlement into the picture. The Verifiable Intent framework defines authorization. The verification layer — cryptographic proof of external market state before an agent commits capital — is the gap. We submitted the External State Attestation RFC (now PR #9) to the Verifiable Intent repo, positioning Headless Oracle to fill it.
 
 ## The Product
 
@@ -29,7 +29,7 @@ Autonomous finance is assembling its stack in real time. Mastercard acquired BVN
 
 ## The RFC
 
-We submitted an External State Attestation RFC to github.com/agent-intent/verifiable-intent today. This positions Headless Oracle as the reference implementation for verifiable market state in the autonomous finance stack alongside Mastercard Verifiable Intent and BVNK.
+We submitted an External State Attestation RFC (now PR #9) to github.com/agent-intent/verifiable-intent. Subject to PR adoption, this positions Headless Oracle as the reference implementation for verifiable market state in the autonomous finance stack alongside Mastercard Verifiable Intent and BVNK.
 
 ## The Ask
 

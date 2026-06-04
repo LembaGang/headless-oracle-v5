@@ -3615,7 +3615,7 @@ Allow: /
 // ============================================================================
 
 const ENV_FAMILY_FRAMING_SHORT =
-  "Reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. Composes with environment.wallet_state for multi-venue mandates.";
+  "Proposed reference implementation of environment.market_state — open PR on Mastercard's Verifiable Intent repo. Composes with environment.wallet_state for multi-venue mandates.";
 
 const ENV_FAMILY_FRAMING_SECTION = `## Role in the Verifiable Intent Environment.* Family
 
@@ -3652,7 +3652,7 @@ const REGULATORY_REFERENCES_STRUCTURED = [
 // points to /llms-full.txt for comprehensive documentation.
 const LLMS_TXT_INDEX = `# Headless Oracle
 
-> Reference implementation of environment.market_state, the execution-environment verification constraint in the Verifiable Intent environment.* family.
+> Proposed reference implementation of environment.market_state — open as PR #9 on Mastercard's Verifiable Intent repo and filed as an IETF I-D for the environment.* family.
 > Ed25519-signed market-state attestations for 28 global exchanges. 60-second TTL. Fail-closed.
 > MCP server + REST API + x402 micropayments.
 
@@ -3708,7 +3708,7 @@ Autonomous agents executing against regulated workflows or tokenized collateral 
 
 ## Standards
 
-- [environment.market_state RFC](https://github.com/agent-intent/verifiable-intent/pull/9): Constraint type in the Verifiable Intent environment.* family; coordinated drafting. Reference implementation is Headless Oracle.
+- [environment.market_state RFC](https://github.com/agent-intent/verifiable-intent/pull/9): Proposed constraint type for the Verifiable Intent environment.* family; PR #9 open, coordinated drafting. Proposed reference implementation is Headless Oracle.
 - [environment.wallet_state RFC](https://github.com/agent-intent/verifiable-intent/pull/22): Sibling constraint in the same family; coordinated drafting.
 - [Multi-Oracle Consensus Protocol v1.0.1](https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1): Consensus algorithm and attestation format for multiple independent market-state feeds.
 
@@ -4365,7 +4365,7 @@ SDKs: npm install @headlessoracle/verify | go get github.com/LembaGang/headless-
 
 ## Compliance Standards
 
-Headless Oracle is the reference implementation of \`environment.market_state\` in the Verifiable Intent environment.* constraint family.
+Headless Oracle is the proposed reference implementation of \`environment.market_state\` — open as PR #9 on the Verifiable Intent repo (Mastercard-maintained) and described in the IETF I-D for the environment.* family.
 
 **Primary specifications (coordinated drafting):**
 - environment.market_state — [PR #9 on agent-intent/verifiable-intent](https://github.com/agent-intent/verifiable-intent/pull/9)
@@ -4397,7 +4397,7 @@ SMA (Signed Market Attestation), APTS (Agent Pre-Trade Safety Standard), and MPA
 // using the Ampersend CLI (`ampersend fetch`).
 const AMPERSEND_SKILL_MD = `---
 name: headless-oracle
-description: Reference implementation of environment.market_state (Verifiable Intent environment.* family). Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.
+description: Proposed reference implementation of environment.market_state — open PR on the Verifiable Intent repo. Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.
 metadata:
   x402:
     endpoint: https://headlessoracle.com/v5/status
@@ -4414,7 +4414,7 @@ metadata:
 
 # Headless Oracle
 
-Headless Oracle is the reference implementation of \`environment.market_state\` in the Verifiable Intent environment.* constraint family — the cryptographic attestation primitive for autonomous agents verifying venue state before trade execution. It provides cryptographically signed market-state receipts for 28 global exchanges. Every receipt is Ed25519-signed with a 60-second TTL — a verifiable pre-trade attestation that the agent checked market state before executing.
+Headless Oracle is the proposed reference implementation of \`environment.market_state\` — open as PR #9 on Mastercard's Verifiable Intent repo. The cryptographic attestation primitive for autonomous agents verifying venue state before trade execution. It provides cryptographically signed market-state receipts for 28 global exchanges. Every receipt is Ed25519-signed with a 60-second TTL — a verifiable pre-trade attestation that the agent checked market state before executing.
 
 **Critical safety rule**: \`UNKNOWN\` and \`HALTED\` MUST be treated as \`CLOSED\` — halt all execution immediately.
 
@@ -4656,7 +4656,7 @@ Each step's proof composes into the next. If any step fails, subsequent steps ar
 
 **Protocol:** Cryptographically signed constraint attestations with finite TTL, fail-closed semantics, composable via conjunction.
 
-**Reference implementation of environment.market_state:** [Headless Oracle](https://headlessoracle.com). 28 venues, Ed25519 signing, 60-second TTL.
+**Proposed reference implementation of environment.market_state:** [Headless Oracle](https://headlessoracle.com). 28 venues, Ed25519 signing, 60-second TTL.
 
 ## Step 2 — Spend Authorization
 
@@ -5184,7 +5184,7 @@ const AMPERSEND_INTEGRATION_MD = `# Ampersend + Headless Oracle: Composable Pre-
 
 Headless Oracle and Ampersend are complementary verification services for autonomous trading agents:
 
-- **Headless Oracle** — cryptographically signed market-state attestations. Reference implementation of [\`environment.market_state\`](https://github.com/agent-intent/verifiable-intent/pull/9) in the Verifiable Intent environment.* family. 28 exchanges, Ed25519 signatures, 60-second TTL.
+- **Headless Oracle** — cryptographically signed market-state attestations. Proposed reference implementation of [\`environment.market_state\`](https://github.com/agent-intent/verifiable-intent/pull/9) (open PR on the Verifiable Intent repo). 28 exchanges, Ed25519 signatures, 60-second TTL.
 - **Ampersend** — policy-bound spend authorization for autonomous agents. Human-in-the-loop for high-value actions.
 
 This guide shows how to compose the two: fetch a signed HO receipt proving the market is open, then submit it to Ampersend as cryptographic evidence when requesting Spend Authorization.
@@ -5385,7 +5385,7 @@ const AGENT_JSON = {
 	agentVersion:      '5.0.0',
 	name:              'Headless Oracle',
 	version:           'v5.0',
-	description:       'Reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. Provides Ed25519-signed market-state receipts (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges. Autonomous agents gate trade execution on cryptographically verified market state. Composes with environment.wallet_state for multi-venue mandates. Fail-closed: UNKNOWN always means CLOSED.',
+	description:       'Proposed reference implementation of environment.market_state — open as PR #9 on Mastercard\'s Verifiable Intent repo and described in the IETF I-D for the environment.* family. Provides Ed25519-signed market-state receipts (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges. Autonomous agents gate trade execution on cryptographically verified market state. Composes with environment.wallet_state for multi-venue mandates. Fail-closed: UNKNOWN always means CLOSED.',
 	url:               'https://headlessoracle.com',
 	provider: {
 		organization: 'LembaGang',
@@ -5550,7 +5550,7 @@ const AGENT_JSON = {
 		verifiable_intent: {
 			family:        'environment.*',
 			upstream_repo: 'agent-intent/verifiable-intent',
-			role:          'reference implementation of environment.market_state',
+			role:          'proposed reference implementation of environment.market_state (PR #9, open)',
 			pull_requests: [
 				{ constraint: 'environment.market_state', pr: 9,  url: 'https://github.com/agent-intent/verifiable-intent/pull/9',  status: 'coordinated drafting' },
 				{ constraint: 'environment.wallet_state', pr: 22, url: 'https://github.com/agent-intent/verifiable-intent/pull/22', status: 'coordinated drafting' },
@@ -6611,7 +6611,7 @@ const OPENAPI_SPEC = {
 		'/v5/compliance': {
 			get: {
 				summary:     'Compliance declaration (environment.market_state family)',
-				description: 'Machine-readable compliance self-report. Documents the 6 pre-trade safety checks (APTS v1.0 check vocabulary, preserved for citation continuity) that Headless Oracle satisfies as the reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. No authentication required. Suitable for CI pipelines and MCP evaluation tools.',
+				description: 'Machine-readable compliance self-report. Documents the 6 pre-trade safety checks (APTS v1.0 check vocabulary, preserved for citation continuity) that Headless Oracle satisfies as the proposed reference implementation of environment.market_state (open PR on the Verifiable Intent repo). No authentication required. Suitable for CI pipelines and MCP evaluation tools.',
 				responses: {
 					'200': {
 						description: 'Compliance document',
@@ -7641,7 +7641,7 @@ const OPENAPI_SPEC = {
 			get: {
 				tags:        ['Documentation'],
 				summary:     'Ampersend integration guide',
-				description: 'Integration recipe: Headless Oracle (environment.market_state reference implementation) + Ampersend (spend authorization service). Code examples, batch verification, MCP integration.',
+				description: 'Integration recipe: Headless Oracle (proposed environment.market_state reference implementation) + Ampersend (spend authorization service). Code examples, batch verification, MCP integration.',
 				responses: {
 					'200': { description: 'Integration guide', content: { 'text/markdown': { schema: { type: 'string' } } } },
 				},
@@ -10225,7 +10225,7 @@ export default {
 				return json({
 					name:           'Headless Oracle',
 					version:        'v5.0',
-					description:    'Headless Oracle — reference implementation of environment.market_state in the Verifiable Intent environment.* constraint family. ' +
+					description:    'Headless Oracle — proposed reference implementation of environment.market_state, an open PR on Mastercard\'s Verifiable Intent repo. ' +
 						'Provides Ed25519-signed market-state attestations for 28 global exchanges with 60-second TTL. ' +
 						'Autonomous agents gate trade execution on cryptographically verified venue state; fail-closed UNKNOWN. ' +
 						'Composes with environment.wallet_state for multi-venue mandates. ' +
@@ -10292,7 +10292,7 @@ export default {
 					verifiable_intent: {
 						family:        'environment.*',
 						upstream_repo: 'agent-intent/verifiable-intent',
-						role:          'reference implementation of environment.market_state',
+						role:          'proposed reference implementation of environment.market_state (PR #9, open)',
 						pull_requests: [
 							{ constraint: 'environment.market_state', pr: 9,  url: 'https://github.com/agent-intent/verifiable-intent/pull/9',  status: 'coordinated drafting' },
 							{ constraint: 'environment.wallet_state', pr: 22, url: 'https://github.com/agent-intent/verifiable-intent/pull/22', status: 'coordinated drafting' },
@@ -12168,7 +12168,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 <ul>
   <li><a href="https://headlessoracle.com/docs/integrations/datacamp-workspace">DataLab / Jupyter integration guide</a> — most comprehensive walkthrough</li>
   <li><a href="https://headlessoracle.com/docs">Full documentation</a></li>
-  <li><a href="https://headlessoracle.com/docs/specifications/pre-trade-stack">Composable Pre-Trade Verification Pattern v2.0</a> — where Headless Oracle fits as the reference implementation of environment.market_state</li>
+  <li><a href="https://headlessoracle.com/docs/specifications/pre-trade-stack">Composable Pre-Trade Verification Pattern v2.0</a> — where Headless Oracle fits as the proposed reference implementation of environment.market_state</li>
   <li>Verifiable Intent environment.* constraint family: <a href="https://github.com/agent-intent/verifiable-intent/pull/9">environment.market_state (PR #9)</a> and <a href="https://github.com/agent-intent/verifiable-intent/pull/22">environment.wallet_state (PR #22)</a> — the constraint specifications Headless Oracle implements</li>
 </ul>
 
@@ -12371,7 +12371,7 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 					standard_status:  'retired_brand; check vocabulary preserved',
 					spec_family: {
 						name:          'Verifiable Intent environment.* constraint family',
-						role:          'reference implementation of environment.market_state',
+						role:          'proposed reference implementation of environment.market_state (PR #9, open)',
 						upstream_repo: 'agent-intent/verifiable-intent',
 						pull_requests: [
 							{
