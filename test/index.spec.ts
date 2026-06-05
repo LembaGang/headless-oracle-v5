@@ -3771,7 +3771,7 @@ describe('POST /v5/keys/request', () => {
 		expect(response.status).toBe(402);
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('x402Version', 2);
 	});
 
 	it('401 on /v5/account without key includes X-Oracle-Upgrade header', async () => {
@@ -8913,7 +8913,7 @@ describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('x402Version', 2);
 		expect(body).toHaveProperty('network', 'mainnet');
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('network', 'base');
@@ -8974,7 +8974,7 @@ describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 			});
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('x402Version', 2);
 			expect(body).toHaveProperty('network', 'mainnet');
 			expect(body).toHaveProperty('x402_error');
 			expect(res.headers.get('X-Payment-Status')).toBe('payment-rejected');
@@ -9402,7 +9402,7 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			const res  = await fetchWorker('/v5/status?mic=XNYS');
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('x402Version', 2);
 			expect(body).toHaveProperty('agent_actions');
 			const actions = body.agent_actions as Record<string, unknown>;
 			expect(actions).toHaveProperty('pay_per_request');
