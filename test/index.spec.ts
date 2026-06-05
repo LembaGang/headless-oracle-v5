@@ -257,7 +257,7 @@ describe('GET /v5/status', () => {
 		const response = await fetchWorker('/v5/status?mic=XNYS');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('x402Version', 2);
 		expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
 		expect(Array.isArray(body.accepts)).toBe(true);
 		const accepts = body.accepts as Array<Record<string, unknown>>;
@@ -333,6 +333,112 @@ describe('GET /v5/status', () => {
 			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
 		});
 		expect(body).toHaveProperty('mic', 'XNYS');
+	});
+});
+
+// ─── GET /v5/status/x402 — dedicated always-402 CDP-Bazaar-indexable resource ─
+// This resource exists solely to give the CDP Bazaar a paywalled resource it can
+// catalogue. It never serves a 200 receipt without a CDP-facilitator-settled payment,
+// and it never accepts the direct-on-chain raw-JSON shortcut that the main /v5/status
+// honours. Every successful payment here transits api.cdp.coinbase.com → produces the
+// catalog signal that drives Bazaar indexing.
+
+describe('GET /v5/status/x402 — dedicated CDP-Bazaar-indexable resource', () => {
+	it('returns 402 without payment, even with mic param, and emits full x402 v2 + extensions.bazaar shape', async () => {
+		const response = await fetchWorker('/v5/status/x402?mic=XNYS');
+		expect(response.status).toBe(402);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('error', 'Payment Required');
+		const accepts = body.accepts as Array<Record<string, unknown>>;
+		expect(accepts[0]).toHaveProperty('scheme', 'exact');
+		expect(accepts[0]).toHaveProperty('network', 'base');
+		expect(accepts[0]).toHaveProperty('maxAmountRequired', '1000');
+		expect(accepts[0]).toHaveProperty('resource', 'https://headlessoracle.com/v5/status/x402?mic=XNYS');
+		// CDP Bazaar v2 discovery extension is what CDP indexes after a settled payment.
+		const extensions = body.extensions as Record<string, unknown>;
+		const bazaar = extensions.bazaar as Record<string, unknown>;
+		const info   = bazaar.info as Record<string, unknown>;
+		expect(info).toHaveProperty('category', 'financial-data');
+		expect(info).toHaveProperty('family', 'market-state');
+		expect(info).toHaveProperty('metadataUrl', 'https://headlessoracle.com/.well-known/mcp/server-card.json');
+		const input  = info.input as Record<string, unknown>;
+		expect(input).toHaveProperty('type', 'http');
+		expect(input).toHaveProperty('method', 'GET');
+		expect((input.queryParams as Record<string, unknown>)).toHaveProperty('mic');
+		const output = info.output as Record<string, unknown>;
+		expect(output).toHaveProperty('type', 'json');
+		expect(output).toHaveProperty('example');
+		const example = output.example as Record<string, unknown>;
+		// Example must be a real-shape signed receipt: signed fields per
+		// /v5/keys → canonical_payload_spec.receipt_fields plus the signature.
+		expect(example).toHaveProperty('public_key_id', 'key_2026_v1');
+		expect(example).toHaveProperty('issuer', 'headlessoracle.com');
+		expect(example).toHaveProperty('schema_version', 'v5.0');
+		expect(typeof example.signature).toBe('string');
+		expect((example.signature as string)).toMatch(/^[0-9a-f]{128}$/);
+		// Schema must validate input against schema.properties.input (CDP discoverability rule).
+		const schema = bazaar.schema as Record<string, unknown>;
+		expect(schema).toHaveProperty('$schema');
+		const props = (schema.properties as Record<string, unknown>);
+		expect(props).toHaveProperty('input');
+		expect(props).toHaveProperty('output');
+	});
+
+	it('returns 402 with the same Bazaar discovery payload even when no mic param is supplied (discovery surface)', async () => {
+		const response = await fetchWorker('/v5/status/x402');
+		expect(response.status).toBe(402);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('x402Version', 2);
+		expect((body.extensions as Record<string, unknown>).bazaar).toBeDefined();
+	});
+
+	it('rejects unsupported MIC with 400 UNSUPPORTED_MIC', async () => {
+		const response = await fetchWorker('/v5/status/x402?mic=FAKE');
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'UNSUPPORTED_MIC');
+	});
+
+	it('rejects raw-JSON X-Payment with 402 CDP_SETTLEMENT_REQUIRED (CDP-facilitator-only path)', async () => {
+		const rawPayment = JSON.stringify({ txHash: '0xdeadbeef', network: 'base', amount: '1000', paymentAddress: '0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3', memo: 'test' });
+		const response = await fetchWorker('/v5/status/x402?mic=XNYS', {
+			headers: { 'X-Payment': rawPayment },
+		});
+		expect(response.status).toBe(402);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'CDP_SETTLEMENT_REQUIRED');
+		expect(body).toHaveProperty('sdk_reference');
+	});
+
+	it('returns 402 (not 200) even when a valid API key is presented — no keyholder bypass', async () => {
+		const response = await fetchWorker('/v5/status/x402?mic=XNYS', {
+			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+		});
+		expect(response.status).toBe(402);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('x402Version', 2);
+	});
+
+	it('returns 405 METHOD_NOT_ALLOWED for non-GET methods', async () => {
+		const response = await fetchWorker('/v5/status/x402?mic=XNYS', { method: 'POST' });
+		expect(response.status).toBe(405);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
+	});
+
+	it('the main /v5/status trial path is unchanged — first call still returns a 200 trial receipt', async () => {
+		// Sanity: adding /v5/status/x402 must not regress the main endpoint's trial UX.
+		const response = await fetchWorker('/v5/status?mic=XNYS');
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('status');
+		expect(body).toHaveProperty('signature');
+		expect(body).toHaveProperty('receipt_mode');
+		// The wrong-shape extensions.bazaar block previously emitted in this body was
+		// removed — confirm it's no longer present.
+		expect(body.extensions).toBeUndefined();
 	});
 });
 
@@ -2024,11 +2130,11 @@ describe('GET /v5/why-not-free', () => {
 // ─── GET /v5/batch ────────────────────────────────────────────────────────────
 
 describe('GET /v5/batch', () => {
-	it('returns 402 x402scan format without API key — includes input schema for mics param', async () => {
+	it('returns 402 x402scan format without API key — includes input schema for mics param and CDP bazaar extension', async () => {
 		const response = await fetchWorker('/v5/batch?mics=XNYS,XNAS');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('x402Version', 2);
 		expect(body).toHaveProperty('error', 'Payment Required');
 		expect(Array.isArray(body.accepts)).toBe(true);
 		const accepts = body.accepts as Array<Record<string, unknown>>;
@@ -2036,6 +2142,16 @@ describe('GET /v5/batch', () => {
 		expect(accepts[0]).toHaveProperty('input');
 		const input = accepts[0].input as Record<string, unknown>;
 		expect((input.required as string[])).toContain('mics');
+		// v2 shape: extensions.bazaar.{info, schema} present for CDP Bazaar indexing.
+		const extensions = body.extensions as Record<string, unknown>;
+		expect(extensions).toBeDefined();
+		const bazaar = extensions.bazaar as Record<string, unknown>;
+		expect(bazaar).toBeDefined();
+		const bazaarInfo = bazaar.info as Record<string, unknown>;
+		expect(bazaarInfo).toHaveProperty('input');
+		expect(bazaarInfo).toHaveProperty('category', 'financial-data');
+		expect(bazaarInfo).toHaveProperty('family', 'market-state');
+		expect(bazaar.schema).toBeDefined();
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 	});
 
@@ -3643,7 +3759,7 @@ describe('POST /v5/keys/request', () => {
 			expect(response.status).toBe(402);
 			expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 			const body = await response.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('x402Version', 2);
 			expect(body).toHaveProperty('trial_used', 3);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
@@ -3655,7 +3771,7 @@ describe('POST /v5/keys/request', () => {
 		expect(response.status).toBe(402);
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('x402Version', 2);
 	});
 
 	it('401 on /v5/account without key includes X-Oracle-Upgrade header', async () => {
@@ -4586,7 +4702,7 @@ describe('Error responses include docs field', () => {
 		try {
 			const body = await fetchJSON('/v5/status');
 			expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
-			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('x402Version', 2);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
@@ -4858,7 +4974,7 @@ describe('x402 — payment verification', () => {
 			const prHeader = res.headers.get('Payment-Required');
 			expect(prHeader).toBeTruthy();
 			const decoded = JSON.parse(atob(prHeader!));
-			expect(decoded.x402Version).toBe(1);
+			expect(decoded.x402Version).toBe(2);
 			expect(decoded.accepts).toBeInstanceOf(Array);
 			expect(decoded.accepts[0].network).toBe('base');
 			expect(decoded.accepts[0].asset).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
@@ -7335,7 +7451,7 @@ describe('x402 — end-to-end payment flow', () => {
 			const res = await fetchWorker('/v5/status?mic=XNYS');
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('x402Version', 2);
 			expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts).toBeDefined();
@@ -8797,7 +8913,7 @@ describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 1);
+		expect(body).toHaveProperty('x402Version', 2);
 		expect(body).toHaveProperty('network', 'mainnet');
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('network', 'base');
@@ -8858,7 +8974,7 @@ describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 			});
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('x402Version', 2);
 			expect(body).toHaveProperty('network', 'mainnet');
 			expect(body).toHaveProperty('x402_error');
 			expect(res.headers.get('X-Payment-Status')).toBe('payment-rejected');
@@ -9286,7 +9402,7 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			const res  = await fetchWorker('/v5/status?mic=XNYS');
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 1);
+			expect(body).toHaveProperty('x402Version', 2);
 			expect(body).toHaveProperty('agent_actions');
 			const actions = body.agent_actions as Record<string, unknown>;
 			expect(actions).toHaveProperty('pay_per_request');
