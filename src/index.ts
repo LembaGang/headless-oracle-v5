@@ -2547,9 +2547,15 @@ function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 }
 
 // Build x402-compatible 402 payload for Base mainnet via CDP facilitator.
+// x402Version: 1 — the legacy x402 npm client (x402@1.2.0, the only published version) emits
+// v1-shape paymentPayloads regardless of the version it's told to use. CDP /verify validates
+// strictly against the declared version, and the v2 NetworkSchemaV2 requires CAIP-2 format
+// ("eip155:8453"), rejecting the bare "base" string the v1 client embeds. Until Coinbase ships
+// a v2-capable client to npm, v1 is the only path that round-trips through CDP settlement.
+// See active-priorities GAP-020.
 function buildMainnetFacilitatorPayload(paymentAddress: string, resourceUrl: string): Record<string, unknown> {
 	return {
-		x402Version: 2,
+		x402Version: 1,
 		accepts: [{
 			scheme:              'exact',
 			network:             'base',
@@ -2958,10 +2964,12 @@ async function verifyReceiptDetailed(
 
 // Build the Payment-Required header value required by x402 index crawlers (e.g. 402index.io).
 // Crawlers read this header (base64 JSON) rather than parsing the response body.
-// Uses bare "base" network name and "amount" field (x402 v2 header convention).
+// x402Version: 1 — must match the body version (buildMainnetFacilitatorPayload / buildX402ScanPayload)
+// so a header-driven crawler signing against this gets the same v1 flow that CDP /verify accepts.
+// See active-priorities GAP-020.
 function buildX402IndexHeaders(paymentAddress: string, endpoint: 'status' | 'batch' = 'status'): Record<string, string> {
 	const payload = {
-		x402Version: 2,
+		x402Version: 1,
 		error:       'Payment Required',
 		accepts: [
 			{
@@ -3147,8 +3155,12 @@ function buildBazaarExtension(endpoint: 'status' | 'batch'): Record<string, unkn
 
 function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpoint: 'status' | 'batch' = 'status'): Record<string, unknown> {
 	const isStatus = endpoint === 'status';
+	// x402Version: 1 — see buildMainnetFacilitatorPayload note. The Bazaar `extensions` block
+	// below lives at the top level alongside `accepts`, not inside it, so the discovery payload
+	// CDP indexes is unaffected by the version downgrade. The legacy x402 npm client only emits
+	// v1-shape paymentPayloads; settlement must round-trip through CDP under x402Version 1.
 	return {
-		x402Version: 2,
+		x402Version: 1,
 		accepts: [
 			{
 				scheme:              'exact',
@@ -9215,7 +9227,7 @@ export default {
 			// ── /v5/status/x402 — dedicated always-402 CDP-Bazaar-indexable resource ─────
 			// Distinct from /v5/status: no trial path, no API-key bypass, no direct-on-chain
 			// shortcut. Every request without a valid CDP-facilitator-settled payment returns
-			// 402 with the full x402Version-2 + extensions.bazaar.{info, schema} payload that
+			// 402 with the full x402 + extensions.bazaar.{info, schema} payload that
 			// CDP indexes. Every successful payment settles through the CDP facilitator
 			// (verifyX402ViaFacilitator), which is the only thing that triggers cataloguing.
 			// /v5/status remains unchanged: trial UX intact, keyholder UX intact, this is a
