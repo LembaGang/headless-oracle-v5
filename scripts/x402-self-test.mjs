@@ -24,7 +24,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import { createPaymentHeader, selectPaymentRequirements } from 'x402/client';
 
-const ENDPOINT    = 'https://headlessoracle.com/v5/status?mic=XNYS';
+const ENDPOINT    = 'https://headlessoracle.com/v5/status/x402?mic=XNYS';
 const USDC        = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const PAY_TO      = '0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3';
 const CHAIN_ID    = 8453;  // Base mainnet
@@ -164,8 +164,12 @@ try {
   //   1. Verifies the EIP-3009 signature
   //   2. Submits the TransferWithAuthorization to Base mainnet
   //   3. Returns { success: true, txHash: '0x...' }
-  xPaymentHeader = await createPaymentHeader(walletClient, 1, req);
-  console.log(`  ✓ Payment header created (${xPaymentHeader.length} chars base64)`);
+  // Pass the x402 protocol version advertised by the 402 response (was hardcoded 1 originally;
+  // the new /v5/status/x402 Bazaar resource advertises version 2). Reading it from the live
+  // 402 keeps the script forward-compatible if CDP bumps the version again.
+  const x402Version = paymentTerms.x402Version ?? 1;
+  xPaymentHeader = await createPaymentHeader(walletClient, x402Version, req);
+  console.log(`  ✓ Payment header created (${xPaymentHeader.length} chars base64, x402Version=${x402Version})`);
   // Decode and show structure (without exposing private key material)
   const decoded = JSON.parse(Buffer.from(xPaymentHeader, 'base64').toString('utf8'));
   console.log('  Payload structure:');

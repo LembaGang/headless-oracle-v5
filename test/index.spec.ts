@@ -257,7 +257,7 @@ describe('GET /v5/status', () => {
 		const response = await fetchWorker('/v5/status?mic=XNYS');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('x402Version', 1);
 		expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
 		expect(Array.isArray(body.accepts)).toBe(true);
 		const accepts = body.accepts as Array<Record<string, unknown>>;
@@ -349,7 +349,7 @@ describe('GET /v5/status/x402 — dedicated CDP-Bazaar-indexable resource', () =
 		expect(response.status).toBe(402);
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('x402Version', 1);
 		expect(body).toHaveProperty('error', 'Payment Required');
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('scheme', 'exact');
@@ -390,7 +390,7 @@ describe('GET /v5/status/x402 — dedicated CDP-Bazaar-indexable resource', () =
 		const response = await fetchWorker('/v5/status/x402');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('x402Version', 1);
 		expect((body.extensions as Record<string, unknown>).bazaar).toBeDefined();
 	});
 
@@ -418,7 +418,7 @@ describe('GET /v5/status/x402 — dedicated CDP-Bazaar-indexable resource', () =
 		});
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('x402Version', 1);
 	});
 
 	it('returns 405 METHOD_NOT_ALLOWED for non-GET methods', async () => {
@@ -2134,7 +2134,7 @@ describe('GET /v5/batch', () => {
 		const response = await fetchWorker('/v5/batch?mics=XNYS,XNAS');
 		expect(response.status).toBe(402);
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('x402Version', 1);
 		expect(body).toHaveProperty('error', 'Payment Required');
 		expect(Array.isArray(body.accepts)).toBe(true);
 		const accepts = body.accepts as Array<Record<string, unknown>>;
@@ -3759,7 +3759,7 @@ describe('POST /v5/keys/request', () => {
 			expect(response.status).toBe(402);
 			expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 			const body = await response.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 2);
+			expect(body).toHaveProperty('x402Version', 1);
 			expect(body).toHaveProperty('trial_used', 3);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
@@ -3771,7 +3771,7 @@ describe('POST /v5/keys/request', () => {
 		expect(response.status).toBe(402);
 		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
 		const body = await response.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('x402Version', 1);
 	});
 
 	it('401 on /v5/account without key includes X-Oracle-Upgrade header', async () => {
@@ -4702,7 +4702,7 @@ describe('Error responses include docs field', () => {
 		try {
 			const body = await fetchJSON('/v5/status');
 			expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
-			expect(body).toHaveProperty('x402Version', 2);
+			expect(body).toHaveProperty('x402Version', 1);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
@@ -4974,7 +4974,7 @@ describe('x402 — payment verification', () => {
 			const prHeader = res.headers.get('Payment-Required');
 			expect(prHeader).toBeTruthy();
 			const decoded = JSON.parse(atob(prHeader!));
-			expect(decoded.x402Version).toBe(2);
+			expect(decoded.x402Version).toBe(1);
 			expect(decoded.accepts).toBeInstanceOf(Array);
 			expect(decoded.accepts[0].network).toBe('base');
 			expect(decoded.accepts[0].asset).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
@@ -7451,7 +7451,7 @@ describe('x402 — end-to-end payment flow', () => {
 			const res = await fetchWorker('/v5/status?mic=XNYS');
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 2);
+			expect(body).toHaveProperty('x402Version', 1);
 			expect(body).toHaveProperty('error', 'TRIAL_EXHAUSTED');
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts).toBeDefined();
@@ -8913,7 +8913,7 @@ describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
-		expect(body).toHaveProperty('x402Version', 2);
+		expect(body).toHaveProperty('x402Version', 1);
 		expect(body).toHaveProperty('network', 'mainnet');
 		const accepts = body.accepts as Array<Record<string, unknown>>;
 		expect(accepts[0]).toHaveProperty('network', 'base');
@@ -8974,7 +8974,7 @@ describe('x402 mainnet facilitator path (CDP, X402_ENABLED=true)', () => {
 			});
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 2);
+			expect(body).toHaveProperty('x402Version', 1);
 			expect(body).toHaveProperty('network', 'mainnet');
 			expect(body).toHaveProperty('x402_error');
 			expect(res.headers.get('X-Payment-Status')).toBe('payment-rejected');
@@ -9402,7 +9402,7 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			const res  = await fetchWorker('/v5/status?mic=XNYS');
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('x402Version', 2);
+			expect(body).toHaveProperty('x402Version', 1);
 			expect(body).toHaveProperty('agent_actions');
 			const actions = body.agent_actions as Record<string, unknown>;
 			expect(actions).toHaveProperty('pay_per_request');
