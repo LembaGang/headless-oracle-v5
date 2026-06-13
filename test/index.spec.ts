@@ -1,6 +1,6 @@
 import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek } from '../src';
+import worker, { edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek, signPayload } from '../src';
 
 // Clear module-level caches before every test so that tests which
 // set KV values always read from KV rather than stale in-memory entries.
@@ -10746,6 +10746,65 @@ describe('Ed25519 signing — cryptographic correctness', () => {
 		});
 		const vBody = await verifyRes.json() as Record<string, unknown>;
 		expect(vBody.valid).toBe(true);
+	});
+});
+
+// ─── signPayload runtime type guard ──────────────────────────────────────────
+// Guards the canonicalization-parity hazard: in-repo verifier coerces with
+// String(); SDK does not. Non-string signed fields would canonicalize
+// differently across verifiers and surface as INVALID_SIGNATURE on the SDK
+// side only. Throwing at sign time makes that drift impossible to ship.
+
+describe('signPayload — runtime type guard', () => {
+	const PRIV_KEY = env.ED25519_PRIVATE_KEY;
+
+	it('throws on number value, naming the field and type', async () => {
+		await expect(
+			signPayload({ mic: 42 as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "mic" \(got number\)/);
+	});
+
+	it('throws on boolean value, naming the field and type', async () => {
+		await expect(
+			signPayload({ status: false as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "status" \(got boolean\)/);
+	});
+
+	it('throws on null value, distinguishing null from object', async () => {
+		await expect(
+			signPayload({ source: null as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "source" \(got null\)/);
+	});
+
+	it('throws on undefined value', async () => {
+		await expect(
+			signPayload({ expires_at: undefined as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "expires_at" \(got undefined\)/);
+	});
+
+	it('throws on plain object value', async () => {
+		await expect(
+			signPayload({ issuer: { nested: 'x' } as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "issuer" \(got object\)/);
+	});
+
+	it('throws on array value, distinguishing array from object', async () => {
+		await expect(
+			signPayload({ mic: ['XNYS'] as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "mic" \(got array\)/);
+	});
+
+	it('accepts an all-string payload and returns a hex signature', async () => {
+		const sig = await signPayload(
+			{
+				expires_at: '2026-06-12T00:01:00.000Z',
+				issued_at:  '2026-06-12T00:00:00.000Z',
+				mic:        'XNYS',
+				status:     'OPEN',
+			},
+			PRIV_KEY,
+		);
+		expect(sig).toMatch(/^[0-9a-f]+$/);
 	});
 });
 

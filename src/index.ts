@@ -1606,13 +1606,21 @@ function getNextSession(mic: string, now: Date): NextSession | null {
 
 // ─── Signing ─────────────────────────────────────────────────────────────────
 
-async function signPayload(payload: Record<string, string>, privKeyHex: string): Promise<string> {
+export async function signPayload(payload: Record<string, string>, privKeyHex: string): Promise<string> {
 	// Canonical form: keys sorted alphabetically, serialised with no whitespace.
 	// Deterministic regardless of JS object insertion order.
 	// See /v5/keys → canonical_payload_spec for the published specification.
 	const sorted: Record<string, string> = {};
 	for (const key of Object.keys(payload).sort()) {
-		sorted[key] = payload[key];
+		// Runtime guard: signed fields MUST be strings. In-repo verifier coerces
+		// with String(); SDK does not. Coercing here would surface as INVALID_SIGNATURE
+		// on SDK consumers only — throw at sign time so the bug can't ship.
+		const v = payload[key] as unknown;
+		if (typeof v !== 'string') {
+			const t = v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
+			throw new Error(`signPayload: non-string value for field "${key}" (got ${t})`);
+		}
+		sorted[key] = v;
 	}
 	const canonical = JSON.stringify(sorted);
 	const msgBytes  = new TextEncoder().encode(canonical);
