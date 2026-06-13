@@ -3479,7 +3479,7 @@ const HALT_ARCHIVE_KV_LAST_STATE_PREFIX = 'halt_archive_last_state:';
 
 type HaltArchiveSource = 'nyse' | 'nasdaq' | 'ho_session' | 'gap';
 type HaltArchiveSourceMode = 'LIVE' | 'BACKFILL';
-type HaltArchiveEventType = 'feed_snapshot' | 'session_transition' | 'gap';
+type HaltArchiveEventType = 'feed_snapshot' | 'session_transition' | 'halt' | 'gap';
 
 interface HaltArchiveRow {
 	id:           string;
@@ -3506,7 +3506,7 @@ export function clearHaltArchiveSchemaCache(): void {
 	_haltSchemaEnsuredPromise = null;
 }
 
-async function ensureHaltArchiveSchema(env: Env): Promise<void> {
+export async function ensureHaltArchiveSchema(env: Env): Promise<void> {
 	if (!env.HALT_ARCHIVE) return;
 	if (_haltSchemaEnsuredPromise) return _haltSchemaEnsuredPromise;
 	_haltSchemaEnsuredPromise = (async () => {
@@ -3583,10 +3583,19 @@ async function signHaltArchivePayload(
 	return { signature, canonical, key_id: env.PUBLIC_KEY_ID };
 }
 
-async function insertHaltEvent(row: HaltArchiveRow, env: Env): Promise<void> {
+// Insert a signed halt event. Production code uses INSERT only — never UPDATE
+// or DELETE — preserving the append-only contract. The `ignoreOnConflict` flag
+// flips the insert to `INSERT OR IGNORE` for rows with deterministic primary
+// keys (e.g. per-halt rows derived from (source, IssueSymbol, HaltDate, HaltTime))
+// so re-observing the same upstream event across fetches is a no-op rather
+// than a duplicate-key error. INSERT OR IGNORE never modifies an existing row;
+// the first-sighting signature is the canonical anchor and cannot be silently
+// replaced.
+async function insertHaltEvent(row: HaltArchiveRow, env: Env, ignoreOnConflict = false): Promise<void> {
 	if (!env.HALT_ARCHIVE) return;
+	const verb = ignoreOnConflict ? 'INSERT OR IGNORE INTO' : 'INSERT INTO';
 	await env.HALT_ARCHIVE.prepare(
-		`INSERT INTO halt_events
+		`${verb} halt_events
 		 (id, source, source_mode, mic, event_type, observed_at, captured_at,
 		  observation, body_sha256, r2_key, payload_json, signature, key_id, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -3595,6 +3604,95 @@ async function insertHaltEvent(row: HaltArchiveRow, env: Env): Promise<void> {
 		row.observed_at, row.captured_at, row.observation, row.body_sha256,
 		row.r2_key, row.payload_json, row.signature, row.key_id, row.created_at,
 	).run();
+}
+
+// ─── Nasdaq Trader RSS parser ────────────────────────────────────────────────
+// The feed at https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts is the
+// CONSOLIDATED US halt feed. It carries NASDAQ-, NYSE-, NYSE American-, and
+// NYSE Arca-listed halts — distinguished by the <ndaq:Market> element on each
+// <item>. So a "NYSE halt" arrives via this feed; a direct NYSE fetch would be
+// redundant.
+//
+// The <description> CDATA HTML table in each item is human-readable but
+// brittle — Nasdaq has reformatted it before. Parse the <ndaq:*> elements
+// instead; they are the canonical machine-readable representation.
+//
+// Times are Eastern. Dates are MM/DD/YYYY. We keep them as strings exactly as
+// the source presents them — the archive's claim ceiling is "what the feed
+// said," not "what time it really was." Consumers convert if they need UTC.
+
+export interface NasdaqHaltItem {
+	IssueSymbol:         string;
+	IssueName:           string;
+	HaltDate:            string;  // MM/DD/YYYY (ET)
+	HaltTime:            string;  // HH:MM:SS.mmm (ET)
+	Market:              string;  // raw source label: NASDAQ / NYSE / NYSE American / NYSE Arca / ...
+	ReasonCode:          string;
+	PauseThresholdPrice: string;
+	ResumptionDate:      string;
+	ResumptionQuoteTime: string;
+	ResumptionTradeTime: string;
+}
+
+function decodeXmlEntities(s: string): string {
+	return s
+		.replace(/&amp;/g,  '&')
+		.replace(/&lt;/g,   '<')
+		.replace(/&gt;/g,   '>')
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'");
+}
+
+function getNdaqField(block: string, name: string): string {
+	// Match <ndaq:Name>VALUE</ndaq:Name> — captures empty <ndaq:X/> via the
+	// alternate self-closing path too.
+	const open = new RegExp(`<ndaq:${name}\\b[^>]*?\\/>`, 'i');
+	if (open.test(block)) return '';
+	const re = new RegExp(`<ndaq:${name}\\b[^>]*>([\\s\\S]*?)<\\/ndaq:${name}>`, 'i');
+	const m = re.exec(block);
+	if (!m) return '';
+	return decodeXmlEntities(m[1].trim());
+}
+
+export function parseNasdaqHaltItems(xml: string): NasdaqHaltItem[] {
+	const items: NasdaqHaltItem[] = [];
+	const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/g;
+	let match: RegExpExecArray | null;
+	while ((match = itemRe.exec(xml)) !== null) {
+		const block = match[1];
+		const item: NasdaqHaltItem = {
+			IssueSymbol:         getNdaqField(block, 'IssueSymbol'),
+			IssueName:           getNdaqField(block, 'IssueName'),
+			HaltDate:            getNdaqField(block, 'HaltDate'),
+			HaltTime:            getNdaqField(block, 'HaltTime'),
+			Market:              getNdaqField(block, 'Market'),
+			ReasonCode:          getNdaqField(block, 'ReasonCode'),
+			PauseThresholdPrice: getNdaqField(block, 'PauseThresholdPrice'),
+			ResumptionDate:      getNdaqField(block, 'ResumptionDate'),
+			ResumptionQuoteTime: getNdaqField(block, 'ResumptionQuoteTime'),
+			ResumptionTradeTime: getNdaqField(block, 'ResumptionTradeTime'),
+		};
+		// Require the (IssueSymbol, HaltDate, HaltTime) triple — that's what we
+		// dedupe on, so an item missing any of them is unusable archive data.
+		if (item.IssueSymbol && item.HaltDate && item.HaltTime) {
+			items.push(item);
+		}
+	}
+	return items;
+}
+
+// Map the raw Market field from Nasdaq's feed to an ISO 10383 MIC where the
+// mapping is unambiguous. Returns '' for venues we don't have a clean MIC for
+// (NYSE American, NYSE Arca, BX, PSX, ...) — the full Market label is still
+// preserved in the signed payload's `market` field for those.
+function nasdaqMarketToMic(market: string): string {
+	const m = market.trim().toUpperCase();
+	if (m === '')      return '';
+	if (m === 'NYSE' || m === 'NYSE LISTED') return 'XNYS';
+	// Nasdaq's own market labels include "NASDAQ", "NASDAQ GLOBAL MARKET",
+	// "NASDAQ GLOBAL SELECT MARKET", "NASDAQ CAPITAL MARKET" — all XNAS.
+	if (m === 'NASDAQ' || m.startsWith('NASDAQ ')) return 'XNAS';
+	return '';
 }
 
 async function writeRawToR2(r2Key: string, body: string, env: Env, contentType: string): Promise<boolean> {
@@ -3660,59 +3758,83 @@ async function recordSignedGap(opts: {
 	return row;
 }
 
-// Fetch one external halt feed and write the result. On success: signed
-// feed_snapshot row + raw bytes in R2. On failure: signed gap record.
-// Returns the row written, or null if HALT_ARCHIVE is unavailable.
-async function captureFeedSource(opts: {
-	source:      'nyse' | 'nasdaq';
+// Browser-like fetch headers. Nasdaq Trader serves the RSS to a bare GET today,
+// but insulates against future default-UA filtering by sending a normal browser
+// UA + RSS-accepting Accept header. `redirect: 'follow'` is fetch's default
+// here but called out so a future refactor doesn't silently change it.
+const HALT_ARCHIVE_FETCH_HEADERS: Record<string, string> = {
+	'User-Agent': 'Mozilla/5.0 (compatible; HeadlessOracleHaltArchive/1.1; +https://headlessoracle.com)',
+	'Accept':     'application/rss+xml, application/xml;q=0.9, */*;q=0.8',
+};
+
+// Fetch the Nasdaq Trader RSS, anchor the raw bytes in R2, sign a
+// feed_snapshot row, then sign one halt row per unique parsed item.
+//
+// CADENCE POLICY: Nasdaq's published guidance is "Data is updated each trading
+// day once a minute. Please do not query the data more than once a minute."
+// The capture path is wired to the existing `* * * * *` cron — exactly 1/min.
+// DO NOT shorten the cadence or duplicate this call in another scheduler.
+//
+// Returns:
+//   - the feed_snapshot HaltArchiveRow on success
+//   - a signed gap HaltArchiveRow on fetch / read / non-2xx failure
+//   - null if HALT_ARCHIVE is unavailable
+async function captureNasdaqFeed(opts: {
 	url:         string;
 	source_mode: HaltArchiveSourceMode;
 	now:         Date;
 	env:         Env;
-}): Promise<HaltArchiveRow | null> {
-	const { source, url, source_mode, now, env } = opts;
-	if (!env.HALT_ARCHIVE) return null;
+}): Promise<{ snapshot: HaltArchiveRow | null; halts: HaltArchiveRow[] }> {
+	const { url, source_mode, now, env } = opts;
+	if (!env.HALT_ARCHIVE) return { snapshot: null, halts: [] };
+	const source = 'nasdaq' as const;
 	const observedAt = now.toISOString();
 	let resp: Response;
 	try {
 		resp = await fetch(url, {
-			signal: AbortSignal.timeout(HALT_ARCHIVE_FETCH_TIMEOUT_MS),
-			headers: { 'User-Agent': 'HeadlessOracleHaltArchive/1.0 (+https://headlessoracle.com)' },
+			signal:   AbortSignal.timeout(HALT_ARCHIVE_FETCH_TIMEOUT_MS),
+			headers:  HALT_ARCHIVE_FETCH_HEADERS,
+			redirect: 'follow',
 		});
 	} catch (err) {
 		const reason = err instanceof Error ? `${err.name}: ${err.message}` : 'fetch failed';
-		return recordSignedGap({ source, source_mode, reason, now, env });
+		const gap = await recordSignedGap({ source, source_mode, reason, now, env });
+		return { snapshot: gap, halts: [] };
 	}
 	let body: string;
 	try {
 		body = await resp.text();
 	} catch (err) {
 		const reason = err instanceof Error ? `body read failed: ${err.message}` : 'body read failed';
-		return recordSignedGap({ source, source_mode, reason, now, env });
+		const gap = await recordSignedGap({ source, source_mode, reason, now, env });
+		return { snapshot: gap, halts: [] };
 	}
 	if (!resp.ok) {
-		return recordSignedGap({
+		const gap = await recordSignedGap({
 			source, source_mode,
 			reason: `HTTP ${resp.status}`,
 			now, env,
 		});
+		return { snapshot: gap, halts: [] };
 	}
+
+	// ── feed_snapshot row ────────────────────────────────────────────────────
 	const bodySha256 = await sha256Hex(body);
-	const r2Key      = `raw/${source}/${observedAt}.${source === 'nasdaq' ? 'xml' : 'json'}`;
+	const r2Key      = `raw/${source}/${observedAt}.xml`;
 	let wroteR2 = false;
 	try {
-		wroteR2 = await writeRawToR2(r2Key, body, env, resp.headers.get('Content-Type') ?? 'text/plain');
+		wroteR2 = await writeRawToR2(r2Key, body, env, resp.headers.get('Content-Type') ?? 'application/rss+xml');
 	} catch {
-		// R2 write failure is non-fatal for the signed record — body_sha256 is
-		// still the canonical anchor. We DO record it as part of the observation
-		// so consumers know whether the bytes are independently fetchable.
+		// R2 write failure is non-fatal — body_sha256 is still the canonical
+		// anchor. We record it in the observation so consumers know whether the
+		// bytes are independently fetchable.
 	}
 	const id           = crypto.randomUUID();
 	const fetchStatus  = String(resp.status);
-	const observation  =
+	const snapshotObs  =
 		`source ${source} fetched ${fetchStatus} OK at ${observedAt}; body sha256 ${bodySha256}` +
 		(wroteR2 ? '' : ' (raw bytes not archived to R2)');
-	const payload: Record<string, string> = {
+	const snapshotPayload: Record<string, string> = {
 		body_sha256:   bodySha256,
 		event_type:    'feed_snapshot',
 		fetch_status:  fetchStatus,
@@ -3721,7 +3843,7 @@ async function captureFeedSource(opts: {
 		issuer:        ORACLE_ISSUER,
 		key_id:        env.PUBLIC_KEY_ID,
 		mic:           '',
-		observation,
+		observation:   snapshotObs,
 		observed_at:   observedAt,
 		r2_key:        wroteR2 ? r2Key : '',
 		schema:        'halt_archive_event/v1',
@@ -3729,8 +3851,8 @@ async function captureFeedSource(opts: {
 		source_mode,
 		source_url:    url,
 	};
-	const signed = await signHaltArchivePayload(payload, env);
-	const row: HaltArchiveRow = {
+	const snapshotSigned = await signHaltArchivePayload(snapshotPayload, env);
+	const snapshotRow: HaltArchiveRow = {
 		id,
 		source,
 		source_mode,
@@ -3738,16 +3860,97 @@ async function captureFeedSource(opts: {
 		event_type:   'feed_snapshot',
 		observed_at:  observedAt,
 		captured_at:  observedAt,
-		observation,
+		observation:  snapshotObs,
 		body_sha256:  bodySha256,
 		r2_key:       wroteR2 ? r2Key : '',
-		payload_json: signed.canonical,
-		signature:    signed.signature,
-		key_id:       signed.key_id,
+		payload_json: snapshotSigned.canonical,
+		signature:    snapshotSigned.signature,
+		key_id:       snapshotSigned.key_id,
 		created_at:   observedAt,
 	};
-	await insertHaltEvent(row, env);
-	return row;
+	await insertHaltEvent(snapshotRow, env);
+
+	// ── per-halt rows from the parsed RSS items ──────────────────────────────
+	// Parse against the real ndaq: schema. Dedupe within this fetch on
+	// (IssueSymbol, HaltDate, HaltTime) — same triple appearing twice in one
+	// feed snapshot is a feed-side anomaly we collapse silently. Dedupe across
+	// fetches uses INSERT OR IGNORE on a deterministic per-halt id so the
+	// first-sighting signature stays canonical.
+	const haltRows: HaltArchiveRow[] = [];
+	let parsed: NasdaqHaltItem[];
+	try {
+		parsed = parseNasdaqHaltItems(body);
+	} catch (err) {
+		// Parser failure is not a fetch failure — the bytes are still anchored
+		// in R2 with a valid feed_snapshot row. Surface as a signed gap with a
+		// distinct reason so consumers can tell.
+		const reason = err instanceof Error ? `parse failed: ${err.message}` : 'parse failed';
+		await recordSignedGap({ source, source_mode, reason, now, env });
+		return { snapshot: snapshotRow, halts: [] };
+	}
+	const seen = new Set<string>();
+	for (const item of parsed) {
+		const dedupeKey = `${item.IssueSymbol}|${item.HaltDate}|${item.HaltTime}`;
+		if (seen.has(dedupeKey)) continue;
+		seen.add(dedupeKey);
+
+		const haltId      = await sha256Hex(`${source}:halt:${item.IssueSymbol}:${item.HaltDate}:${item.HaltTime}`);
+		const mic         = nasdaqMarketToMic(item.Market);
+		const observation =
+			`source ${source} reported halt of ${item.IssueSymbol} (${item.IssueName || 'unnamed'}) ` +
+			`on ${item.Market || 'unspecified market'} at ${item.HaltDate} ${item.HaltTime} ET` +
+			(item.ReasonCode ? ` (reason: ${item.ReasonCode})` : '');
+		const haltPayload: Record<string, string> = {
+			body_sha256:           '',
+			event_type:            'halt',
+			fetch_status:          'parsed',
+			halt_date:             item.HaltDate,
+			halt_time:             item.HaltTime,
+			id:                    haltId,
+			issued_at:             observedAt,
+			issue_name:            item.IssueName,
+			issue_symbol:          item.IssueSymbol,
+			issuer:                ORACLE_ISSUER,
+			key_id:                env.PUBLIC_KEY_ID,
+			market:                item.Market,
+			mic,
+			observation,
+			observed_at:           observedAt,
+			pause_threshold_price: item.PauseThresholdPrice,
+			r2_key:                '',
+			reason_code:           item.ReasonCode,
+			resumption_date:       item.ResumptionDate,
+			resumption_quote_time: item.ResumptionQuoteTime,
+			resumption_trade_time: item.ResumptionTradeTime,
+			schema:                'halt_archive_event/v1',
+			source,
+			source_mode,
+		};
+		const haltSigned = await signHaltArchivePayload(haltPayload, env);
+		const haltRow: HaltArchiveRow = {
+			id:           haltId,
+			source,
+			source_mode,
+			mic,
+			event_type:   'halt',
+			observed_at:  observedAt,
+			captured_at:  observedAt,
+			observation,
+			body_sha256:  '',
+			r2_key:       '',
+			payload_json: haltSigned.canonical,
+			signature:    haltSigned.signature,
+			key_id:       haltSigned.key_id,
+			created_at:   observedAt,
+		};
+		// INSERT OR IGNORE: if this halt was already captured on a prior fetch,
+		// silently skip. We do NOT replace the existing row — its first-sighting
+		// signature is the canonical anchor and is intentionally immutable.
+		await insertHaltEvent(haltRow, env, true);
+		haltRows.push(haltRow);
+	}
+
+	return { snapshot: snapshotRow, halts: haltRows };
 }
 
 // Compute HO's authoritative current session state for a MIC: schedule status
@@ -3854,7 +4057,7 @@ export async function runHaltArchiveCapture(
 ): Promise<{
 	written: number;
 	gaps:    number;
-	sources: Array<{ source: HaltArchiveSource; status: 'ok' | 'gap'; detail?: string }>;
+	sources: Array<{ source: HaltArchiveSource; status: 'ok' | 'gap' | 'skipped'; detail?: string }>;
 }> {
 	if (!env.HALT_ARCHIVE) {
 		return { written: 0, gaps: 0, sources: [] };
@@ -3865,30 +4068,54 @@ export async function runHaltArchiveCapture(
 		console.error(`HALT_ARCHIVE_SCHEMA_ERROR: ${err instanceof Error ? err.message : String(err)}`);
 		return { written: 0, gaps: 0, sources: [] };
 	}
-	const sources: Array<{ source: HaltArchiveSource; status: 'ok' | 'gap'; detail?: string }> = [];
+	const sources: Array<{ source: HaltArchiveSource; status: 'ok' | 'gap' | 'skipped'; detail?: string }> = [];
 	let written = 0;
 	let gaps    = 0;
 
+	// Nasdaq Trader is the consolidated US halt feed — NYSE-listed halts arrive
+	// here via <ndaq:Market>NYSE</ndaq:Market>, so this is the only feed we
+	// need for the US.
 	const nasdaqUrl = env.NASDAQ_HALTS_URL ?? 'https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts';
-	const nyseUrl   = env.NYSE_HALTS_URL   ?? 'https://www.nyse.com/api/trade-halts/get?market=NYSE';
 
 	try {
-		const row = await captureFeedSource({ source: 'nasdaq', url: nasdaqUrl, source_mode, now, env });
-		if (row?.source === 'gap') { gaps++; sources.push({ source: 'nasdaq', status: 'gap', detail: row.observation }); }
-		else if (row)              { written++; sources.push({ source: 'nasdaq', status: 'ok' }); }
+		const result = await captureNasdaqFeed({ url: nasdaqUrl, source_mode, now, env });
+		if (result.snapshot?.source === 'gap') {
+			gaps++;
+			sources.push({ source: 'nasdaq', status: 'gap', detail: result.snapshot.observation });
+		} else if (result.snapshot) {
+			written += 1 + result.halts.length;
+			sources.push({ source: 'nasdaq', status: 'ok', detail: `1 feed_snapshot + ${result.halts.length} halt(s)` });
+		}
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		try { await recordSignedGap({ source: 'nasdaq', source_mode, reason, now, env }); gaps++; } catch { /* swallow */ }
 		sources.push({ source: 'nasdaq', status: 'gap', detail: reason });
 	}
-	try {
-		const row = await captureFeedSource({ source: 'nyse', url: nyseUrl, source_mode, now, env });
-		if (row?.source === 'gap') { gaps++; sources.push({ source: 'nyse', status: 'gap', detail: row.observation }); }
-		else if (row)              { written++; sources.push({ source: 'nyse', status: 'ok' }); }
-	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
-		try { await recordSignedGap({ source: 'nyse', source_mode, reason, now, env }); gaps++; } catch { /* swallow */ }
-		sources.push({ source: 'nyse', status: 'gap', detail: reason });
+
+	// Direct NYSE source: intentionally skipped unless explicitly configured.
+	// The real NYSE CSV endpoint sits behind Akamai bot protection that rejects
+	// datacenter UAs; fetching it would land as a signed gap on every run and
+	// pollute day-one history. The Nasdaq consolidated feed above already
+	// covers NYSE-listed halts. A future direct NYSE source would require a
+	// browser / residential-proxy path. Unset URL → no fetch, no gap row.
+	const nyseUrl = env.NYSE_HALTS_URL?.trim() ?? '';
+	if (nyseUrl) {
+		try {
+			// Reserved slot — if a future operator wires a working NYSE feed,
+			// reuse captureNasdaqFeed only after the parser matches that feed's
+			// schema. For now this path is intentionally unreached in prod.
+			throw new Error('direct NYSE source configured but no parser is wired; refusing to fetch');
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			try { await recordSignedGap({ source: 'nyse', source_mode, reason, now, env }); gaps++; } catch { /* swallow */ }
+			sources.push({ source: 'nyse', status: 'gap', detail: reason });
+		}
+	} else {
+		sources.push({
+			source: 'nyse',
+			status: 'skipped',
+			detail: 'NYSE_HALTS_URL unset; NYSE-listed halts arrive via the Nasdaq consolidated feed (ndaq:Market="NYSE")',
+		});
 	}
 	try {
 		const rows = await captureHoSessionTransitions({ source_mode, now, env });

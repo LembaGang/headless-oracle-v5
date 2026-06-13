@@ -47,10 +47,21 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
 TEST_COUNT = "1071"
-# External halt feed URLs — defaults are public RSS / API endpoints.
-# Override per-environment with `wrangler secret put` if a feed URL changes.
+# Nasdaq Trader RSS is the CONSOLIDATED US halt feed: it carries NASDAQ-,
+# NYSE-, NYSE American-, NYSE Arca-listed halts, distinguished by the
+# <ndaq:Market> element on each <item>. Free, no auth, no API key.
+# Polling cadence is fixed at the existing 1/min cron — Nasdaq's published
+# guidance is "Data is updated each trading day once a minute. Please do not
+# query the data more than once a minute." DO NOT poll faster.
 NASDAQ_HALTS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
-NYSE_HALTS_URL   = "https://www.nyse.com/api/trade-halts/get?market=NYSE"
+# NYSE_HALTS_URL — INTENTIONALLY UNSET. The real NYSE endpoint is CSV at
+# /api/trade-halts/current/download, behind Akamai bot protection that rejects
+# server-side fetches from datacenter IPs (returns a "supported browsers"
+# challenge page, not data). The Nasdaq consolidated feed above already
+# includes NYSE-listed halts, so a direct NYSE fetch is redundant. Capture
+# loop skips silently when this slot is unset (no fetch, no gap row).
+# A future direct NYSE source would require a browser / residential-proxy
+# path; the env var is preserved for that future configuration.
 
 # ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
 # Used for circuit breaker halts and emergency market status overrides.
