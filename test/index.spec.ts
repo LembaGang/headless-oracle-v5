@@ -1,6 +1,10 @@
 import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek } from '../src';
+import worker, {
+	edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek, signPayload,
+	clearHaltArchiveSchemaCache, runHaltArchiveCapture, buildHaltArchiveDigest,
+	parseNasdaqHaltItems, ensureHaltArchiveSchema,
+} from '../src';
 
 // Clear module-level caches before every test so that tests which
 // set KV values always read from KV rather than stale in-memory entries.
@@ -10749,6 +10753,65 @@ describe('Ed25519 signing — cryptographic correctness', () => {
 	});
 });
 
+// ─── signPayload runtime type guard ──────────────────────────────────────────
+// Guards the canonicalization-parity hazard: in-repo verifier coerces with
+// String(); SDK does not. Non-string signed fields would canonicalize
+// differently across verifiers and surface as INVALID_SIGNATURE on the SDK
+// side only. Throwing at sign time makes that drift impossible to ship.
+
+describe('signPayload — runtime type guard', () => {
+	const PRIV_KEY = env.ED25519_PRIVATE_KEY;
+
+	it('throws on number value, naming the field and type', async () => {
+		await expect(
+			signPayload({ mic: 42 as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "mic" \(got number\)/);
+	});
+
+	it('throws on boolean value, naming the field and type', async () => {
+		await expect(
+			signPayload({ status: false as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "status" \(got boolean\)/);
+	});
+
+	it('throws on null value, distinguishing null from object', async () => {
+		await expect(
+			signPayload({ source: null as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "source" \(got null\)/);
+	});
+
+	it('throws on undefined value', async () => {
+		await expect(
+			signPayload({ expires_at: undefined as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "expires_at" \(got undefined\)/);
+	});
+
+	it('throws on plain object value', async () => {
+		await expect(
+			signPayload({ issuer: { nested: 'x' } as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "issuer" \(got object\)/);
+	});
+
+	it('throws on array value, distinguishing array from object', async () => {
+		await expect(
+			signPayload({ mic: ['XNYS'] as unknown as string }, PRIV_KEY),
+		).rejects.toThrow(/non-string value for field "mic" \(got array\)/);
+	});
+
+	it('accepts an all-string payload and returns a hex signature', async () => {
+		const sig = await signPayload(
+			{
+				expires_at: '2026-06-12T00:01:00.000Z',
+				issued_at:  '2026-06-12T00:00:00.000Z',
+				mic:        'XNYS',
+				status:     'OPEN',
+			},
+			PRIV_KEY,
+		);
+		expect(sig).toMatch(/^[0-9a-f]+$/);
+	});
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TASK 2: Endpoint Coverage Gaps — comprehensive tests for uncovered routes
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -11682,5 +11745,634 @@ describe('GET /.well-known/agent-card.json (A2A v1)', () => {
 		expect(tags).toContain('finance');
 		expect(tags).toContain('pre-trade');
 		expect(tags).toContain('fail-closed');
+	});
+});
+
+
+// ─── Signed Halt Archive (BUILD 2) ────────────────────────────────────────────
+//
+// Tests for the append-only signed halt archive: NYSE/Nasdaq feed capture, HO
+// session-state transitions, signed gap records, daily digest with merkle_root,
+// source_mode integrity, claim-ceiling framing, and the two serving endpoints.
+
+// Realistic ndaq:-namespaced fixture matching the actual Nasdaq Trader feed
+// shape. Three items: NASDAQ-listed, NYSE-listed (proves NYSE-listed halts
+// arrive via the consolidated feed), and NYSE American (proves we keep the
+// row even without a clean MIC mapping).
+const NASDAQ_RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:ndaq="http://www.nasdaqtrader.com">
+  <channel>
+    <title>Nasdaq Trader Trading Halts</title>
+    <item>
+      <title>ABCD — Halt</title>
+      <description><![CDATA[<p>halted</p>]]></description>
+      <ndaq:IssueSymbol>ABCD</ndaq:IssueSymbol>
+      <ndaq:IssueName>Sample Nasdaq Co</ndaq:IssueName>
+      <ndaq:HaltDate>06/13/2026</ndaq:HaltDate>
+      <ndaq:HaltTime>14:30:00.123</ndaq:HaltTime>
+      <ndaq:Market>NASDAQ</ndaq:Market>
+      <ndaq:ReasonCode>LUDP</ndaq:ReasonCode>
+      <ndaq:PauseThresholdPrice></ndaq:PauseThresholdPrice>
+      <ndaq:ResumptionDate>06/13/2026</ndaq:ResumptionDate>
+      <ndaq:ResumptionQuoteTime>14:35:00</ndaq:ResumptionQuoteTime>
+      <ndaq:ResumptionTradeTime>14:35:05</ndaq:ResumptionTradeTime>
+    </item>
+    <item>
+      <title>WXYZ — Halt</title>
+      <ndaq:IssueSymbol>WXYZ</ndaq:IssueSymbol>
+      <ndaq:IssueName>NYSE Test Co</ndaq:IssueName>
+      <ndaq:HaltDate>06/13/2026</ndaq:HaltDate>
+      <ndaq:HaltTime>14:32:15.000</ndaq:HaltTime>
+      <ndaq:Market>NYSE</ndaq:Market>
+      <ndaq:ReasonCode>T1</ndaq:ReasonCode>
+      <ndaq:PauseThresholdPrice/>
+      <ndaq:ResumptionDate></ndaq:ResumptionDate>
+      <ndaq:ResumptionQuoteTime></ndaq:ResumptionQuoteTime>
+      <ndaq:ResumptionTradeTime></ndaq:ResumptionTradeTime>
+    </item>
+    <item>
+      <title>AMEX1 — Halt</title>
+      <ndaq:IssueSymbol>AMEX1</ndaq:IssueSymbol>
+      <ndaq:IssueName>NYSE American Co &amp; Affiliates</ndaq:IssueName>
+      <ndaq:HaltDate>06/13/2026</ndaq:HaltDate>
+      <ndaq:HaltTime>14:40:00.000</ndaq:HaltTime>
+      <ndaq:Market>NYSE American</ndaq:Market>
+      <ndaq:ReasonCode>T12</ndaq:ReasonCode>
+      <ndaq:PauseThresholdPrice></ndaq:PauseThresholdPrice>
+      <ndaq:ResumptionDate></ndaq:ResumptionDate>
+      <ndaq:ResumptionQuoteTime></ndaq:ResumptionQuoteTime>
+      <ndaq:ResumptionTradeTime></ndaq:ResumptionTradeTime>
+    </item>
+  </channel>
+</rss>`;
+
+describe('parseNasdaqHaltItems — RSS parser against real ndaq: schema', () => {
+	it('extracts all populated ndaq: fields from each item', () => {
+		const items = parseNasdaqHaltItems(NASDAQ_RSS_FIXTURE);
+		expect(items.length).toBe(3);
+		const abcd = items[0];
+		expect(abcd.IssueSymbol).toBe('ABCD');
+		expect(abcd.IssueName).toBe('Sample Nasdaq Co');
+		expect(abcd.HaltDate).toBe('06/13/2026');
+		expect(abcd.HaltTime).toBe('14:30:00.123');
+		expect(abcd.Market).toBe('NASDAQ');
+		expect(abcd.ReasonCode).toBe('LUDP');
+		expect(abcd.PauseThresholdPrice).toBe('');
+		expect(abcd.ResumptionDate).toBe('06/13/2026');
+		expect(abcd.ResumptionQuoteTime).toBe('14:35:00');
+		expect(abcd.ResumptionTradeTime).toBe('14:35:05');
+	});
+
+	it('captures NYSE-listed halts via the consolidated feed (ndaq:Market=NYSE)', () => {
+		const items = parseNasdaqHaltItems(NASDAQ_RSS_FIXTURE);
+		const nyseRow = items.find(i => i.Market === 'NYSE');
+		expect(nyseRow).toBeTruthy();
+		expect(nyseRow!.IssueSymbol).toBe('WXYZ');
+		expect(nyseRow!.HaltTime).toBe('14:32:15.000');
+		expect(nyseRow!.ReasonCode).toBe('T1');
+	});
+
+	it('decodes XML entities in field values', () => {
+		const items = parseNasdaqHaltItems(NASDAQ_RSS_FIXTURE);
+		const amex = items.find(i => i.IssueSymbol === 'AMEX1');
+		expect(amex!.IssueName).toBe('NYSE American Co & Affiliates');
+	});
+
+	it('handles self-closing <ndaq:Field/> as an empty string, not as missing data', () => {
+		const items = parseNasdaqHaltItems(NASDAQ_RSS_FIXTURE);
+		const wxyz = items.find(i => i.IssueSymbol === 'WXYZ');
+		expect(wxyz!.PauseThresholdPrice).toBe('');
+	});
+
+	it('drops items missing the (IssueSymbol, HaltDate, HaltTime) triple — unusable archive data', () => {
+		const xml = `<?xml version="1.0"?>
+<rss xmlns:ndaq="http://www.nasdaqtrader.com"><channel>
+  <item>
+    <ndaq:IssueSymbol></ndaq:IssueSymbol>
+    <ndaq:HaltDate>06/13/2026</ndaq:HaltDate>
+    <ndaq:HaltTime>14:30:00.000</ndaq:HaltTime>
+    <ndaq:Market>NASDAQ</ndaq:Market>
+  </item>
+  <item>
+    <ndaq:IssueSymbol>GOOD</ndaq:IssueSymbol>
+    <ndaq:HaltDate>06/13/2026</ndaq:HaltDate>
+    <ndaq:HaltTime>14:31:00.000</ndaq:HaltTime>
+    <ndaq:Market>NASDAQ</ndaq:Market>
+  </item>
+</channel></rss>`;
+		const items = parseNasdaqHaltItems(xml);
+		expect(items.length).toBe(1);
+		expect(items[0].IssueSymbol).toBe('GOOD');
+	});
+});
+
+describe('Signed Halt Archive — capture, signing, gap records, framing', () => {
+	const fetchMock: { current: ((url: string) => Promise<Response>) | null } = { current: null };
+	let originalFetch: typeof fetch;
+
+	async function truncateArchive(): Promise<void> {
+		if (!env.HALT_ARCHIVE) return;
+		try { await env.HALT_ARCHIVE.prepare('DELETE FROM halt_events').run(); } catch { /* not yet */ }
+		try { await env.HALT_ARCHIVE.prepare('DELETE FROM halt_archive_digest').run(); } catch { /* not yet */ }
+	}
+
+	beforeEach(async () => {
+		vi.useRealTimers();
+		clearHaltArchiveSchemaCache();
+		originalFetch = globalThis.fetch;
+		// Default mock: Nasdaq Trader returns realistic ndaq: RSS. NYSE_HALTS_URL
+		// is intentionally unset in test env (matches prod default), so no nyse
+		// fetch should occur from the capture path.
+		fetchMock.current = async (url: string) => {
+			if (url.includes('nasdaqtrader.com')) {
+				return new Response(NASDAQ_RSS_FIXTURE, { status: 200, headers: { 'Content-Type': 'application/rss+xml' } });
+			}
+			return originalFetch(url);
+		};
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const u = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (fetchMock.current) return fetchMock.current(u);
+			return originalFetch(input, init);
+		}) as typeof fetch;
+		await truncateArchive();
+		if (env.ORACLE_TELEMETRY) {
+			const list = await env.ORACLE_TELEMETRY.list({ prefix: 'halt_archive_last_state:' });
+			await Promise.all(list.keys.map(k => env.ORACLE_TELEMETRY.delete(k.name)));
+		}
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it('writes signed feed_snapshot rows to D1 on successful nasdaq fetch', async () => {
+		const result = await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		expect(result.written).toBeGreaterThan(0);
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT * FROM halt_events WHERE source = 'nasdaq' AND event_type = 'feed_snapshot' ORDER BY observed_at DESC LIMIT 1`,
+		).all<Record<string, unknown>>();
+		expect(results.length).toBe(1);
+		const row = results[0];
+		expect(row.event_type).toBe('feed_snapshot');
+		expect(row.source_mode).toBe('LIVE');
+		expect(typeof row.signature).toBe('string');
+		expect((row.signature as string).length).toBeGreaterThan(64);
+		expect(typeof row.body_sha256).toBe('string');
+		expect((row.body_sha256 as string).length).toBe(64);
+		expect(row.r2_key).toContain('raw/nasdaq/');
+	});
+
+	it('emits per-halt signed rows from the parsed RSS, with mic mapping (NASDAQ→XNAS, NYSE→XNYS)', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT mic, observation, payload_json, signature FROM halt_events WHERE event_type = 'halt' ORDER BY observation ASC`,
+		).all<{ mic: string; observation: string; payload_json: string; signature: string }>();
+		// Three items in the fixture → three halt rows.
+		expect(results.length).toBe(3);
+		// NASDAQ-listed → XNAS
+		const nasdaqRow = results.find(r => r.observation.includes('ABCD'));
+		expect(nasdaqRow).toBeTruthy();
+		expect(nasdaqRow!.mic).toBe('XNAS');
+		expect(nasdaqRow!.observation).toMatch(/^source nasdaq reported halt of ABCD/);
+		// NYSE-listed (via consolidated feed) → XNYS
+		const nyseRow = results.find(r => r.observation.includes('WXYZ'));
+		expect(nyseRow).toBeTruthy();
+		expect(nyseRow!.mic).toBe('XNYS');
+		expect(nyseRow!.observation).toMatch(/^source nasdaq reported halt of WXYZ/);
+		// NYSE American → no clean MIC; mic empty, market preserved in payload
+		const amexRow = results.find(r => r.observation.includes('AMEX1'));
+		expect(amexRow).toBeTruthy();
+		expect(amexRow!.mic).toBe('');
+		expect(amexRow!.payload_json).toContain('"market":"NYSE American"');
+		// All signatures valid hex
+		for (const r of results) expect(r.signature).toMatch(/^[0-9a-f]{128}$/);
+	});
+
+	it('dedupes per-halt rows by (IssueSymbol, HaltDate, HaltTime) within a single fetch', async () => {
+		// Replace mock with a fixture where the same triple appears twice.
+		const dupeXml = `<?xml version="1.0"?>
+<rss xmlns:ndaq="http://www.nasdaqtrader.com"><channel>
+  <item><ndaq:IssueSymbol>DUPE</ndaq:IssueSymbol><ndaq:IssueName>Dupe Co</ndaq:IssueName><ndaq:HaltDate>06/13/2026</ndaq:HaltDate><ndaq:HaltTime>14:30:00.000</ndaq:HaltTime><ndaq:Market>NASDAQ</ndaq:Market><ndaq:ReasonCode>LUDP</ndaq:ReasonCode><ndaq:PauseThresholdPrice></ndaq:PauseThresholdPrice><ndaq:ResumptionDate></ndaq:ResumptionDate><ndaq:ResumptionQuoteTime></ndaq:ResumptionQuoteTime><ndaq:ResumptionTradeTime></ndaq:ResumptionTradeTime></item>
+  <item><ndaq:IssueSymbol>DUPE</ndaq:IssueSymbol><ndaq:IssueName>Dupe Co</ndaq:IssueName><ndaq:HaltDate>06/13/2026</ndaq:HaltDate><ndaq:HaltTime>14:30:00.000</ndaq:HaltTime><ndaq:Market>NASDAQ</ndaq:Market><ndaq:ReasonCode>LUDP</ndaq:ReasonCode><ndaq:PauseThresholdPrice></ndaq:PauseThresholdPrice><ndaq:ResumptionDate></ndaq:ResumptionDate><ndaq:ResumptionQuoteTime></ndaq:ResumptionQuoteTime><ndaq:ResumptionTradeTime></ndaq:ResumptionTradeTime></item>
+</channel></rss>`;
+		fetchMock.current = async (url: string) => {
+			if (url.includes('nasdaqtrader.com')) return new Response(dupeXml, { status: 200 });
+			return originalFetch(url);
+		};
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT count(*) AS c FROM halt_events WHERE event_type = 'halt'`,
+		).all<{ c: number }>();
+		expect(results[0].c).toBe(1);
+	});
+
+	it('dedupes across fetches via INSERT OR IGNORE — re-observing the same halt is a no-op', async () => {
+		// Two captures of the same RSS body. The same halt triples should NOT
+		// produce new halt rows on the second capture; only the feed_snapshot is
+		// new (different observed_at + UUID).
+		await runHaltArchiveCapture(env, new Date('2026-06-13T14:35:00Z'), 'LIVE');
+		const after1 = await env.HALT_ARCHIVE!.prepare(
+			`SELECT id, signature FROM halt_events WHERE event_type = 'halt' ORDER BY id ASC`,
+		).all<{ id: string; signature: string }>();
+		expect(after1.results.length).toBe(3);
+
+		await runHaltArchiveCapture(env, new Date('2026-06-13T14:36:00Z'), 'LIVE');
+		const after2 = await env.HALT_ARCHIVE!.prepare(
+			`SELECT id, signature FROM halt_events WHERE event_type = 'halt' ORDER BY id ASC`,
+		).all<{ id: string; signature: string }>();
+		expect(after2.results.length).toBe(3);
+		// Every halt-row signature from the first capture must be byte-identical
+		// in the second — INSERT OR IGNORE never replaces existing rows.
+		const lookup = new Map(after2.results.map(r => [r.id, r.signature]));
+		for (const r of after1.results) {
+			expect(lookup.get(r.id)).toBe(r.signature);
+		}
+	});
+
+	it('NYSE source unset (default) does NOT emit a gap row — distinct from a real fetch failure', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT count(*) AS c FROM halt_events WHERE source = 'gap'`,
+		).all<{ c: number }>();
+		expect(results[0].c).toBe(0);
+		// And the capture summary records the source as 'skipped', not 'gap'.
+		const summary = await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const nyseEntry = summary.sources.find(s => s.source === 'nyse');
+		expect(nyseEntry).toBeTruthy();
+		expect(nyseEntry!.status).toBe('skipped');
+	});
+
+	it('records a SIGNED gap row when a real Nasdaq fetch fails (not silent)', async () => {
+		fetchMock.current = async (url: string) => {
+			if (url.includes('nasdaqtrader.com')) throw new TypeError('network unreachable');
+			return originalFetch(url);
+		};
+		const result = await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		expect(result.gaps).toBeGreaterThanOrEqual(1);
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT * FROM halt_events WHERE source = 'gap' ORDER BY observed_at DESC LIMIT 1`,
+		).all<Record<string, unknown>>();
+		expect(results.length).toBe(1);
+		const gapRow = results[0];
+		expect(gapRow.event_type).toBe('gap');
+		expect(typeof gapRow.signature).toBe('string');
+		expect((gapRow.signature as string).length).toBeGreaterThan(64);
+		expect(gapRow.observation).toMatch(/^source nasdaq unreachable at/);
+	});
+
+	it('also records a signed gap when feed returns non-2xx (HTTP error → signed fact)', async () => {
+		fetchMock.current = async (url: string) => {
+			if (url.includes('nasdaqtrader.com')) return new Response('forbidden', { status: 403 });
+			return originalFetch(url);
+		};
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT * FROM halt_events WHERE source = 'gap'`,
+		).all<Record<string, unknown>>();
+		expect(results.length).toBeGreaterThanOrEqual(1);
+		const row = results.find(r => String(r.observation).includes('nasdaq'));
+		expect(row).toBeTruthy();
+		expect(String(row!.observation)).toMatch(/HTTP 403/);
+	});
+
+	it('source_mode flag is present and matches the call mode on every row', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'BACKFILL');
+		const { results } = await env.HALT_ARCHIVE!.prepare(`SELECT source_mode FROM halt_events`).all<{ source_mode: string }>();
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			expect(r.source_mode === 'LIVE' || r.source_mode === 'BACKFILL').toBe(true);
+			expect(r.source_mode).toBe('BACKFILL');
+		}
+	});
+
+	it('LIVE and BACKFILL are never silently mixed within a single capture call', async () => {
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:00:00Z'), 'LIVE');
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:01:00Z'), 'BACKFILL');
+		const live = await env.HALT_ARCHIVE!.prepare(`SELECT count(*) AS c FROM halt_events WHERE source_mode = 'LIVE'`).first<{ c: number }>();
+		const back = await env.HALT_ARCHIVE!.prepare(`SELECT count(*) AS c FROM halt_events WHERE source_mode = 'BACKFILL'`).first<{ c: number }>();
+		expect((live?.c ?? 0)).toBeGreaterThan(0);
+		expect((back?.c ?? 0)).toBeGreaterThan(0);
+	});
+
+	it('every payload uses observed-source framing — never claims ground truth', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(`SELECT observation, payload_json FROM halt_events`).all<{ observation: string; payload_json: string }>();
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			expect(r.observation).toMatch(/^(source [a-z_]+ (fetched|unreachable|reported)|ho schedule computation)/);
+			expect(r.observation).not.toMatch(/\bis (true|open|closed|halted) at\b/i);
+		}
+	});
+
+	it('signing uses the canonical signPayload path — non-string fields would have thrown', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(`SELECT signature FROM halt_events`).all<{ signature: string }>();
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			expect(r.signature).toMatch(/^[0-9a-f]{128}$/);
+		}
+	});
+
+	it('signPayload directly rejects non-string fields (guard regression check)', async () => {
+		const pk = env.ED25519_PRIVATE_KEY as unknown as string;
+		await expect(
+			signPayload({ a: 'ok', b: 42 as unknown as string }, pk),
+		).rejects.toThrow(/non-string value for field "b"/);
+	});
+
+	it('repeated capture is observably append-only — earlier rows are never modified or removed', async () => {
+		// Behavioral proof of the append-only contract: capture twice, then prove
+		// (a) the row count grew, (b) every row from the first run still exists
+		// with byte-identical signature and observation. Halt rows dedupe across
+		// fetches via INSERT OR IGNORE; the feed_snapshot row is new each time.
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:00:00Z'), 'LIVE');
+		const first = await env.HALT_ARCHIVE!.prepare(
+			`SELECT id, signature, observation FROM halt_events ORDER BY id ASC`,
+		).all<{ id: string; signature: string; observation: string }>();
+		expect(first.results.length).toBeGreaterThan(0);
+
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:01:00Z'), 'LIVE');
+		const second = await env.HALT_ARCHIVE!.prepare(
+			`SELECT id, signature, observation FROM halt_events ORDER BY id ASC`,
+		).all<{ id: string; signature: string; observation: string }>();
+		expect(second.results.length).toBeGreaterThan(first.results.length);
+
+		const lookup = new Map(second.results.map(r => [r.id, r]));
+		for (const r of first.results) {
+			const after = lookup.get(r.id);
+			expect(after).toBeTruthy();
+			expect(after!.signature).toBe(r.signature);
+			expect(after!.observation).toBe(r.observation);
+		}
+	});
+
+	it('captures HO session_transition rows when MIC state changes between calls', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const before = await env.HALT_ARCHIVE!.prepare(
+			`SELECT count(*) AS c FROM halt_events WHERE event_type = 'session_transition'`,
+		).first<{ c: number }>();
+		expect(before?.c ?? 0).toBe(0);
+
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status:  'HALTED',
+			reason:  'test override for session-transition capture',
+			expires: new Date(Date.now() + 3600_000).toISOString(),
+		}));
+		clearOverrideCache();
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+
+		const after = await env.HALT_ARCHIVE!.prepare(
+			`SELECT mic, source, event_type, observation FROM halt_events WHERE event_type = 'session_transition'`,
+		).all<Record<string, unknown>>();
+		const xnysRow = (after.results ?? []).find(r => r.mic === 'XNYS');
+		expect(xnysRow).toBeTruthy();
+		expect(xnysRow!.source).toBe('ho_session');
+		expect(String(xnysRow!.observation)).toMatch(/^ho schedule computation: XNYS transitioned from /);
+		expect(String(xnysRow!.observation)).toContain('to HALTED');
+
+		await env.ORACLE_OVERRIDES.delete('XNYS');
+		clearOverrideCache();
+	});
+});
+
+describe('Signed Halt Archive — daily digest with merkle_root', () => {
+	async function seedSignedRow(
+		date: string,
+		idx: number,
+		source: 'nasdaq' | 'nyse' | 'ho_session' = 'nasdaq',
+	): Promise<void> {
+		const id          = `seed-${date}-${idx}`;
+		const observedAt  = `${date}T${String(idx % 24).padStart(2, '0')}:00:00.000Z`;
+		const observation = `source ${source} fetched 200 OK at ${observedAt}; body sha256 ${'a'.repeat(64)}`;
+		const payload: Record<string, string> = {
+			body_sha256:  'a'.repeat(64),
+			event_type:   'feed_snapshot',
+			fetch_status: '200',
+			id,
+			issued_at:    observedAt,
+			issuer:       'headlessoracle.com',
+			key_id:       env.PUBLIC_KEY_ID as unknown as string,
+			mic:          '',
+			observation,
+			observed_at:  observedAt,
+			r2_key:       `raw/${source}/${observedAt}.bin`,
+			schema:       'halt_archive_event/v1',
+			source,
+			source_mode:  'LIVE',
+			source_url:   `https://example.invalid/${source}`,
+		};
+		const sig = await signPayload(payload, env.ED25519_PRIVATE_KEY as unknown as string);
+		const sorted: Record<string, string> = {};
+		for (const k of Object.keys(payload).sort()) sorted[k] = payload[k];
+		await env.HALT_ARCHIVE!.prepare(
+			`INSERT INTO halt_events (id, source, source_mode, mic, event_type, observed_at, captured_at, observation, body_sha256, r2_key, payload_json, signature, key_id, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			id, source, 'LIVE', '', 'feed_snapshot', observedAt, observedAt, observation,
+			'a'.repeat(64), `raw/${source}/${observedAt}.bin`, JSON.stringify(sorted),
+			sig, env.PUBLIC_KEY_ID as unknown as string, observedAt,
+		).run();
+	}
+
+	beforeEach(async () => {
+		// Restore real timers — earlier tests in the suite leave faked system
+		// time behind (vi.setSystemTime), which makes our date-validation
+		// endpoints reject 2026-06-XX dates as "future."
+		vi.useRealTimers();
+		clearHaltArchiveSchemaCache();
+		await ensureHaltArchiveSchema(env);
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_events').run(); } catch { /* ok */ }
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_archive_digest').run(); } catch { /* ok */ }
+	});
+
+	it('returns a signed digest with merkle_root over the day\'s events', async () => {
+		await seedSignedRow('2026-06-10', 1);
+		await seedSignedRow('2026-06-10', 2);
+		await seedSignedRow('2026-06-10', 3);
+		const digest = await buildHaltArchiveDigest('2026-06-10', env);
+		expect(digest).toBeTruthy();
+		expect(digest!.date).toBe('2026-06-10');
+		expect(digest!.event_count).toBe(3);
+		expect(typeof digest!.merkle_root).toBe('string');
+		expect((digest!.merkle_root as string)).toMatch(/^[0-9a-f]{64}$/);
+		expect(typeof digest!.signature).toBe('string');
+		expect((digest!.signature as string)).toMatch(/^[0-9a-f]{128}$/);
+	});
+
+	it('merkle_root is deterministic for the same input set', async () => {
+		await seedSignedRow('2026-06-09', 1);
+		await seedSignedRow('2026-06-09', 2);
+		const d1 = await buildHaltArchiveDigest('2026-06-09', env);
+		const d2 = await buildHaltArchiveDigest('2026-06-09', env);
+		expect(d1!.merkle_root).toBe(d2!.merkle_root);
+		expect(d1!.signature).toBe(d2!.signature);
+	});
+
+	it('chains to the previous day\'s merkle_root', async () => {
+		await seedSignedRow('2026-06-07', 1);
+		await seedSignedRow('2026-06-08', 1);
+		const d7 = await buildHaltArchiveDigest('2026-06-07', env);
+		const d8 = await buildHaltArchiveDigest('2026-06-08', env);
+		expect(d7!.previous_day_merkle_root).toBe('');
+		expect(d7!.chain_length).toBe(1);
+		expect(d8!.previous_day_merkle_root).toBe(d7!.merkle_root);
+		expect(d8!.chain_length).toBe(2);
+	});
+
+	it('source_modes field reflects the modes present in the day', async () => {
+		await seedSignedRow('2026-06-06', 1);
+		const digest = await buildHaltArchiveDigest('2026-06-06', env);
+		expect(digest!.source_modes).toEqual(['LIVE']);
+	});
+});
+
+describe('GET /v1/halts/digest/{date} — free public digest', () => {
+	beforeEach(async () => {
+		// Restore real timers — earlier tests in the suite leave faked system
+		// time behind (vi.setSystemTime), which makes our date-validation
+		// endpoints reject 2026-06-XX dates as "future."
+		vi.useRealTimers();
+		clearHaltArchiveSchemaCache();
+		await ensureHaltArchiveSchema(env);
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_events').run(); } catch { /* ok */ }
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_archive_digest').run(); } catch { /* ok */ }
+	});
+
+	it('returns 400 on malformed date', async () => {
+		const response = await fetchWorker('/v1/halts/digest/not-a-date');
+		expect(response.status).toBe(400);
+	});
+
+	it('returns 400 on future date', async () => {
+		const future = new Date(Date.now() + 86400_000 * 2).toISOString().slice(0, 10);
+		const response = await fetchWorker(`/v1/halts/digest/${future}`);
+		expect(response.status).toBe(400);
+	});
+
+	it('returns 404 with DIGEST_NOT_YET_FINAL for today (incomplete day)', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const response = await fetchWorker(`/v1/halts/digest/${today}`);
+		expect(response.status).toBe(404);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body.error).toBe('DIGEST_NOT_YET_FINAL');
+	});
+
+	it('returns digest JSON for a past date that has events', async () => {
+		const past = '2026-06-05';
+		const id = `endpoint-test-${past}`;
+		const payload: Record<string, string> = {
+			body_sha256:  'b'.repeat(64),
+			event_type:   'feed_snapshot',
+			fetch_status: '200',
+			id,
+			issued_at:    `${past}T01:00:00.000Z`,
+			issuer:       'headlessoracle.com',
+			key_id:       env.PUBLIC_KEY_ID as unknown as string,
+			mic:          '',
+			observation:  `source nasdaq fetched 200 OK at ${past}T01:00:00.000Z; body sha256 ${'b'.repeat(64)}`,
+			observed_at:  `${past}T01:00:00.000Z`,
+			r2_key:       `raw/nasdaq/${past}T01:00:00.000Z.xml`,
+			schema:       'halt_archive_event/v1',
+			source:       'nasdaq',
+			source_mode:  'LIVE',
+			source_url:   'https://example.invalid/nasdaq',
+		};
+		const sig = await signPayload(payload, env.ED25519_PRIVATE_KEY as unknown as string);
+		const sorted: Record<string, string> = {};
+		for (const k of Object.keys(payload).sort()) sorted[k] = payload[k];
+		await env.HALT_ARCHIVE!.prepare(
+			`INSERT INTO halt_events (id, source, source_mode, mic, event_type, observed_at, captured_at, observation, body_sha256, r2_key, payload_json, signature, key_id, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			id, 'nasdaq', 'LIVE', '', 'feed_snapshot', `${past}T01:00:00.000Z`, `${past}T01:00:00.000Z`,
+			payload.observation, 'b'.repeat(64), `raw/nasdaq/${past}T01:00:00.000Z.xml`, JSON.stringify(sorted),
+			sig, env.PUBLIC_KEY_ID as unknown as string, `${past}T01:00:00.000Z`,
+		).run();
+
+		const response = await fetchWorker(`/v1/halts/digest/${past}`);
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body.schema).toBe('halt_archive_digest/v1');
+		expect(typeof body.framing).toBe('string');
+		expect(String(body.framing)).toMatch(/observed-source/i);
+		expect(typeof body.merkle_root).toBe('string');
+		expect(typeof body.signature).toBe('string');
+	});
+});
+
+describe('GET /v1/halts — paid endpoint', () => {
+	let originalFetch: typeof fetch;
+
+	beforeEach(async () => {
+		clearHaltArchiveSchemaCache();
+		clearApiKeyCache();
+		// Stub fetch so runHaltArchiveCapture seeds D1 from a known fixture
+		// instead of hitting nasdaqtrader.com over the network.
+		originalFetch = globalThis.fetch;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const u = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (u.includes('nasdaqtrader.com')) {
+				return Promise.resolve(new Response(NASDAQ_RSS_FIXTURE, {
+					status: 200, headers: { 'Content-Type': 'application/rss+xml' },
+				}));
+			}
+			return originalFetch(input, init);
+		}) as typeof fetch;
+		await ensureHaltArchiveSchema(env);
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_events').run(); } catch { /* ok */ }
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it('returns 402 when no payment or paid key provided', async () => {
+		const response = await fetchWorker('/v1/halts');
+		expect(response.status).toBe(402);
+	});
+
+	it('accepts MASTER_API_KEY (internal plan) as paid access', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const response = await fetchWorker('/v1/halts?limit=5', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body.schema).toBe('halt_archive_event/v1');
+		expect(typeof body.framing).toBe('string');
+		expect(Array.isArray(body.events)).toBe(true);
+		expect(typeof body.count).toBe('number');
+	});
+
+	it('respects ?mic= and ?source= filters', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status: 'HALTED', reason: 'test', expires: new Date(Date.now() + 3600_000).toISOString(),
+		}));
+		clearOverrideCache();
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+
+		const response = await fetchWorker('/v1/halts?source=ho_session&mic=XNYS&limit=10', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as { events: Array<Record<string, unknown>> };
+		for (const e of body.events) {
+			expect(e.source).toBe('ho_session');
+			expect(e.mic).toBe('XNYS');
+		}
+
+		await env.ORACLE_OVERRIDES.delete('XNYS');
+		clearOverrideCache();
+	});
+
+	it('still returns 402 if a free-plan sandbox key is presented', async () => {
+		const sandboxResp = await fetchSandbox('halts-sandbox@example.com');
+		expect(sandboxResp.status).toBe(200);
+		const sb = await sandboxResp.json() as { api_key: string };
+		const response = await fetchWorker('/v1/halts', {
+			headers: { 'X-Oracle-Key': sb.api_key },
+		});
+		expect(response.status).toBe(402);
 	});
 });

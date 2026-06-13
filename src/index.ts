@@ -153,6 +153,16 @@ export interface Env {
 	BETA_KEY_SUNSET_DATE?:       string;  // Human-readable date string, e.g. "March 31, 2026"
 	STREAM_COORDINATOR:          DurableObjectNamespace;  // SSE stream coordinator — one DO per MIC
 	WEBHOOK_DISPATCHER:          DurableObjectNamespace;  // Webhook delivery DO — alarm-based state-change fan-out
+	// ── Signed Halt Archive ──────────────────────────────────────────────────
+	// D1 holds append-only signed halt events from NYSE / Nasdaq feeds and HO's
+	// own 28-MIC session-state transitions. R2 holds the raw source bytes,
+	// anchored by sha256 from the D1 row so any consumer can independently
+	// re-verify what each source actually said at a given timestamp.
+	// See migrations/0001_halt_archive.sql for the schema.
+	HALT_ARCHIVE?:        D1Database;
+	HALT_ARCHIVE_RAW?:    R2Bucket;
+	NASDAQ_HALTS_URL?:    string;
+	NYSE_HALTS_URL?:      string;
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -1606,13 +1616,21 @@ function getNextSession(mic: string, now: Date): NextSession | null {
 
 // ─── Signing ─────────────────────────────────────────────────────────────────
 
-async function signPayload(payload: Record<string, string>, privKeyHex: string): Promise<string> {
+export async function signPayload(payload: Record<string, string>, privKeyHex: string): Promise<string> {
 	// Canonical form: keys sorted alphabetically, serialised with no whitespace.
 	// Deterministic regardless of JS object insertion order.
 	// See /v5/keys → canonical_payload_spec for the published specification.
 	const sorted: Record<string, string> = {};
 	for (const key of Object.keys(payload).sort()) {
-		sorted[key] = payload[key];
+		// Runtime guard: signed fields MUST be strings. In-repo verifier coerces
+		// with String(); SDK does not. Coercing here would surface as INVALID_SIGNATURE
+		// on SDK consumers only — throw at sign time so the bug can't ship.
+		const v = payload[key] as unknown;
+		if (typeof v !== 'string') {
+			const t = v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v;
+			throw new Error(`signPayload: non-string value for field "${key}" (got ${t})`);
+		}
+		sorted[key] = v;
 	}
 	const canonical = JSON.stringify(sorted);
 	const msgBytes  = new TextEncoder().encode(canonical);
@@ -3432,6 +3450,832 @@ async function getMcpUsageToday(today: string, env: Env): Promise<{ unique_clien
 		}
 	} catch { /* KV unavailable — return zeros */ }
 	return { unique_clients_today, total_requests_today };
+}
+
+// ─── Signed Halt Archive ─────────────────────────────────────────────────────
+// Append-only D1 archive of every halt / session-transition / gap event the
+// worker observes. Every row is Ed25519-signed via the existing signPayload
+// path — the string-only assertion guard there is load-bearing, do not bypass.
+//
+// Claim ceiling: every observation phrase is "source <S> reported X at T" or
+// "ho schedule computation: ..." — NEVER "X was true at T". The archive
+// attests what a named feed said, not ground truth.
+//
+// Storage: D1 halt_events table (append-only — no UPDATE / DELETE in code),
+// R2 HALT_ARCHIVE_RAW for raw source bytes (anchored by sha256 from D1).
+//
+// source_mode is on every row: LIVE = ongoing cron capture, BACKFILL = one-shot
+// historical pull. They are never silently mixed; the flag is required.
+//
+// Value of this archive is a function of start date — NYSE/Nasdaq public feeds
+// retain ~1 year, so days not captured are lost forever. Ship the capture loop
+// first; the serving endpoints can land later. See PRD "BUILD 2".
+
+const HALT_ARCHIVE_RECENT_LIMIT = 1000;
+const HALT_ARCHIVE_DEFAULT_LIMIT = 100;
+const HALT_ARCHIVE_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB cap on raw R2 writes
+const HALT_ARCHIVE_FETCH_TIMEOUT_MS = 8_000;
+const HALT_ARCHIVE_KV_LAST_STATE_PREFIX = 'halt_archive_last_state:';
+
+type HaltArchiveSource = 'nyse' | 'nasdaq' | 'ho_session' | 'gap';
+type HaltArchiveSourceMode = 'LIVE' | 'BACKFILL';
+type HaltArchiveEventType = 'feed_snapshot' | 'session_transition' | 'halt' | 'gap';
+
+interface HaltArchiveRow {
+	id:           string;
+	source:       HaltArchiveSource;
+	source_mode:  HaltArchiveSourceMode;
+	mic:          string;
+	event_type:   HaltArchiveEventType;
+	observed_at:  string;
+	captured_at:  string;
+	observation:  string;
+	body_sha256:  string;
+	r2_key:       string;
+	payload_json: string;
+	signature:    string;
+	key_id:       string;
+	created_at:   string;
+}
+
+let _haltSchemaEnsuredPromise: Promise<void> | null = null;
+
+// Reset the schema-ensured memo. Tests call this in beforeEach so the
+// CREATE TABLE IF NOT EXISTS runs against the per-test Miniflare D1 instance.
+export function clearHaltArchiveSchemaCache(): void {
+	_haltSchemaEnsuredPromise = null;
+}
+
+export async function ensureHaltArchiveSchema(env: Env): Promise<void> {
+	if (!env.HALT_ARCHIVE) return;
+	if (_haltSchemaEnsuredPromise) return _haltSchemaEnsuredPromise;
+	_haltSchemaEnsuredPromise = (async () => {
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE TABLE IF NOT EXISTS halt_events (
+				id              TEXT PRIMARY KEY,
+				source          TEXT NOT NULL,
+				source_mode     TEXT NOT NULL,
+				mic             TEXT NOT NULL,
+				event_type      TEXT NOT NULL,
+				observed_at     TEXT NOT NULL,
+				captured_at     TEXT NOT NULL,
+				observation     TEXT NOT NULL,
+				body_sha256     TEXT NOT NULL,
+				r2_key          TEXT NOT NULL,
+				payload_json    TEXT NOT NULL,
+				signature       TEXT NOT NULL,
+				key_id          TEXT NOT NULL,
+				created_at      TEXT NOT NULL
+			)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_halt_events_observed_at ON halt_events (observed_at)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_halt_events_source ON halt_events (source)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_halt_events_mic ON halt_events (mic)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_halt_events_source_mode ON halt_events (source_mode)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_halt_events_event_type ON halt_events (event_type)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE TABLE IF NOT EXISTS halt_archive_digest (
+				date                      TEXT PRIMARY KEY,
+				event_count               INTEGER NOT NULL,
+				merkle_root               TEXT NOT NULL,
+				previous_day_merkle_root  TEXT NOT NULL,
+				chain_length              INTEGER NOT NULL,
+				source_modes              TEXT NOT NULL,
+				payload_json              TEXT NOT NULL,
+				signature                 TEXT NOT NULL,
+				key_id                    TEXT NOT NULL,
+				created_at                TEXT NOT NULL
+			)`,
+		).run();
+	})().catch((err) => {
+		// On failure, clear the memo so the next call retries. We surface the
+		// error via the caller's try/catch — this returns a rejected promise.
+		_haltSchemaEnsuredPromise = null;
+		throw err;
+	});
+	return _haltSchemaEnsuredPromise;
+}
+
+// Sign a halt-archive payload via the existing signPayload path. signPayload's
+// string-only assertion guard is the spec-conformance line for the receipt
+// schema; the halt archive piggybacks on it deliberately. If any caller passes
+// a non-string field this will throw with a clear field name — fail-closed.
+async function signHaltArchivePayload(
+	payload: Record<string, string>,
+	env: Env,
+): Promise<{ signature: string; canonical: string; key_id: string }> {
+	const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
+	// Reproduce the same canonical form signPayload uses so we can persist it
+	// for replay-independent verification by readers.
+	const sorted: Record<string, string> = {};
+	for (const k of Object.keys(payload).sort()) sorted[k] = payload[k];
+	const canonical = JSON.stringify(sorted);
+	return { signature, canonical, key_id: env.PUBLIC_KEY_ID };
+}
+
+// Insert a signed halt event. Production code uses INSERT only — never UPDATE
+// or DELETE — preserving the append-only contract. The `ignoreOnConflict` flag
+// flips the insert to `INSERT OR IGNORE` for rows with deterministic primary
+// keys (e.g. per-halt rows derived from (source, IssueSymbol, HaltDate, HaltTime))
+// so re-observing the same upstream event across fetches is a no-op rather
+// than a duplicate-key error. INSERT OR IGNORE never modifies an existing row;
+// the first-sighting signature is the canonical anchor and cannot be silently
+// replaced.
+async function insertHaltEvent(row: HaltArchiveRow, env: Env, ignoreOnConflict = false): Promise<void> {
+	if (!env.HALT_ARCHIVE) return;
+	const verb = ignoreOnConflict ? 'INSERT OR IGNORE INTO' : 'INSERT INTO';
+	await env.HALT_ARCHIVE.prepare(
+		`${verb} halt_events
+		 (id, source, source_mode, mic, event_type, observed_at, captured_at,
+		  observation, body_sha256, r2_key, payload_json, signature, key_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	).bind(
+		row.id, row.source, row.source_mode, row.mic, row.event_type,
+		row.observed_at, row.captured_at, row.observation, row.body_sha256,
+		row.r2_key, row.payload_json, row.signature, row.key_id, row.created_at,
+	).run();
+}
+
+// ─── Nasdaq Trader RSS parser ────────────────────────────────────────────────
+// The feed at https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts is the
+// CONSOLIDATED US halt feed. It carries NASDAQ-, NYSE-, NYSE American-, and
+// NYSE Arca-listed halts — distinguished by the <ndaq:Market> element on each
+// <item>. So a "NYSE halt" arrives via this feed; a direct NYSE fetch would be
+// redundant.
+//
+// The <description> CDATA HTML table in each item is human-readable but
+// brittle — Nasdaq has reformatted it before. Parse the <ndaq:*> elements
+// instead; they are the canonical machine-readable representation.
+//
+// Times are Eastern. Dates are MM/DD/YYYY. We keep them as strings exactly as
+// the source presents them — the archive's claim ceiling is "what the feed
+// said," not "what time it really was." Consumers convert if they need UTC.
+
+export interface NasdaqHaltItem {
+	IssueSymbol:         string;
+	IssueName:           string;
+	HaltDate:            string;  // MM/DD/YYYY (ET)
+	HaltTime:            string;  // HH:MM:SS.mmm (ET)
+	Market:              string;  // raw source label: NASDAQ / NYSE / NYSE American / NYSE Arca / ...
+	ReasonCode:          string;
+	PauseThresholdPrice: string;
+	ResumptionDate:      string;
+	ResumptionQuoteTime: string;
+	ResumptionTradeTime: string;
+}
+
+function decodeXmlEntities(s: string): string {
+	return s
+		.replace(/&amp;/g,  '&')
+		.replace(/&lt;/g,   '<')
+		.replace(/&gt;/g,   '>')
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'");
+}
+
+function getNdaqField(block: string, name: string): string {
+	// Match <ndaq:Name>VALUE</ndaq:Name> — captures empty <ndaq:X/> via the
+	// alternate self-closing path too.
+	const open = new RegExp(`<ndaq:${name}\\b[^>]*?\\/>`, 'i');
+	if (open.test(block)) return '';
+	const re = new RegExp(`<ndaq:${name}\\b[^>]*>([\\s\\S]*?)<\\/ndaq:${name}>`, 'i');
+	const m = re.exec(block);
+	if (!m) return '';
+	return decodeXmlEntities(m[1].trim());
+}
+
+export function parseNasdaqHaltItems(xml: string): NasdaqHaltItem[] {
+	const items: NasdaqHaltItem[] = [];
+	const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/g;
+	let match: RegExpExecArray | null;
+	while ((match = itemRe.exec(xml)) !== null) {
+		const block = match[1];
+		const item: NasdaqHaltItem = {
+			IssueSymbol:         getNdaqField(block, 'IssueSymbol'),
+			IssueName:           getNdaqField(block, 'IssueName'),
+			HaltDate:            getNdaqField(block, 'HaltDate'),
+			HaltTime:            getNdaqField(block, 'HaltTime'),
+			Market:              getNdaqField(block, 'Market'),
+			ReasonCode:          getNdaqField(block, 'ReasonCode'),
+			PauseThresholdPrice: getNdaqField(block, 'PauseThresholdPrice'),
+			ResumptionDate:      getNdaqField(block, 'ResumptionDate'),
+			ResumptionQuoteTime: getNdaqField(block, 'ResumptionQuoteTime'),
+			ResumptionTradeTime: getNdaqField(block, 'ResumptionTradeTime'),
+		};
+		// Require the (IssueSymbol, HaltDate, HaltTime) triple — that's what we
+		// dedupe on, so an item missing any of them is unusable archive data.
+		if (item.IssueSymbol && item.HaltDate && item.HaltTime) {
+			items.push(item);
+		}
+	}
+	return items;
+}
+
+// Map the raw Market field from Nasdaq's feed to an ISO 10383 MIC where the
+// mapping is unambiguous. Returns '' for venues we don't have a clean MIC for
+// (NYSE American, NYSE Arca, BX, PSX, ...) — the full Market label is still
+// preserved in the signed payload's `market` field for those.
+function nasdaqMarketToMic(market: string): string {
+	const m = market.trim().toUpperCase();
+	if (m === '')      return '';
+	if (m === 'NYSE' || m === 'NYSE LISTED') return 'XNYS';
+	// Nasdaq's own market labels include "NASDAQ", "NASDAQ GLOBAL MARKET",
+	// "NASDAQ GLOBAL SELECT MARKET", "NASDAQ CAPITAL MARKET" — all XNAS.
+	if (m === 'NASDAQ' || m.startsWith('NASDAQ ')) return 'XNAS';
+	return '';
+}
+
+async function writeRawToR2(r2Key: string, body: string, env: Env, contentType: string): Promise<boolean> {
+	if (!env.HALT_ARCHIVE_RAW) return false;
+	const bytes = new TextEncoder().encode(body);
+	if (bytes.byteLength > HALT_ARCHIVE_MAX_BODY_BYTES) return false;
+	await env.HALT_ARCHIVE_RAW.put(r2Key, bytes, {
+		httpMetadata: { contentType },
+	});
+	return true;
+}
+
+// Record a signed gap. A gap is itself a signed fact: "source X was unreachable
+// at time T" — the archive's completeness is auditable because failures are
+// not silently dropped.
+async function recordSignedGap(opts: {
+	source:      HaltArchiveSource;
+	source_mode: HaltArchiveSourceMode;
+	reason:      string;
+	now:         Date;
+	env:         Env;
+}): Promise<HaltArchiveRow | null> {
+	const { source, source_mode, reason, now, env } = opts;
+	if (!env.HALT_ARCHIVE) return null;
+	const id          = crypto.randomUUID();
+	const observedAt  = now.toISOString();
+	const observation = `source ${source} unreachable at ${observedAt}: ${reason}`;
+	const payload: Record<string, string> = {
+		body_sha256:   '',
+		event_type:    'gap',
+		fetch_status:  'error',
+		id,
+		issued_at:     observedAt,
+		issuer:        ORACLE_ISSUER,
+		key_id:        env.PUBLIC_KEY_ID,
+		mic:           '',
+		observation,
+		observed_at:   observedAt,
+		r2_key:        '',
+		schema:        'halt_archive_event/v1',
+		source:        'gap',
+		source_mode,
+		target_source: source,
+	};
+	const signed = await signHaltArchivePayload(payload, env);
+	const row: HaltArchiveRow = {
+		id,
+		source:       'gap',
+		source_mode,
+		mic:          '',
+		event_type:   'gap',
+		observed_at:  observedAt,
+		captured_at:  observedAt,
+		observation,
+		body_sha256:  '',
+		r2_key:       '',
+		payload_json: signed.canonical,
+		signature:    signed.signature,
+		key_id:       signed.key_id,
+		created_at:   observedAt,
+	};
+	await insertHaltEvent(row, env);
+	return row;
+}
+
+// Browser-like fetch headers. Nasdaq Trader serves the RSS to a bare GET today,
+// but insulates against future default-UA filtering by sending a normal browser
+// UA + RSS-accepting Accept header. `redirect: 'follow'` is fetch's default
+// here but called out so a future refactor doesn't silently change it.
+const HALT_ARCHIVE_FETCH_HEADERS: Record<string, string> = {
+	'User-Agent': 'Mozilla/5.0 (compatible; HeadlessOracleHaltArchive/1.1; +https://headlessoracle.com)',
+	'Accept':     'application/rss+xml, application/xml;q=0.9, */*;q=0.8',
+};
+
+// Fetch the Nasdaq Trader RSS, anchor the raw bytes in R2, sign a
+// feed_snapshot row, then sign one halt row per unique parsed item.
+//
+// CADENCE POLICY: Nasdaq's published guidance is "Data is updated each trading
+// day once a minute. Please do not query the data more than once a minute."
+// The capture path is wired to the existing `* * * * *` cron — exactly 1/min.
+// DO NOT shorten the cadence or duplicate this call in another scheduler.
+//
+// Returns:
+//   - the feed_snapshot HaltArchiveRow on success
+//   - a signed gap HaltArchiveRow on fetch / read / non-2xx failure
+//   - null if HALT_ARCHIVE is unavailable
+async function captureNasdaqFeed(opts: {
+	url:         string;
+	source_mode: HaltArchiveSourceMode;
+	now:         Date;
+	env:         Env;
+}): Promise<{ snapshot: HaltArchiveRow | null; halts: HaltArchiveRow[] }> {
+	const { url, source_mode, now, env } = opts;
+	if (!env.HALT_ARCHIVE) return { snapshot: null, halts: [] };
+	const source = 'nasdaq' as const;
+	const observedAt = now.toISOString();
+	let resp: Response;
+	try {
+		resp = await fetch(url, {
+			signal:   AbortSignal.timeout(HALT_ARCHIVE_FETCH_TIMEOUT_MS),
+			headers:  HALT_ARCHIVE_FETCH_HEADERS,
+			redirect: 'follow',
+		});
+	} catch (err) {
+		const reason = err instanceof Error ? `${err.name}: ${err.message}` : 'fetch failed';
+		const gap = await recordSignedGap({ source, source_mode, reason, now, env });
+		return { snapshot: gap, halts: [] };
+	}
+	let body: string;
+	try {
+		body = await resp.text();
+	} catch (err) {
+		const reason = err instanceof Error ? `body read failed: ${err.message}` : 'body read failed';
+		const gap = await recordSignedGap({ source, source_mode, reason, now, env });
+		return { snapshot: gap, halts: [] };
+	}
+	if (!resp.ok) {
+		const gap = await recordSignedGap({
+			source, source_mode,
+			reason: `HTTP ${resp.status}`,
+			now, env,
+		});
+		return { snapshot: gap, halts: [] };
+	}
+
+	// ── feed_snapshot row ────────────────────────────────────────────────────
+	const bodySha256 = await sha256Hex(body);
+	const r2Key      = `raw/${source}/${observedAt}.xml`;
+	let wroteR2 = false;
+	try {
+		wroteR2 = await writeRawToR2(r2Key, body, env, resp.headers.get('Content-Type') ?? 'application/rss+xml');
+	} catch {
+		// R2 write failure is non-fatal — body_sha256 is still the canonical
+		// anchor. We record it in the observation so consumers know whether the
+		// bytes are independently fetchable.
+	}
+	const id           = crypto.randomUUID();
+	const fetchStatus  = String(resp.status);
+	const snapshotObs  =
+		`source ${source} fetched ${fetchStatus} OK at ${observedAt}; body sha256 ${bodySha256}` +
+		(wroteR2 ? '' : ' (raw bytes not archived to R2)');
+	const snapshotPayload: Record<string, string> = {
+		body_sha256:   bodySha256,
+		event_type:    'feed_snapshot',
+		fetch_status:  fetchStatus,
+		id,
+		issued_at:     observedAt,
+		issuer:        ORACLE_ISSUER,
+		key_id:        env.PUBLIC_KEY_ID,
+		mic:           '',
+		observation:   snapshotObs,
+		observed_at:   observedAt,
+		r2_key:        wroteR2 ? r2Key : '',
+		schema:        'halt_archive_event/v1',
+		source,
+		source_mode,
+		source_url:    url,
+	};
+	const snapshotSigned = await signHaltArchivePayload(snapshotPayload, env);
+	const snapshotRow: HaltArchiveRow = {
+		id,
+		source,
+		source_mode,
+		mic:          '',
+		event_type:   'feed_snapshot',
+		observed_at:  observedAt,
+		captured_at:  observedAt,
+		observation:  snapshotObs,
+		body_sha256:  bodySha256,
+		r2_key:       wroteR2 ? r2Key : '',
+		payload_json: snapshotSigned.canonical,
+		signature:    snapshotSigned.signature,
+		key_id:       snapshotSigned.key_id,
+		created_at:   observedAt,
+	};
+	await insertHaltEvent(snapshotRow, env);
+
+	// ── per-halt rows from the parsed RSS items ──────────────────────────────
+	// Parse against the real ndaq: schema. Dedupe within this fetch on
+	// (IssueSymbol, HaltDate, HaltTime) — same triple appearing twice in one
+	// feed snapshot is a feed-side anomaly we collapse silently. Dedupe across
+	// fetches uses INSERT OR IGNORE on a deterministic per-halt id so the
+	// first-sighting signature stays canonical.
+	const haltRows: HaltArchiveRow[] = [];
+	let parsed: NasdaqHaltItem[];
+	try {
+		parsed = parseNasdaqHaltItems(body);
+	} catch (err) {
+		// Parser failure is not a fetch failure — the bytes are still anchored
+		// in R2 with a valid feed_snapshot row. Surface as a signed gap with a
+		// distinct reason so consumers can tell.
+		const reason = err instanceof Error ? `parse failed: ${err.message}` : 'parse failed';
+		await recordSignedGap({ source, source_mode, reason, now, env });
+		return { snapshot: snapshotRow, halts: [] };
+	}
+	const seen = new Set<string>();
+	for (const item of parsed) {
+		const dedupeKey = `${item.IssueSymbol}|${item.HaltDate}|${item.HaltTime}`;
+		if (seen.has(dedupeKey)) continue;
+		seen.add(dedupeKey);
+
+		const haltId      = await sha256Hex(`${source}:halt:${item.IssueSymbol}:${item.HaltDate}:${item.HaltTime}`);
+		const mic         = nasdaqMarketToMic(item.Market);
+		const observation =
+			`source ${source} reported halt of ${item.IssueSymbol} (${item.IssueName || 'unnamed'}) ` +
+			`on ${item.Market || 'unspecified market'} at ${item.HaltDate} ${item.HaltTime} ET` +
+			(item.ReasonCode ? ` (reason: ${item.ReasonCode})` : '');
+		const haltPayload: Record<string, string> = {
+			body_sha256:           '',
+			event_type:            'halt',
+			fetch_status:          'parsed',
+			halt_date:             item.HaltDate,
+			halt_time:             item.HaltTime,
+			id:                    haltId,
+			issued_at:             observedAt,
+			issue_name:            item.IssueName,
+			issue_symbol:          item.IssueSymbol,
+			issuer:                ORACLE_ISSUER,
+			key_id:                env.PUBLIC_KEY_ID,
+			market:                item.Market,
+			mic,
+			observation,
+			observed_at:           observedAt,
+			pause_threshold_price: item.PauseThresholdPrice,
+			r2_key:                '',
+			reason_code:           item.ReasonCode,
+			resumption_date:       item.ResumptionDate,
+			resumption_quote_time: item.ResumptionQuoteTime,
+			resumption_trade_time: item.ResumptionTradeTime,
+			schema:                'halt_archive_event/v1',
+			source,
+			source_mode,
+		};
+		const haltSigned = await signHaltArchivePayload(haltPayload, env);
+		const haltRow: HaltArchiveRow = {
+			id:           haltId,
+			source,
+			source_mode,
+			mic,
+			event_type:   'halt',
+			observed_at:  observedAt,
+			captured_at:  observedAt,
+			observation,
+			body_sha256:  '',
+			r2_key:       '',
+			payload_json: haltSigned.canonical,
+			signature:    haltSigned.signature,
+			key_id:       haltSigned.key_id,
+			created_at:   observedAt,
+		};
+		// INSERT OR IGNORE: if this halt was already captured on a prior fetch,
+		// silently skip. We do NOT replace the existing row — its first-sighting
+		// signature is the canonical anchor and is intentionally immutable.
+		await insertHaltEvent(haltRow, env, true);
+		haltRows.push(haltRow);
+	}
+
+	return { snapshot: snapshotRow, halts: haltRows };
+}
+
+// Compute HO's authoritative current session state for a MIC: schedule status
+// combined with any active KV override. This mirrors the reasoning the webhook
+// path uses but reads from a separate last-state KV so the two systems do not
+// share writers (the archive is observational, the webhook system is operational).
+async function getEffectiveSessionStatus(mic: string, now: Date, env: Env): Promise<string> {
+	let scheduleStatus: string;
+	try {
+		scheduleStatus = getScheduleStatus(mic, now).status;
+	} catch {
+		return 'UNKNOWN';
+	}
+	const overrideRaw = await env.ORACLE_OVERRIDES.get(mic).catch(() => null);
+	if (!overrideRaw) return scheduleStatus;
+	try {
+		const ov = JSON.parse(overrideRaw) as { status?: string; expires?: string };
+		if (ov.expires && new Date(ov.expires) > now) return ov.status ?? scheduleStatus;
+		return scheduleStatus;
+	} catch {
+		return scheduleStatus;
+	}
+}
+
+// Detect HO session-state transitions across the 28 MICs and emit one signed
+// session_transition row per change. Uses ORACLE_TELEMETRY as the last-state
+// store to avoid coupling with the webhook delivery system's last_state writes.
+async function captureHoSessionTransitions(opts: {
+	source_mode: HaltArchiveSourceMode;
+	now:         Date;
+	env:         Env;
+}): Promise<HaltArchiveRow[]> {
+	const { source_mode, now, env } = opts;
+	if (!env.HALT_ARCHIVE) return [];
+	const written: HaltArchiveRow[] = [];
+	const observedAt = now.toISOString();
+	for (const mic of Object.keys(MARKET_CONFIGS)) {
+		const currentStatus = await getEffectiveSessionStatus(mic, now, env);
+		const stateKey = `${HALT_ARCHIVE_KV_LAST_STATE_PREFIX}${mic}`;
+		const prevRaw  = await env.ORACLE_TELEMETRY.get(stateKey).catch(() => null);
+		const prevStatus = prevRaw
+			? (() => { try { return (JSON.parse(prevRaw) as { status?: string }).status ?? null; } catch { return null; } })()
+			: null;
+
+		// Always write back current state so the next run has a baseline.
+		await env.ORACLE_TELEMETRY.put(
+			stateKey,
+			JSON.stringify({ status: currentStatus, updated_at: observedAt }),
+		).catch(() => {});
+
+		if (prevStatus === null || prevStatus === currentStatus) continue;
+
+		const id          = crypto.randomUUID();
+		const observation =
+			`ho schedule computation: ${mic} transitioned from ${prevStatus} to ${currentStatus}`;
+		const payload: Record<string, string> = {
+			body_sha256:     '',
+			current_status:  currentStatus,
+			event_type:      'session_transition',
+			fetch_status:    'computed',
+			id,
+			issued_at:       observedAt,
+			issuer:          ORACLE_ISSUER,
+			key_id:          env.PUBLIC_KEY_ID,
+			mic,
+			observation,
+			observed_at:     observedAt,
+			previous_status: prevStatus,
+			r2_key:          '',
+			schema:          'halt_archive_event/v1',
+			source:          'ho_session',
+			source_mode,
+		};
+		const signed = await signHaltArchivePayload(payload, env);
+		const row: HaltArchiveRow = {
+			id,
+			source:       'ho_session',
+			source_mode,
+			mic,
+			event_type:   'session_transition',
+			observed_at:  observedAt,
+			captured_at:  observedAt,
+			observation,
+			body_sha256:  '',
+			r2_key:       '',
+			payload_json: signed.canonical,
+			signature:    signed.signature,
+			key_id:       signed.key_id,
+			created_at:   observedAt,
+		};
+		await insertHaltEvent(row, env);
+		written.push(row);
+	}
+	return written;
+}
+
+// Top-level capture orchestrator. Called from the per-minute cron and is also
+// safe to call manually (e.g. one-shot BACKFILL). Best-effort per source: a
+// failure of one feed becomes a signed gap and does not block the others.
+export async function runHaltArchiveCapture(
+	env: Env,
+	now: Date = new Date(),
+	source_mode: HaltArchiveSourceMode = 'LIVE',
+): Promise<{
+	written: number;
+	gaps:    number;
+	sources: Array<{ source: HaltArchiveSource; status: 'ok' | 'gap' | 'skipped'; detail?: string }>;
+}> {
+	if (!env.HALT_ARCHIVE) {
+		return { written: 0, gaps: 0, sources: [] };
+	}
+	try {
+		await ensureHaltArchiveSchema(env);
+	} catch (err) {
+		console.error(`HALT_ARCHIVE_SCHEMA_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+		return { written: 0, gaps: 0, sources: [] };
+	}
+	const sources: Array<{ source: HaltArchiveSource; status: 'ok' | 'gap' | 'skipped'; detail?: string }> = [];
+	let written = 0;
+	let gaps    = 0;
+
+	// Nasdaq Trader is the consolidated US halt feed — NYSE-listed halts arrive
+	// here via <ndaq:Market>NYSE</ndaq:Market>, so this is the only feed we
+	// need for the US.
+	const nasdaqUrl = env.NASDAQ_HALTS_URL ?? 'https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts';
+
+	try {
+		const result = await captureNasdaqFeed({ url: nasdaqUrl, source_mode, now, env });
+		if (result.snapshot?.source === 'gap') {
+			gaps++;
+			sources.push({ source: 'nasdaq', status: 'gap', detail: result.snapshot.observation });
+		} else if (result.snapshot) {
+			written += 1 + result.halts.length;
+			sources.push({ source: 'nasdaq', status: 'ok', detail: `1 feed_snapshot + ${result.halts.length} halt(s)` });
+		}
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		try { await recordSignedGap({ source: 'nasdaq', source_mode, reason, now, env }); gaps++; } catch { /* swallow */ }
+		sources.push({ source: 'nasdaq', status: 'gap', detail: reason });
+	}
+
+	// Direct NYSE source: intentionally skipped unless explicitly configured.
+	// The real NYSE CSV endpoint sits behind Akamai bot protection that rejects
+	// datacenter UAs; fetching it would land as a signed gap on every run and
+	// pollute day-one history. The Nasdaq consolidated feed above already
+	// covers NYSE-listed halts. A future direct NYSE source would require a
+	// browser / residential-proxy path. Unset URL → no fetch, no gap row.
+	const nyseUrl = env.NYSE_HALTS_URL?.trim() ?? '';
+	if (nyseUrl) {
+		try {
+			// Reserved slot — if a future operator wires a working NYSE feed,
+			// reuse captureNasdaqFeed only after the parser matches that feed's
+			// schema. For now this path is intentionally unreached in prod.
+			throw new Error('direct NYSE source configured but no parser is wired; refusing to fetch');
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			try { await recordSignedGap({ source: 'nyse', source_mode, reason, now, env }); gaps++; } catch { /* swallow */ }
+			sources.push({ source: 'nyse', status: 'gap', detail: reason });
+		}
+	} else {
+		sources.push({
+			source: 'nyse',
+			status: 'skipped',
+			detail: 'NYSE_HALTS_URL unset; NYSE-listed halts arrive via the Nasdaq consolidated feed (ndaq:Market="NYSE")',
+		});
+	}
+	try {
+		const rows = await captureHoSessionTransitions({ source_mode, now, env });
+		written += rows.length;
+		sources.push({ source: 'ho_session', status: 'ok', detail: `${rows.length} transition(s)` });
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		try { await recordSignedGap({ source: 'ho_session', source_mode, reason, now, env }); gaps++; } catch { /* swallow */ }
+		sources.push({ source: 'ho_session', status: 'gap', detail: reason });
+	}
+
+	console.log(JSON.stringify({
+		event: 'HALT_ARCHIVE_CAPTURE',
+		timestamp: now.toISOString(),
+		source_mode,
+		written,
+		gaps,
+		sources,
+	}));
+	return { written, gaps, sources };
+}
+
+// Build and persist the signed daily digest for a UTC date.
+// merkle_root is SHA-256 over the row signatures, ordered by (observed_at, id),
+// which gives a single anchor a consumer can verify any single event against by
+// walking the tree. The digest itself is Ed25519-signed and chained via
+// previous_day_merkle_root so the archive's history is tamper-evident.
+export async function buildHaltArchiveDigest(date: string, env: Env): Promise<Record<string, unknown> | null> {
+	if (!env.HALT_ARCHIVE) return null;
+	await ensureHaltArchiveSchema(env);
+
+	// If already built, return it as-is. INSERT OR IGNORE on the write keeps
+	// this idempotent across retries; never overwrite a prior digest signature.
+	const existing = await env.HALT_ARCHIVE.prepare(
+		`SELECT * FROM halt_archive_digest WHERE date = ?`,
+	).bind(date).first<Record<string, unknown>>();
+	if (existing) {
+		return {
+			date:                      existing.date,
+			event_count:               existing.event_count,
+			merkle_root:               existing.merkle_root,
+			previous_day_merkle_root:  existing.previous_day_merkle_root,
+			chain_length:              existing.chain_length,
+			source_modes:              String(existing.source_modes).split(',').filter(Boolean),
+			payload_json:              existing.payload_json,
+			signature:                 existing.signature,
+			key_id:                    existing.key_id,
+			created_at:                existing.created_at,
+		};
+	}
+
+	// Pull all rows for the date, ordered deterministically.
+	const startIso = `${date}T00:00:00.000Z`;
+	const endIso   = `${date}T23:59:59.999Z`;
+	const { results } = await env.HALT_ARCHIVE.prepare(
+		`SELECT id, signature, source_mode FROM halt_events
+		 WHERE observed_at >= ? AND observed_at <= ?
+		 ORDER BY observed_at ASC, id ASC`,
+	).bind(startIso, endIso).all<{ id: string; signature: string; source_mode: string }>();
+	const rows = results ?? [];
+
+	const sigs        = rows.map(r => r.signature);
+	const merkleRoot  = await computeMerkleRoot(sigs);
+
+	// Chain to previous day if present.
+	const prevDate = new Date(date + 'T00:00:00Z');
+	prevDate.setUTCDate(prevDate.getUTCDate() - 1);
+	const prevDateStr = prevDate.toISOString().slice(0, 10);
+	const prev = await env.HALT_ARCHIVE.prepare(
+		`SELECT merkle_root, chain_length FROM halt_archive_digest WHERE date = ?`,
+	).bind(prevDateStr).first<{ merkle_root: string; chain_length: number }>();
+	const previousDayMerkleRoot = prev?.merkle_root ?? '';
+	const chainLength = (prev?.chain_length ?? 0) + 1;
+
+	const sourceModesPresent = [...new Set(rows.map(r => r.source_mode))].sort().join(',');
+	const now                = new Date().toISOString();
+
+	const payload: Record<string, string> = {
+		chain_length:             String(chainLength),
+		date,
+		event_count:              String(rows.length),
+		issued_at:                now,
+		issuer:                   ORACLE_ISSUER,
+		key_id:                   env.PUBLIC_KEY_ID,
+		merkle_root:              merkleRoot,
+		previous_day_merkle_root: previousDayMerkleRoot,
+		schema:                   'halt_archive_digest/v1',
+		source_modes:             sourceModesPresent,
+	};
+	const signed = await signHaltArchivePayload(payload, env);
+
+	// INSERT OR IGNORE — if a parallel digest build raced us, keep the first
+	// signed digest and discard this one. The first signature is the canonical
+	// anchor; rewriting it would invalidate chains rooted at that day.
+	await env.HALT_ARCHIVE.prepare(
+		`INSERT OR IGNORE INTO halt_archive_digest
+		 (date, event_count, merkle_root, previous_day_merkle_root, chain_length,
+		  source_modes, payload_json, signature, key_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	).bind(
+		date, rows.length, merkleRoot, previousDayMerkleRoot, chainLength,
+		sourceModesPresent, signed.canonical, signed.signature, signed.key_id, now,
+	).run();
+
+	// Re-read the row we (or a racing call) committed — return the canonical one.
+	const finalRow = await env.HALT_ARCHIVE.prepare(
+		`SELECT * FROM halt_archive_digest WHERE date = ?`,
+	).bind(date).first<Record<string, unknown>>();
+	if (!finalRow) return null;
+	return {
+		date:                      finalRow.date,
+		event_count:               finalRow.event_count,
+		merkle_root:               finalRow.merkle_root,
+		previous_day_merkle_root:  finalRow.previous_day_merkle_root,
+		chain_length:              finalRow.chain_length,
+		source_modes:              String(finalRow.source_modes).split(',').filter(Boolean),
+		payload_json:              finalRow.payload_json,
+		signature:                 finalRow.signature,
+		key_id:                    finalRow.key_id,
+		created_at:                finalRow.created_at,
+	};
+}
+
+// Read events from the archive with the requested filters. Used by the
+// x402-gated GET /v1/halts endpoint after payment is verified.
+async function readHaltArchive(env: Env, opts: {
+	date?:        string;
+	from?:        string;
+	to?:          string;
+	mic?:         string;
+	source?:      string;
+	source_mode?: string;
+	limit?:       number;
+}): Promise<HaltArchiveRow[]> {
+	if (!env.HALT_ARCHIVE) return [];
+	await ensureHaltArchiveSchema(env);
+	const where: string[] = [];
+	const binds: unknown[] = [];
+	if (opts.date) {
+		where.push('observed_at >= ? AND observed_at <= ?');
+		binds.push(`${opts.date}T00:00:00.000Z`, `${opts.date}T23:59:59.999Z`);
+	} else {
+		if (opts.from) { where.push('observed_at >= ?'); binds.push(opts.from); }
+		if (opts.to)   { where.push('observed_at <= ?'); binds.push(opts.to); }
+	}
+	if (opts.mic)         { where.push('mic = ?');         binds.push(opts.mic.toUpperCase()); }
+	if (opts.source)      { where.push('source = ?');      binds.push(opts.source); }
+	if (opts.source_mode) { where.push('source_mode = ?'); binds.push(opts.source_mode); }
+	const limit = Math.min(opts.limit ?? HALT_ARCHIVE_DEFAULT_LIMIT, HALT_ARCHIVE_RECENT_LIMIT);
+	const sql =
+		`SELECT id, source, source_mode, mic, event_type, observed_at, captured_at,
+		        observation, body_sha256, r2_key, payload_json, signature, key_id, created_at
+		 FROM halt_events
+		 ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+		 ORDER BY observed_at DESC, id DESC
+		 LIMIT ?`;
+	binds.push(limit);
+	const stmt = env.HALT_ARCHIVE.prepare(sql);
+	const { results } = await stmt.bind(...binds).all<HaltArchiveRow>();
+	return results ?? [];
 }
 
 // Add credits to a key's balance.
@@ -14012,6 +14856,128 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			return json(MULTI_ORACLE_CONSENSUS_GUIDE_JSON);
 		}
 
+		// ── GET /v1/halts/digest/{date} ─────────────────────────────────────────
+		// FREE: signed daily digest (merkle_root + previous_day_merkle_root + chain
+		// length) for a UTC date. This is the citation / verification wedge — any
+		// consumer can fetch and verify the day's anchor for free. The full event
+		// data behind it is paywalled on /v1/halts.
+		if (url.pathname.startsWith('/v1/halts/digest/') && request.method === 'GET') {
+			const date = url.pathname.slice('/v1/halts/digest/'.length).replace(/\/$/, '');
+			if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+				return json({ error: 'BAD_DATE', message: 'Date must be YYYY-MM-DD UTC' }, 400);
+			}
+			const today = new Date().toISOString().slice(0, 10);
+			if (date > today) {
+				return json({ error: 'FUTURE_DATE', message: 'Cannot anchor a future date' }, 400);
+			}
+			if (!env.HALT_ARCHIVE) {
+				return json({ error: 'ARCHIVE_UNAVAILABLE', message: 'Halt archive not configured' }, 503);
+			}
+			try {
+				// For past complete days, build (or return cached). For today, return
+				// 404 — today is incomplete, the anchor is published at 09:00 UTC the
+				// next day. This is the fail-closed semantic: never imply a partial
+				// day is settled.
+				if (date >= today) {
+					return json({
+						error:   'DIGEST_NOT_YET_FINAL',
+						message: 'Digest is published at 09:00 UTC the day after the date completes',
+						date,
+					}, 404);
+				}
+				const digest = await buildHaltArchiveDigest(date, env);
+				if (!digest) {
+					return json({ error: 'NOT_FOUND', message: 'No digest for this date', date }, 404);
+				}
+				return json({
+					schema:    'halt_archive_digest/v1',
+					framing:   'observed-source — this digest attests what named feeds reported, not ground truth',
+					...digest,
+				});
+			} catch (err: unknown) {
+				const message = err instanceof Error ? err.message : 'digest read failed';
+				return json({ error: 'DIGEST_ERROR', message }, 500);
+			}
+		}
+
+		// ── GET /v1/halts — PAID: signed halt events from the archive ───────────
+		// Reuses the existing x402 verification path (X-Payment / Payment-Signature
+		// header, $0.001 USDC on Base mainnet) OR a paid API key. Free trial does
+		// NOT apply here — this is archival data, not a market-state primitive.
+		// Filters: ?date=YYYY-MM-DD, ?from=ISO, ?to=ISO, ?mic=, ?source=,
+		//          ?source_mode=, ?limit= (default 100, max 1000)
+		if (url.pathname === '/v1/halts' && request.method === 'GET') {
+			if (!env.HALT_ARCHIVE) {
+				return json({ error: 'ARCHIVE_UNAVAILABLE', message: 'Halt archive not configured' }, 503);
+			}
+			// Auth path 1: paid API key (any plan that's not 'free' — internal,
+			// builder, pro, protocol, credits — bypasses x402 since they're already
+			// paying via subscription / credits).
+			const apiKey = request.headers.get('X-Oracle-Key') ?? request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '');
+			let paid = false;
+			if (apiKey) {
+				const auth = await checkApiKey(apiKey, env);
+				if (auth.allowed && auth.plan !== 'free' && auth.plan !== 'sandbox') paid = true;
+			}
+			// Auth path 2: x402 payment header
+			if (!paid) {
+				const paymentHeader = getPaymentHeader(request);
+				if (!paymentHeader || !env.ORACLE_PAYMENT_ADDRESS) {
+					const haltsResource = `https://headlessoracle.com${url.pathname}${url.search}`;
+					return json(
+						env.ORACLE_PAYMENT_ADDRESS
+							? buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, haltsResource)
+							: { error: 'PAYMENT_REQUIRED', message: 'x402 payment required (server x402 not configured)' },
+						402,
+						env.ORACLE_PAYMENT_ADDRESS ? {
+							'Content-Type':                 'application/json',
+							'Access-Control-Allow-Origin':  '*',
+							'X-X402-Network':               'mainnet',
+							'X-Payment-Required':           'true',
+							...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status'),
+						} : {},
+					);
+				}
+				const haltsResource = `https://headlessoracle.com${url.pathname}${url.search}`;
+				const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, haltsResource);
+				if (!verified.valid) {
+					return json({
+						error:        'PAYMENT_VERIFICATION_FAILED',
+						message:      `Payment verification failed: ${verified.detail ?? 'unknown'}`,
+						x402:         buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, haltsResource),
+					}, 402);
+				}
+				paid = true;
+			}
+			if (!paid) {
+				return json({ error: 'PAYMENT_REQUIRED', message: 'Auth required: X-Oracle-Key (paid plan) or X-Payment (x402)' }, 402);
+			}
+
+			const params = url.searchParams;
+			const limitRaw = parseInt(params.get('limit') ?? '', 10);
+			const limit    = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : HALT_ARCHIVE_DEFAULT_LIMIT;
+			try {
+				const rows = await readHaltArchive(env, {
+					date:        params.get('date')        ?? undefined,
+					from:        params.get('from')        ?? undefined,
+					to:          params.get('to')          ?? undefined,
+					mic:         params.get('mic')         ?? undefined,
+					source:      params.get('source')      ?? undefined,
+					source_mode: params.get('source_mode') ?? undefined,
+					limit,
+				});
+				return json({
+					schema:  'halt_archive_event/v1',
+					framing: 'observed-source — each row attests what a named feed reported at observed_at, not ground truth',
+					count:   rows.length,
+					events:  rows,
+				});
+			} catch (err: unknown) {
+				const message = err instanceof Error ? err.message : 'archive read failed';
+				return json({ error: 'ARCHIVE_ERROR', message }, 500);
+			}
+		}
+
 		// ── GET /v5/showcase — social proof and reference projects ───────────────────
 		if (url.pathname === '/v5/showcase' && request.method === 'GET') {
 			return json({
@@ -14059,6 +15025,14 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			// Checks exchanges scheduled OPEN against Polygon.io/Alpaca; writes REALTIME
 			// overrides to ORACLE_OVERRIDES KV when discrepancy detected. Fail-open.
 			await runHaltMonitor(env);
+			// Signed Halt Archive capture (LIVE mode) — every minute. The archive's
+			// value is f(start date); shipping the capture loop is the load-bearing
+			// move. Failures of individual sources become signed gap records.
+			ctx.waitUntil(
+				runHaltArchiveCapture(env, new Date(), 'LIVE').catch((err) => {
+					console.error(`HALT_ARCHIVE_CAPTURE_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+				}),
+			);
 			// Self-ping: keep the HTTP request path warm so Chiark and other MCP probers
 			// don't hit cold starts. Fires every minute; Cloudflare routes the inbound
 			// request to the nearest warm isolate, keeping P95 latency low.
@@ -14066,6 +15040,18 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				fetch('https://headlessoracle.com/mcp', { method: 'HEAD' }).catch(() => {}),
 			);
 		} else if (event.cron === '0 9 * * *') {
+			// Build the signed halt-archive digest for yesterday (UTC). Yesterday is
+			// complete by 09:00 UTC, so this is the earliest safe time to anchor it.
+			// Idempotent — INSERT OR IGNORE on the digest table means re-runs are
+			// no-ops, not tampering.
+			try {
+				const y = new Date();
+				y.setUTCDate(y.getUTCDate() - 1);
+				const yDate = y.toISOString().slice(0, 10);
+				await buildHaltArchiveDigest(yDate, env);
+			} catch (err: unknown) {
+				console.error(`HALT_ARCHIVE_DIGEST_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+			}
 			// Fetch @headlessoracle/verify download counts and log for monitoring.
 			try {
 				const [week, month] = await Promise.all([
