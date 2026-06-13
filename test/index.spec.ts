@@ -1,6 +1,9 @@
 import { env, createExecutionContext, waitOnExecutionContext, createScheduledController } from 'cloudflare:test';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek, signPayload } from '../src';
+import worker, {
+	edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek, signPayload,
+	clearHaltArchiveSchemaCache, runHaltArchiveCapture, buildHaltArchiveDigest,
+} from '../src';
 
 // Clear module-level caches before every test so that tests which
 // set KV values always read from KV rather than stale in-memory entries.
@@ -11741,5 +11744,429 @@ describe('GET /.well-known/agent-card.json (A2A v1)', () => {
 		expect(tags).toContain('finance');
 		expect(tags).toContain('pre-trade');
 		expect(tags).toContain('fail-closed');
+	});
+});
+
+
+// ─── Signed Halt Archive (BUILD 2) ────────────────────────────────────────────
+//
+// Tests for the append-only signed halt archive: NYSE/Nasdaq feed capture, HO
+// session-state transitions, signed gap records, daily digest with merkle_root,
+// source_mode integrity, claim-ceiling framing, and the two serving endpoints.
+
+describe('Signed Halt Archive — capture, signing, gap records, framing', () => {
+	const fetchMock: { current: ((url: string) => Promise<Response>) | null } = { current: null };
+	let originalFetch: typeof fetch;
+
+	async function truncateArchive(): Promise<void> {
+		if (!env.HALT_ARCHIVE) return;
+		try { await env.HALT_ARCHIVE.prepare('DELETE FROM halt_events').run(); } catch { /* not yet */ }
+		try { await env.HALT_ARCHIVE.prepare('DELETE FROM halt_archive_digest').run(); } catch { /* not yet */ }
+	}
+
+	beforeEach(async () => {
+		vi.useRealTimers();
+		clearHaltArchiveSchemaCache();
+		originalFetch = globalThis.fetch;
+		fetchMock.current = async (url: string) => {
+			if (url.includes('nasdaqtrader.com')) {
+				return new Response('<rss>nasdaq halts test body</rss>', { status: 200, headers: { 'Content-Type': 'application/rss+xml' } });
+			}
+			if (url.includes('nyse.com')) {
+				return new Response('{"halts":[]}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(url);
+		};
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const u = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (fetchMock.current) return fetchMock.current(u);
+			return originalFetch(input, init);
+		}) as typeof fetch;
+		await truncateArchive();
+		if (env.ORACLE_TELEMETRY) {
+			const list = await env.ORACLE_TELEMETRY.list({ prefix: 'halt_archive_last_state:' });
+			await Promise.all(list.keys.map(k => env.ORACLE_TELEMETRY.delete(k.name)));
+		}
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it('writes signed feed_snapshot rows to D1 on successful nasdaq fetch', async () => {
+		const result = await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		expect(result.written).toBeGreaterThan(0);
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT * FROM halt_events WHERE source = 'nasdaq' ORDER BY observed_at DESC LIMIT 1`,
+		).all<Record<string, unknown>>();
+		expect(results.length).toBe(1);
+		const row = results[0];
+		expect(row.event_type).toBe('feed_snapshot');
+		expect(row.source_mode).toBe('LIVE');
+		expect(typeof row.signature).toBe('string');
+		expect((row.signature as string).length).toBeGreaterThan(64);
+		expect(typeof row.body_sha256).toBe('string');
+		expect((row.body_sha256 as string).length).toBe(64);
+		expect(row.r2_key).toContain('raw/nasdaq/');
+	});
+
+	it('records a SIGNED gap row when a feed fetch fails (not silent)', async () => {
+		fetchMock.current = async (url: string) => {
+			if (url.includes('nasdaqtrader.com')) throw new TypeError('network unreachable');
+			if (url.includes('nyse.com'))         return new Response('{"halts":[]}', { status: 200 });
+			return originalFetch(url);
+		};
+		const result = await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		expect(result.gaps).toBeGreaterThanOrEqual(1);
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT * FROM halt_events WHERE source = 'gap' ORDER BY observed_at DESC LIMIT 1`,
+		).all<Record<string, unknown>>();
+		expect(results.length).toBe(1);
+		const gapRow = results[0];
+		expect(gapRow.event_type).toBe('gap');
+		expect(typeof gapRow.signature).toBe('string');
+		expect((gapRow.signature as string).length).toBeGreaterThan(64);
+		expect(gapRow.observation).toMatch(/^source nasdaq unreachable at/);
+	});
+
+	it('also records a signed gap when feed returns non-2xx (HTTP error → signed fact)', async () => {
+		fetchMock.current = async (url: string) => {
+			if (url.includes('nasdaqtrader.com')) return new Response('forbidden', { status: 403 });
+			if (url.includes('nyse.com'))         return new Response('{"halts":[]}', { status: 200 });
+			return originalFetch(url);
+		};
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(
+			`SELECT * FROM halt_events WHERE source = 'gap'`,
+		).all<Record<string, unknown>>();
+		expect(results.length).toBeGreaterThanOrEqual(1);
+		const row = results.find(r => String(r.observation).includes('nasdaq'));
+		expect(row).toBeTruthy();
+		expect(String(row!.observation)).toMatch(/HTTP 403/);
+	});
+
+	it('source_mode flag is present and never empty on every row', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'BACKFILL');
+		const { results } = await env.HALT_ARCHIVE!.prepare(`SELECT source_mode FROM halt_events`).all<{ source_mode: string }>();
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			expect(r.source_mode === 'LIVE' || r.source_mode === 'BACKFILL').toBe(true);
+			expect(r.source_mode).toBe('BACKFILL');
+		}
+	});
+
+	it('LIVE and BACKFILL are never silently mixed within a single capture call', async () => {
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:00:00Z'), 'LIVE');
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:01:00Z'), 'BACKFILL');
+		const live = await env.HALT_ARCHIVE!.prepare(`SELECT count(*) AS c FROM halt_events WHERE source_mode = 'LIVE'`).first<{ c: number }>();
+		const back = await env.HALT_ARCHIVE!.prepare(`SELECT count(*) AS c FROM halt_events WHERE source_mode = 'BACKFILL'`).first<{ c: number }>();
+		expect((live?.c ?? 0)).toBeGreaterThan(0);
+		expect((back?.c ?? 0)).toBeGreaterThan(0);
+	});
+
+	it('every payload uses observed-source framing — never claims ground truth', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(`SELECT observation, payload_json FROM halt_events`).all<{ observation: string; payload_json: string }>();
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			expect(r.observation).toMatch(/^(source [a-z_]+ (fetched|unreachable)|ho schedule computation)/);
+			expect(r.observation).not.toMatch(/\bis (true|open|closed|halted) at\b/i);
+		}
+	});
+
+	it('signing uses the canonical signPayload path — non-string fields would have thrown', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const { results } = await env.HALT_ARCHIVE!.prepare(`SELECT signature FROM halt_events`).all<{ signature: string }>();
+		expect(results.length).toBeGreaterThan(0);
+		for (const r of results) {
+			expect(r.signature).toMatch(/^[0-9a-f]{128}$/);
+		}
+	});
+
+	it('signPayload directly rejects non-string fields (guard regression check)', async () => {
+		const pk = env.ED25519_PRIVATE_KEY as unknown as string;
+		await expect(
+			signPayload({ a: 'ok', b: 42 as unknown as string }, pk),
+		).rejects.toThrow(/non-string value for field "b"/);
+	});
+
+	it('repeated capture is observably append-only — earlier rows are never modified or removed', async () => {
+		// Behavioral proof of the append-only contract: capture twice, then prove
+		// (a) the row count grew, (b) every row from the first run still exists
+		// with byte-identical signature and observation. Source-code grep would
+		// be a static guarantee but workerd's fs polyfill can't read the file;
+		// this is the runtime-observable equivalent.
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:00:00Z'), 'LIVE');
+		const first = await env.HALT_ARCHIVE!.prepare(
+			`SELECT id, signature, observation FROM halt_events ORDER BY id ASC`,
+		).all<{ id: string; signature: string; observation: string }>();
+		expect(first.results.length).toBeGreaterThan(0);
+
+		await runHaltArchiveCapture(env, new Date('2026-06-13T10:01:00Z'), 'LIVE');
+		const second = await env.HALT_ARCHIVE!.prepare(
+			`SELECT id, signature, observation FROM halt_events ORDER BY id ASC`,
+		).all<{ id: string; signature: string; observation: string }>();
+		expect(second.results.length).toBeGreaterThan(first.results.length);
+
+		// Every row from the first run must still be there, bit-identical.
+		const lookup = new Map(second.results.map(r => [r.id, r]));
+		for (const r of first.results) {
+			const after = lookup.get(r.id);
+			expect(after).toBeTruthy();
+			expect(after!.signature).toBe(r.signature);
+			expect(after!.observation).toBe(r.observation);
+		}
+	});
+
+	it('captures HO session_transition rows when MIC state changes between calls', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const before = await env.HALT_ARCHIVE!.prepare(
+			`SELECT count(*) AS c FROM halt_events WHERE event_type = 'session_transition'`,
+		).first<{ c: number }>();
+		expect(before?.c ?? 0).toBe(0);
+
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status:  'HALTED',
+			reason:  'test override for session-transition capture',
+			expires: new Date(Date.now() + 3600_000).toISOString(),
+		}));
+		clearOverrideCache();
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+
+		const after = await env.HALT_ARCHIVE!.prepare(
+			`SELECT mic, source, event_type, observation FROM halt_events WHERE event_type = 'session_transition'`,
+		).all<Record<string, unknown>>();
+		const xnysRow = (after.results ?? []).find(r => r.mic === 'XNYS');
+		expect(xnysRow).toBeTruthy();
+		expect(xnysRow!.source).toBe('ho_session');
+		expect(String(xnysRow!.observation)).toMatch(/^ho schedule computation: XNYS transitioned from /);
+		expect(String(xnysRow!.observation)).toContain('to HALTED');
+
+		await env.ORACLE_OVERRIDES.delete('XNYS');
+		clearOverrideCache();
+	});
+});
+
+describe('Signed Halt Archive — daily digest with merkle_root', () => {
+	async function seedSignedRow(
+		date: string,
+		idx: number,
+		source: 'nasdaq' | 'nyse' | 'ho_session' = 'nasdaq',
+	): Promise<void> {
+		const id          = `seed-${date}-${idx}`;
+		const observedAt  = `${date}T${String(idx % 24).padStart(2, '0')}:00:00.000Z`;
+		const observation = `source ${source} fetched 200 OK at ${observedAt}; body sha256 ${'a'.repeat(64)}`;
+		const payload: Record<string, string> = {
+			body_sha256:  'a'.repeat(64),
+			event_type:   'feed_snapshot',
+			fetch_status: '200',
+			id,
+			issued_at:    observedAt,
+			issuer:       'headlessoracle.com',
+			key_id:       env.PUBLIC_KEY_ID as unknown as string,
+			mic:          '',
+			observation,
+			observed_at:  observedAt,
+			r2_key:       `raw/${source}/${observedAt}.bin`,
+			schema:       'halt_archive_event/v1',
+			source,
+			source_mode:  'LIVE',
+			source_url:   `https://example.invalid/${source}`,
+		};
+		const sig = await signPayload(payload, env.ED25519_PRIVATE_KEY as unknown as string);
+		const sorted: Record<string, string> = {};
+		for (const k of Object.keys(payload).sort()) sorted[k] = payload[k];
+		await env.HALT_ARCHIVE!.prepare(
+			`INSERT INTO halt_events (id, source, source_mode, mic, event_type, observed_at, captured_at, observation, body_sha256, r2_key, payload_json, signature, key_id, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			id, source, 'LIVE', '', 'feed_snapshot', observedAt, observedAt, observation,
+			'a'.repeat(64), `raw/${source}/${observedAt}.bin`, JSON.stringify(sorted),
+			sig, env.PUBLIC_KEY_ID as unknown as string, observedAt,
+		).run();
+	}
+
+	beforeEach(async () => {
+		// Restore real timers — earlier tests in the suite leave faked system
+		// time behind (vi.setSystemTime), which makes our date-validation
+		// endpoints reject 2026-06-XX dates as "future."
+		vi.useRealTimers();
+		clearHaltArchiveSchemaCache();
+		await runHaltArchiveCapture(env, new Date(), 'LIVE').catch(() => {});
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_events').run(); } catch { /* ok */ }
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_archive_digest').run(); } catch { /* ok */ }
+	});
+
+	it('returns a signed digest with merkle_root over the day\'s events', async () => {
+		await seedSignedRow('2026-06-10', 1);
+		await seedSignedRow('2026-06-10', 2);
+		await seedSignedRow('2026-06-10', 3);
+		const digest = await buildHaltArchiveDigest('2026-06-10', env);
+		expect(digest).toBeTruthy();
+		expect(digest!.date).toBe('2026-06-10');
+		expect(digest!.event_count).toBe(3);
+		expect(typeof digest!.merkle_root).toBe('string');
+		expect((digest!.merkle_root as string)).toMatch(/^[0-9a-f]{64}$/);
+		expect(typeof digest!.signature).toBe('string');
+		expect((digest!.signature as string)).toMatch(/^[0-9a-f]{128}$/);
+	});
+
+	it('merkle_root is deterministic for the same input set', async () => {
+		await seedSignedRow('2026-06-09', 1);
+		await seedSignedRow('2026-06-09', 2);
+		const d1 = await buildHaltArchiveDigest('2026-06-09', env);
+		const d2 = await buildHaltArchiveDigest('2026-06-09', env);
+		expect(d1!.merkle_root).toBe(d2!.merkle_root);
+		expect(d1!.signature).toBe(d2!.signature);
+	});
+
+	it('chains to the previous day\'s merkle_root', async () => {
+		await seedSignedRow('2026-06-07', 1);
+		await seedSignedRow('2026-06-08', 1);
+		const d7 = await buildHaltArchiveDigest('2026-06-07', env);
+		const d8 = await buildHaltArchiveDigest('2026-06-08', env);
+		expect(d7!.previous_day_merkle_root).toBe('');
+		expect(d7!.chain_length).toBe(1);
+		expect(d8!.previous_day_merkle_root).toBe(d7!.merkle_root);
+		expect(d8!.chain_length).toBe(2);
+	});
+
+	it('source_modes field reflects the modes present in the day', async () => {
+		await seedSignedRow('2026-06-06', 1);
+		const digest = await buildHaltArchiveDigest('2026-06-06', env);
+		expect(digest!.source_modes).toEqual(['LIVE']);
+	});
+});
+
+describe('GET /v1/halts/digest/{date} — free public digest', () => {
+	beforeEach(async () => {
+		// Restore real timers — earlier tests in the suite leave faked system
+		// time behind (vi.setSystemTime), which makes our date-validation
+		// endpoints reject 2026-06-XX dates as "future."
+		vi.useRealTimers();
+		clearHaltArchiveSchemaCache();
+		await runHaltArchiveCapture(env, new Date(), 'LIVE').catch(() => {});
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_events').run(); } catch { /* ok */ }
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_archive_digest').run(); } catch { /* ok */ }
+	});
+
+	it('returns 400 on malformed date', async () => {
+		const response = await fetchWorker('/v1/halts/digest/not-a-date');
+		expect(response.status).toBe(400);
+	});
+
+	it('returns 400 on future date', async () => {
+		const future = new Date(Date.now() + 86400_000 * 2).toISOString().slice(0, 10);
+		const response = await fetchWorker(`/v1/halts/digest/${future}`);
+		expect(response.status).toBe(400);
+	});
+
+	it('returns 404 with DIGEST_NOT_YET_FINAL for today (incomplete day)', async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const response = await fetchWorker(`/v1/halts/digest/${today}`);
+		expect(response.status).toBe(404);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body.error).toBe('DIGEST_NOT_YET_FINAL');
+	});
+
+	it('returns digest JSON for a past date that has events', async () => {
+		const past = '2026-06-05';
+		const id = `endpoint-test-${past}`;
+		const payload: Record<string, string> = {
+			body_sha256:  'b'.repeat(64),
+			event_type:   'feed_snapshot',
+			fetch_status: '200',
+			id,
+			issued_at:    `${past}T01:00:00.000Z`,
+			issuer:       'headlessoracle.com',
+			key_id:       env.PUBLIC_KEY_ID as unknown as string,
+			mic:          '',
+			observation:  `source nasdaq fetched 200 OK at ${past}T01:00:00.000Z; body sha256 ${'b'.repeat(64)}`,
+			observed_at:  `${past}T01:00:00.000Z`,
+			r2_key:       `raw/nasdaq/${past}T01:00:00.000Z.xml`,
+			schema:       'halt_archive_event/v1',
+			source:       'nasdaq',
+			source_mode:  'LIVE',
+			source_url:   'https://example.invalid/nasdaq',
+		};
+		const sig = await signPayload(payload, env.ED25519_PRIVATE_KEY as unknown as string);
+		const sorted: Record<string, string> = {};
+		for (const k of Object.keys(payload).sort()) sorted[k] = payload[k];
+		await env.HALT_ARCHIVE!.prepare(
+			`INSERT INTO halt_events (id, source, source_mode, mic, event_type, observed_at, captured_at, observation, body_sha256, r2_key, payload_json, signature, key_id, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			id, 'nasdaq', 'LIVE', '', 'feed_snapshot', `${past}T01:00:00.000Z`, `${past}T01:00:00.000Z`,
+			payload.observation, 'b'.repeat(64), `raw/nasdaq/${past}T01:00:00.000Z.xml`, JSON.stringify(sorted),
+			sig, env.PUBLIC_KEY_ID as unknown as string, `${past}T01:00:00.000Z`,
+		).run();
+
+		const response = await fetchWorker(`/v1/halts/digest/${past}`);
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body.schema).toBe('halt_archive_digest/v1');
+		expect(typeof body.framing).toBe('string');
+		expect(String(body.framing)).toMatch(/observed-source/i);
+		expect(typeof body.merkle_root).toBe('string');
+		expect(typeof body.signature).toBe('string');
+	});
+});
+
+describe('GET /v1/halts — paid endpoint', () => {
+	beforeEach(async () => {
+		clearHaltArchiveSchemaCache();
+		clearApiKeyCache();
+		await runHaltArchiveCapture(env, new Date(), 'LIVE').catch(() => {});
+		try { await env.HALT_ARCHIVE!.prepare('DELETE FROM halt_events').run(); } catch { /* ok */ }
+	});
+
+	it('returns 402 when no payment or paid key provided', async () => {
+		const response = await fetchWorker('/v1/halts');
+		expect(response.status).toBe(402);
+	});
+
+	it('accepts MASTER_API_KEY (internal plan) as paid access', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		const response = await fetchWorker('/v1/halts?limit=5', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body.schema).toBe('halt_archive_event/v1');
+		expect(typeof body.framing).toBe('string');
+		expect(Array.isArray(body.events)).toBe(true);
+		expect(typeof body.count).toBe('number');
+	});
+
+	it('respects ?mic= and ?source= filters', async () => {
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status: 'HALTED', reason: 'test', expires: new Date(Date.now() + 3600_000).toISOString(),
+		}));
+		clearOverrideCache();
+		await runHaltArchiveCapture(env, new Date(), 'LIVE');
+
+		const response = await fetchWorker('/v1/halts?source=ho_session&mic=XNYS&limit=10', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(response.status).toBe(200);
+		const body = await response.json() as { events: Array<Record<string, unknown>> };
+		for (const e of body.events) {
+			expect(e.source).toBe('ho_session');
+			expect(e.mic).toBe('XNYS');
+		}
+
+		await env.ORACLE_OVERRIDES.delete('XNYS');
+		clearOverrideCache();
+	});
+
+	it('still returns 402 if a free-plan sandbox key is presented', async () => {
+		const sandboxResp = await fetchSandbox('halts-sandbox@example.com');
+		expect(sandboxResp.status).toBe(200);
+		const sb = await sandboxResp.json() as { api_key: string };
+		const response = await fetchWorker('/v1/halts', {
+			headers: { 'X-Oracle-Key': sb.api_key },
+		});
+		expect(response.status).toBe(402);
 	});
 });

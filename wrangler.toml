@@ -34,6 +34,8 @@ routes = [
   { pattern = "headlessoracle.com/x402", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/specifications/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/verification/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/halts", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/halts/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/*", zone_name = "headlessoracle.com" },
 ]
@@ -45,6 +47,10 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
 TEST_COUNT = "1071"
+# External halt feed URLs — defaults are public RSS / API endpoints.
+# Override per-environment with `wrangler secret put` if a feed URL changes.
+NASDAQ_HALTS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
+NYSE_HALTS_URL   = "https://www.nyse.com/api/trade-halts/get?market=NYSE"
 
 # ─── KV Namespace: Manual Overrides ──────────────────────────────────────────
 # Used for circuit breaker halts and emergency market status overrides.
@@ -76,6 +82,34 @@ id = "aaf52e9a579242f48fc09bb3e8afb293"
 [[kv_namespaces]]
 binding = "ORACLE_TELEMETRY"
 id = "6fcde4c94b6b40f1913a44f410a06c5d"
+
+# ─── D1 Database: Signed Halt Archive ────────────────────────────────────────
+# Append-only D1 database holding signed halt events from NYSE / Nasdaq feeds
+# plus HO's own 28-MIC session-state transitions. Every row is Ed25519-signed
+# with claim-ceiling framing ("observed source S reported X at T" — never
+# "X was true at T"). See migrations/0001_halt_archive.sql for the schema.
+#
+# HUMAN TASK (before first prod deploy):
+#   1. wrangler d1 create halt_archive
+#   2. Replace the placeholder database_id below with the real ID returned.
+#   3. wrangler d1 migrations apply halt_archive --remote
+# Tests use Miniflare's in-memory D1 — placeholder ID is fine for tests.
+[[d1_databases]]
+binding       = "HALT_ARCHIVE"
+database_name = "halt_archive"
+database_id   = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "migrations"
+
+# ─── R2 Bucket: Halt Archive Raw Payloads ────────────────────────────────────
+# Raw bytes of external halt feeds, anchored by sha256 in the corresponding
+# signed D1 row. Enables independent re-verification of what each source
+# actually said at a given timestamp.
+#
+# HUMAN TASK (before first prod deploy):
+#   wrangler r2 bucket create halt-archive-raw
+[[r2_buckets]]
+binding     = "HALT_ARCHIVE_RAW"
+bucket_name = "halt-archive-raw"
 
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 # Rate limiting for public routes is configured in the Cloudflare Dashboard,
