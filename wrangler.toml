@@ -110,7 +110,7 @@ id = "6fcde4c94b6b40f1913a44f410a06c5d"
 [[d1_databases]]
 binding       = "HALT_ARCHIVE"
 database_name = "halt_archive"
-database_id   = "00000000-0000-0000-0000-000000000001"
+database_id   = "dac1ff26-8774-43e5-a55f-7fac2c708743"
 migrations_dir = "migrations"
 
 # ─── R2 Bucket: Halt Archive Raw Payloads ────────────────────────────────────
