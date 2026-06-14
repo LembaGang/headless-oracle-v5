@@ -14978,6 +14978,58 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			}
 		}
 
+		// ── GET /v1/status/{MIC} — FREE, unauthenticated, rate-limited, SIGNED ──────
+		// Same authoritative answer as /v5/status, through an unauth door. Returns
+		// byte-equivalent canonical receipt bytes for the same MIC at the same
+		// issued_at (modulo receipt_id). receipt_mode is 'live' because the receipt
+		// attests provenance-of-content (HO's signed observation), not
+		// provenance-of-payment. Rate limiting is configured at the Cloudflare
+		// Dashboard layer — see wrangler.toml.
+		//
+		// Phase-C-safe shape: the wrapper is { ...receipt, receipt, discovery_url }.
+		// Any future top-level field on the receipt (e.g. archive_anchor in Phase C)
+		// slots in alphabetically inside buildSignedReceipt and the SDK verifier
+		// picks it up via canonical_payload_spec without an envelope change.
+		if (url.pathname === '/v1/status' && request.method === 'GET') {
+			return json({
+				error:    'MIC_REQUIRED',
+				message:  'Specify a MIC: GET /v1/status/{MIC} (e.g. /v1/status/XNYS). See /v5/exchanges for supported markets.',
+				example:  'https://headlessoracle.com/v1/status/XNYS',
+			}, 400);
+		}
+		if (url.pathname.startsWith('/v1/status/')) {
+			if (request.method !== 'GET') {
+				return json({ error: 'METHOD_NOT_ALLOWED', message: 'GET required' }, 405);
+			}
+			const v1Mic = url.pathname.slice('/v1/status/'.length).replace(/\/$/, '').toUpperCase();
+			if (!v1Mic) {
+				return json({
+					error:    'MIC_REQUIRED',
+					message:  'Specify a MIC: GET /v1/status/{MIC} (e.g. /v1/status/XNYS).',
+					example:  'https://headlessoracle.com/v1/status/XNYS',
+				}, 400);
+			}
+			if (!MARKET_CONFIGS[v1Mic]) {
+				return json({
+					error:     'UNKNOWN_MIC',
+					message:   `Unsupported exchange: ${v1Mic}. See /v5/exchanges for supported markets.`,
+					supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
+				}, 400);
+			}
+			const { receipt, status } = await buildSignedReceipt(v1Mic, env, now, expiresAt, 'live');
+			// Track receipt ID for the daily attestation digest — /v1/status calls
+			// belong in the merkle chain alongside /v5/status calls.
+			if (typeof ctx?.waitUntil === 'function' && env.ORACLE_TELEMETRY && typeof receipt['receipt_id'] === 'string') {
+				trackReceiptId(receipt['receipt_id'] as string, now.toISOString().slice(0, 10), v1Mic, env, ctx);
+			}
+			incrementKvCounter(`v1_status_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
+			const v1Body = { ...receipt, receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' };
+			return json(v1Body, status, {
+				'Cache-Control':      'no-store',
+				'X-Attestation-Mode': 'live',
+			});
+		}
+
 		// ── GET /v5/showcase — social proof and reference projects ───────────────────
 		if (url.pathname === '/v5/showcase' && request.method === 'GET') {
 			return json({

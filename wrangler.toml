@@ -36,6 +36,8 @@ routes = [
   { pattern = "headlessoracle.com/v1/verification/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/halts", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/halts/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/status", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/status/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/*", zone_name = "headlessoracle.com" },
 ]
@@ -46,7 +48,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "1071"
+TEST_COUNT = "1117"
 # Nasdaq Trader RSS is the CONSOLIDATED US halt feed: it carries NASDAQ-,
 # NYSE-, NYSE American-, NYSE Arca-listed halts, distinguished by the
 # <ndaq:Market> element on each <item>. Free, no auth, no API key.
@@ -135,6 +137,7 @@ bucket_name = "halt-archive-raw"
 #   /v5/keys             60 req/min    Public key registry
 #   /v5/checkout         10 req/min    Hits Paddle API — keep low
 #   /v5/health           60 req/min    Liveness probe
+#   /v1/status/*         60 req/min    Free signed status — unauth wedge
 #   /mcp                 60 req/min    MCP endpoint (agents)
 #   /openapi.json        60 req/min    API spec discovery
 #   /.well-known/*       60 req/min    Key/agent discovery
