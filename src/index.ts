@@ -4582,6 +4582,12 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
+  <url>
+    <loc>https://headlessoracle.com/halt-gate</loc>
+    <lastmod>2026-06-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
 </urlset>`;
 
 const ROBOTS_TXT = `Sitemap: https://headlessoracle.com/sitemap.xml

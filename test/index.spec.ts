@@ -11383,6 +11383,18 @@ describe('/sitemap.xml', () => {
 		const ct = res.headers.get('Content-Type') || '';
 		expect(ct).toContain('xml');
 	});
+
+	it('includes the /halt-gate adoption page (the free signed-status wedge)', async () => {
+		// /halt-gate is the adoption-first landing page that walks an external
+		// developer through curl /v1/status → safeToExecute() → HaltGuard.sol.
+		// Search engines discover it via this sitemap; if this assertion fails,
+		// the page is invisible to indexers even though it's reachable via
+		// direct URL. Pinned here so future SITEMAP_XML edits cannot silently
+		// drop it.
+		const res  = await fetchWorker('/sitemap.xml');
+		const body = await res.text();
+		expect(body).toContain('<loc>https://headlessoracle.com/halt-gate</loc>');
+	});
 });
 
 // ─── /mics.json — additional ────────────────────────────────────────────────
