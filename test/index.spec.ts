@@ -12640,6 +12640,167 @@ describe('GET /v1/status/{MIC}', () => {
 	});
 });
 
+// ─── In-worker rate limit on /v1/status/{MIC} (belt-and-suspenders) ───────────
+//
+// 60 req/min/IP soft cap, fail-OPEN on KV error. The Cloudflare dashboard rule
+// is the primary enforcement; this is the safety net in front of it. Tests pin
+// the under/over/error-path behaviour so a refactor cannot silently change the
+// fail-open posture (which would break the free door on any KV blip).
+
+describe('GET /v1/status/{MIC} — in-worker rate limit', () => {
+	// Each test uses a unique X-Original-IP so cases don't bleed counters into
+	// each other. The IP is hashed and bucketed by minute; the KV cleanup at the
+	// end of each test deletes the exact key the worker just wrote.
+	async function ipHashOf(ip: string): Promise<string> {
+		const bytes = new TextEncoder().encode(ip);
+		const buf   = await crypto.subtle.digest('SHA-256', bytes);
+		return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+	async function cleanupRateBuckets(ip: string): Promise<void> {
+		const hash = await ipHashOf(ip);
+		// Sweep a small window of minute buckets around now — covers tests that
+		// might span a minute boundary.
+		const minute = Math.floor(Date.now() / 60_000);
+		for (let m = minute - 1; m <= minute + 1; m++) {
+			await env.ORACLE_TELEMETRY.delete(`v1_status_rate:${hash}:${m}`).catch(() => {});
+		}
+	}
+
+	it('passes under the limit (10 requests with a fresh IP all return 200)', async () => {
+		const ip = '203.0.113.10';
+		try {
+			for (let i = 0; i < 10; i++) {
+				const res = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ip } });
+				expect(res.status).toBe(200);
+			}
+		} finally {
+			await cleanupRateBuckets(ip);
+		}
+	});
+
+	it('exact-limit (60) all pass; 61st returns 429 with Retry-After', async () => {
+		const ip = '203.0.113.20';
+		try {
+			for (let i = 0; i < 60; i++) {
+				const res = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ip } });
+				expect(res.status, `request #${i + 1} should pass`).toBe(200);
+			}
+			const over = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ip } });
+			expect(over.status).toBe(429);
+			expect(over.headers.get('Retry-After')).toBeTruthy();
+			expect(Number(over.headers.get('Retry-After'))).toBeGreaterThan(0);
+			expect(Number(over.headers.get('Retry-After'))).toBeLessThanOrEqual(60);
+			expect(over.headers.get('X-RateLimit-Limit')).toBe('60');
+			expect(over.headers.get('X-RateLimit-Remaining')).toBe('0');
+			expect(over.headers.get('X-RateLimit-Reset')).toBeTruthy();
+			const body = await over.json() as Record<string, unknown>;
+			expect(body.error).toBe('RATE_LIMITED');
+			expect(body.limit_per_minute).toBe(60);
+			expect(typeof body.retry_after_seconds).toBe('number');
+		} finally {
+			await cleanupRateBuckets(ip);
+		}
+	});
+
+	it('fails OPEN when the KV read throws (free door must not break on KV blips)', async () => {
+		const ip = '203.0.113.30';
+		const originalGet = env.ORACLE_TELEMETRY.get.bind(env.ORACLE_TELEMETRY);
+		vi.spyOn(env.ORACLE_TELEMETRY, 'get').mockImplementation(async (key: string) => {
+			if (typeof key === 'string' && key.startsWith('v1_status_rate:')) {
+				throw new Error('simulated KV outage');
+			}
+			return originalGet(key);
+		});
+		try {
+			const res = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.mic).toBe('XNYS');
+			expect(typeof body.signature).toBe('string');
+		} finally {
+			vi.restoreAllMocks();
+			await cleanupRateBuckets(ip);
+		}
+	});
+
+	it('per-IP isolation — IP A at the limit does not affect IP B', async () => {
+		// Seed IP A's counter directly to the limit (bypassing the API loop)
+		// so this test is robust against a minute-boundary roll-over partway
+		// through what would otherwise be 60 sequential requests. The
+		// increment-path coverage lives in the "exact-limit (60)" test above;
+		// here we are isolating the per-IP partitioning of the bucket key.
+		const ipA = '203.0.113.40';
+		const ipB = '203.0.113.41';
+		const ipAHash = await ipHashOf(ipA);
+		const minute  = Math.floor(Date.now() / 60_000);
+		const ipAKey  = `v1_status_rate:${ipAHash}:${minute}`;
+		try {
+			await env.ORACLE_TELEMETRY.put(ipAKey, '60', { expirationTtl: 90 });
+			// IP A is already at the limit — next request rate-limited.
+			const overA = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ipA } });
+			expect(overA.status).toBe(429);
+			// IP B is fresh — first request passes.
+			const freshB = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ipB } });
+			expect(freshB.status).toBe(200);
+		} finally {
+			await cleanupRateBuckets(ipA);
+			await cleanupRateBuckets(ipB);
+		}
+	});
+
+	it('HEAD counts against the same per-IP minute bucket as GET (volume-based, not receipt-based)', async () => {
+		// HEAD still computes the receipt to derive headers, so the rate-limit
+		// gate treats GET and HEAD as equivalent volume. (This is intentionally
+		// distinct from the served-receipt counter / digest skip, which is
+		// receipt-based.) Seed the counter directly to keep the test off the
+		// minute-boundary roll-over path; the increment-via-HEAD path is
+		// exercised below with a small fresh slice.
+		const ip = '203.0.113.50';
+		const ipHash = await ipHashOf(ip);
+		const minute = Math.floor(Date.now() / 60_000);
+		const key    = `v1_status_rate:${ipHash}:${minute}`;
+		try {
+			// First: prove HEAD increments the same bucket by driving 3 HEADs
+			// and checking the counter ticked.
+			for (let i = 0; i < 3; i++) {
+				const r = await fetchWorker('/v1/status/XNYS', { method: 'HEAD', headers: { 'X-Original-IP': ip } });
+				expect(r.status, `HEAD request #${i + 1}`).toBe(200);
+			}
+			const counted = await env.ORACLE_TELEMETRY.get(key);
+			expect(parseInt(counted ?? '0', 10)).toBeGreaterThanOrEqual(3);
+
+			// Then: seed the bucket to the limit and confirm both GET and HEAD
+			// are rate-limited from the same shared counter.
+			await env.ORACLE_TELEMETRY.put(key, '60', { expirationTtl: 90 });
+			const overGet = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ip } });
+			expect(overGet.status).toBe(429);
+			const overHead = await fetchWorker('/v1/status/XNYS', { method: 'HEAD', headers: { 'X-Original-IP': ip } });
+			expect(overHead.status).toBe(429);
+			const headBody = await overHead.text();
+			expect(headBody).toBe('');
+			expect(overHead.headers.get('Retry-After')).toBeTruthy();
+		} finally {
+			await cleanupRateBuckets(ip);
+		}
+	});
+
+	it('bare /v1/status (no MIC) is NOT rate-limited — outside the {MIC} handler scope', async () => {
+		// Bare /v1/status is cheap (400 MIC_REQUIRED, no receipt computation)
+		// and lives outside the /v1/status/{MIC} handler. Confirming the limit
+		// is scoped to the MIC path so a misconfiguration doesn't accidentally
+		// gate the friendly error response.
+		const ip = '203.0.113.60';
+		try {
+			for (let i = 0; i < 65; i++) {
+				const r = await fetchWorker('/v1/status', { headers: { 'X-Original-IP': ip } });
+				expect(r.status).toBe(400);
+			}
+		} finally {
+			await cleanupRateBuckets(ip);
+		}
+	});
+});
+
 // ─── Byte-parity guard across signer / in-repo verifier / SDK verifier ────────
 //
 // This is the gate that protects against the March 1-2 silent-canonicalization
