@@ -12376,3 +12376,326 @@ describe('GET /v1/halts — paid endpoint', () => {
 		expect(response.status).toBe(402);
 	});
 });
+
+// ─── GET /v1/status/{MIC} — Halt Gate free signed door ────────────────────────
+//
+// The "free signed status" wedge: unauthenticated, rate-limited (dashboard rule),
+// returns the SAME authoritative signed receipt as /v5/status — mode 'live',
+// byte-equivalent canonical payload for the same MIC at the same instant.
+// receipt_mode is 'live' because it attests provenance-of-content, not
+// provenance-of-payment.
+
+describe('GET /v1/status/{MIC}', () => {
+	it('bare /v1/status returns 400 MIC_REQUIRED with an example URL', async () => {
+		const response = await fetchWorker('/v1/status');
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'MIC_REQUIRED');
+		expect(body).toHaveProperty('example');
+		expect(typeof body.example).toBe('string');
+		expect((body.example as string)).toContain('/v1/status/XNYS');
+	});
+
+	it('trailing-slash /v1/status/ returns 400 MIC_REQUIRED', async () => {
+		const response = await fetchWorker('/v1/status/');
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'MIC_REQUIRED');
+	});
+
+	it('unknown MIC returns 400 UNKNOWN_MIC with supported list', async () => {
+		const response = await fetchWorker('/v1/status/ZZZZ');
+		expect(response.status).toBe(400);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'UNKNOWN_MIC');
+		expect(Array.isArray(body.supported)).toBe(true);
+		expect((body.supported as string[])).toContain('XNYS');
+	});
+
+	it('POST /v1/status/XNYS returns 405', async () => {
+		const response = await fetchWorker('/v1/status/XNYS', { method: 'POST' });
+		expect(response.status).toBe(405);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
+	});
+
+	it('PUT /v1/status/XNYS returns 405', async () => {
+		const response = await fetchWorker('/v1/status/XNYS', { method: 'PUT' });
+		expect(response.status).toBe(405);
+	});
+
+	it('lowercase MIC is normalized to uppercase', async () => {
+		const response = await fetchWorker('/v1/status/xnys');
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('mic', 'XNYS');
+	});
+
+	it('trailing slash on MIC path is accepted', async () => {
+		const response = await fetchWorker('/v1/status/XNYS/');
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('mic', 'XNYS');
+	});
+
+	// Every supported MIC returns a valid signed receipt.
+	for (const mic of ALL_MICS) {
+		it(`returns a signed receipt for ${mic} (no auth required)`, async () => {
+			const response = await fetchWorker(`/v1/status/${mic}`);
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('mic', mic);
+			expect(body).toHaveProperty('status');
+			expect(VALID_STATUSES).toContain(body.status);
+			expect(body).toHaveProperty('source');
+			expect(VALID_SOURCES).toContain(body.source);
+			expect(body).toHaveProperty('signature');
+			expect((body.signature as string).length).toBe(128);
+			expect(body).toHaveProperty('receipt_id');
+			expect(body).toHaveProperty('issued_at');
+			expect(body).toHaveProperty('expires_at');
+			expect(body).toHaveProperty('schema_version', 'v5.0');
+			expect(body).toHaveProperty('issuer', 'headlessoracle.com');
+			expect(body).toHaveProperty('public_key_id');
+		});
+	}
+
+	it('receipt_mode is "live" — same provenance-of-content as /v5/status, not demo', async () => {
+		const response = await fetchWorker('/v1/status/XNYS');
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('receipt_mode', 'live');
+	});
+
+	it('TTL is exactly 60 seconds (RECEIPT_TTL_SECONDS — never extend)', async () => {
+		const response = await fetchWorker('/v1/status/XNYS');
+		const body = await response.json() as Record<string, unknown>;
+		const issuedAt  = new Date(body.issued_at as string).getTime();
+		const expiresAt = new Date(body.expires_at as string).getTime();
+		expect(expiresAt - issuedAt).toBe(60_000);
+	});
+
+	it('response carries Cache-Control: no-store', async () => {
+		const response = await fetchWorker('/v1/status/XNYS');
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+	});
+
+	it('response carries X-Attestation-Mode: live', async () => {
+		const response = await fetchWorker('/v1/status/XNYS');
+		expect(response.headers.get('X-Attestation-Mode')).toBe('live');
+	});
+
+	it('response includes discovery_url + nested receipt envelope (matches /v5/status shape)', async () => {
+		const response = await fetchWorker('/v1/status/XNYS');
+		const body = await response.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('discovery_url');
+		expect(body.discovery_url).toBe('https://headlessoracle.com/.well-known/mcp/server-card.json');
+		expect(body).toHaveProperty('receipt');
+		const nested = body.receipt as Record<string, unknown>;
+		expect(nested).toHaveProperty('mic', 'XNYS');
+		expect(nested).toHaveProperty('signature');
+		expect((nested.signature as string).length).toBe(128);
+	});
+
+	it('Tier 0 — ORACLE_OVERRIDES HALTED flows through to /v1/status', async () => {
+		const expires = new Date(Date.now() + 3600_000).toISOString();
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status:  'HALTED',
+			reason:  'Test circuit breaker via /v1/status',
+			expires,
+		}));
+		try {
+			const response = await fetchWorker('/v1/status/XNYS');
+			expect(response.status).toBe(200);
+			const body = await response.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('status', 'HALTED');
+			expect(body).toHaveProperty('source', 'OVERRIDE');
+			expect(body).toHaveProperty('reason', 'Test circuit breaker via /v1/status');
+			expect(body).toHaveProperty('signature');
+			expect((body.signature as string).length).toBe(128);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+		}
+	});
+
+	it('canonical signed fields match the /v5/demo shape exactly (Phase-C-safe envelope)', async () => {
+		// /v5/demo and /v1/status both call buildSignedReceipt — the canonical
+		// signed-field SET must be identical (mode differs: 'demo' vs 'live', but
+		// that field is in both). This guards against /v1/status diverging from the
+		// signing path's payload shape (which would force a verifier-SDK update).
+		const v1   = await fetchJSON('/v1/status/XNYS');
+		const demo = await fetchJSON('/v5/demo?mic=XNYS');
+		const CANONICAL = ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic',
+			'status', 'source', 'halt_detection', 'receipt_mode', 'schema_version',
+			'public_key_id', 'signature'];
+		for (const field of CANONICAL) {
+			expect(v1, `missing field ${field}`).toHaveProperty(field);
+			expect(demo, `/v5/demo missing field ${field}`).toHaveProperty(field);
+		}
+		// Constants match.
+		expect(v1.issuer).toBe(demo.issuer);
+		expect(v1.schema_version).toBe(demo.schema_version);
+		expect(v1.public_key_id).toBe(demo.public_key_id);
+		// Status + source MUST match across the two doors (same MIC, same instant).
+		expect(v1.status).toBe(demo.status);
+		expect(v1.source).toBe(demo.source);
+		// mode differs by design.
+		expect(v1.receipt_mode).toBe('live');
+		expect(demo.receipt_mode).toBe('demo');
+	});
+
+	it('signature verifies via signPayload-derived canonical bytes (in-repo signer round-trip)', async () => {
+		// Drives the byte-parity guarantee from the worker side: reconstruct the
+		// canonical payload from receipt fields, re-sign with the test private key,
+		// and assert the worker's signature matches. If this test passes, the
+		// canonical-bytes path inside /v1/status is identical to signPayload's.
+		const response = await fetchWorker('/v1/status/XNYS');
+		const body = await response.json() as Record<string, unknown>;
+		const CANONICAL = ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic',
+			'status', 'source', 'halt_detection', 'receipt_mode', 'schema_version',
+			'public_key_id'];
+		const payload: Record<string, string> = {};
+		for (const k of CANONICAL) {
+			if (typeof body[k] === 'string') payload[k] = body[k] as string;
+		}
+		const expectedSig = await signPayload(payload, env.ED25519_PRIVATE_KEY);
+		expect(body.signature).toBe(expectedSig);
+	});
+});
+
+// ─── Byte-parity guard across signer / in-repo verifier / SDK verifier ────────
+//
+// This is the gate that protects against the March 1-2 silent-canonicalization
+// class of bug: three independent canonicalizations of the same receipt
+// (signer, in-repo verifier inside /v5/verify, SDK verifier in
+// @headlessoracle/verify) MUST agree byte-for-byte. If any one of them drifts,
+// silently produced signatures will silently fail verification. Tests in this
+// block run an INDEPENDENT re-implementation of each algorithm (not a shared
+// helper) so a refactor that touches src/ canonicalization cannot accidentally
+// teach the test the wrong algorithm.
+//
+// The three documented canonicalization algorithms:
+//
+//   1. signer (signPayload in src/index.ts): sort keys alphabetically →
+//      JSON.stringify with no whitespace.
+//
+//   2. in-repo verifier (verifyReceiptLogic in src/index.ts): drop the
+//      'signature' field, drop the wrapper fields {'discovery_url', 'receipt',
+//      'extensions'}, then sort + JSON.stringify the remainder. Field values
+//      are coerced to String() — this matches what the live worker does.
+//
+//   3. SDK verifier (@headlessoracle/verify src/index.ts): filter the receipt
+//      to a canonical_payload_spec allowlist (intentionally the same set as
+//      the signer's canonical fields), then sort + JSON.stringify.
+
+describe('Byte-parity — signer / in-repo verifier / SDK verifier all produce identical canonical bytes', () => {
+	// A fixed, realistic /v1/status canonical payload. All values are strings
+	// because the signer's string-only guard is the spec-conformance line —
+	// non-string fields throw on sign. Receipt mode is 'live' because /v1/status
+	// emits 'live' (same provenance-of-content as /v5/status).
+	const FIXED_PAYLOAD: Record<string, string> = {
+		receipt_id:     'parity-fixture-00000001',
+		issued_at:      '2026-06-14T13:42:11.000Z',
+		expires_at:     '2026-06-14T13:43:11.000Z',
+		issuer:         'headlessoracle.com',
+		mic:            'XNYS',
+		status:         'OPEN',
+		source:         'SCHEDULE',
+		halt_detection: 'schedule_only',
+		receipt_mode:   'live',
+		schema_version: 'v5.0',
+		public_key_id:  'key_2026_v1',
+	};
+
+	// Independent re-implementation of (1) the signer's canonicalization.
+	function signerCanonical(p: Record<string, string>): string {
+		const sorted: Record<string, string> = {};
+		for (const k of Object.keys(p).sort()) sorted[k] = p[k];
+		return JSON.stringify(sorted);
+	}
+
+	// Independent re-implementation of (2) the in-repo verifier's
+	// canonicalization (strip-wrapper approach).
+	function inRepoCanonical(wrappedReceipt: Record<string, unknown>): string {
+		const UNSIGNED = new Set(['discovery_url', 'receipt', 'extensions']);
+		const { signature: _sig, ...rest } = wrappedReceipt;
+		void _sig;
+		const out: Record<string, string> = {};
+		for (const k of Object.keys(rest).sort()) {
+			if (UNSIGNED.has(k)) continue;
+			out[k] = String((rest as Record<string, unknown>)[k]);
+		}
+		return JSON.stringify(out);
+	}
+
+	// Independent re-implementation of (3) the SDK verifier's canonicalization
+	// (allowlist approach). The allowlist mirrors canonical_payload_spec.
+	function sdkCanonical(wrappedReceipt: Record<string, unknown>, allowlist: string[]): string {
+		const out: Record<string, unknown> = {};
+		for (const k of allowlist.slice().sort()) {
+			if (k in wrappedReceipt) out[k] = wrappedReceipt[k];
+		}
+		return JSON.stringify(out);
+	}
+
+	const ALLOWLIST = [
+		'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic',
+		'public_key_id', 'reason', 'receipt_id', 'receipt_mode',
+		'schema_version', 'source', 'status',
+	];
+
+	it('the three canonicalization algorithms produce byte-identical bytes on a fixed payload', async () => {
+		const signerBytes = signerCanonical(FIXED_PAYLOAD);
+		// Build the response shape /v1/status actually emits (incl. wrapper).
+		const sig = await signPayload(FIXED_PAYLOAD, env.ED25519_PRIVATE_KEY);
+		const receiptOut = { ...FIXED_PAYLOAD, signature: sig };
+		const wrapped = { ...receiptOut, receipt: receiptOut, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' };
+		const inRepoBytes = inRepoCanonical(wrapped);
+		const sdkBytes    = sdkCanonical(wrapped, ALLOWLIST);
+		expect(inRepoBytes).toBe(signerBytes);
+		expect(sdkBytes).toBe(signerBytes);
+	});
+
+	it('byte-parity holds against a LIVE /v1/status receipt fetched from the worker', async () => {
+		// Same check but with a real, just-issued receipt — guards against any
+		// drift between the fixed fixture and what buildSignedReceipt actually
+		// emits. If the worker started emitting an extra field, this catches it.
+		const response = await fetchWorker('/v1/status/XNYS');
+		expect(response.status).toBe(200);
+		const wrapped = await response.json() as Record<string, unknown>;
+
+		// Reconstruct the signer's canonical from the top-level fields the
+		// signer would have signed (the 11 fields in FIXED_PAYLOAD shape).
+		const signerPayload: Record<string, string> = {};
+		for (const k of Object.keys(FIXED_PAYLOAD)) {
+			if (typeof wrapped[k] === 'string') signerPayload[k] = wrapped[k] as string;
+		}
+		const signerBytes = signerCanonical(signerPayload);
+		const inRepoBytes = inRepoCanonical(wrapped);
+		const sdkBytes    = sdkCanonical(wrapped, ALLOWLIST);
+		expect(inRepoBytes).toBe(signerBytes);
+		expect(sdkBytes).toBe(signerBytes);
+	});
+
+	it('signPayload-produced signature verifies against signerCanonical bytes — closes the loop', async () => {
+		// The strongest form: produce a signature with signPayload, then check
+		// it via raw Ed25519 against bytes we built ourselves with the
+		// independent reimplementation. If the signature does NOT verify, the
+		// signer has silently drifted from documented canonicalization.
+		const sig = await signPayload(FIXED_PAYLOAD, env.ED25519_PRIVATE_KEY);
+		const bytes = signerCanonical(FIXED_PAYLOAD);
+		const msg   = new TextEncoder().encode(bytes);
+		const pubKey = (await import('@noble/ed25519')).getPublicKeyAsync;
+		// fromHex helper inline to avoid a new import.
+		const fromHexBytes = (hex: string) => {
+			const out = new Uint8Array(hex.length / 2);
+			for (let i = 0; i < hex.length; i += 2) out[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+			return out;
+		};
+		const privBytes = fromHexBytes(env.ED25519_PRIVATE_KEY);
+		const pub = await pubKey(privBytes);
+		const ed = await import('@noble/ed25519');
+		const ok = await ed.verifyAsync(fromHexBytes(sig), msg, pub);
+		expect(ok).toBe(true);
+	});
+});
