@@ -14990,44 +14990,54 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 		// Any future top-level field on the receipt (e.g. archive_anchor in Phase C)
 		// slots in alphabetically inside buildSignedReceipt and the SDK verifier
 		// picks it up via canonical_payload_spec without an envelope change.
-		if (url.pathname === '/v1/status' && request.method === 'GET') {
-			return json({
+		// HEAD mirrors GET: same status, same headers, no body. Per RFC 7231 §4.3.2.
+		// Side effects (counter increment, digest tracking) are skipped — HEAD is a
+		// metadata probe (uptime checks, CDN warm-up, header inspection), not a real
+		// receipt request.
+		if (url.pathname === '/v1/status' && (request.method === 'GET' || request.method === 'HEAD')) {
+			const v1Resp = json({
 				error:    'MIC_REQUIRED',
 				message:  'Specify a MIC: GET /v1/status/{MIC} (e.g. /v1/status/XNYS). See /v5/exchanges for supported markets.',
 				example:  'https://headlessoracle.com/v1/status/XNYS',
 			}, 400);
+			return request.method === 'HEAD' ? new Response(null, { status: v1Resp.status, headers: v1Resp.headers }) : v1Resp;
 		}
 		if (url.pathname.startsWith('/v1/status/')) {
-			if (request.method !== 'GET') {
-				return json({ error: 'METHOD_NOT_ALLOWED', message: 'GET required' }, 405);
+			if (request.method !== 'GET' && request.method !== 'HEAD') {
+				return json({ error: 'METHOD_NOT_ALLOWED', message: 'GET or HEAD required' }, 405);
 			}
+			const v1IsHead = request.method === 'HEAD';
+			const v1Strip  = (resp: Response): Response => v1IsHead ? new Response(null, { status: resp.status, headers: resp.headers }) : resp;
 			const v1Mic = url.pathname.slice('/v1/status/'.length).replace(/\/$/, '').toUpperCase();
 			if (!v1Mic) {
-				return json({
+				return v1Strip(json({
 					error:    'MIC_REQUIRED',
 					message:  'Specify a MIC: GET /v1/status/{MIC} (e.g. /v1/status/XNYS).',
 					example:  'https://headlessoracle.com/v1/status/XNYS',
-				}, 400);
+				}, 400));
 			}
 			if (!MARKET_CONFIGS[v1Mic]) {
-				return json({
+				return v1Strip(json({
 					error:     'UNKNOWN_MIC',
 					message:   `Unsupported exchange: ${v1Mic}. See /v5/exchanges for supported markets.`,
 					supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
-				}, 400);
+				}, 400));
 			}
 			const { receipt, status } = await buildSignedReceipt(v1Mic, env, now, expiresAt, 'live');
-			// Track receipt ID for the daily attestation digest — /v1/status calls
-			// belong in the merkle chain alongside /v5/status calls.
-			if (typeof ctx?.waitUntil === 'function' && env.ORACLE_TELEMETRY && typeof receipt['receipt_id'] === 'string') {
-				trackReceiptId(receipt['receipt_id'] as string, now.toISOString().slice(0, 10), v1Mic, env, ctx);
+			// Track receipt ID + counter only for GET — HEAD is a metadata probe and
+			// the receipt body is not actually served, so it has no place in the
+			// merkle chain or the served-receipt counter.
+			if (!v1IsHead) {
+				if (typeof ctx?.waitUntil === 'function' && env.ORACLE_TELEMETRY && typeof receipt['receipt_id'] === 'string') {
+					trackReceiptId(receipt['receipt_id'] as string, now.toISOString().slice(0, 10), v1Mic, env, ctx);
+				}
+				incrementKvCounter(`v1_status_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 			}
-			incrementKvCounter(`v1_status_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 			const v1Body = { ...receipt, receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' };
-			return json(v1Body, status, {
+			return v1Strip(json(v1Body, status, {
 				'Cache-Control':      'no-store',
 				'X-Attestation-Mode': 'live',
-			});
+			}));
 		}
 
 		// ── GET /v5/showcase — social proof and reference projects ───────────────────

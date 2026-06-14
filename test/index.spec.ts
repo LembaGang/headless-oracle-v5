@@ -12544,6 +12544,71 @@ describe('GET /v1/status/{MIC}', () => {
 		expect(demo.receipt_mode).toBe('demo');
 	});
 
+	// ── HEAD method support ────────────────────────────────────────────────
+	// RFC 7231 §4.3.2 — HEAD mirrors GET: same status, same headers, no body.
+	// HEAD is the metadata-probe path (uptime checks, CDN warm-up, header inspection);
+	// the receipt body is not served, so side effects are skipped.
+	it('HEAD /v1/status/XNYS returns 200 with no body and GET-equivalent headers', async () => {
+		const response = await fetchWorker('/v1/status/XNYS', { method: 'HEAD' });
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Cache-Control')).toBe('no-store');
+		expect(response.headers.get('X-Attestation-Mode')).toBe('live');
+		expect(response.headers.get('Content-Type')).toMatch(/json/);
+		const body = await response.text();
+		expect(body).toBe('');
+	});
+
+	it('HEAD /v1/status (bare) returns 400 MIC_REQUIRED with no body', async () => {
+		const response = await fetchWorker('/v1/status', { method: 'HEAD' });
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toBe('');
+	});
+
+	it('HEAD /v1/status/ZZZZ returns 400 UNKNOWN_MIC with no body', async () => {
+		const response = await fetchWorker('/v1/status/ZZZZ', { method: 'HEAD' });
+		expect(response.status).toBe(400);
+		const body = await response.text();
+		expect(body).toBe('');
+	});
+
+	it('POST /v1/status/XNYS still returns 405 (HEAD-or-GET only path is the relaxation)', async () => {
+		const response = await fetchWorker('/v1/status/XNYS', { method: 'POST' });
+		expect(response.status).toBe(405);
+	});
+
+	it('HEAD does NOT increment v1_status_calls counter (metadata probe, not a served receipt)', async () => {
+		const date = new Date().toISOString().slice(0, 10);
+		const key  = `v1_status_calls:${date}`;
+		await env.ORACLE_TELEMETRY.delete(key);
+		const headResp = await fetchWorker('/v1/status/XNYS', { method: 'HEAD' });
+		expect(headResp.status).toBe(200);
+		// Allow the deferred KV write a tick to settle — though it should not fire.
+		const after = await env.ORACLE_TELEMETRY.get(key);
+		expect(after).toBeNull();
+	});
+
+	it('GET (after HEAD) still increments v1_status_calls counter — proves HEAD-skip is method-scoped, not global', async () => {
+		const date = new Date().toISOString().slice(0, 10);
+		const key  = `v1_status_calls:${date}`;
+		await env.ORACLE_TELEMETRY.delete(key);
+		await fetchWorker('/v1/status/XNYS', { method: 'HEAD' });
+		await fetchWorker('/v1/status/XNYS');
+		// fetchWorker awaits waitOnExecutionContext, so the deferred writes have landed.
+		const after = await env.ORACLE_TELEMETRY.get(key);
+		expect(after).toBe('1');
+	});
+
+	it('HEAD /v1/status/XNYS headers are byte-identical to GET /v1/status/XNYS headers (modulo time)', async () => {
+		const headResp = await fetchWorker('/v1/status/XNYS', { method: 'HEAD' });
+		const getResp  = await fetchWorker('/v1/status/XNYS');
+		expect(headResp.status).toBe(getResp.status);
+		// Headers that are response-shape-invariant must match exactly.
+		for (const h of ['Cache-Control', 'X-Attestation-Mode', 'X-Oracle-Version', 'X-Oracle-Plan']) {
+			expect(headResp.headers.get(h)).toBe(getResp.headers.get(h));
+		}
+	});
+
 	it('signature verifies via signPayload-derived canonical bytes (in-repo signer round-trip)', async () => {
 		// Drives the byte-parity guarantee from the worker side: reconstruct the
 		// canonical payload from receipt fields, re-sign with the test private key,
