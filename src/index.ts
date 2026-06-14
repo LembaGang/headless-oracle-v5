@@ -15014,6 +15014,70 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			}
 			const v1IsHead = request.method === 'HEAD';
 			const v1Strip  = (resp: Response): Response => v1IsHead ? new Response(null, { status: resp.status, headers: resp.headers }) : resp;
+
+			// ── Belt-and-suspenders rate limit ───────────────────────────────
+			// Documented contract on this free door: 60 req/min/IP. Primary
+			// enforcement is a Cloudflare dashboard rule (see wrangler.toml);
+			// this in-worker counter is a secondary safety net so a single
+			// misbehaving caller cannot pull a disproportionate share of the
+			// free budget before the dashboard rule is configured.
+			//
+			// Fail-OPEN on KV error: a hard-fail rate limiter would break the
+			// endpoint on any KV blip, which is the wrong tradeoff for a free
+			// best-effort surface — the signing path stays correct either way
+			// (the receipt itself is still cryptographically authoritative).
+			// We log so operators can see the failure rate; we never refuse
+			// service because the counter could not be read.
+			//
+			// Applied to GET and HEAD — the limit is about request volume on
+			// the worker (HEAD still computes the receipt to know the headers),
+			// not about served receipts (which is the discipline that drives
+			// the digest / counter skip below).
+			const V1_RATE_LIMIT_PER_MIN = 60;
+			const v1RateRawIp   = request.headers.get('X-Original-IP') || request.headers.get('CF-Connecting-IP') || '';
+			const v1RateIpHash  = await sha256Hex(v1RateRawIp);
+			const v1RateMinute  = Math.floor(now.getTime() / 60_000);
+			const v1RateResetMs = (v1RateMinute + 1) * 60_000;
+			const v1RateKey     = `v1_status_rate:${v1RateIpHash}:${v1RateMinute}`;
+			let   v1RateCount   = 0;
+			let   v1RateKvUp    = true;
+			try {
+				const raw = env.ORACLE_TELEMETRY ? await env.ORACLE_TELEMETRY.get(v1RateKey) : null;
+				v1RateCount = parseInt(raw ?? '0', 10) || 0;
+			} catch (err: unknown) {
+				v1RateKvUp = false;
+				const msg = err instanceof Error ? err.message : 'unknown error';
+				console.error(`V1_STATUS_RATE_KV_READ_FAILED fail_open=true err=${msg}`);
+			}
+			if (v1RateKvUp && v1RateCount >= V1_RATE_LIMIT_PER_MIN) {
+				const v1RateRetryAfter = Math.max(1, Math.ceil((v1RateResetMs - now.getTime()) / 1000));
+				const v1RateLimitedHeaders: Record<string, string> = {
+					'Retry-After':           String(v1RateRetryAfter),
+					'X-RateLimit-Limit':     String(V1_RATE_LIMIT_PER_MIN),
+					'X-RateLimit-Remaining': '0',
+					'X-RateLimit-Reset':     new Date(v1RateResetMs).toISOString(),
+				};
+				return v1Strip(json({
+					error:               'RATE_LIMITED',
+					message:             `Free /v1/status door is capped at ${V1_RATE_LIMIT_PER_MIN} req/min/IP. Retry in ${v1RateRetryAfter}s.`,
+					retry_after_seconds: v1RateRetryAfter,
+					limit_per_minute:    V1_RATE_LIMIT_PER_MIN,
+				}, 429, v1RateLimitedHeaders));
+			}
+			// Increment is deferred and best-effort. If the put fails we log
+			// and move on — the counter under-counts rather than over-counts,
+			// which is the safer drift direction for a fail-open limiter.
+			if (v1RateKvUp && env.ORACLE_TELEMETRY && typeof ctx?.waitUntil === 'function') {
+				ctx.waitUntil(
+					env.ORACLE_TELEMETRY
+						.put(v1RateKey, String(v1RateCount + 1), { expirationTtl: 90 })
+						.catch((err: unknown) => {
+							const msg = err instanceof Error ? err.message : 'unknown error';
+							console.error(`V1_STATUS_RATE_KV_PUT_FAILED err=${msg}`);
+						}),
+				);
+			}
+
 			const v1Mic = url.pathname.slice('/v1/status/'.length).replace(/\/$/, '').toUpperCase();
 			if (!v1Mic) {
 				return v1Strip(json({
