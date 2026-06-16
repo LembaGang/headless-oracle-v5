@@ -34,11 +34,16 @@ routes = [
   { pattern = "headlessoracle.com/x402", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/specifications/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/verification/*", zone_name = "headlessoracle.com" },
-  { pattern = "headlessoracle.com/v1/halts", zone_name = "headlessoracle.com" },
-  { pattern = "headlessoracle.com/v1/halts/*", zone_name = "headlessoracle.com" },
+  # /v1 patterns use a trailing `*` so the Cloudflare zone route table matches
+  # the query-stringed form too (e.g. `?date=…`, `?limit=…`, `?venue=…`).
+  # Without the wildcard, exact-path patterns match ONLY the bare URL — any
+  # query string makes the request fall through to the Pages SPA fallback.
+  # The in-worker `url.pathname === '/v1/<route>'` guards reject unintended
+  # over-matches (`/v1/halts-foo`) cleanly via the 404 fallback.
+  { pattern = "headlessoracle.com/v1/halts*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/status", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/status/*", zone_name = "headlessoracle.com" },
-  { pattern = "headlessoracle.com/v1/safe-to-trade", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/safe-to-trade*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/*", zone_name = "headlessoracle.com" },
 ]
