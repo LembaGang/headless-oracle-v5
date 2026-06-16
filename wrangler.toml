@@ -38,6 +38,7 @@ routes = [
   { pattern = "headlessoracle.com/v1/halts/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/status", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/status/*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/safe-to-trade", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/*", zone_name = "headlessoracle.com" },
 ]
