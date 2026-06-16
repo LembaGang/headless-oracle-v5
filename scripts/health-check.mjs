@@ -14,7 +14,12 @@
 //   3. The Pages frontend at https://headlessoracle.com/ returns 200 in
 //      under 3 seconds.
 //   4. Pages-vs-Worker failure classification when something is broken.
-//   5. New Paddle revenue events from /v5/revenue-pulse (if MASTER_API_KEY
+//   5. Paid /v1/* routes are actually served by the Worker (not the Pages
+//      SPA fallback). Catches the route-pattern class of bug where a
+//      Cloudflare zone route doesn't match the query-stringed form and the
+//      request falls through to Pages — unit tests can't catch this since
+//      they call the worker handler directly, bypassing the route table.
+//   6. New Paddle revenue events from /v5/revenue-pulse (if MASTER_API_KEY
 //      is provided via env). Each new event becomes a GitHub issue via the
 //      workflow. Sliding 20-min window matches the 15-min cron with
 //      overlap; deduplication is by txn_id, handled in the workflow.
@@ -206,6 +211,65 @@ async function checkWorkerEndpoints() {
 	} catch (err) { fail('openapi.fetch', err.message); }
 }
 
+// ── Paid /v1/* route-reachability probes ────────────────────────────────────
+// Catches the route-pattern class of bug where a Cloudflare zone route
+// pattern doesn't match the query-stringed form of the URL, and the request
+// silently falls through to the Pages SPA fallback. The load-bearing
+// assertion is content-type: any text/html response on these paths is a
+// ROUTE_BUG (the Worker would have returned application/json — either a
+// 402, a 400, or a signed receipt — for every documented input).
+//
+// No auth is sent. A 402 response IS the success signal — it proves the
+// Worker handled the request and emitted its paid-endpoint payment payload.
+// The handler reached, not the path opened: that's exactly the bug class
+// we want to catch.
+async function probeRoute(checkName, path, expectedStatus) {
+	let res;
+	try {
+		res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+	} catch (err) {
+		fail(checkName + '.fetch', err.message);
+		return;
+	}
+	const ct = res.headers.get('content-type') ?? '';
+	if (ct.startsWith('text/html')) {
+		// Pages SPA fallback. The Worker was never invoked for this path.
+		fail(checkName + '.route_bug', `ROUTE_BUG: ${path} returned text/html (Pages SPA fallback) — the Cloudflare zone route pattern did not match. Check wrangler.toml routes for a trailing-wildcard mismatch.`);
+		return;
+	}
+	if (res.status !== expectedStatus) {
+		fail(checkName + '.status', `expected HTTP ${expectedStatus}, got ${res.status} (content-type=${ct})`);
+		return;
+	}
+	if (!ct.includes('application/json')) {
+		fail(checkName + '.content_type', `expected application/json, got ${ct}`);
+		return;
+	}
+	let body;
+	try {
+		body = await res.json();
+	} catch (err) {
+		fail(checkName + '.json_parse', err.message);
+		return;
+	}
+	if (typeof body !== 'object' || body === null) {
+		fail(checkName + '.body_shape', 'response body is not a JSON object');
+		return;
+	}
+	log('CHECK_OK', { endpoint: path, status: res.status });
+}
+
+async function checkPaidV1Routes() {
+	// /v1/safe-to-trade — paid circuit-breaker. No auth → 402 with x402
+	// payment payload (Worker's standard paid-endpoint shape). text/html
+	// here means the route pattern didn't match the query string.
+	await probeRoute('v1_safe_to_trade.route', '/v1/safe-to-trade?venue=XNYS&max_age=30', 402);
+
+	// /v1/halts — paid halt-archive. Same pattern: ?limit=1 forces the
+	// query-stringed form so a route bug surfaces. No auth → 402.
+	await probeRoute('v1_halts.route', '/v1/halts?limit=1', 402);
+}
+
 // ── Pages frontend + failure classifier ─────────────────────────────────────
 async function checkFrontend() {
 	let pagesOk = false;
@@ -279,6 +343,7 @@ async function checkRevenue() {
 // ── main ────────────────────────────────────────────────────────────────────
 log('HEALTH_CHECK_START', { base: BASE });
 await checkWorkerEndpoints();
+await checkPaidV1Routes();
 await checkFrontend();
 await checkRevenue();
 
