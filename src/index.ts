@@ -10528,10 +10528,15 @@ export default {
 						valid_until: env.PUBLIC_KEY_VALID_UNTIL || null,
 					}],
 					canonical_payload_spec: {
-						description:     'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
-						receipt_fields:  ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
-						override_fields: ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
-						health_fields:   ['expires_at', 'issued_at', 'issuer', 'public_key_id', 'receipt_id', 'source', 'status'],
+						description:          'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
+						receipt_fields:       ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						override_fields:      ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						health_fields:        ['expires_at', 'issued_at', 'issuer', 'public_key_id', 'receipt_id', 'source', 'status'],
+						// safe-to-trade receipt (GET /v1/safe-to-trade) — circuit-breaker shape.
+						// cross_venue and reasons are JSON-encoded strings in the signed bytes
+						// (strings-only canonical form, matching the /v5/batch precedent for
+						// `exchanges` and `all_open`). Consumers JSON.parse them after sig verify.
+						safe_to_trade_fields: ['cross_venue', 'expires_at', 'instrument', 'issued_at', 'issuer', 'max_age', 'public_key_id', 'reasons', 'receipt_id', 'receipt_mode', 'safe', 'schema_version', 'venue', 'venue_source', 'venue_status'],
 					},
 				}));
 			}
@@ -14982,6 +14987,271 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				const message = err instanceof Error ? err.message : 'archive read failed';
 				return json({ error: 'ARCHIVE_ERROR', message }, 500);
 			}
+		}
+
+		// ── GET /v1/safe-to-trade — PAID: signed circuit-breaker receipt ───────────
+		// Clones the /v1/halts auth pattern: paid API key bypass (any plan that's
+		// not 'free' / 'sandbox') OR x402 settlement via verifyPaymentAnyFormat.
+		// Same $0.001 USDC price.
+		//
+		// SHAPE: a NEW signed receipt distinct from the venue-level /v5/status
+		// receipt. Carries cross-venue REALTIME-override visibility (the halt
+		// monitor's signal) — fixes /v5/briefing's override-blindness for this
+		// surface. canonical field list is /v5/keys → safe_to_trade_fields.
+		//
+		// FAIL-CLOSED LOGIC. safe=false when ANY of:
+		//   - venue status !== OPEN
+		//   - venue source !== SCHEDULE (OVERRIDE / SYSTEM both unsafe)
+		//   - Tier-3 signing failure (returns 500, no receipt — same shape
+		//     as buildSignedReceipt's CRITICAL_FAILURE)
+		//
+		// CROSS-VENUE divergence (v1) = the set of MICs with active REALTIME
+		// overrides in ORACLE_OVERRIDES. Reported in cross_venue.realtime_overrides
+		// but does NOT directly trip `safe` unless it includes the target venue.
+		// The cross-listed-venue map that would correlate instrument → other-venue
+		// override is a flagged TODO; instrument stays opaque metadata for v1.
+		//
+		// MAX_AGE is REQUIRED and bounded [1, 60] seconds. No default — same
+		// discipline as the SDK's safeToExecute and the IETF environment.* rule.
+		if (url.pathname === '/v1/safe-to-trade' && request.method === 'GET') {
+			// ── 1. Parameter validation ──────────────────────────────────────
+			const venueRaw = url.searchParams.get('venue');
+			if (!venueRaw) {
+				return json({
+					error:   'VENUE_REQUIRED',
+					message: 'Specify a venue MIC: GET /v1/safe-to-trade?venue={MIC}&max_age={seconds}',
+					example: 'https://headlessoracle.com/v1/safe-to-trade?venue=XNYS&max_age=30',
+				}, 400);
+			}
+			const safeVenue = venueRaw.toUpperCase();
+			if (!MARKET_CONFIGS[safeVenue]) {
+				return json({
+					error:     'UNKNOWN_VENUE',
+					message:   `Unsupported venue: ${safeVenue}. See /v5/exchanges for supported markets.`,
+					supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
+				}, 400);
+			}
+			const maxAgeRaw = url.searchParams.get('max_age');
+			if (maxAgeRaw === null || maxAgeRaw === '') {
+				return json({
+					error:   'MAX_AGE_REQUIRED',
+					message: 'max_age (seconds, integer 1-60) is required. No default — declare your freshness policy.',
+					example: 'https://headlessoracle.com/v1/safe-to-trade?venue=XNYS&max_age=30',
+				}, 400);
+			}
+			// Strict integer parse: reject "3.5", "abc", "  30", "30s", etc.
+			// String(parsed) === raw catches the float-truncation and trailing-junk cases.
+			const safeMaxAge = parseInt(maxAgeRaw, 10);
+			if (!Number.isFinite(safeMaxAge) || safeMaxAge < 1 || safeMaxAge > 60 || String(safeMaxAge) !== maxAgeRaw) {
+				return json({
+					error:    'MAX_AGE_INVALID',
+					message:  'max_age must be an integer between 1 and 60 seconds inclusive.',
+					received: maxAgeRaw,
+				}, 400);
+			}
+			// instrument stays opaque for v1. Empty string when not supplied so
+			// the canonical payload always carries a string (signPayload's
+			// strings-only invariant). Capped at 64 chars to keep the field bounded.
+			const safeInstrumentRaw = url.searchParams.get('instrument') ?? '';
+			if (safeInstrumentRaw.length > 64) {
+				return json({
+					error:   'INSTRUMENT_TOO_LONG',
+					message: 'instrument must be 64 characters or fewer (it is opaque metadata for v1).',
+				}, 400);
+			}
+			const safeInstrument = safeInstrumentRaw;
+
+			// ── 2. Auth — paid-key bypass OR x402 (clone /v1/halts) ──────────
+			const safeApiKey = request.headers.get('X-Oracle-Key') ?? request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '');
+			let safePaid = false;
+			if (safeApiKey) {
+				const safeAuth = await checkApiKey(safeApiKey, env);
+				if (safeAuth.allowed && safeAuth.plan !== 'free' && safeAuth.plan !== 'sandbox') safePaid = true;
+			}
+			if (!safePaid) {
+				const safePaymentHeader = getPaymentHeader(request);
+				const safeResource = `https://headlessoracle.com${url.pathname}${url.search}`;
+				if (!safePaymentHeader || !env.ORACLE_PAYMENT_ADDRESS) {
+					return json(
+						env.ORACLE_PAYMENT_ADDRESS
+							? buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, safeResource)
+							: { error: 'PAYMENT_REQUIRED', message: 'x402 payment required (server x402 not configured)' },
+						402,
+						env.ORACLE_PAYMENT_ADDRESS ? {
+							'Content-Type':                 'application/json',
+							'Access-Control-Allow-Origin':  '*',
+							'X-X402-Network':               'mainnet',
+							'X-Payment-Required':           'true',
+							...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status'),
+						} : {},
+					);
+				}
+				const safeVerified = await verifyPaymentAnyFormat(safePaymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, safeResource);
+				if (!safeVerified.valid) {
+					return json({
+						error:   'PAYMENT_VERIFICATION_FAILED',
+						message: `Payment verification failed: ${safeVerified.detail ?? 'unknown'}`,
+						x402:    buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, safeResource),
+					}, 402);
+				}
+				safePaid = true;
+			}
+
+			// ── 3. Build venue receipt via the shared 4-tier core ────────────
+			const safeIssuedAt = now;
+			const safeExpiresAt = new Date(safeIssuedAt.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
+			const { receipt: venueReceipt, status: venueReceiptStatus } = await buildSignedReceipt(safeVenue, env, safeIssuedAt, safeExpiresAt, 'live');
+			if (venueReceiptStatus === 500) {
+				// Tier 3 — signing offline. Cannot sign safe-to-trade either.
+				// Same unsigned shape as buildSignedReceipt's CRITICAL_FAILURE so
+				// agents already coded against that shape get a consistent signal.
+				return json({
+					error:   'CRITICAL_FAILURE',
+					message: 'Oracle signature system offline. Treat as UNKNOWN. Halt all execution.',
+					status:  'UNKNOWN',
+					source:  'SYSTEM',
+					safe:    false,
+				}, 500);
+			}
+			const venueStatusValue = (venueReceipt.status as string) ?? 'UNKNOWN';
+			const venueSourceValue = (venueReceipt.source as string) ?? 'SYSTEM';
+
+			// ── 4. GAP-012 re-check on TARGET venue + cross-venue scan ───────
+			// buildSignedReceipt already did the Tier-0 read (cached, 10s TTL).
+			// Re-read uncached to catch a halt-monitor KV write that landed
+			// between the cache fill and now. This is the same discipline as
+			// /v5/batch's override re-check.
+			//
+			// CRITICAL: this is what makes safe-to-trade a circuit breaker
+			// rather than a /v5/briefing-style override-blind snapshot.
+			// Without this scan, a REALTIME halt that landed mid-request would
+			// be invisible to the cross_venue field.
+			let effectiveStatus = venueStatusValue;
+			let effectiveSource = venueSourceValue;
+			let crossVenueRealtimeOverrides: string[] = [];
+			let crossVenueScanOk = true;
+			if (env.ORACLE_OVERRIDES) {
+				try {
+					const allSafeMics = Object.keys(MARKET_CONFIGS);
+					const overrideRows = await Promise.all(
+						allSafeMics.map(async (m) => {
+							const raw = await env.ORACLE_OVERRIDES.get(m).catch(() => null);
+							if (!raw) return null as null | { mic: string; status: string; source: string };
+							try {
+								const parsed = JSON.parse(raw) as { status?: string; source?: string; expires?: string };
+								if (!parsed.expires || new Date(parsed.expires) <= now) return null;
+								if (typeof parsed.status !== 'string') return null;
+								return { mic: m, status: parsed.status, source: parsed.source ?? 'OVERRIDE' };
+							} catch { return null; }
+						})
+					);
+					for (const row of overrideRows) {
+						if (!row) continue;
+						if (row.mic === safeVenue) {
+							effectiveStatus = row.status;
+							effectiveSource = 'OVERRIDE';
+						}
+						if (row.source === 'REALTIME') {
+							crossVenueRealtimeOverrides.push(row.mic);
+						}
+					}
+					crossVenueRealtimeOverrides.sort();
+				} catch {
+					// KV unavailable for the scan. Fail-closed: emit a structural
+					// reason so the agent knows the cross-venue field is incomplete.
+					crossVenueScanOk = false;
+				}
+			} else {
+				// No ORACLE_OVERRIDES binding at all (dev or misconfigured prod).
+				// Treat as scan-unavailable rather than scan-clean.
+				crossVenueScanOk = false;
+			}
+
+			// ── 5. Compute fail-closed safe + reasons ────────────────────────
+			const safeReasons: string[] = [];
+			let safeFlag = true;
+			if (effectiveStatus !== 'OPEN') {
+				safeFlag = false;
+				safeReasons.push('VENUE_NOT_OPEN');
+			}
+			if (effectiveSource === 'OVERRIDE') {
+				safeFlag = false;
+				// More specific reason when the override was halt-monitor-driven.
+				if (crossVenueRealtimeOverrides.includes(safeVenue)) {
+					safeReasons.push('VENUE_REALTIME_HALT');
+				} else {
+					safeReasons.push('VENUE_OVERRIDE_ACTIVE');
+				}
+			}
+			if (effectiveSource === 'SYSTEM') {
+				safeFlag = false;
+				safeReasons.push('VENUE_TIER2_UNKNOWN');
+			}
+			if (!crossVenueScanOk) {
+				// Informational, does NOT trip safe by itself. The target venue
+				// receipt is still authoritative (it went through Tier-0 cache).
+				safeReasons.push('CROSS_VENUE_SCAN_UNAVAILABLE');
+			}
+
+			// ── 6. Canonical payload (strings only, alphabetical) ────────────
+			// safe / max_age numbers and the cross_venue / reasons composites are
+			// string-encoded so they ride signPayload's strings-only invariant.
+			// Matches the /v5/batch precedent (exchanges, all_open). The SDK
+			// JSON.parses cross_venue and reasons back after signature verify.
+			const safeCrossVenueJson = JSON.stringify({
+				realtime_overrides: crossVenueRealtimeOverrides,
+				scan_ok:            crossVenueScanOk,
+			});
+			const safeReasonsJson = JSON.stringify(safeReasons);
+			const safePayload: Record<string, string> = {
+				cross_venue:    safeCrossVenueJson,
+				expires_at:     safeExpiresAt,
+				instrument:     safeInstrument,
+				issued_at:      safeIssuedAt.toISOString(),
+				issuer:         ORACLE_ISSUER,
+				max_age:        String(safeMaxAge),
+				public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
+				reasons:        safeReasonsJson,
+				receipt_id:     crypto.randomUUID(),
+				receipt_mode:   'live',
+				safe:           String(safeFlag),
+				schema_version: 'v5.0',
+				venue:          safeVenue,
+				venue_source:   effectiveSource,
+				venue_status:   effectiveStatus,
+			};
+			let safeSignature: string;
+			try {
+				safeSignature = await signPayload(safePayload, env.ED25519_PRIVATE_KEY);
+			} catch (err: unknown) {
+				const msg = err instanceof Error ? err.message : 'unknown';
+				console.error(`SAFE_TO_TRADE_SIGN_FAILED: ${msg}`);
+				return json({
+					error:   'CRITICAL_FAILURE',
+					message: 'Oracle signature system offline. Treat as UNKNOWN. Halt all execution.',
+					status:  'UNKNOWN',
+					source:  'SYSTEM',
+					safe:    false,
+				}, 500);
+			}
+			const safeReceipt = { ...safePayload, signature: safeSignature };
+
+			// ── 7. Audit chain — track receipt_id, increment counter ─────────
+			if (typeof ctx?.waitUntil === 'function' && env.ORACLE_TELEMETRY) {
+				trackReceiptId(safePayload['receipt_id']!, now.toISOString().slice(0, 10), safeVenue, env, ctx);
+				incrementKvCounter(`v1_safe_to_trade_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
+			}
+
+			// ── 8. Wire body (matches /v1/status/{MIC} discovery shape) ──────
+			const safeBody = {
+				...safeReceipt,
+				receipt:       safeReceipt,
+				discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json',
+			};
+			return json(safeBody, 200, {
+				'Cache-Control':      'no-store',
+				'X-Attestation-Mode': 'live',
+			});
 		}
 
 		// ── GET /v1/status/{MIC} — FREE, unauthenticated, rate-limited, SIGNED ──────

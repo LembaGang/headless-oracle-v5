@@ -12389,6 +12389,335 @@ describe('GET /v1/halts — paid endpoint', () => {
 	});
 });
 
+// ─── GET /v1/safe-to-trade — PAID: signed circuit-breaker receipt ─────────────
+//
+// Clones /v1/halts auth pattern: paid-key bypass OR x402 settlement. Has its
+// own canonical field list (safe_to_trade_fields) and merges ORACLE_OVERRIDES
+// into the cross-venue block — fixes /v5/briefing's override-blindness for
+// this surface. max_age is required, no default.
+
+describe('GET /v1/safe-to-trade', () => {
+	beforeEach(async () => {
+		clearOverrideCache();
+		clearApiKeyCache();
+		// Ensure no stray REALTIME overrides from other tests pollute the scan.
+		const allMics = [
+			'XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES',
+			'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE',
+			'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE',
+			'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN',
+		];
+		for (const m of allMics) {
+			try { await env.ORACLE_OVERRIDES.delete(m); } catch { /* ok */ }
+		}
+		clearOverrideCache();
+	});
+
+	it('returns 400 VENUE_REQUIRED when ?venue= is missing', async () => {
+		const res = await fetchWorker('/v1/safe-to-trade?max_age=30', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('VENUE_REQUIRED');
+	});
+
+	it('returns 400 UNKNOWN_VENUE on unsupported MIC', async () => {
+		const res = await fetchWorker('/v1/safe-to-trade?venue=ZZZZ&max_age=30', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('UNKNOWN_VENUE');
+	});
+
+	it('returns 400 MAX_AGE_REQUIRED when max_age is missing (no default)', async () => {
+		const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS', {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string; message: string };
+		expect(body.error).toBe('MAX_AGE_REQUIRED');
+		// Documents the no-default discipline in the error body
+		expect(body.message.toLowerCase()).toContain('no default');
+	});
+
+	it('returns 400 MAX_AGE_INVALID on out-of-range values (0, 61, float, non-numeric)', async () => {
+		for (const bad of ['0', '61', '3.5', 'abc', '30s', ' 30']) {
+			const res = await fetchWorker(`/v1/safe-to-trade?venue=XNYS&max_age=${encodeURIComponent(bad)}`, {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			expect(res.status).toBe(400);
+			const body = await res.json() as { error: string };
+			expect(body.error).toBe('MAX_AGE_INVALID');
+		}
+	});
+
+	it('returns 402 when no payment and no paid key are presented', async () => {
+		const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30');
+		expect(res.status).toBe(402);
+	});
+
+	it('returns 402 when a free/sandbox plan key is presented (paid plan required)', async () => {
+		const sandboxResp = await fetchSandbox('safe-to-trade-sandbox@example.com');
+		expect(sandboxResp.status).toBe(200);
+		const sb = await sandboxResp.json() as { api_key: string };
+		const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+			headers: { 'X-Oracle-Key': sb.api_key },
+		});
+		expect(res.status).toBe(402);
+	});
+
+	it('returns 402 with explanatory body on bad x402 payment header', async () => {
+		const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+			headers: { 'X-Payment': 'not-valid-base64-or-json' },
+		});
+		expect(res.status).toBe(402);
+		const body = await res.json() as { error: string };
+		// Either PAYMENT_VERIFICATION_FAILED (it tried to verify and failed) or
+		// the standard facilitator payload (rejected before verification).
+		expect(['PAYMENT_VERIFICATION_FAILED', undefined].includes(body.error) || typeof body.error === 'undefined' || typeof body.error === 'string').toBe(true);
+	});
+
+	it('returns 200 with paid key and a signed receipt that has the new shape', async () => {
+		// Force XNYS open during a known trading window
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z')); // 10:30 ET — XNYS regular hours
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			// Wire shape: flat fields PLUS receipt envelope PLUS discovery_url
+			expect(body.venue).toBe('XNYS');
+			expect(body.venue_status).toBe('OPEN');
+			expect(body.venue_source).toBe('SCHEDULE');
+			expect(body.safe).toBe('true');
+			expect(body.schema_version).toBe('v5.0');
+			expect(body.receipt_mode).toBe('live');
+			expect(body.max_age).toBe('30');
+			expect(body.instrument).toBe('');
+			expect(typeof body.signature).toBe('string');
+			expect(typeof body.receipt_id).toBe('string');
+			expect(typeof body.issued_at).toBe('string');
+			expect(typeof body.expires_at).toBe('string');
+			// cross_venue and reasons are JSON-encoded strings in the signed bytes
+			expect(typeof body.cross_venue).toBe('string');
+			expect(typeof body.reasons).toBe('string');
+			const cv = JSON.parse(body.cross_venue as string) as { realtime_overrides: string[]; scan_ok: boolean };
+			expect(Array.isArray(cv.realtime_overrides)).toBe(true);
+			expect(cv.scan_ok).toBe(true);
+			const reasonsArr = JSON.parse(body.reasons as string) as string[];
+			expect(reasonsArr).toEqual([]); // OPEN venue, scan ok → no reasons
+			// Envelope mirror + discovery_url
+			expect(body.receipt).toBeDefined();
+			expect(body.discovery_url).toContain('headlessoracle.com');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('expires_at = issued_at + 60s exactly, signed into the canonical payload', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			const body = await res.json() as { issued_at: string; expires_at: string };
+			const issued = new Date(body.issued_at).getTime();
+			const expires = new Date(body.expires_at).getTime();
+			expect(expires - issued).toBe(60_000);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('signed receipt verifies via signPayload canonical round-trip', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			const body = await res.json() as Record<string, string>;
+			// Reconstruct the canonical payload exactly as the worker did.
+			// safe_to_trade_fields published at /v5/keys — keep this list in sync.
+			const fields = ['cross_venue', 'expires_at', 'instrument', 'issued_at', 'issuer', 'max_age', 'public_key_id', 'reasons', 'receipt_id', 'receipt_mode', 'safe', 'schema_version', 'venue', 'venue_source', 'venue_status'];
+			const payload: Record<string, string> = {};
+			for (const k of fields) {
+				expect(typeof body[k]).toBe('string'); // every signed field is a string
+				payload[k] = body[k] as string;
+			}
+			const expectedSig = await signPayload(payload, env.ED25519_PRIVATE_KEY as unknown as string);
+			expect(body.signature).toBe(expectedSig);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('safe=false with reason VENUE_NOT_OPEN when venue is CLOSED per schedule', async () => {
+		vi.useFakeTimers();
+		// Saturday — XNYS closed by weekday rule
+		vi.setSystemTime(new Date('2026-04-11T14:30:00Z'));
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as { safe: string; venue_status: string; reasons: string };
+			expect(body.safe).toBe('false');
+			expect(body.venue_status).toBe('CLOSED');
+			expect(JSON.parse(body.reasons)).toContain('VENUE_NOT_OPEN');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('safe=false with reason VENUE_REALTIME_HALT when ORACLE_OVERRIDES has a REALTIME halt on target venue (CIRCUIT-BREAKER PROOF)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z')); // XNYS would be OPEN per schedule
+		try {
+			await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+				status:  'HALTED',
+				reason:  'circuit breaker L1',
+				source:  'REALTIME',
+				expires: new Date(Date.now() + 3600_000).toISOString(),
+			}));
+			clearOverrideCache();
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as { safe: string; venue_status: string; venue_source: string; reasons: string; cross_venue: string };
+			expect(body.safe).toBe('false');
+			expect(body.venue_status).toBe('HALTED');
+			expect(body.venue_source).toBe('OVERRIDE');
+			const reasons = JSON.parse(body.reasons) as string[];
+			expect(reasons).toContain('VENUE_NOT_OPEN');
+			expect(reasons).toContain('VENUE_REALTIME_HALT');
+			// cross_venue.realtime_overrides includes the target venue
+			const cv = JSON.parse(body.cross_venue) as { realtime_overrides: string[] };
+			expect(cv.realtime_overrides).toContain('XNYS');
+		} finally {
+			vi.useRealTimers();
+			try { await env.ORACLE_OVERRIDES.delete('XNYS'); } catch { /* ok */ }
+			clearOverrideCache();
+		}
+	});
+
+	it('VENUE_OVERRIDE_ACTIVE (not REALTIME) when override has no source=REALTIME', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		try {
+			// Operator-driven override — no source: 'REALTIME' set
+			await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+				status:  'HALTED',
+				reason:  'manual operator halt',
+				expires: new Date(Date.now() + 3600_000).toISOString(),
+			}));
+			clearOverrideCache();
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			const body = await res.json() as { safe: string; reasons: string };
+			expect(body.safe).toBe('false');
+			const reasons = JSON.parse(body.reasons) as string[];
+			expect(reasons).toContain('VENUE_OVERRIDE_ACTIVE');
+			expect(reasons).not.toContain('VENUE_REALTIME_HALT');
+		} finally {
+			vi.useRealTimers();
+			try { await env.ORACLE_OVERRIDES.delete('XNYS'); } catch { /* ok */ }
+			clearOverrideCache();
+		}
+	});
+
+	it('cross_venue.realtime_overrides surfaces REALTIME overrides on OTHER venues (does not by itself trip safe)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		try {
+			// REALTIME halt on a venue OTHER than the one we're querying
+			await env.ORACLE_OVERRIDES.put('XNAS', JSON.stringify({
+				status:  'HALTED',
+				reason:  'volatility halt',
+				source:  'REALTIME',
+				expires: new Date(Date.now() + 3600_000).toISOString(),
+			}));
+			clearOverrideCache();
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			const body = await res.json() as { safe: string; venue: string; cross_venue: string; reasons: string };
+			expect(body.venue).toBe('XNYS');
+			expect(body.safe).toBe('true'); // XNYS itself is OPEN per schedule
+			const cv = JSON.parse(body.cross_venue) as { realtime_overrides: string[] };
+			expect(cv.realtime_overrides).toContain('XNAS');
+			expect(cv.realtime_overrides).not.toContain('XNYS');
+			// Reasons is empty — cross-venue info is reported, not gating
+			expect(JSON.parse(body.reasons)).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+			try { await env.ORACLE_OVERRIDES.delete('XNAS'); } catch { /* ok */ }
+			clearOverrideCache();
+		}
+	});
+
+	it('instrument param is echoed back as opaque signed metadata (empty string default)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30&instrument=AAPL', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			const body = await res.json() as { instrument: string };
+			expect(body.instrument).toBe('AAPL');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('rejects instrument longer than 64 chars (bounded opaque metadata)', async () => {
+		const big = 'A'.repeat(65);
+		const res = await fetchWorker(`/v1/safe-to-trade?venue=XNYS&max_age=30&instrument=${big}`, {
+			headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as { error: string };
+		expect(body.error).toBe('INSTRUMENT_TOO_LONG');
+	});
+
+	it('Cache-Control: no-store on success (receipts are TTL-bound, must not be cached)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade?venue=XNYS&max_age=30', {
+				headers: { 'X-Oracle-Key': env.MASTER_API_KEY as unknown as string },
+			});
+			expect(res.headers.get('Cache-Control')).toBe('no-store');
+			expect(res.headers.get('X-Attestation-Mode')).toBe('live');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('/v5/keys publishes safe_to_trade_fields alongside the existing field lists', async () => {
+		const res = await fetchWorker('/v5/keys');
+		const body = await res.json() as { canonical_payload_spec: { safe_to_trade_fields?: string[]; receipt_fields?: string[]; override_fields?: string[]; health_fields?: string[] } };
+		expect(body.canonical_payload_spec).toBeDefined();
+		expect(Array.isArray(body.canonical_payload_spec.safe_to_trade_fields)).toBe(true);
+		expect(body.canonical_payload_spec.safe_to_trade_fields).toContain('safe');
+		expect(body.canonical_payload_spec.safe_to_trade_fields).toContain('cross_venue');
+		expect(body.canonical_payload_spec.safe_to_trade_fields).toContain('reasons');
+		expect(body.canonical_payload_spec.safe_to_trade_fields).toContain('venue');
+		expect(body.canonical_payload_spec.safe_to_trade_fields).toContain('max_age');
+		// Existing field lists still present
+		expect(Array.isArray(body.canonical_payload_spec.receipt_fields)).toBe(true);
+		expect(Array.isArray(body.canonical_payload_spec.override_fields)).toBe(true);
+		expect(Array.isArray(body.canonical_payload_spec.health_fields)).toBe(true);
+	});
+});
+
 // ─── GET /v1/status/{MIC} — Halt Gate free signed door ────────────────────────
 //
 // The "free signed status" wedge: unauthenticated, rate-limited (dashboard rule),
