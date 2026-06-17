@@ -13035,6 +13035,123 @@ describe('GET /v1/safe-to-trade/sample', () => {
 			await cleanupSampleRateBuckets(ip);
 		}
 	});
+
+	// ── Test 10: scan-failure forces safe=false (LOAD-BEARING fail-closed flip)
+	// The cross-venue scan is a synchronous-throw bypass of the per-MIC
+	// .catch(() => null), achieved by spying ORACLE_OVERRIDES.get to throw
+	// synchronously (Promise.reject would be swallowed by the inner catch).
+	// The override cache is primed by a successful pre-fetch so the Tier-0
+	// read inside buildSignedReceipt does NOT hit the spy — that keeps the
+	// primary venue receipt OPEN/SCHEDULE and isolates the test to the
+	// cross-venue-scan failure path. Without the primary venue being OPEN,
+	// safe=false is trivially satisfied by VENUE_NOT_OPEN and the test
+	// wouldn't actually pin the new behaviour.
+	it('scan-failure with primary venue OPEN forces safe=false (was safe=true before this PR)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z')); // XNYS regular hours
+		const ip = '203.0.113.119';
+		try {
+			// Prime the override cache so the Tier-0 read inside buildSignedReceipt
+			// uses the cached null and never calls ORACLE_OVERRIDES.get under the spy.
+			const primer = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(primer.status).toBe(200);
+
+			vi.spyOn(env.ORACLE_OVERRIDES, 'get').mockImplementation(((_mic: string) => {
+				throw new Error('simulated KV outage on cross-venue scan');
+			}) as never);
+
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+
+			// Primary venue is still OPEN/SCHEDULE — Tier-0 cache held.
+			expect(body.venue_status).toBe('OPEN');
+			expect(body.venue_source).toBe('SCHEDULE');
+
+			// LOAD-BEARING: safe MUST be 'false' on scan-failure even though the
+			// primary venue is OPEN. Previously this case returned safe=true.
+			expect(body.safe).toBe('false');
+
+			const reasons = JSON.parse(body.reasons as string) as string[];
+			expect(reasons).toContain('CROSS_VENUE_SCAN_UNAVAILABLE');
+			// Tier-0 didn't blow up (cache held), so the SYSTEM reason must NOT
+			// be present — this proves the test is exercising the scan-failure
+			// path specifically, not the venue-tier-2-unknown path.
+			expect(reasons).not.toContain('VENUE_TIER2_UNKNOWN');
+			expect(reasons).not.toContain('VENUE_NOT_OPEN');
+
+			const cv = JSON.parse(body.cross_venue as string) as { realtime_overrides: string[]; scan_ok: boolean };
+			expect(cv.scan_ok).toBe(false);
+		} finally {
+			vi.restoreAllMocks();
+			vi.useRealTimers();
+			clearOverrideCache();
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 11: scan-failure increments v1_safe_to_trade_scan_unavailable
+	// Observability counter — gives forward-looking visibility into scan-failure
+	// frequency so the fail-closed flip above can be sized in prod.
+	it('scan-failure increments v1_safe_to_trade_scan_unavailable:{date}', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		const ip = '203.0.113.120';
+		const date = '2026-04-09';
+		const counterKey = `v1_safe_to_trade_scan_unavailable:${date}`;
+		try {
+			await env.ORACLE_TELEMETRY.delete(counterKey).catch(() => {});
+			// Prime override cache as in Test 10.
+			const primer = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(primer.status).toBe(200);
+			// Counter must NOT have ticked on the primer call (scan succeeded).
+			const beforeSpy = await env.ORACLE_TELEMETRY.get(counterKey);
+			expect(beforeSpy).toBeNull();
+
+			vi.spyOn(env.ORACLE_OVERRIDES, 'get').mockImplementation(((_mic: string) => {
+				throw new Error('simulated KV outage on cross-venue scan');
+			}) as never);
+
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(200);
+			const after = await env.ORACLE_TELEMETRY.get(counterKey);
+			expect(after).toBe('1');
+		} finally {
+			vi.restoreAllMocks();
+			vi.useRealTimers();
+			clearOverrideCache();
+			await env.ORACLE_TELEMETRY.delete(counterKey).catch(() => {});
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 12: regression — scan-success leaves safe=true, reasons clean,
+	// counter does NOT tick. Pins that the new code path is dormant on the
+	// happy path and the change is strictly additive on failure.
+	it('regression: scan-success keeps safe=true, no CROSS_VENUE_SCAN_UNAVAILABLE, counter unchanged', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		const ip = '203.0.113.121';
+		const date = '2026-04-09';
+		const counterKey = `v1_safe_to_trade_scan_unavailable:${date}`;
+		try {
+			await env.ORACLE_TELEMETRY.delete(counterKey).catch(() => {});
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.safe).toBe('true');
+			const reasons = JSON.parse(body.reasons as string) as string[];
+			expect(reasons).toEqual([]);
+			const cv = JSON.parse(body.cross_venue as string) as { scan_ok: boolean };
+			expect(cv.scan_ok).toBe(true);
+			const after = await env.ORACLE_TELEMETRY.get(counterKey);
+			expect(after).toBeNull();
+		} finally {
+			vi.useRealTimers();
+			await env.ORACLE_TELEMETRY.delete(counterKey).catch(() => {});
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
 });
 
 // ─── GET /v1/status/{MIC} — Halt Gate free signed door ────────────────────────
