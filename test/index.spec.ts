@@ -8,7 +8,59 @@ import worker, {
 
 // Clear module-level caches before every test so that tests which
 // set KV values always read from KV rather than stale in-memory entries.
-beforeEach(() => { clearOverrideCache(); clearApiKeyCache(); });
+//
+// Also: install a DEFAULT fetch stub for the Supabase audit-log path.
+//   gap-019 fix: SUPABASE_URL in .dev.vars is a real Supabase host (required
+//   so that tests which explicitly intercept supabase.co URLs work — see
+//   GAP-013 audit test and ~20 sibling cases). For tests that DON'T install
+//   their own fetch stub but exercise authenticated paths (/v5/status with
+//   auth, /v5/batch, /v5/handoff), the worker calls insertReceiptAudit under
+//   ctx.waitUntil → supabase-js → fetch(https://...supabase.co/...). On
+//   Windows under workerd that DNS lookup fails slowly and surfaces an
+//   uncaught "internal error" inside the isolate, so waitOnExecutionContext
+//   stalls and vitest times the test out at 5s.
+//
+//   This default stub returns the standard Supabase-style success response
+//   (`[{}]` / 201) for any supabase.co URL. Tests that install their own
+//   per-test stub via `globalThis.fetch = ...` keep working unchanged — they
+//   reassign after this beforeEach runs, and their try/finally restoration
+//   to the pre-test fetch (this stub) is still correct because the afterEach
+//   below unconditionally restores the true original fetch.
+let __testEnvOriginalFetch: typeof globalThis.fetch | undefined;
+beforeEach(() => {
+	clearOverrideCache();
+	clearApiKeyCache();
+	__testEnvOriginalFetch = globalThis.fetch;
+	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+		const url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+		if (url.includes('supabase.co')) {
+			const method = (init?.method ?? 'GET').toUpperCase();
+			// Inserts/upserts into receipt_audit: success with the standard Supabase
+			// 201 + inserted-row payload. GAP-013 and friends rely on this path
+			// being callable.
+			if (url.includes('receipt_audit') && (method === 'POST' || method === 'PATCH')) {
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			// Everything else (api_keys lookups, etc.): emulate PostgREST's
+			// "no rows" response for .single() — status 406 with the PGRST116
+			// error code. supabase-js maps this to { data: null }. This is the
+			// shape checkApiKey expects when a key is not in the database.
+			// Without this, invalid-key tests get a falsy-but-defined object
+			// and the auth path returns 402 instead of 403.
+			return new Response(
+				JSON.stringify({ code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned', details: null, hint: null }),
+				{ status: 406, headers: { 'Content-Type': 'application/json' } },
+			);
+		}
+		return __testEnvOriginalFetch!(input, init);
+	}) as typeof globalThis.fetch;
+});
+afterEach(() => {
+	if (__testEnvOriginalFetch) {
+		globalThis.fetch = __testEnvOriginalFetch;
+		__testEnvOriginalFetch = undefined;
+	}
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
