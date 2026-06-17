@@ -8930,6 +8930,7 @@ async function buildSafeToTradeReceipt(
 	env:        Env,
 	now:        Date,
 	expiresAt:  string,
+	ctx?:       ExecutionContext,
 ): Promise<{ ok: true; safeReceipt: Record<string, string> } | { ok: false }> {
 	// ── 1. Build venue receipt via the shared 4-tier core ────────────
 	const { receipt: venueReceipt, status: venueReceiptStatus } =
@@ -8978,13 +8979,22 @@ async function buildSafeToTradeReceipt(
 			crossVenueRealtimeOverrides.sort();
 		} catch {
 			// KV unavailable for the scan. Fail-closed: emit a structural
-			// reason so the agent knows the cross-venue field is incomplete.
+			// reason so the agent knows the cross-venue field is incomplete,
+			// flip safe=false below, and tick the observability counter so
+			// production frequency of this path is visible (not silent).
 			crossVenueScanOk = false;
+			if (ctx && env.ORACLE_TELEMETRY) {
+				incrementKvCounter(`v1_safe_to_trade_scan_unavailable:${now.toISOString().slice(0, 10)}`, env, ctx);
+			}
 		}
 	} else {
 		// No ORACLE_OVERRIDES binding at all (dev or misconfigured prod).
-		// Treat as scan-unavailable rather than scan-clean.
+		// Treat as scan-unavailable rather than scan-clean. Same counter as
+		// the runtime-failure path above so both failure modes share one signal.
 		crossVenueScanOk = false;
+		if (ctx && env.ORACLE_TELEMETRY) {
+			incrementKvCounter(`v1_safe_to_trade_scan_unavailable:${now.toISOString().slice(0, 10)}`, env, ctx);
+		}
 	}
 
 	// ── 3. Compute fail-closed safe + reasons ────────────────────────
@@ -9007,8 +9017,12 @@ async function buildSafeToTradeReceipt(
 		safeReasons.push('VENUE_TIER2_UNKNOWN');
 	}
 	if (!crossVenueScanOk) {
-		// Informational, does NOT trip safe by itself. Target-venue receipt
-		// is still authoritative (Tier-0 cache went through buildSignedReceipt).
+		// Fail-closed: if we couldn't run the full cross-venue scan, we can't
+		// attest safe. Consistent with the UNKNOWN=CLOSED contract — partial
+		// safety checks don't satisfy the surface's circuit-breaker semantics.
+		// The reason stays in reasons[] either way so agents can disambiguate
+		// scan-failure from a real venue halt.
+		safeFlag = false;
 		safeReasons.push('CROSS_VENUE_SCAN_UNAVAILABLE');
 	}
 
@@ -15328,7 +15342,11 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			// independently verifiable via the signature; it just doesn't
 			// enter our internal digest. The paid /v1/safe-to-trade handler
 			// DOES call trackReceiptId — see that handler below.
-			const sampleBuilt = await buildSafeToTradeReceipt(sampleVenue, sampleInstrument, sampleMaxAge, env, now, expiresAt);
+			// Pass ctx so the helper can tick v1_safe_to_trade_scan_unavailable
+			// on scan-failure. HEAD passes undefined to honour the no-side-effects
+			// discipline already applied to v1_safe_to_trade_sample_calls below;
+			// incrementKvCounter itself no-ops when ctx?.waitUntil is missing.
+			const sampleBuilt = await buildSafeToTradeReceipt(sampleVenue, sampleInstrument, sampleMaxAge, env, now, expiresAt, sampleIsHead ? undefined : ctx);
 			if (!sampleBuilt.ok) {
 				return sampleStrip(json({
 					error:   'CRITICAL_FAILURE',
@@ -15484,7 +15502,8 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			// Ed25519 signing live in buildSafeToTradeReceipt. Door-specific
 			// concerns (paid counter, audit-chain tracking) stay here so the
 			// paid-vs-public-sample signal stays distinct.
-			const built = await buildSafeToTradeReceipt(safeVenue, safeInstrument, safeMaxAge, env, now, expiresAt);
+			// GET-only — no HEAD on the paid endpoint, so ctx is passed unconditionally.
+			const built = await buildSafeToTradeReceipt(safeVenue, safeInstrument, safeMaxAge, env, now, expiresAt, ctx);
 			if (!built.ok) {
 				return json({
 					error:   'CRITICAL_FAILURE',
