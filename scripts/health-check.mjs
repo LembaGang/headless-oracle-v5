@@ -268,6 +268,16 @@ async function checkPaidV1Routes() {
 	// /v1/halts — paid halt-archive. Same pattern: ?limit=1 forces the
 	// query-stringed form so a route bug surfaces. No auth → 402.
 	await probeRoute('v1_halts.route', '/v1/halts?limit=1', 402);
+
+	// /v1/safe-to-trade/sample — FREE, unauthenticated, rate-limited, SIGNED.
+	// Same byte-identical signed receipt as the paid /v1/safe-to-trade, just
+	// through the public-discovery door. The query-stringed form forces the
+	// route pattern to be exercised — text/html here would mean the Cloudflare
+	// zone route fell through to the Pages SPA fallback (the same route-bug
+	// class that bit us on /v1/halts and /v1/safe-to-trade — see 82db741).
+	// Expected status is 200 (signed receipt), not 402, because this door has
+	// no auth.
+	await probeRoute('v1_safe_to_trade_sample.route', '/v1/safe-to-trade/sample?venue=XNYS&max_age=30', 200);
 }
 
 // ── Pages frontend + failure classifier ─────────────────────────────────────

@@ -44,6 +44,11 @@ routes = [
   { pattern = "headlessoracle.com/v1/status", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/status/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v1/safe-to-trade*", zone_name = "headlessoracle.com" },
+  # /v1/safe-to-trade/sample is already covered by the trailing-wildcard above,
+  # but we register the explicit sibling so the route table self-documents the
+  # public-discovery door and stays correct if the parent wildcard is ever
+  # tightened. We've been bitten twice on this class of bug — explicit > clever.
+  { pattern = "headlessoracle.com/v1/safe-to-trade/sample*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/*", zone_name = "headlessoracle.com" },
 ]
@@ -144,6 +149,7 @@ bucket_name = "halt-archive-raw"
 #   /v5/checkout         10 req/min    Hits Paddle API — keep low
 #   /v5/health           60 req/min    Liveness probe
 #   /v1/status/*         60 req/min    Free signed status — unauth wedge
+#   /v1/safe-to-trade/sample* 60 req/min  Free signed safe-to-trade — public door
 #   /mcp                 60 req/min    MCP endpoint (agents)
 #   /openapi.json        60 req/min    API spec discovery
 #   /.well-known/*       60 req/min    Key/agent discovery
