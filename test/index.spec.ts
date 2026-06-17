@@ -8,7 +8,59 @@ import worker, {
 
 // Clear module-level caches before every test so that tests which
 // set KV values always read from KV rather than stale in-memory entries.
-beforeEach(() => { clearOverrideCache(); clearApiKeyCache(); });
+//
+// Also: install a DEFAULT fetch stub for the Supabase audit-log path.
+//   gap-019 fix: SUPABASE_URL in .dev.vars is a real Supabase host (required
+//   so that tests which explicitly intercept supabase.co URLs work — see
+//   GAP-013 audit test and ~20 sibling cases). For tests that DON'T install
+//   their own fetch stub but exercise authenticated paths (/v5/status with
+//   auth, /v5/batch, /v5/handoff), the worker calls insertReceiptAudit under
+//   ctx.waitUntil → supabase-js → fetch(https://...supabase.co/...). On
+//   Windows under workerd that DNS lookup fails slowly and surfaces an
+//   uncaught "internal error" inside the isolate, so waitOnExecutionContext
+//   stalls and vitest times the test out at 5s.
+//
+//   This default stub returns the standard Supabase-style success response
+//   (`[{}]` / 201) for any supabase.co URL. Tests that install their own
+//   per-test stub via `globalThis.fetch = ...` keep working unchanged — they
+//   reassign after this beforeEach runs, and their try/finally restoration
+//   to the pre-test fetch (this stub) is still correct because the afterEach
+//   below unconditionally restores the true original fetch.
+let __testEnvOriginalFetch: typeof globalThis.fetch | undefined;
+beforeEach(() => {
+	clearOverrideCache();
+	clearApiKeyCache();
+	__testEnvOriginalFetch = globalThis.fetch;
+	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+		const url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+		if (url.includes('supabase.co')) {
+			const method = (init?.method ?? 'GET').toUpperCase();
+			// Inserts/upserts into receipt_audit: success with the standard Supabase
+			// 201 + inserted-row payload. GAP-013 and friends rely on this path
+			// being callable.
+			if (url.includes('receipt_audit') && (method === 'POST' || method === 'PATCH')) {
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			// Everything else (api_keys lookups, etc.): emulate PostgREST's
+			// "no rows" response for .single() — status 406 with the PGRST116
+			// error code. supabase-js maps this to { data: null }. This is the
+			// shape checkApiKey expects when a key is not in the database.
+			// Without this, invalid-key tests get a falsy-but-defined object
+			// and the auth path returns 402 instead of 403.
+			return new Response(
+				JSON.stringify({ code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned', details: null, hint: null }),
+				{ status: 406, headers: { 'Content-Type': 'application/json' } },
+			);
+		}
+		return __testEnvOriginalFetch!(input, init);
+	}) as typeof globalThis.fetch;
+});
+afterEach(() => {
+	if (__testEnvOriginalFetch) {
+		globalThis.fetch = __testEnvOriginalFetch;
+		__testEnvOriginalFetch = undefined;
+	}
+});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -12715,6 +12767,273 @@ describe('GET /v1/safe-to-trade', () => {
 		expect(Array.isArray(body.canonical_payload_spec.receipt_fields)).toBe(true);
 		expect(Array.isArray(body.canonical_payload_spec.override_fields)).toBe(true);
 		expect(Array.isArray(body.canonical_payload_spec.health_fields)).toBe(true);
+	});
+});
+
+// ─── GET /v1/safe-to-trade/sample — public, unauth, rate-limited, SIGNED ──────
+//
+// Same authoritative signed receipt as the paid /v1/safe-to-trade — same
+// helper, same Tier-0 override merge, same GAP-012 cross-venue scan, same
+// fail-closed reason taxonomy, receipt_mode='live'. The ONLY differences are
+// (a) no auth, (b) 60/min/IP rate limit, (c) venue defaults to XNYS, and
+// (d) unsigned `door` and `note` wrapper fields. max_age stays REQUIRED with
+// no default — modeling the IETF environment.* freshness contract is the
+// load-bearing property of this surface and must not be relaxed at the most
+// visible door.
+
+describe('GET /v1/safe-to-trade/sample', () => {
+	// Cleanup helper for the per-IP rate-limit bucket. Clones the
+	// /v1/status/{MIC} test scaffolding pattern so the two suites stay
+	// recognisably aligned.
+	async function ipHashOf(ip: string): Promise<string> {
+		const bytes = new TextEncoder().encode(ip);
+		const buf   = await crypto.subtle.digest('SHA-256', bytes);
+		return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+	async function cleanupSampleRateBuckets(ip: string): Promise<void> {
+		const hash = await ipHashOf(ip);
+		const minute = Math.floor(Date.now() / 60_000);
+		for (let m = minute - 1; m <= minute + 1; m++) {
+			await env.ORACLE_TELEMETRY.delete(`v1_safe_to_trade_sample_rate:${hash}:${m}`).catch(() => {});
+		}
+	}
+
+	beforeEach(async () => {
+		clearOverrideCache();
+		clearApiKeyCache();
+		for (const m of ALL_MICS) {
+			try { await env.ORACLE_OVERRIDES.delete(m); } catch { /* ok */ }
+		}
+		clearOverrideCache();
+	});
+
+	// ── Test 1: 200 + full canonical shape + receipt_mode='live' ──────────
+	it('returns 200 with a signed receipt carrying all 15 canonical fields and receipt_mode=live', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z')); // 10:30 ET — XNYS regular hours
+		const ip = '203.0.113.110';
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(200);
+			expect(res.headers.get('Cache-Control')).toBe('no-store');
+			expect(res.headers.get('X-Attestation-Mode')).toBe('live');
+			const body = await res.json() as Record<string, unknown>;
+			// All 15 canonical signed fields
+			expect(body.venue).toBe('XNYS');
+			expect(body.venue_status).toBe('OPEN');
+			expect(body.venue_source).toBe('SCHEDULE');
+			expect(body.safe).toBe('true');
+			expect(body.schema_version).toBe('v5.0');
+			// LOAD-BEARING: receipt_mode is 'live', NOT 'sample'. Same rationale as
+			// /v1/status/{MIC}: the receipt attests provenance-of-content (real
+			// signed observation), not provenance-of-payment. The free door does
+			// not change the data.
+			expect(body.receipt_mode).toBe('live');
+			expect(body.max_age).toBe('30');
+			expect(body.instrument).toBe('');
+			expect(typeof body.signature).toBe('string');
+			expect(typeof body.receipt_id).toBe('string');
+			expect(typeof body.issued_at).toBe('string');
+			expect(typeof body.expires_at).toBe('string');
+			expect(typeof body.cross_venue).toBe('string');
+			expect(typeof body.reasons).toBe('string');
+			expect(typeof body.public_key_id).toBe('string');
+			expect(body.issuer).toBe('headlessoracle.com');
+			// cross_venue / reasons are JSON-stringified composites (strings-only invariant)
+			const cv = JSON.parse(body.cross_venue as string) as { realtime_overrides: string[]; scan_ok: boolean };
+			expect(Array.isArray(cv.realtime_overrides)).toBe(true);
+			expect(cv.scan_ok).toBe(true);
+			expect(JSON.parse(body.reasons as string)).toEqual([]);
+			// Wrapper: door + note OUTSIDE the signed payload. The framing must not
+			// imply illustrative / lesser data — strictly identifies the door.
+			expect(body.door).toBe('public-sample');
+			expect(typeof body.note).toBe('string');
+			expect((body.note as string).toLowerCase()).toContain('authoritative');
+			expect((body.note as string)).toContain('/v1/safe-to-trade');
+			// Envelope mirror + discovery_url (same wrapper as paid endpoint)
+			expect(body.receipt).toBeDefined();
+			expect(body.discovery_url).toContain('headlessoracle.com');
+		} finally {
+			vi.useRealTimers();
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 2: zero venue param defaults to XNYS; max_age still required ─
+	it('defaults venue to XNYS when ?venue= is omitted (max_age still required)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		const ip = '203.0.113.111';
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade/sample?max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.venue).toBe('XNYS');
+			expect(body.receipt_mode).toBe('live');
+		} finally {
+			vi.useRealTimers();
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 3: 400 UNKNOWN_VENUE on garbage MIC ──────────────────────────
+	it('returns 400 UNKNOWN_VENUE on unsupported MIC', async () => {
+		const ip = '203.0.113.112';
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=ZZZZ&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(400);
+			const body = await res.json() as { error: string };
+			expect(body.error).toBe('UNKNOWN_VENUE');
+		} finally {
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 4: 400 MAX_AGE_REQUIRED when missing (no default) ────────────
+	it('returns 400 MAX_AGE_REQUIRED when max_age is missing (load-bearing fail-closed contract)', async () => {
+		const ip = '203.0.113.113';
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(400);
+			const body = await res.json() as { error: string; message: string };
+			expect(body.error).toBe('MAX_AGE_REQUIRED');
+			expect(body.message.toLowerCase()).toContain('no default');
+		} finally {
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 5: 400 MAX_AGE_INVALID on out-of-range / non-integer ─────────
+	it('returns 400 MAX_AGE_INVALID on out-of-range or malformed values', async () => {
+		const ip = '203.0.113.114';
+		try {
+			for (const bad of ['0', '61', '3.5', 'abc', '30s', ' 30']) {
+				const res = await fetchWorker(`/v1/safe-to-trade/sample?venue=XNYS&max_age=${encodeURIComponent(bad)}`, { headers: { 'X-Original-IP': ip } });
+				expect(res.status, `bad=${bad}`).toBe(400);
+				const body = await res.json() as { error: string };
+				expect(body.error).toBe('MAX_AGE_INVALID');
+			}
+		} finally {
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 6: 60/min/IP rate limit — 61st call → 429 with Retry-After ───
+	it('rate limit: 60 requests pass, 61st returns 429 with Retry-After (Cloudflare dashboard is primary; this is the in-worker safety net)', async () => {
+		const ip = '203.0.113.115';
+		try {
+			for (let i = 0; i < 60; i++) {
+				const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+				expect(res.status, `request #${i + 1} should pass`).toBe(200);
+			}
+			const over = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(over.status).toBe(429);
+			expect(over.headers.get('Retry-After')).toBeTruthy();
+			expect(Number(over.headers.get('Retry-After'))).toBeGreaterThan(0);
+			expect(Number(over.headers.get('Retry-After'))).toBeLessThanOrEqual(60);
+			expect(over.headers.get('X-RateLimit-Limit')).toBe('60');
+			expect(over.headers.get('X-RateLimit-Remaining')).toBe('0');
+			expect(over.headers.get('X-RateLimit-Reset')).toBeTruthy();
+			const body = await over.json() as Record<string, unknown>;
+			expect(body.error).toBe('RATE_LIMITED');
+			expect(body.limit_per_minute).toBe(60);
+			expect(typeof body.retry_after_seconds).toBe('number');
+		} finally {
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 7: Tier-0 override fail-closed (CIRCUIT-BREAKER PROOF) ───────
+	// The worst-case bug for a public safe-to-trade is silently ignoring an
+	// active halt. This test pins that the helper-driven door catches halts
+	// identically to the paid endpoint — same GAP-012 cross-venue scan,
+	// same reason codes.
+	it('safe=false with VENUE_REALTIME_HALT when ORACLE_OVERRIDES has a REALTIME halt on the target venue', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z')); // XNYS scheduled OPEN
+		const ip = '203.0.113.116';
+		try {
+			await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+				status:  'HALTED',
+				reason:  'circuit breaker L1',
+				source:  'REALTIME',
+				expires: new Date(Date.now() + 3600_000).toISOString(),
+			}));
+			clearOverrideCache();
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(res.status).toBe(200);
+			const body = await res.json() as { safe: string; venue_status: string; venue_source: string; reasons: string; cross_venue: string };
+			expect(body.safe).toBe('false');
+			expect(body.venue_status).toBe('HALTED');
+			expect(body.venue_source).toBe('OVERRIDE');
+			const reasons = JSON.parse(body.reasons) as string[];
+			expect(reasons).toContain('VENUE_NOT_OPEN');
+			expect(reasons).toContain('VENUE_REALTIME_HALT');
+			const cv = JSON.parse(body.cross_venue) as { realtime_overrides: string[] };
+			expect(cv.realtime_overrides).toContain('XNYS');
+		} finally {
+			vi.useRealTimers();
+			try { await env.ORACLE_OVERRIDES.delete('XNYS'); } catch { /* ok */ }
+			clearOverrideCache();
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 8: HEAD returns 200 with no body and no served-receipt counter
+	// HEAD mirrors GET (RFC 7231 §4.3.2): same status, same headers, empty
+	// body. Side-effects (the served-receipt counter) are skipped — HEAD is
+	// a metadata probe. The rate-limit bucket still counts HEAD (volume gate
+	// counts work, not receipts), matching /v1/status/{MIC} discipline.
+	it('HEAD returns 200 with no body, and does NOT increment v1_safe_to_trade_sample_calls counter', async () => {
+		const ip = '203.0.113.117';
+		const date = new Date().toISOString().slice(0, 10);
+		const key  = `v1_safe_to_trade_sample_calls:${date}`;
+		try {
+			await env.ORACLE_TELEMETRY.delete(key);
+			const headResp = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { method: 'HEAD', headers: { 'X-Original-IP': ip } });
+			expect(headResp.status).toBe(200);
+			expect(headResp.headers.get('Cache-Control')).toBe('no-store');
+			expect(headResp.headers.get('X-Attestation-Mode')).toBe('live');
+			const headBody = await headResp.text();
+			expect(headBody).toBe('');
+			// Served-receipt counter must NOT have ticked on HEAD
+			const after = await env.ORACLE_TELEMETRY.get(key);
+			expect(after).toBeNull();
+			// Then a single GET DOES tick the counter — proves the skip is method-scoped
+			const getResp = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			expect(getResp.status).toBe(200);
+			const after2 = await env.ORACLE_TELEMETRY.get(key);
+			expect(after2).toBe('1');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(key).catch(() => {});
+			await cleanupSampleRateBuckets(ip);
+		}
+	});
+
+	// ── Test 9 (bonus, ties the suite to canonical bytes): signature verifies
+	// via signPayload canonical round-trip on the safe_to_trade_fields set.
+	// If buildSafeToTradeReceipt's canonical-bytes path drifts from the
+	// signer, this test catches it.
+	it('signed receipt verifies via signPayload canonical round-trip (byte-parity with /v1/safe-to-trade)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-04-09T14:30:00Z'));
+		const ip = '203.0.113.118';
+		try {
+			const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
+			const body = await res.json() as Record<string, string>;
+			// safe_to_trade_fields published at /v5/keys — keep this list in sync.
+			const fields = ['cross_venue', 'expires_at', 'instrument', 'issued_at', 'issuer', 'max_age', 'public_key_id', 'reasons', 'receipt_id', 'receipt_mode', 'safe', 'schema_version', 'venue', 'venue_source', 'venue_status'];
+			const payload: Record<string, string> = {};
+			for (const k of fields) {
+				expect(typeof body[k]).toBe('string');
+				payload[k] = body[k] as string;
+			}
+			const expectedSig = await signPayload(payload, env.ED25519_PRIVATE_KEY as unknown as string);
+			expect(body.signature).toBe(expectedSig);
+		} finally {
+			vi.useRealTimers();
+			await cleanupSampleRateBuckets(ip);
+		}
 	});
 });
 
