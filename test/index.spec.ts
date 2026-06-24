@@ -2476,20 +2476,35 @@ describe('GET /.well-known/jwks.json', () => {
 		expect(response.headers.get('Cache-Control')).toBe('public, max-age=300');
 	});
 
-	it('returns a JWKSet with exactly one OKP/Ed25519 key', async () => {
+	it('returns a JWKSet with two OKP/Ed25519 keys (oracle + Chirindo MCP-gate)', async () => {
 		const body = await fetchJSON('/.well-known/jwks.json');
 		expect(body).toHaveProperty('keys');
 		const keys = body.keys as Array<Record<string, unknown>>;
 		expect(Array.isArray(keys)).toBe(true);
-		expect(keys.length).toBe(1);
-		const key = keys[0];
-		expect(key.kty).toBe('OKP');
-		expect(key.crv).toBe('Ed25519');
-		expect(key.use).toBe('sig');
-		expect(key.alg).toBe('EdDSA');
-		expect(key.key_ops).toEqual(['verify']);
-		expect(typeof key.x).toBe('string');
-		expect(typeof key.kid).toBe('string');
+		expect(keys.length).toBe(2);
+		for (const key of keys) {
+			expect(key.kty).toBe('OKP');
+			expect(key.crv).toBe('Ed25519');
+			expect(key.use).toBe('sig');
+			expect(key.alg).toBe('EdDSA');
+			expect(key.key_ops).toEqual(['verify']);
+			expect(typeof key.x).toBe('string');
+			expect(typeof key.kid).toBe('string');
+		}
+	});
+
+	it('second key is the Chirindo MCP-gate recorder JWK, with recorder-format kid (not a thumbprint)', async () => {
+		const body = await fetchJSON('/.well-known/jwks.json');
+		const gateKey = (body.keys as Array<Record<string, unknown>>)[1];
+		expect(gateKey).toEqual({
+			kty:     'OKP',
+			crv:     'Ed25519',
+			x:       'spZ69O-JgF84hkOWIjKrwKv0zwAjF87tmxuYN-8RQrs',
+			kid:     'ed25519/Y-QgeO0vHBBE',
+			use:     'sig',
+			alg:     'EdDSA',
+			key_ops: ['verify'],
+		});
 	});
 
 	it('x matches base64url(no-pad) of the active hex public key', async () => {

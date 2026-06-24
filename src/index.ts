@@ -11284,11 +11284,12 @@ export default {
 				}, 200, { 'Cache-Control': 'public, max-age=86400' });
 			}
 			if (url.pathname === '/.well-known/jwks.json') {
-				// RFC 7517 JWKSet — discovery-only in this release. Single-key set.
-				// Deployed SDKs continue to verify against /.well-known/oracle-keys.json
-				// (hex `public_key`); JOSE-aware consumers can pivot here. Receipts do not
-				// yet carry `kid`, so this endpoint is for key discovery only — verifiers
-				// can match against the single active key without selecting by kid.
+				// RFC 7517 JWKSet — discovery-only in this release. Two-key set:
+				// the oracle's receipt-signing key (kid = RFC 7638 thumbprint) plus the
+				// Chirindo MCP-gate recorder's verification key (kid in recorder's
+				// `ed25519/<id>` format, NOT a thumbprint). Deployed SDKs continue to
+				// verify against /.well-known/oracle-keys.json (hex `public_key`);
+				// JOSE-aware consumers can pivot here and select the right key by kid.
 				const pubKeyHex = env.ED25519_PUBLIC_KEY || '';
 				if (!pubKeyHex) {
 					return json({
@@ -11304,6 +11305,17 @@ export default {
 						crv:     'Ed25519',
 						x:       xB64u,
 						kid,
+						use:     'sig',
+						alg:     'EdDSA',
+						key_ops: ['verify'],
+					}, {
+						// Chirindo MCP-gate recorder's public JWK. The kid below is the
+						// recorder's own key-id format (`ed25519/<id>`), NOT an RFC 7638
+						// thumbprint — do not recompute via ed25519JwkThumbprint.
+						kty:     'OKP',
+						crv:     'Ed25519',
+						x:       'spZ69O-JgF84hkOWIjKrwKv0zwAjF87tmxuYN-8RQrs',
+						kid:     'ed25519/Y-QgeO0vHBBE',
 						use:     'sig',
 						alg:     'EdDSA',
 						key_ops: ['verify'],

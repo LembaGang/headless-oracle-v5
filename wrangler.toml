@@ -59,7 +59,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "1199"
+TEST_COUNT = "1200"
 # Nasdaq Trader RSS is the CONSOLIDATED US halt feed: it carries NASDAQ-,
 # NYSE-, NYSE American-, NYSE Arca-listed halts, distinguished by the
 # <ndaq:Market> element on each <item>. Free, no auth, no API key.
