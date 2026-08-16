@@ -2476,12 +2476,30 @@ describe('GET /.well-known/jwks.json', () => {
 		expect(response.headers.get('Cache-Control')).toBe('public, max-age=300');
 	});
 
-	it('returns a JWKSet with two OKP/Ed25519 keys (oracle + Chirindo MCP-gate)', async () => {
+	// The published set, named kid by kid. Asserted as an exact SET rather than
+	// a count: `keys.length` broke once when this went 2 -> 5, and a count
+	// breaks again on every rotation while proving nothing about WHICH keys are
+	// served. The set catches both directions — a MISSING key (an
+	// add-and-retain violation, which silently stops prior receipts from
+	// verifying) and an UNEXPECTED one (a key nobody meant to publish).
+	//
+	// The first kid is the RFC 7638 thumbprint of the .dev.vars test keypair,
+	// so it tracks the local key; the other four are literals in src/index.ts.
+	// On a rotation, ADD the new kid here — never replace a retained one.
+	const EXPECTED_KIDS = [
+		'id8Q65wQUOn9lWtAe__JwqChpIAL38N8GDQbqrRngBM', // oracle receipt-signing (from .dev.vars)
+		'ed25519/Y-QgeO0vHBBE',                        // Chirindo MCP-gate recorder — rotated out, retained
+		'ed25519/nQgjxdLXI3wJ',                        // Chirindo MCP-gate recorder — current
+		'study2026-54fb',                              // delivery-incidence study — human cross-reference label
+		'yxjyYJ6HtT7thhoXpZGi4DptSN_b_d5L1_DTL_3SlyI', // same study key under its RFC 7638 thumbprint
+	];
+
+	it('publishes exactly the expected kid set, all OKP/Ed25519 (add-and-retain)', async () => {
 		const body = await fetchJSON('/.well-known/jwks.json');
 		expect(body).toHaveProperty('keys');
 		const keys = body.keys as Array<Record<string, unknown>>;
 		expect(Array.isArray(keys)).toBe(true);
-		expect(keys.length).toBe(2);
+		expect(keys.map(k => k.kid as string).sort()).toEqual([...EXPECTED_KIDS].sort());
 		for (const key of keys) {
 			expect(key.kty).toBe('OKP');
 			expect(key.crv).toBe('Ed25519');

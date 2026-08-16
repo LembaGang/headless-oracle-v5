@@ -11284,12 +11284,15 @@ export default {
 				}, 200, { 'Cache-Control': 'public, max-age=86400' });
 			}
 			if (url.pathname === '/.well-known/jwks.json') {
-				// RFC 7517 JWKSet — discovery-only in this release. Two-key set:
-				// the oracle's receipt-signing key (kid = RFC 7638 thumbprint) plus the
-				// Chirindo MCP-gate recorder's verification key (kid in recorder's
-				// `ed25519/<id>` format, NOT a thumbprint). Deployed SDKs continue to
-				// verify against /.well-known/oracle-keys.json (hex `public_key`);
-				// JOSE-aware consumers can pivot here and select the right key by kid.
+				// RFC 7517 JWKSet — discovery-only in this release. Five-key set:
+				// the oracle's receipt-signing key (kid = RFC 7638 thumbprint) plus
+				// two Chirindo MCP-gate recorder verification keys (kids in recorder's
+				// `ed25519/<id>` format, NOT thumbprints). Chirindo keys are
+				// add-and-retain on rotation: prior receipts must stay verifiable
+				// forever, so the rotated-out key MUST remain alongside the new one.
+				// Deployed SDKs continue to verify against /.well-known/oracle-keys.json
+				// (hex `public_key`); JOSE-aware consumers can pivot here and select
+				// the right key by kid.
 				const pubKeyHex = env.ED25519_PUBLIC_KEY || '';
 				if (!pubKeyHex) {
 					return json({
@@ -11309,13 +11312,51 @@ export default {
 						alg:     'EdDSA',
 						key_ops: ['verify'],
 					}, {
-						// Chirindo MCP-gate recorder's public JWK. The kid below is the
-						// recorder's own key-id format (`ed25519/<id>`), NOT an RFC 7638
-						// thumbprint — do not recompute via ed25519JwkThumbprint.
+						// Chirindo MCP-gate recorder's public JWK — rotated-out key,
+						// retained so prior receipts signed with it remain verifiable.
+						// kid is the recorder's own `ed25519/<id>` format, NOT an RFC
+						// 7638 thumbprint — do not recompute via ed25519JwkThumbprint.
 						kty:     'OKP',
 						crv:     'Ed25519',
 						x:       'spZ69O-JgF84hkOWIjKrwKv0zwAjF87tmxuYN-8RQrs',
 						kid:     'ed25519/Y-QgeO0vHBBE',
+						use:     'sig',
+						alg:     'EdDSA',
+						key_ops: ['verify'],
+					}, {
+						// Chirindo MCP-gate recorder's current signing key (rotated in
+						// 2026-06-28). Same kid-format caveat as above.
+						kty:     'OKP',
+						crv:     'Ed25519',
+						x:       '_EemEdtpjBHcC_paMxbJ_T5IQBvz0eJPbsTMJlGatlo',
+						kid:     'ed25519/nQgjxdLXI3wJ',
+						use:     'sig',
+						alg:     'EdDSA',
+						key_ops: ['verify'],
+					}, {
+						// Delivery-Incidence Study capture-chain signing key (added 2026-08-16).
+						// Signs evidence.action/0 receipt chains for the study's x402 probe
+						// captures. NOT an oracle key and NOT a chirindo recorder key.
+						// Study-facing label kid. NOTE: chirindo 0.4.0 stamps the RFC 7638
+						// thumbprint into receipts, so verifiers resolve the NEXT entry, not
+						// this one. This kid exists for human/study cross-reference only.
+						kty:     'OKP',
+						crv:     'Ed25519',
+						x:       'mhSH2TyBMtDssVfUnQczIIrqGblsAQ1Of8q5hMloTrI',
+						kid:     'study2026-54fb',
+						use:     'sig',
+						alg:     'EdDSA',
+						key_ops: ['verify'],
+					}, {
+						// Same study key, published under its RFC 7638 thumbprint — the kid
+						// chirindo 0.4.0 mints (identity.ts makeKid) and the only form
+						// kidMatchesKey() accepts. THIS is the entry the pinned verifier
+						// resolves; removing it breaks recomputation of every study row.
+						// Add-and-retain: never remove once a row is published.
+						kty:     'OKP',
+						crv:     'Ed25519',
+						x:       'mhSH2TyBMtDssVfUnQczIIrqGblsAQ1Of8q5hMloTrI',
+						kid:     'yxjyYJ6HtT7thhoXpZGi4DptSN_b_d5L1_DTL_3SlyI',
 						use:     'sig',
 						alg:     'EdDSA',
 						key_ops: ['verify'],
