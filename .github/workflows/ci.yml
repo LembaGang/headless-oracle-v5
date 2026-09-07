@@ -44,17 +44,35 @@ jobs:
             printf 'RESEND_API_KEY=re_test_placeholder_for_local_tests\n'
           } > .dev.vars
 
+      # Run the suite ONCE and keep the output. The verify step below used to
+      # run `npx vitest run` a second time purely to count it.
       - name: Run tests
-        run: npx vitest run
+        shell: bash
+        run: |
+          set -o pipefail
+          npx vitest run 2>&1 | tee /tmp/vitest.log
 
       - name: Verify test count matches wrangler.toml
+        shell: bash
         run: |
-          COUNT=$(npx vitest run 2>&1 | grep -oP '\d+(?= passed)' | head -1)
-          TOML_COUNT=$(grep '^TEST_COUNT' wrangler.toml | grep -oP '\d+')
-          echo "Vitest count: $COUNT | wrangler.toml TEST_COUNT: $TOML_COUNT"
+          # Extraction lives in scripts/vitest-count.sh — shared with
+          # scripts/sync-test-count.sh so the two cannot drift apart again.
+          # The old inline one-liner took the FIRST "N passed" in the output,
+          # which is the "Test Files  2 passed" line, so this check annotated
+          # "actual test count (2)" for as long as it has existed.
+          COUNT=$(bash scripts/vitest-count.sh /tmp/vitest.log)
+          TOML_COUNT=$(sed -nE 's/^TEST_COUNT = "([0-9]+)".*/\1/p' wrangler.toml)
+          echo "vitest: $COUNT | wrangler.toml TEST_COUNT: $TOML_COUNT"
           if [ "$COUNT" != "$TOML_COUNT" ]; then
-            echo "::warning::TEST_COUNT in wrangler.toml ($TOML_COUNT) does not match actual test count ($COUNT). Run 'npm run test:sync-count' locally and commit."
+            # An error, not a warning. TEST_COUNT is served at
+            # /v5/metrics/public: a mismatch is a number we publish and cannot
+            # support, and a check that only ever warns is a check that has
+            # never once gone red.
+            echo "::error::TEST_COUNT in wrangler.toml ($TOML_COUNT) does not match the suite ($COUNT). Run 'npm run test:sync-count' and commit."
+            exit 1
           fi
+          echo "TEST_COUNT matches the suite."
+
 
       - name: Security audit
         run: npm audit --audit-level=high || true
