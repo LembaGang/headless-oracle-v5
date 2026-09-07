@@ -2020,24 +2020,32 @@ describe('GET /v5/payment-proof', () => {
 		expect(body).toHaveProperty('verify_at');
 	});
 
-	it('reflects payment_count seeded in KV', async () => {
+	it('does NOT take its answer from the seeded KV counters (CHANGED BY T4)', async () => {
+		// This test used to assert the opposite: that /v5/payment-proof echoed
+		// x402_payment_count and x402_first_tx straight back. That WAS the
+		// defect. It even pinned 'abc123def456' as a first_payment_tx — a
+		// twelve-character string, which is what the old writer stored via
+		// txHash.slice(-12) and which no block explorer can resolve. The
+		// endpoint now computes from the chain-verified ledger and reports the
+		// counters beside it. See '/v5/payment-proof — computed on read'.
 		await env.ORACLE_TELEMETRY.put('x402_payment_count', '7');
 		await env.ORACLE_TELEMETRY.put('x402_first_tx', 'abc123def456');
 		await env.ORACLE_TELEMETRY.put('x402_first_payment_at', '2026-04-05T10:00:00.000Z');
-		await env.ORACLE_TELEMETRY.put('x402_last_payment_at', '2026-04-05T12:00:00.000Z');
 		try {
 			const res = await fetchWorker('/v5/payment-proof');
 			expect(res.status).toBe(200);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body.payment_count).toBe(7);
-			expect(body.first_payment_tx).toBe('abc123def456');
-			expect(body.first_payment_at).toBe('2026-04-05T10:00:00.000Z');
-			expect(body.last_payment_at).toBe('2026-04-05T12:00:00.000Z');
+			expect(body.payment_count).not.toBe(7);
+			expect(body.first_payment_tx).not.toBe('abc123def456');
+			expect(body.first_payment_at).not.toBe('2026-04-05T10:00:00.000Z');
+			// The stale counter is surfaced rather than swallowed.
+			const rec = body.counter_reconciliation as Record<string, unknown>;
+			expect(rec.x402_payment_count).toBe(7);
+			expect(rec.agrees).toBe(false);
 		} finally {
 			await env.ORACLE_TELEMETRY.delete('x402_payment_count');
 			await env.ORACLE_TELEMETRY.delete('x402_first_tx');
 			await env.ORACLE_TELEMETRY.delete('x402_first_payment_at');
-			await env.ORACLE_TELEMETRY.delete('x402_last_payment_at');
 		}
 	});
 });
@@ -14891,5 +14899,155 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		const text = await (await fetchWorker('/.well-known/x402.json')).text();
 		expect(text).toContain(`${BUILDER_COMPACT} calls/day`);
 		expect(text).toContain(`${PRO_COMPACT} calls/day`);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /v5/payment-proof — lifetime counts computed on read (rail sprint T4, GAP-021)
+//
+// The endpoint served first_payment_at: null and first_payment_tx: null on a
+// service whose first dollar settled on 2026-04-03. Three causes, all found by
+// reading the code and walking production KV rather than by guessing:
+//
+//   1. Both verifiers seeded the first-payment keys under `if (count === 0)`.
+//      That branch can fire once in the counter's lifetime and it missed its
+//      window — the keys were never written, not evicted.
+//   2. It wrote `txHash.slice(-12)`: the last twelve characters, which no
+//      explorer can resolve and which does not match the prefix in the canon.
+//   3. Every listable prefix that might have reconstructed the history is
+//      ephemeral. A walk of x402_used:, x402_used_tx: and
+//      paddle_revenue_event: against production on 2026-09-07 returned zero
+//      keys from all three.
+//
+// So the history lives in a chain-verified constant plus durable per-settlement
+// rows, and the count is computed on read.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('/v5/payment-proof — computed on read, first dollar from the chain', () => {
+	const FIRST_TX = '0xeb9da8737537e13e9818902b67b8f03b06b7da46a7c557883f409d42895b308a';
+	const FIRST_AT = '2026-04-03T14:12:11.000Z';
+	const MONDAY_TX = '0x46db8fc8cfd79017375d76c5ad80256950f8437ff009ecbe90b6cd5ce97e9263';
+
+	const clearLedger = async (): Promise<void> => {
+		const page = await env.ORACLE_TELEMETRY.list({ prefix: 'x402_payment:' });
+		for (const k of page.keys) await env.ORACLE_TELEMETRY.delete(k.name);
+	};
+	beforeEach(clearLedger);
+	afterEach(clearLedger);
+
+	it('first_payment_at and first_payment_tx are non-null and match the April-3 block', async () => {
+		// The regression, stated as an assertion. Both were null in production.
+		const body = await fetchJSON('/v5/payment-proof');
+		expect(body.first_payment_at).toBe(FIRST_AT);
+		expect(body.first_payment_tx).toBe(FIRST_TX);
+		expect(body.first_payment_block).toBe(44218092);
+	});
+
+	it('the transaction hash is the full 66-character hash, not a 12-character suffix', async () => {
+		// The old code stored txHash.slice(-12). A reader cannot resolve that on
+		// a block explorer, which makes a "payment proof" endpoint prove nothing.
+		const body = await fetchJSON('/v5/payment-proof');
+		expect(String(body.first_payment_tx)).toMatch(/^0x[0-9a-f]{64}$/);
+		expect(String(body.first_payment_tx)).toHaveLength(66);
+	});
+
+	it('payment_count equals the ledger, not a cached counter', async () => {
+		// Seed a counter that disagrees. The old endpoint returned exactly this
+		// number; the new one must return the ledger's own count.
+		await env.ORACLE_TELEMETRY.put('x402_payment_count', '999');
+		try {
+			const body = await fetchJSON('/v5/payment-proof');
+			const settlements = body.settlements as unknown[];
+			expect(body.payment_count).toBe(settlements.length);
+			expect(body.payment_count).not.toBe(999);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete('x402_payment_count');
+		}
+	});
+
+	it('a disagreeing counter is reported, not silently reconciled away', async () => {
+		// This is a diligence surface. Quietly replacing the counter would hide
+		// the very drift GAP-021 was about.
+		await env.ORACLE_TELEMETRY.put('x402_payment_count', '999');
+		try {
+			const body = await fetchJSON('/v5/payment-proof');
+			const rec = body.counter_reconciliation as Record<string, unknown>;
+			expect(rec.x402_payment_count).toBe(999);
+			expect(rec.ledger_count).toBe(body.payment_count);
+			expect(rec.agrees).toBe(false);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete('x402_payment_count');
+		}
+	});
+
+	it('Monday 2026-09-07 settlement appears in the ledger with its hash', async () => {
+		const body = await fetchJSON('/v5/payment-proof');
+		const hashes = (body.settlements as Record<string, unknown>[]).map((s) => s.tx_hash);
+		expect(hashes).toContain(MONDAY_TX);
+		expect(hashes).toContain(FIRST_TX);
+		// Ordered by block time, so first_payment_* is the earliest and not
+		// whichever row happened to be listed first.
+		const times = (body.settlements as Record<string, string>[]).map((s) => s.block_time);
+		expect([...times].sort()).toEqual(times);
+	});
+
+	it('a durable KV ledger row is merged into the count', async () => {
+		// The forward-looking half: new settlements are appended durably, so a
+		// future walk reconstructs without a chain query.
+		const before = (await fetchJSON('/v5/payment-proof')).payment_count as number;
+		await env.ORACLE_TELEMETRY.put(
+			'x402_payment:2026-09-07T18:00:00.000Z:0xabc0000000000000000000000000000000000000000000000000000000000001',
+			JSON.stringify({
+				tx_hash: '0xabc0000000000000000000000000000000000000000000000000000000000001',
+				block_number: 51000000, block_time: '2026-09-07T18:00:00.000Z',
+				payer: '0x1111111111111111111111111111111111111111',
+				atomic_units: '1000', source: 'direct_onchain', note: '',
+			}),
+		);
+		const after = await fetchJSON('/v5/payment-proof');
+		expect(after.payment_count).toBe(before + 1);
+		expect(after.last_payment_tx).toBe('0xabc0000000000000000000000000000000000000000000000000000000000001');
+		const src = after.ledger_source as Record<string, unknown>;
+		expect(src.kv_ledger_rows).toBe(1);
+		expect(src.walk_complete).toBe(true);
+	});
+
+	it('a KV row duplicating a chain-verified settlement does not double-count', async () => {
+		// Re-recording the same settlement — a retried write, a replayed
+		// webhook — must not inflate a number people do diligence on.
+		const before = (await fetchJSON('/v5/payment-proof')).payment_count as number;
+		await env.ORACLE_TELEMETRY.put(
+			`x402_payment:${FIRST_AT}:${FIRST_TX}`,
+			JSON.stringify({
+				tx_hash: FIRST_TX, block_number: 44218092, block_time: FIRST_AT,
+				payer: '0x2073ed996134536c629c95cadb0e8de668ad4143',
+				atomic_units: '1000', source: 'direct_onchain', note: '',
+			}),
+		);
+		const after = await fetchJSON('/v5/payment-proof');
+		expect(after.payment_count).toBe(before);
+		expect(after.first_payment_tx).toBe(FIRST_TX);
+	});
+
+	it('an unreadable ledger row is skipped, not fatal', async () => {
+		// Fail-closed applies to the count as much as to a verdict: one corrupt
+		// row must not take out a public endpoint or silently zero the history.
+		await env.ORACLE_TELEMETRY.put('x402_payment:2026-09-07T19:00:00.000Z:0xdead', 'not json');
+		const res = await fetchWorker('/v5/payment-proof');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.first_payment_tx).toBe(FIRST_TX);
+		expect((body.settlements as unknown[]).length).toBeGreaterThanOrEqual(3);
+	});
+
+	it('every chain-verified settlement carries a resolvable hash, block and time', async () => {
+		// Each row has to be checkable by a third party without trusting us —
+		// that is the difference between a payment proof and a payment claim.
+		const body = await fetchJSON('/v5/payment-proof');
+		for (const s of body.settlements as Record<string, unknown>[]) {
+			expect(String(s.tx_hash)).toMatch(/^0x[0-9a-f]{64}$/);
+			expect(String(s.block_time)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+			expect(String(s.atomic_units)).toBe('1000');
+		}
+		expect(String(body.verify_at)).toContain('basescan.org');
 	});
 });

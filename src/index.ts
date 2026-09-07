@@ -2897,17 +2897,30 @@ async function verifyX402Payment(
 
 	// Mark as used — 600s TTL prevents replay across the boundary window
 	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 600 }).catch(() => {});
-	// Track payment stats for /v5/payment-proof — best-effort (errors swallowed)
+	// Durable ledger row — the record /v5/payment-proof actually computes from.
+	// Block number and time come from the receipt and block we already fetched
+	// above, so this row is checkable on a block explorer by anyone.
+	await recordX402Settlement(env, {
+		tx_hash:      txHash,
+		block_number: parseInt(receipt.blockNumber, 16),
+		block_time:   new Date(blockTimestampSec * 1000).toISOString(),
+		payer:        transferLog.topics[1] ? '0x' + transferLog.topics[1].slice(-40) : null,
+		atomic_units: amountPaid.toString(),
+		source:       'direct_onchain',
+	});
+	// The legacy counters stay, as a second opinion the endpoint reports
+	// alongside the ledger rather than in place of it. The old `count === 0`
+	// seeding branch is gone: it could fire exactly once, it missed its window
+	// years of payments ago, and it wrote a 12-character hash suffix that no
+	// explorer could resolve. Both first-payment keys are now written from the
+	// ledger's own view, every time, with the full hash.
 	try {
 		const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
 		const count    = parseInt(countStr ?? '0', 10) || 0;
 		const nowIso   = new Date().toISOString();
-		if (count === 0) {
-			await env.ORACLE_TELEMETRY.put('x402_first_tx',         txHash.slice(-12)).catch(() => {});
-			await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
-		}
 		await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
 		await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
+		await env.ORACLE_TELEMETRY.put('x402_last_payment_tx', txHash).catch(() => {});
 	} catch { /* best-effort */ }
 	console.log(JSON.stringify({ event: 'X402_PAYMENT_VERIFIED', tx_hash: txHash, amount_units: amountPaid.toString() }));
 	return { valid: true };
@@ -3070,18 +3083,28 @@ async function verifyX402ViaFacilitator(
 		// carried `txHash`; read both so neither version loses the hash.
 		const settleTxHash = (settleBody.transaction ?? settleBody.txHash) as string | undefined;
 		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleTxHash ?? 'n/a' }));
-		// Track payment stats for /v5/payment-proof — best-effort (errors swallowed)
+		// Durable ledger row. CDP hands back a transaction hash and a payer but
+		// no block, so block_number is null and block_time is the moment WE
+		// observed the settlement — named as such rather than passed off as a
+		// block timestamp we did not read.
+		const _facilTxHash = settleTxHash ?? '';
+		if (_facilTxHash) {
+			await recordX402Settlement(env, {
+				tx_hash:      _facilTxHash,
+				block_number: null,
+				block_time:   new Date().toISOString(),
+				payer:        typeof settleBody.payer === 'string' ? settleBody.payer : null,
+				atomic_units: canonical.amountAtomic,
+				source:       'cdp_facilitator',
+				note:         'block_time is the observation time; CDP settle does not return a block.',
+			});
+		}
 		try {
-			const _facilTxHash = settleTxHash ?? '';
-			const countStr     = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
-			const count        = parseInt(countStr ?? '0', 10) || 0;
-			const nowIso       = new Date().toISOString();
-			if (count === 0 && _facilTxHash) {
-				await env.ORACLE_TELEMETRY.put('x402_first_tx',         _facilTxHash.slice(-12)).catch(() => {});
-				await env.ORACLE_TELEMETRY.put('x402_first_payment_at', nowIso).catch(() => {});
-			}
+			const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
+			const count    = parseInt(countStr ?? '0', 10) || 0;
 			await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
-			await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
+			await env.ORACLE_TELEMETRY.put('x402_last_payment_at', new Date().toISOString()).catch(() => {});
+			if (_facilTxHash) await env.ORACLE_TELEMETRY.put('x402_last_payment_tx', _facilTxHash).catch(() => {});
 		} catch { /* best-effort */ }
 		// The settlement the client is handed back, in the shape its version's
 		// PAYMENT-RESPONSE / X-PAYMENT-RESPONSE header expects.
@@ -3198,6 +3221,162 @@ export function buildMainnetFacilitatorPayload(paymentAddress: string, resourceU
 }
 
 // Verifies a USDC payment for key minting on Base mainnet.
+// ─── The x402 settlement ledger ──────────────────────────────────────────────
+//
+// GAP-021: /v5/payment-proof served first_payment_at: null and
+// first_payment_tx: null despite the first dollar having settled on
+// 2026-04-03, and a payment_count that nothing could be checked against. Three
+// distinct causes, all of them structural rather than accidental:
+//
+//   1. The seeding branch in both verifiers is guarded by `count === 0`. It can
+//      fire exactly once in the lifetime of the counter, and it missed its
+//      window — by the time it shipped the counter was already non-zero, so it
+//      became permanently unreachable. The first-payment keys were never
+//      written, not evicted.
+//   2. It stored `txHash.slice(-12)` — the LAST twelve characters. Even had it
+//      fired, the value could not be checked against a block explorer and would
+//      not match the hash prefix recorded in the canon.
+//   3. Every listable record that could have reconstructed the history is
+//      ephemeral by design: x402_used: is 600s (replay protection needs to be),
+//      x402_used_tx: is 365 days, paddle_revenue_event: is 30 days. A walk of
+//      those prefixes on 2026-09-07 returned zero keys across all three. A
+//      KV-only ledger cannot answer "when was the first payment" at all.
+//
+// So the durable record is the chain, and the historical settlements are a
+// constant here: immutable facts, each naming a transaction hash, its block and
+// that block's timestamp, so a reader can confirm every one of them on Basescan
+// without trusting this service. A constant cannot expire, and that is the
+// point — it removes the failure mode rather than papering over it.
+interface X402Settlement {
+	tx_hash:      string;
+	block_number: number | null;
+	block_time:   string;
+	payer:        string | null;
+	atomic_units: string;
+	source:       'direct_onchain' | 'cdp_facilitator';
+	note:         string;
+}
+
+// Verified against Base mainnet on 2026-09-07 by eth_getTransactionReceipt +
+// eth_getBlockByNumber, and independently by an eth_getLogs walk of USDC
+// Transfer(_, ORACLE_PAYMENT_ADDRESS, _) from block 44192527 to head. Every
+// entry: status 0x1, exactly X402_MIN_AMOUNT_UNITS.
+const X402_HISTORICAL_SETTLEMENTS: X402Settlement[] = [
+	{
+		tx_hash:      '0xeb9da8737537e13e9818902b67b8f03b06b7da46a7c557883f409d42895b308a',
+		block_number: 44218092,
+		block_time:   '2026-04-03T14:12:11.000Z',
+		payer:        '0x2073ed996134536c629c95cadb0e8de668ad4143',
+		atomic_units: '1000',
+		source:       'direct_onchain',
+		note:         'First dollar: an agent discovered, paid and verified without human mediation.',
+	},
+	{
+		// Surfaced by the 2026-09-07 eth_getLogs walk, not by any note we had
+		// kept. Same payer as the June settlement below. Its absence from the
+		// canon is why the walk was done from the chain and not from memory.
+		tx_hash:      '0xb4b93483819b65d561f10cf3ca7fd8d46ad2a5cfd44d142d1adf9a1745cb5cf2',
+		block_number: 44382001,
+		block_time:   '2026-04-07T09:15:49.000Z',
+		payer:        '0xa3854058b350680dd3fb01a04c5555ccb40bb079',
+		atomic_units: '1000',
+		source:       'direct_onchain',
+		note:         'Second per-request settlement, undocumented in the canon until the 2026-09-07 chain walk.',
+	},
+	{
+		tx_hash:      '0xa6bc45dc8a1aa8652e59ca605b5a1adc1ee4f9c6197cf52fe2c4dc8cfe87ee41',
+		block_number: 47022787,
+		block_time:   '2026-06-07T12:22:01.000Z',
+		payer:        '0xa3854058b350680dd3fb01a04c5555ccb40bb079',
+		atomic_units: '1000',
+		source:       'cdp_facilitator',
+		note:         'First CDP-facilitated settlement (EIP-3009), against the Bazaar-indexable resource.',
+	},
+	{
+		tx_hash:      '0x46db8fc8cfd79017375d76c5ad80256950f8437ff009ecbe90b6cd5ce97e9263',
+		block_number: 50998385,
+		block_time:   '2026-09-07T13:01:57.000Z',
+		payer:        '0x13bf013edb5c8bba2747b06031bcdbb6c5173f63',
+		atomic_units: '1000',
+		source:       'cdp_facilitator',
+		note:         'First settlement by a stock x402 2.x client against the v2 Payment-Required header.',
+	},
+];
+
+// Durable and listable, with NO expirationTtl — the one thing the replay
+// namespaces cannot be. Every settlement from here on appends one of these, so
+// the walk below reconstructs the history without a chain query and without
+// depending on a counter that no one can audit.
+const X402_LEDGER_PREFIX = 'x402_payment:';
+
+async function recordX402Settlement(
+	env: Env,
+	entry: Omit<X402Settlement, 'note'> & { note?: string },
+): Promise<void> {
+	try {
+		// Keyed by time then hash: the prefix sorts chronologically, and the
+		// hash makes re-recording the same settlement idempotent rather than a
+		// duplicate row.
+		const key = `${X402_LEDGER_PREFIX}${entry.block_time}:${entry.tx_hash}`;
+		await env.ORACLE_TELEMETRY.put(key, JSON.stringify({ ...entry, note: entry.note ?? '' }));
+	} catch (err) {
+		// Best-effort: a ledger write must never fail a settled payment. The
+		// historical constant and the counter both still stand.
+		console.error(`X402_LEDGER_WRITE_FAILED: ${err instanceof Error ? err.message : 'unknown'}`);
+	}
+}
+
+// Walks every page of the ledger prefix. `complete` is false when a page limit
+// was hit, so a reader is never told a truncated walk is the whole history.
+async function walkX402Ledger(env: Env): Promise<{ entries: X402Settlement[]; pages: number; complete: boolean }> {
+	const entries: X402Settlement[] = [];
+	let cursor: string | undefined;
+	let pages = 0;
+	let complete = true;
+	try {
+		do {
+			const page = await env.ORACLE_TELEMETRY.list({ prefix: X402_LEDGER_PREFIX, cursor });
+			pages++;
+			for (const k of page.keys) {
+				const raw = await env.ORACLE_TELEMETRY.get(k.name);
+				if (!raw) continue;
+				try { entries.push(JSON.parse(raw) as X402Settlement); } catch { /* skip unreadable row */ }
+			}
+			cursor = page.list_complete ? undefined : page.cursor;
+			// A hard page cap so a pathological namespace cannot hang a public
+			// endpoint. Hitting it is reported, not hidden.
+			if (pages >= 20 && cursor) { complete = false; break; }
+		} while (cursor);
+	} catch (err) {
+		complete = false;
+		console.error(`X402_LEDGER_WALK_FAILED: ${err instanceof Error ? err.message : 'unknown'}`);
+	}
+	return { entries, pages, complete };
+}
+
+// The lifetime ledger: the chain-verified constant merged with everything the
+// KV ledger has recorded since, deduped by transaction hash and ordered by
+// block time. Computed on read, so no cached counter can drift away from it.
+async function x402LifetimeLedger(env: Env): Promise<{
+	settlements: X402Settlement[];
+	kv_entries:  number;
+	kv_pages:    number;
+	kv_complete: boolean;
+}> {
+	const walk = await walkX402Ledger(env);
+	const byHash = new Map<string, X402Settlement>();
+	for (const s of X402_HISTORICAL_SETTLEMENTS) byHash.set(s.tx_hash.toLowerCase(), s);
+	for (const s of walk.entries) {
+		if (typeof s?.tx_hash !== 'string') continue;
+		// The constant wins on collision: it was verified against the chain,
+		// the KV row was written from what a facilitator reported.
+		if (!byHash.has(s.tx_hash.toLowerCase())) byHash.set(s.tx_hash.toLowerCase(), s);
+	}
+	const settlements = Array.from(byHash.values())
+		.sort((a, b) => String(a.block_time).localeCompare(String(b.block_time)));
+	return { settlements, kv_entries: walk.entries.length, kv_pages: walk.pages, kv_complete: walk.complete };
+}
+
 // Separate from verifyX402Payment: uses a different replay namespace (x402_used_tx:),
 // configurable minimum amount (tier-based), and a 10-minute age window.
 async function verifyX402MintPayment(
@@ -14431,17 +14610,41 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 			// Returns live stats of USDC payments received on Base mainnet.
 			// Counts are best-effort from ORACLE_TELEMETRY KV — fail-safe zeros.
 			if (url.pathname === '/v5/payment-proof') {
-				const [countStr, firstTx, firstAt, lastAt] = await Promise.all([
-					env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
-					env.ORACLE_TELEMETRY.get('x402_first_tx').catch(() => null),
-					env.ORACLE_TELEMETRY.get('x402_first_payment_at').catch(() => null),
-					env.ORACLE_TELEMETRY.get('x402_last_payment_at').catch(() => null),
-				]);
+				const ledger  = await x402LifetimeLedger(env);
+				const first   = ledger.settlements[0] ?? null;
+				const last    = ledger.settlements[ledger.settlements.length - 1] ?? null;
+				const countStr = await env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null);
+				const counter  = parseInt(countStr ?? '0', 10) || 0;
 				return json({
-					payment_count:    parseInt(countStr ?? '0', 10) || 0,
-					first_payment_at: firstAt ?? null,
-					first_payment_tx: firstTx ?? null,
-					last_payment_at:  lastAt  ?? null,
+					// Computed from the ledger on every read, never from a
+					// cached counter. Each entry names a transaction hash a
+					// reader can resolve on Basescan without trusting us.
+					payment_count:       ledger.settlements.length,
+					first_payment_at:    first?.block_time ?? null,
+					first_payment_tx:    first?.tx_hash    ?? null,
+					first_payment_block: first?.block_number ?? null,
+					last_payment_at:     last?.block_time  ?? null,
+					last_payment_tx:     last?.tx_hash     ?? null,
+					settlements:         ledger.settlements,
+					// The legacy counter, reported rather than relied on. When
+					// it disagrees with the ledger, saying so is the honest
+					// move on a page whose entire purpose is diligence: this is
+					// a payment-proof surface, and a silent reconciliation
+					// would be exactly the wrong thing to hide.
+					counter_reconciliation: {
+						x402_payment_count:  counter,
+						ledger_count:        ledger.settlements.length,
+						agrees:              counter === ledger.settlements.length,
+						note:                'x402_payment_count is a non-atomic read-modify-write KV counter kept since launch. The ledger is computed from chain-verified settlements plus durable per-settlement rows. Where they differ, the ledger is the auditable figure.',
+					},
+					ledger_source: {
+						chain_verified_historical: X402_HISTORICAL_SETTLEMENTS.length,
+						kv_ledger_rows:            ledger.kv_entries,
+						kv_pages_walked:           ledger.kv_pages,
+						// False means a page cap or a KV error cut the walk
+						// short: the numbers above are a floor, not a total.
+						walk_complete:             ledger.kv_complete,
+					},
 					network:          'base',
 					asset:            'USDC',
 					contract:         '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
