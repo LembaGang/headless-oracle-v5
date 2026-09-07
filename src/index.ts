@@ -2304,6 +2304,19 @@ const X402_RESOURCE_SPECS: Record<X402ResourceId, {
 	},
 };
 
+// The dollar figures every served surface quotes, derived from the same atomic
+// amounts a client signs. T1 made X402_RESOURCE_SPECS the one canonical
+// requirements object; these two consts are how prose reaches it, so that a
+// price change moves the OpenAPI descriptions, the 402/429 upgrade ladders, the
+// discovery documents and the MCP tool text with it. Do not write a price as a
+// literal in served text — the placeholder/diff tests will not catch a literal
+// that merely happens to be right today.
+//
+// Deliberately NOT exported: the Workers runtime rejects non-function exports,
+// and the module-export-shape test enforces that.
+const X402_PRICE_USDC       = x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic); // "0.001"
+const X402_BATCH_PRICE_USDC = x402AtomicToUsdc(X402_RESOURCE_SPECS.batch.amountAtomic);  // "0.005"
+
 interface X402Canonical {
 	id:                X402ResourceId;
 	amountAtomic:      string;
@@ -2500,7 +2513,7 @@ const AGENT_UPGRADE_PATHS = {
 	},
 	instant_no_signup: {
 		method:      'x402',
-		cost:        '$0.001 USDC per call',
+		cost:        `$${X402_PRICE_USDC} USDC per call`,
 		network:     'base',
 		instruction: 'Include X-Payment header with USDC payment',
 		friction:        'low',
@@ -2994,7 +3007,7 @@ async function verifyPaymentAnyFormat(
 function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 	return {
 		pay_per_request: {
-			description:        'Send Payment-Signature (x402 v2) or X-Payment (v1) header to pay $0.001 USDC and get this receipt immediately',
+			description:        `Send Payment-Signature (x402 v2) or X-Payment (v1) header to pay $${X402_PRICE_USDC} USDC and get this receipt immediately`,
 			header_names:       ['Payment-Signature', 'X-Payment'],
 			accepted_formats:   ['base64-json (x402 standard — use x402 client library)', 'raw JSON { txHash, network, amount, paymentAddress, memo } (direct on-chain)'],
 			payment_spec:       '/.well-known/x402.json',
@@ -3005,7 +3018,7 @@ function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 			description:     'POST /v5/sandbox with X-Payment header — get 10 credits immediately, no email required',
 			endpoint:        'POST /v5/sandbox',
 			body_with_email: '{ "email": "you@example.com" }',
-			body_x402:       'omit body — use X-Payment header instead (same $0.001 USDC)',
+			body_x402:       `omit body — use X-Payment header instead (same $${X402_PRICE_USDC} USDC)`,
 			credits_issued:  10,
 		},
 		mint_persistent_key: {
@@ -3189,11 +3202,11 @@ function buildPaymentOptions(): Record<string, unknown> {
 			how:    'POST /v5/sandbox with { "email": "you@example.com" }',
 		},
 		x402_per_request: {
-			cost: '$0.001 USDC',
+			cost: `$${X402_PRICE_USDC} USDC`,
 			how:  'Add X-Payment header — see /.well-known/x402.json for payment spec',
 		},
 		x402_sandbox: {
-			cost:    '$0.001 USDC',
+			cost:    `$${X402_PRICE_USDC} USDC`,
 			credits: 10,
 			how:     'POST /v5/sandbox with X-Payment header (no email required)',
 		},
@@ -3229,7 +3242,7 @@ function buildUpgradePaths(options?: { include_paid?: boolean }): unknown[] {
 			id:              'x402_payment',
 			friction:        'low',
 			method:          'include X-Payment header',
-			cost:            '$0.001 USDC on Base',
+			cost:            `$${X402_PRICE_USDC} USDC on Base`,
 			result:          'Signed receipt, no key needed',
 			time_to_access:  '< 5 seconds',
 			details_url:     '/.well-known/x402.json',
@@ -7478,7 +7491,7 @@ const MCP_TOOLS = [
 			'Returns available payment and authentication options for accessing live market data. ' +
 			'Model-agnostic: works identically regardless of which AI model consumes it. ' +
 			'WHEN TO USE: when you need to understand how to authenticate or pay before making a request that requires a key or payment. ' +
-			`Returns upgrade ladder: sandbox (200 calls free), x402 per-request ($0.001 USDC), x402 sandbox (10 credits for $0.001), credit packs ($5 = 1000 calls), builder subscription ($99/mo = ${BUILDER_CALLS_COMPACT}/day). ` +
+			`Returns upgrade ladder: sandbox (200 calls free), x402 per-request ($${X402_PRICE_USDC} USDC), x402 sandbox (10 credits for $${X402_PRICE_USDC}), credit packs ($5 = 1000 calls), builder subscription ($99/mo = ${BUILDER_CALLS_COMPACT}/day). ` +
 			'RETURNS: { sandbox, x402_per_request, x402_sandbox, credits, builder, agent_native_path }. ' +
 			'No authentication required. Always returns 200.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -7629,14 +7642,14 @@ const OPENAPI_SPEC = {
 				security:    [{ ApiKeyAuth: [] }],
 				parameters:  [
 					{ name: 'mic', in: 'query', schema: { type: 'string', default: 'XNYS' }, description: 'Market Identifier Code (MIC).' },
-					{ name: 'Payment-Signature', in: 'header', schema: { type: 'string' }, description: 'x402 v2 payment header — base64-encoded JSON PaymentPayload with EIP-712 TransferWithAuthorization signature. Alternative to X-Oracle-Key for keyless per-request payment ($0.001 USDC on Base mainnet).' },
+					{ name: 'Payment-Signature', in: 'header', schema: { type: 'string' }, description: `x402 v2 payment header — base64-encoded JSON PaymentPayload with EIP-712 TransferWithAuthorization signature. Alternative to X-Oracle-Key for keyless per-request payment ($${X402_PRICE_USDC} USDC on Base mainnet).` },
 					{ name: 'X-Payment', in: 'header', schema: { type: 'string' }, description: 'x402 v1 payment header — base64-encoded JSON OR raw JSON { txHash, network, amount, paymentAddress, memo }. Alternative to Payment-Signature.' },
 				],
 				responses: {
 					'200': { description: 'Signed receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/SignedReceipt' } } } },
 					'400': { description: 'Unknown MIC', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'401': { description: 'Missing API key' },
-					'402': { description: 'Payment required — free tier exhausted or no API key. Body includes x402 payment requirements (accepts[], payTo, amount). Send Payment-Signature or X-Payment header to pay $0.001 USDC per request.' },
+					'402': { description: `Payment required — free tier exhausted or no API key. Body includes x402 payment requirements (accepts[], payTo, amount). Send Payment-Signature or X-Payment header to pay $${X402_PRICE_USDC} USDC per request.` },
 					'403': { description: 'Invalid API key' },
 				},
 			},
@@ -7778,7 +7791,7 @@ const OPENAPI_SPEC = {
 				summary:     'Authenticated batch receipt query',
 				description: 'Returns independently signed receipts for multiple exchanges in one request. ' +
 					'Each receipt goes through the same 4-tier fail-closed architecture as /v5/status. ' +
-					'Receipts are built in parallel. Requires X-Oracle-Key header or x402 payment ($0.005 USDC for batch).',
+					`Receipts are built in parallel. Requires X-Oracle-Key header or x402 payment ($${X402_BATCH_PRICE_USDC} USDC for batch).`,
 				security:    [{ ApiKeyAuth: [] }],
 				parameters:  [
 					{
@@ -7788,7 +7801,7 @@ const OPENAPI_SPEC = {
 						schema:      { type: 'string' },
 						description: 'Comma-separated MIC codes. Duplicates are deduplicated. Example: XNYS,XNAS,XLON.',
 					},
-					{ name: 'Payment-Signature', in: 'header', schema: { type: 'string' }, description: 'x402 v2 payment header — base64-encoded JSON PaymentPayload ($0.005 USDC on Base mainnet for batch).' },
+					{ name: 'Payment-Signature', in: 'header', schema: { type: 'string' }, description: `x402 v2 payment header — base64-encoded JSON PaymentPayload ($${X402_BATCH_PRICE_USDC} USDC on Base mainnet for batch).` },
 					{ name: 'X-Payment', in: 'header', schema: { type: 'string' }, description: 'x402 v1 payment header — base64-encoded JSON or raw JSON.' },
 				],
 				responses: {
@@ -8281,7 +8294,7 @@ const OPENAPI_SPEC = {
 				summary:     'Provision a sandbox or credit key for testing',
 				description: 'Two paths: (1) Email path — POST with { "email": "..." } to get a sb_ sandbox key (7 days, 200 calls). ' +
 					'One key per email/IP per 7-day window. ' +
-					'(2) x402 agent path — POST with X-Payment header containing a valid Base mainnet USDC payment ($0.001). ' +
+					`(2) x402 agent path — POST with X-Payment header containing a valid Base mainnet USDC payment ($${X402_PRICE_USDC}). ` +
 					'Skips email entirely; returns a ho_crd_ credit key with 10 credits. ' +
 					'Agent-native: no human in the loop. ' +
 					'Sandbox keys are rejected by /v5/receipts and /v5/webhooks/subscribe (paid features).',
@@ -8698,7 +8711,7 @@ const OPENAPI_SPEC = {
 			post: {
 				tags:        ['Billing'],
 				summary:     'Mint a persistent API key via x402 USDC payment',
-				description: 'Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: 99 USDC = ${BUILDER_CALLS_COMPACT} calls/day. Pro tier: 299 USDC = ${PRO_CALLS_COMPACT} calls/day. Replay protection: each tx_hash can only be used once (365-day TTL).',
+				description: `Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: 99 USDC = ${BUILDER_CALLS_COMPACT} calls/day. Pro tier: 299 USDC = ${PRO_CALLS_COMPACT} calls/day. Replay protection: each tx_hash can only be used once (365-day TTL).`,
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {
@@ -9011,7 +9024,7 @@ const OPENAPI_SPEC = {
 			get: {
 				tags:        ['Discovery'],
 				summary:     'x402 payment resource discovery',
-				description: 'Lists endpoints that accept x402 micropayments: /v5/status ($0.001 USDC), /v5/batch ($0.005), /v5/x402/mint (99/299 USDC). x402scan-compatible.',
+				description: `Lists endpoints that accept x402 micropayments: /v5/status ($${X402_PRICE_USDC} USDC), /v5/batch ($${X402_BATCH_PRICE_USDC}), /v5/x402/mint (99/299 USDC). x402scan-compatible.`,
 				responses: {
 					'200': { description: 'x402 resources', content: { 'application/json': { schema: { type: 'object', properties: { version: { type: 'integer' }, resources: { type: 'array', items: { type: 'object' } } } } } } },
 				},
@@ -10876,7 +10889,7 @@ export default {
 										used:          usage,
 										resets_at:     resetMn.toISOString(),
 										upgrade_paths: [
-											{ id: 'x402_payment', description: 'Pay $0.001 per call, no limit', time_to_access: '< 5 seconds' },
+											{ id: 'x402_payment', description: `Pay $${X402_PRICE_USDC} per call, no limit`, time_to_access: '< 5 seconds' },
 											{ id: 'credit_pack', description: '$5 for 1,000 calls', url: 'https://headlessoracle.com/pricing' },
 											{ id: 'builder_plan', description: `$99/month, ${BUILDER_CALLS_PER_DAY} calls/day`, url: 'https://headlessoracle.com/pricing' },
 										],
@@ -12043,7 +12056,7 @@ export default {
 						'Autonomous agents gate trade execution on cryptographically verified venue state; fail-closed UNKNOWN. ' +
 						'Composes with environment.wallet_state for multi-venue mandates. ' +
 						'MCP tools: get_market_status, get_market_schedule, list_exchanges. Receipt verification is REST-only (POST /v5/verify) or offline via @headlessoracle/verify. ' +
-						'REST API + x402 micropayments ($0.001 USDC on Base mainnet). ' +
+						`REST API + x402 micropayments ($${X402_PRICE_USDC} USDC on Base mainnet). ` +
 						'Handles DST transitions, exchange holidays, lunch breaks, and circuit breaker detection. ' +
 						'Consistent with emerging regulatory direction on tokenized collateral (CFTC Staff Letter 25-39, Dec 2025; SEC Project Blueprint on Tokenized Collateral, Nov 2025).',
 					model_agnostic:       true,
@@ -12203,7 +12216,7 @@ export default {
 				{
 					path:        '/v5/x402/mint',
 					method:      'POST',
-					description: 'Mint a persistent ho_live_ API key by sending USDC on Base mainnet. Tier builder=99 USDC (${BUILDER_CALLS_COMPACT} calls/day), pro=299 USDC (${PRO_CALLS_COMPACT} calls/day). No signup required.',
+					description: `Mint a persistent ho_live_ API key by sending USDC on Base mainnet. Tier builder=99 USDC (${BUILDER_CALLS_COMPACT} calls/day), pro=299 USDC (${PRO_CALLS_COMPACT} calls/day). No signup required.`,
 					input: {
 						type:       'object',
 						properties: {
@@ -12225,7 +12238,7 @@ export default {
 				const facilitatorResources = (env.X402_ENABLED === 'true' && env.ORACLE_PAYMENT_ADDRESS) ? [{
 					path:        '/v5/status',
 					method:      'GET',
-					description: 'Signed market-state receipt. Ed25519 signed, 60s TTL. $0.001 USDC on Base mainnet via CDP facilitator.',
+					description: `Signed market-state receipt. Ed25519 signed, 60s TTL. $${X402_PRICE_USDC} USDC on Base mainnet via CDP facilitator.`,
 					network:     'mainnet',
 					facilitator: X402_FACILITATOR_URL,
 					accepts: [{
@@ -14365,7 +14378,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							calls_per_day:   null,
 							key_prefix:      null,
 							provision:       'X-Payment header on /v5/status',
-							description:     'No key, no signup. Pay $0.001 USDC per request on Base mainnet. Agent-native.',
+							description:     `No key, no signup. Pay $${X402_PRICE_USDC} USDC per request on Base mainnet. Agent-native.`,
 							network:         'base',
 							chain_id:        8453,
 							usdc_amount_units: String(X402_MIN_AMOUNT_UNITS),

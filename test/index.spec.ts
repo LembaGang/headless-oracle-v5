@@ -14018,6 +14018,89 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 			expect(x402AtomicToUsdc('99000000')).toBe('99');
 			expect(x402AtomicToUsdc('1')).toBe('0.000001');
 		});
+
+		// ── Served price text (T2b) ──────────────────────────────────────────
+		// T1 made the canonical object the single source of the price a client
+		// SIGNS. These assertions extend that to the price a human or an agent
+		// READS: every served surface below quoted "$0.001" as a literal until
+		// this fix pass, so a change to status.amountAtomic would have left them
+		// advertising a price the worker no longer charges. Each expectation is
+		// derived from x402ResourceSpecs(), never written out, so the test moves
+		// with the product and goes red only on a surface that stopped deriving.
+		const EXPECTED_BATCH_USDC = x402AtomicToUsdc(x402ResourceSpecs().batch.amountAtomic);
+
+		it('/openapi.json quotes the canonical per-request and batch prices', async () => {
+			const text = await (await fetchWorker('/openapi.json')).text();
+			// /v5/status: the payment header parameter and the 402 response.
+			expect(text).toContain(`($${EXPECTED_USDC} USDC on Base mainnet)`);
+			expect(text).toContain(`pay $${EXPECTED_USDC} USDC per request`);
+			// /v5/batch: its own, higher price.
+			expect(text).toContain(`($${EXPECTED_BATCH_USDC} USDC for batch)`);
+			expect(text).toContain(`($${EXPECTED_BATCH_USDC} USDC on Base mainnet for batch)`);
+			// /v5/sandbox and the x402 discovery summary.
+			expect(text).toContain(`USDC payment ($${EXPECTED_USDC})`);
+			expect(text).toContain(`/v5/status ($${EXPECTED_USDC} USDC), /v5/batch ($${EXPECTED_BATCH_USDC})`);
+		});
+
+		it('the MCP server card description quotes the canonical price', async () => {
+			const card = await fetchJSON('/.well-known/mcp/server-card.json');
+			expect(card.description as string).toContain(`x402 micropayments ($${EXPECTED_USDC} USDC on Base mainnet)`);
+		});
+
+		it('/v5/pricing tier prose quotes the canonical price, not just the number', async () => {
+			const body  = await fetchJSON('/v5/pricing');
+			const tiers = body.tiers as Array<Record<string, unknown>>;
+			const x402  = tiers.find((t) => t.id === 'x402') as Record<string, unknown>;
+			expect(x402.description as string).toContain(`Pay $${EXPECTED_USDC} USDC per request`);
+			expect(x402.price_label).toBe(`$${EXPECTED_USDC} USDC / request`);
+		});
+
+		it('/v5/why-not-free quotes the canonical price in every payment option', async () => {
+			const body = await fetchJSON('/v5/why-not-free');
+			const perRequest = body.x402_per_request as Record<string, unknown>;
+			const sandbox    = body.x402_sandbox as Record<string, unknown>;
+			expect(perRequest.cost).toBe(`$${EXPECTED_USDC} USDC`);
+			expect(sandbox.cost).toBe(`$${EXPECTED_USDC} USDC`);
+		});
+
+		it('the MCP get_payment_options tool description quotes the canonical price', async () => {
+			const body  = await postMcpJSON({ jsonrpc: '2.0', id: 901, method: 'tools/list' });
+			const tools = (body.result as Record<string, unknown>).tools as Array<Record<string, unknown>>;
+			const tool  = tools.find((t) => t.name === 'get_payment_options') as Record<string, unknown>;
+			expect(tool.description as string).toContain(`x402 per-request ($${EXPECTED_USDC} USDC)`);
+			expect(tool.description as string).toContain(`10 credits for $${EXPECTED_USDC}`);
+		});
+
+		it('the 402 an agent actually receives quotes the canonical price', async () => {
+			// The trial gates the 402 (T1.6) — exhaust it first or this measures a 200.
+			const ip     = '203.0.113.91';
+			const ipHash = await sha256Hex(ip);
+			const today  = new Date().toISOString().slice(0, 10);
+			await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+			try {
+				const r = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'CF-Connecting-IP': ip } });
+				expect(r.status).toBe(402);
+				const text = await r.text();
+				expect(text).toContain(`pay $${EXPECTED_USDC} USDC and get this receipt immediately`);
+				expect(text).toContain(`(same $${EXPECTED_USDC} USDC)`);
+				expect(text).toContain(`${EXPECTED_USDC} USDC on Base`);
+				expect(text).toContain(`$${EXPECTED_USDC} USDC per call`);
+			} finally {
+				await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+			}
+		});
+
+		it('the x402 discovery facilitator resource quotes the canonical price', async () => {
+			// Behind X402_ENABLED=true, so it is unreachable in the default test
+			// env — enable it here rather than leave the converted line unasserted.
+			(env as unknown as Record<string, string>).X402_ENABLED = 'true';
+			try {
+				const text = await (await fetchWorker('/.well-known/x402.json')).text();
+				expect(text).toContain(`60s TTL. $${EXPECTED_USDC} USDC on Base mainnet via CDP facilitator.`);
+			} finally {
+				delete (env as unknown as Record<string, string>).X402_ENABLED;
+			}
+		});
 	});
 
 	// ── The free trial (T1.6) ────────────────────────────────────────────────
@@ -14441,5 +14524,91 @@ describe('module export shape — the Workers runtime rejects non-function expor
 		const mod = await import('../src') as { default?: { fetch?: unknown } };
 		expect(typeof mod.default).toBe('object');
 		expect(typeof mod.default?.fetch).toBe('function');
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Uninterpolated-placeholder guard (rail sprint T2b, 2026-09-07)
+//
+// T2 converted the served allowance literals ("50,000 calls/day") into
+// `${BUILDER_CALLS_COMPACT}` / `${PRO_CALLS_COMPACT}` interpolations. Two of
+// those conversions landed inside SINGLE-QUOTED strings, which do not
+// interpolate: src/index.ts 8701 (OPENAPI_SPEC, the /v5/x402/mint description
+// served at /openapi.json) and 12206 (the /v5/x402/mint entry in the
+// /.well-known/x402.json endpoint catalogue). Deployed as they stood, both
+// public surfaces would have served the literal text "${BUILDER_CALLS_COMPACT}
+// calls/day" to every agent and indexer that read them.
+//
+// Nothing in the toolchain catches this: tsc accepts a valid string, the T2 DoD
+// grep for the old literals cannot match a placeholder, and no test fetched
+// either surface. This guard closes that hole for every public text surface at
+// once, and is falsifiable by construction — revert either line's backticks to
+// single quotes and it goes red naming that surface.
+//
+// The expected allowance strings are DERIVED from the same functions the worker
+// uses, never written as literals, so a change to BUILDER_TIER_DAILY_LIMIT moves
+// the assertion with the product rather than against it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('public text surfaces carry no uninterpolated placeholder', () => {
+	const BUILDER_COMPACT = formatCallsCompact(planAllowances().builder);
+	const PRO_COMPACT     = formatCallsCompact(planAllowances().pro);
+
+	// Every surface that serves prose an agent or indexer reads.
+	const TEXT_SURFACES: Array<[label: string, path: string]> = [
+		['/openapi.json',                        '/openapi.json'],
+		['/.well-known/x402.json',               '/.well-known/x402.json'],
+		['/.well-known/mcp/server-card.json',    '/.well-known/mcp/server-card.json'],
+		['/.well-known/agent.json',              '/.well-known/agent.json'],
+		['/.well-known/agent-card.json',         '/.well-known/agent-card.json'],
+		['/v5/pricing',                          '/v5/pricing'],
+		['/v5/keys/request',                     '/v5/keys/request'],
+		['/llms.txt',                            '/llms.txt'],
+		['/llms-full.txt',                       '/llms-full.txt'],
+		['/v5/why-not-free',                     '/v5/why-not-free'],
+	];
+
+	// No served byte may carry a template placeholder the runtime never filled.
+	// There is no legitimate `${` in any served surface: the source contains no
+	// escaped `\${` anywhere, so every occurrence is a conversion that failed.
+	const PLACEHOLDER = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
+
+	for (const [label, path] of TEXT_SURFACES) {
+		it(`${label} serves no uninterpolated \${...} placeholder`, async () => {
+			const response = await fetchWorker(path);
+			expect(response.status).toBe(200);
+			const text = await response.text();
+			const match = text.match(PLACEHOLDER);
+			expect(
+				match === null,
+				match ? `${label} served an uninterpolated placeholder: ${match[0]}` : '',
+			).toBe(true);
+			expect(text).not.toContain('${');
+		});
+	}
+
+	it('the MCP tools/list response serves no uninterpolated ${...} placeholder', async () => {
+		const response = await postMcp({ jsonrpc: '2.0', id: 900, method: 'tools/list' });
+		expect(response.status).toBe(200);
+		const text = await response.text();
+		const match = text.match(PLACEHOLDER);
+		expect(
+			match === null,
+			match ? `MCP tools/list served an uninterpolated placeholder: ${match[0]}` : '',
+		).toBe(true);
+		expect(text).not.toContain('${');
+	});
+
+	// The positive control: the two surfaces the placeholders were on must carry
+	// the real, derived allowance text — not merely be free of "${".
+	it('/openapi.json states both tier allowances, derived from planAllowances()', async () => {
+		const text = await (await fetchWorker('/openapi.json')).text();
+		expect(text).toContain(`${BUILDER_COMPACT} calls/day`);
+		expect(text).toContain(`${PRO_COMPACT} calls/day`);
+	});
+
+	it('/.well-known/x402.json states both tier allowances, derived from planAllowances()', async () => {
+		const text = await (await fetchWorker('/.well-known/x402.json')).text();
+		expect(text).toContain(`${BUILDER_COMPACT} calls/day`);
+		expect(text).toContain(`${PRO_COMPACT} calls/day`);
 	});
 });
