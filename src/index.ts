@@ -1724,7 +1724,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 							insight:     'At your usage rate, Builder plan ($99/month) costs less per call than buying more credit packs.',
 							plans: {
 								credits: '$5 for 1,000 more calls — headlessoracle.com/upgrade',
-								builder: '$99/month — 50,000 calls — 60% cheaper per call',
+								builder: `$99/month — ${BUILDER_CALLS_PER_DAY} calls — 60% cheaper per call`,
 							},
 						},
 					};
@@ -2382,8 +2382,38 @@ const AGENT_UPGRADE_PATHS = {
 };
 const SANDBOX_DAILY_LIMIT      = 200;   // Sandbox keys: 200 calls per 7-day key lifetime — enough to evaluate without replacing credit pack
 const UNAUTH_MCP_STATUS_LIMIT  = 10;   // Unauthenticated get_market_status calls per IP per day via /mcp
-const BUILDER_TIER_DAILY_LIMIT = 50_000;
-const PRO_TIER_DAILY_LIMIT     = 200_000;
+export const BUILDER_TIER_DAILY_LIMIT = 50_000;
+export const PRO_TIER_DAILY_LIMIT     = 200_000;
+
+// ─── Plan allowances, stated once ─────────────────────────────────────────
+// P8, found 2026-09-01: src/index.ts stated the Builder allowance three ways —
+// "$99/month — 50,000 calls", BUILDER_TIER_DAILY_LIMIT = 50_000, and
+// "50K req/day" — plus a fourth, "50,000/month" on GET /v5/keys/request, which
+// was simply wrong: the allowance is per DAY. Two customers reading two lines
+// got two contracts, and one of them got a false one.
+//
+// The limit above is the only place a number is written. Every human-readable
+// rendering below is derived from it, so a change to the allowance moves every
+// surface at once: /v5/pricing, the 402 pricing block, /llms.txt, the MCP
+// server card, the key-delivery email, the mint and upgrade messages.
+// (docs.html lives in the headless-oracle-web repo and is NOT covered here.)
+function formatCallsGrouped(n: number): string {
+	return n.toLocaleString('en-US');
+}
+
+// Compact form for tight surfaces ("50K"). Only exact thousands/millions are
+// abbreviated; anything else falls back to the grouped form rather than
+// rounding, because a rounded allowance in a price quote is a wrong allowance.
+export function formatCallsCompact(n: number): string {
+	if (n >= 1_000_000 && n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+	if (n >= 1_000 && n % 1_000 === 0) return `${n / 1_000}K`;
+	return formatCallsGrouped(n);
+}
+
+const BUILDER_CALLS_PER_DAY  = formatCallsGrouped(BUILDER_TIER_DAILY_LIMIT); // "50,000"
+const BUILDER_CALLS_COMPACT  = formatCallsCompact(BUILDER_TIER_DAILY_LIMIT); // "50K"
+const PRO_CALLS_PER_DAY      = formatCallsGrouped(PRO_TIER_DAILY_LIMIT);     // "200,000"
+const PRO_CALLS_COMPACT      = formatCallsCompact(PRO_TIER_DAILY_LIMIT);     // "200K"
 
 // ─── Canonical pricing table ──────────────────────────────────────────────
 // Single source of truth for dollar amounts. Both build402Payload and
@@ -2401,7 +2431,7 @@ const PRICING = {
 } as const;
 
 // Returns the daily request limit for a given plan. null = unlimited (protocol, internal).
-function getPlanDailyLimit(plan: string): number | null {
+export function getPlanDailyLimit(plan: string): number | null {
 	switch (plan) {
 		case 'free':    return FREE_TIER_DAILY_LIMIT;
 		case 'sandbox': return SANDBOX_DAILY_LIMIT;
@@ -2837,7 +2867,7 @@ function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 			description: 'POST /v5/x402/mint with tx_hash of Base mainnet USDC payment — get a persistent API key',
 			endpoint:    'POST /v5/x402/mint',
 			body:        '{ "tx_hash": "0x...", "tier": "builder" }',
-			tiers:       { builder: '$99 USDC → 50K req/day', pro: '$299 USDC → 200K req/day' },
+			tiers:       { builder: `$99 USDC → ${BUILDER_CALLS_COMPACT} req/day`, pro: `$299 USDC → ${PRO_CALLS_COMPACT} req/day` },
 		},
 		buy_subscription: {
 			description: 'Human-driven checkout — get a permanent key with monthly billing',
@@ -3029,7 +3059,7 @@ function buildPaymentOptions(): Record<string, unknown> {
 		},
 		builder: {
 			cost:  '$99/mo',
-			calls: '50K/day',
+			calls: `${BUILDER_CALLS_COMPACT}/day`,
 			how:   'GET /upgrade',
 		},
 		agent_native_path: 'No key, no signup. Send X-Payment with any request OR POST /v5/sandbox with X-Payment to get 10 credits instantly.',
@@ -3089,7 +3119,7 @@ function buildUpgradePaths(options?: { include_paid?: boolean }): unknown[] {
 			{
 				id:              'builder_plan',
 				friction:        'medium',
-				description:     '$99/month, 50,000 calls/day',
+				description:     `$99/month, ${BUILDER_CALLS_PER_DAY} calls/day`,
 				url:             'https://headlessoracle.com/pricing',
 				time_to_access:  '~ 5 minutes',
 			},
@@ -5065,7 +5095,7 @@ GET https://api.headlessoracle.com/v5/status?mic=XNYS + X-Payment header → 200
 # Path D — mint persistent key (99 USDC builder / 299 USDC pro):
 POST https://api.headlessoracle.com/v5/x402/mint
 Body: { "tx_hash": "0x...", "tier": "builder" }
-→ Returns ho_live_ key (50,000 calls/day, no expiry)
+→ Returns ho_live_ key (${BUILDER_CALLS_PER_DAY} calls/day, no expiry)
 
 # Demo (signed receipt, no key needed):
 GET https://api.headlessoracle.com/v5/demo?mic=XNYS
@@ -5184,8 +5214,8 @@ UNKNOWN status means the oracle cannot determine market state. Agents MUST treat
 - Free: 500 req/day (GET /v5/keys/request)
 - Sandbox: 200 req/7 days, email required (POST /v5/sandbox with { "email": "you@example.com" })
 - x402: ${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC/req via Base mainnet (no key, no signup)
-- Builder: 50,000 req/day ($99/mo)
-- Pro: 200,000 req/day ($299/mo)
+- Builder: ${BUILDER_CALLS_PER_DAY} req/day ($99/mo)
+- Pro: ${PRO_CALLS_PER_DAY} req/day ($299/mo)
 - Protocol: unlimited ($500/mo)
 Upgrade: https://headlessoracle.com/upgrade
 
@@ -7303,7 +7333,7 @@ const MCP_TOOLS = [
 			'Returns available payment and authentication options for accessing live market data. ' +
 			'Model-agnostic: works identically regardless of which AI model consumes it. ' +
 			'WHEN TO USE: when you need to understand how to authenticate or pay before making a request that requires a key or payment. ' +
-			'Returns upgrade ladder: sandbox (200 calls free), x402 per-request ($0.001 USDC), x402 sandbox (10 credits for $0.001), credit packs ($5 = 1000 calls), builder subscription ($99/mo = 50K/day). ' +
+			`Returns upgrade ladder: sandbox (200 calls free), x402 per-request ($0.001 USDC), x402 sandbox (10 credits for $0.001), credit packs ($5 = 1000 calls), builder subscription ($99/mo = ${BUILDER_CALLS_COMPACT}/day). ` +
 			'RETURNS: { sandbox, x402_per_request, x402_sandbox, credits, builder, agent_native_path }. ' +
 			'No authentication required. Always returns 200.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -8523,7 +8553,7 @@ const OPENAPI_SPEC = {
 			post: {
 				tags:        ['Billing'],
 				summary:     'Mint a persistent API key via x402 USDC payment',
-				description: 'Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: 99 USDC = 50K calls/day. Pro tier: 299 USDC = 200K calls/day. Replay protection: each tx_hash can only be used once (365-day TTL).',
+				description: 'Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: 99 USDC = ${BUILDER_CALLS_COMPACT} calls/day. Pro tier: 299 USDC = ${PRO_CALLS_COMPACT} calls/day. Replay protection: each tx_hash can only be used once (365-day TTL).',
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {
@@ -10606,7 +10636,7 @@ export default {
 					if (!auth.allowed) {
 						const authHeaders: Record<string, string> = auth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 						const authBody = auth.status === 402
-							? { error: auth.error, message: auth.message, upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }
+							? { error: auth.error, message: auth.message, upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: `$99/month — ${BUILDER_CALLS_PER_DAY} calls`, pro: `$299/month — ${PRO_CALLS_PER_DAY} calls` } }
 							: { error: auth.error, message: auth.message };
 						return json(authBody, auth.status, authHeaders);
 					}
@@ -10695,7 +10725,7 @@ export default {
 										upgrade_paths: [
 											{ id: 'x402_payment', description: 'Pay $0.001 per call, no limit', time_to_access: '< 5 seconds' },
 											{ id: 'credit_pack', description: '$5 for 1,000 calls', url: 'https://headlessoracle.com/pricing' },
-											{ id: 'builder_plan', description: '$99/month, 50,000 calls/day', url: 'https://headlessoracle.com/pricing' },
+											{ id: 'builder_plan', description: `$99/month, ${BUILDER_CALLS_PER_DAY} calls/day`, url: 'https://headlessoracle.com/pricing' },
 										],
 										recommended: 'x402_payment',
 									}, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)), 'X-Upgrade-Path': 'https://headlessoracle.com/pricing' });
@@ -10714,7 +10744,7 @@ export default {
 							return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Sandbox key limit reached. Get an instant free key (500 calls/day) or upgrade.', upgrade_paths: buildUpgradePaths({ include_paid: true }), recommended: 'instant_key', upgrade_url: 'https://headlessoracle.com/pricing' }, 402, { 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 						}
 						incrementDailyUsage(sbKeyHash, env, ctx, sbUsage);
-					// ── Paid tier daily limits (builder: 50k/day, pro: 200k/day) ──
+					// ── Paid tier daily limits (BUILDER_TIER_DAILY_LIMIT / PRO_TIER_DAILY_LIMIT) ──
 					} else if (auth.plan === 'builder' || auth.plan === 'pro') {
 						const paidKeyHash = auth.keyHash ?? await sha256Hex(apiKey);
 						const paidUsage   = await getDailyUsage(paidKeyHash, env);
@@ -10734,7 +10764,7 @@ export default {
 								used:        paidUsage,
 								resets_at:   paidResetMn.toISOString(),
 								upgrade_paths: auth.plan === 'builder'
-									? [{ id: 'pro_plan', description: '$299/month, 200,000 calls/day', url: 'https://headlessoracle.com/pricing' }]
+									? [{ id: 'pro_plan', description: `$299/month, ${PRO_CALLS_PER_DAY} calls/day`, url: 'https://headlessoracle.com/pricing' }]
 									: [{ id: 'protocol_plan', description: 'Custom pricing, unlimited', url: 'https://headlessoracle.com/pricing' }],
 							}, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)), 'X-Upgrade-Path': 'https://headlessoracle.com/pricing' });
 						}
@@ -11145,7 +11175,7 @@ export default {
 				if (!batchAuth.allowed) {
 					const batchAuthHeaders: Record<string, string> = batchAuth.status === 402 ? { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Plans': 'free=https://headlessoracle.com/v5/keys/request,builder=99,pro=299,protocol=500' } : {};
 					const batchAuthBody = batchAuth.body ?? (batchAuth.status === 402
-						? { error: batchAuth.error, message: batchAuth.message, upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' } }
+						? { error: batchAuth.error, message: batchAuth.message, upgrade_url: 'https://headlessoracle.com/upgrade', plans: { builder: `$99/month — ${BUILDER_CALLS_PER_DAY} calls`, pro: `$299/month — ${PRO_CALLS_PER_DAY} calls` } }
 						: { error: batchAuth.error, message: batchAuth.message });
 					return json(batchAuthBody, batchAuth.status, batchAuthHeaders);
 				}
@@ -11193,7 +11223,7 @@ export default {
 						return json({ error: 'SANDBOX_LIMIT_REACHED', message: 'Sandbox key limit reached. Get an instant free key (500 calls/day) or upgrade.', upgrade_paths: buildUpgradePaths({ include_paid: true }), recommended: 'instant_key', upgrade_url: 'https://headlessoracle.com/pricing' }, 402, { 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 					}
 					incrementDailyUsage(sbBatchKeyHash, env, ctx, sbBatchUsage);
-				// ── Paid tier daily limits for batch (builder: 50k/day, pro: 200k/day) ──
+				// ── Paid tier daily limits for batch (BUILDER_TIER_DAILY_LIMIT / PRO_TIER_DAILY_LIMIT) ──
 				} else if (batchAuth.plan === 'builder' || batchAuth.plan === 'pro') {
 					const paidBatchKeyHash = batchAuth.keyHash ?? await sha256Hex(apiKey);
 					const paidBatchUsage   = await getDailyUsage(paidBatchKeyHash, env);
@@ -11685,7 +11715,7 @@ export default {
 					PAYMENT_ALREADY_USED:  { message: 'This transaction hash has already been used for a payment.', resolution: 'Each txHash can only be used once. Send a new USDC transaction.', http_status: 402 },
 					PAYMENT_EXPIRED:       { message: 'The transaction is older than 300 seconds.', resolution: 'Send a new USDC transaction and retry immediately.', http_status: 402 },
 					ACCOUNT_NOT_FOUND:     { message: 'No account found for this API key.', resolution: 'Verify your X-Oracle-Key. If subscribed via Paddle, check your email for the key.', http_status: 404 },
-					SANDBOX_LIMIT_REACHED: { message: 'Sandbox key has reached its 200-call limit.', resolution: 'Upgrade to a credit pack ($5 for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder ($99/mo) for 50,000 calls/day.', http_status: 402 },
+					SANDBOX_LIMIT_REACHED: { message: 'Sandbox key has reached its 200-call limit.', resolution: `Upgrade to a credit pack ($5 for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder ($99/mo) for ${BUILDER_CALLS_PER_DAY} calls/day.`, http_status: 402 },
 					SANDBOX_KEY_EXPIRED:   { message: 'Sandbox key has expired (7-day TTL).', resolution: 'Upgrade to a credit pack ($5 for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder ($99/mo).', http_status: 402 },
 					CREDITS_EXHAUSTED:     { message: 'Credit pack balance is zero.', resolution: 'Purchase a new credit pack at https://headlessoracle.com/upgrade, or subscribe to Builder ($99/mo) for a daily allowance.', http_status: 402 },
 					PLAN_LIMIT_EXCEEDED:   { message: 'Daily request limit for your plan has been reached.', resolution: 'Upgrade your plan at https://headlessoracle.com/upgrade. Limit resets at UTC midnight.', http_status: 429 },
@@ -12010,7 +12040,7 @@ export default {
 				{
 					path:        '/v5/x402/mint',
 					method:      'POST',
-					description: 'Mint a persistent ho_live_ API key by sending USDC on Base mainnet. Tier builder=99 USDC (50K calls/day), pro=299 USDC (200K calls/day). No signup required.',
+					description: 'Mint a persistent ho_live_ API key by sending USDC on Base mainnet. Tier builder=99 USDC (${BUILDER_CALLS_COMPACT} calls/day), pro=299 USDC (${PRO_CALLS_COMPACT} calls/day). No signup required.',
 					input: {
 						type:       'object',
 						properties: {
@@ -12057,7 +12087,7 @@ export default {
 			// ── POST /v5/x402/mint — autonomous key minting via on-chain USDC payment ──
 			// No auth required. Agents send USDC on Base mainnet and receive a persistent
 			// ho_live_ API key without any human in the loop.
-			// Tiers: builder (99 USDC → 50K calls/day), pro (299 USDC → 200K calls/day)
+			// Tiers: builder (99 USDC) and pro (299 USDC); allowances from BUILDER_TIER_DAILY_LIMIT / PRO_TIER_DAILY_LIMIT
 			if (url.pathname === '/v5/x402/mint') {
 				if (request.method !== 'POST') {
 					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST /v5/x402/mint with { tx_hash, network, tier }' }, 405);
@@ -12083,7 +12113,7 @@ export default {
 				if (tier !== 'builder' && tier !== 'pro') {
 					return json({
 						error:   'BAD_REQUEST',
-						message: 'tier must be "builder" (99 USDC, 50K calls/day) or "pro" (299 USDC, 200K calls/day)',
+						message: `tier must be "builder" (99 USDC, ${BUILDER_CALLS_COMPACT} calls/day) or "pro" (299 USDC, ${PRO_CALLS_COMPACT} calls/day)`,
 						tiers: {
 							builder: { usdc: 99, calls_per_day: BUILDER_TIER_DAILY_LIMIT },
 							pro:     { usdc: 299, calls_per_day: PRO_TIER_DAILY_LIMIT },
@@ -12180,7 +12210,7 @@ export default {
 								to:      [email],
 								subject: `Your Headless Oracle ${tier} API key`,
 								html: `<p>Your autonomous x402 payment was verified on Base mainnet.</p>
-<p>Your API key for the <strong>${tier}</strong> plan (${tier === 'pro' ? '200K' : '50K'} calls/day) — save this, it will not be shown again:</p>
+<p>Your API key for the <strong>${tier}</strong> plan (${tier === 'pro' ? PRO_CALLS_COMPACT : BUILDER_CALLS_COMPACT} calls/day) — save this, it will not be shown again:</p>
 <pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
 <p>Use it as the <code>X-Oracle-Key</code> header: <code>GET https://api.headlessoracle.com/v5/status?mic=XNYS</code></p>
 <p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
@@ -13667,12 +13697,12 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 						plans: {
 							builder: {
 								price: '$99/month',
-								calls: '50,000/month',
+								calls: `${BUILDER_CALLS_PER_DAY}/day`,
 								url:   'https://headlessoracle.com/upgrade',
 							},
 							pro: {
 								price: '$299/month',
-								calls: '200,000/month',
+								calls: `${PRO_CALLS_PER_DAY}/day`,
 								url:   'https://headlessoracle.com/upgrade',
 							},
 						},
@@ -14199,8 +14229,8 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							calls_per_day: BUILDER_TIER_DAILY_LIMIT,
 							key_prefix:   'ho_live_',
 							provision:    'POST /v5/checkout',
-							description:  '50,000 calls/day. Paddle subscription. Webhook subscriptions. Receipt audit log.',
-							features:     ['50,000 calls/day', '5 webhook subs', 'Receipt audit log', '28 exchanges', 'Paddle billing'],
+							description:  `${BUILDER_CALLS_PER_DAY} calls/day. Paddle subscription. Webhook subscriptions. Receipt audit log.`,
+							features:     [`${BUILDER_CALLS_PER_DAY} calls/day`, '5 webhook subs', 'Receipt audit log', '28 exchanges', 'Paddle billing'],
 						},
 						{
 							id:           'pro',
@@ -14210,8 +14240,8 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							calls_per_day: PRO_TIER_DAILY_LIMIT,
 							key_prefix:   'ho_live_',
 							provision:    'POST /v5/checkout',
-							description:  '200,000 calls/day. Paddle subscription. 25 webhook subscriptions.',
-							features:     ['200,000 calls/day', '25 webhook subs', 'Receipt audit log', '28 exchanges', 'Paddle billing'],
+							description:  `${PRO_CALLS_PER_DAY} calls/day. Paddle subscription. 25 webhook subscriptions.`,
+							features:     [`${PRO_CALLS_PER_DAY} calls/day`, '25 webhook subs', 'Receipt audit log', '28 exchanges', 'Paddle billing'],
 						},
 						{
 							id:           'protocol',
@@ -14755,7 +14785,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						error:       'SANDBOX_LIMIT_REACHED',
 						message:     'You have already used your free sandbox allocation.',
 						upgrade_url: 'https://headlessoracle.com/upgrade',
-						plans: { builder: '$99/month — 50,000 calls', pro: '$299/month — 200,000 calls' },
+						plans: { builder: `$99/month — ${BUILDER_CALLS_PER_DAY} calls`, pro: `$299/month — ${PRO_CALLS_PER_DAY} calls` },
 					}, 429);
 				}
 
@@ -14835,7 +14865,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						`curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' \\\n` +
 						`  -H 'X-Oracle-Key: ${rawKey}'\n\n` +
 						`Docs: https://headlessoracle.com/docs\n\n` +
-						`When you're ready to build in production, Builder plan is $99/month for 50,000 calls:\n` +
+						`When you're ready to build in production, Builder plan is $99/month for ${BUILDER_CALLS_PER_DAY} calls:\n` +
 						`https://headlessoracle.com/upgrade\n\n` +
 						`Questions? Reply to this email.\n\n` +
 						`P.S. If you'd like to share what you're building, just reply. Design partners get early access to new features and direct support.`;
@@ -15283,7 +15313,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 						changes: [
 							'x402 micropayments on Base mainnet (USDC, chain 8453)',
 							'api.headlessoracle.com subdomain',
-							'Plan-based rate limits (builder: 50k/day, pro: 200k/day)',
+							`Plan-based rate limits (builder: ${BUILDER_CALLS_COMPACT}/day, pro: ${PRO_CALLS_COMPACT}/day)`,
 						],
 					},
 					{
@@ -16166,7 +16196,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 								const followupText =
 									`Your sandbox key expires in ~2 hours.\n` +
 									`If you want to keep building:\nhttps://headlessoracle.com/upgrade\n` +
-									`Builder plan: $99/month, 50K calls/day\n` +
+									`Builder plan: $99/month, ${BUILDER_CALLS_COMPACT} calls/day\n` +
 									`Free beta keys also available — reply to ask.`;
 								const emailRes = await fetch('https://api.resend.com/emails', {
 									method:  'POST',

@@ -9,6 +9,8 @@ import worker, {
 	x402SettlementHeaders, X402_RESOURCE_SPECS, X402_EMAIL_PRICE_LINE,
 	buildX402IndexHeaders, buildMainnetFacilitatorPayload, buildX402ScanPayload,
 	x402Base64Decode, x402Base64Encode,
+	// plan-allowance module (rail sprint T2, 2026-09-07)
+	BUILDER_TIER_DAILY_LIMIT, PRO_TIER_DAILY_LIMIT, formatCallsCompact, getPlanDailyLimit,
 } from '../src';
 
 // Clear module-level caches before every test so that tests which
@@ -14077,5 +14079,100 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The Builder allowance, stated once (P8)
+//
+// Found 2026-09-01 while checking the Yu letter against the worker source:
+// src/index.ts stated the Builder allowance three ways — "$99/month — 50,000
+// calls", BUILDER_TIER_DAILY_LIMIT = 50_000, and "50K req/day" — and a fourth,
+// "50,000/month" on GET /v5/keys/request, which was simply wrong: the allowance
+// is per DAY. Two customers reading two lines got two contracts, and one of them
+// got a false one.
+//
+// These tests assert every surface against the DERIVED rendering, so they move
+// with the constant. Their red case is a surface that carries a literal: change
+// BUILDER_TIER_DAILY_LIMIT and any hardcoded "50,000" fails here.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('the Builder allowance is stated once', () => {
+	const EXPECTED_GROUPED = BUILDER_TIER_DAILY_LIMIT.toLocaleString('en-US'); // 50,000
+	const EXPECTED_COMPACT = `${BUILDER_TIER_DAILY_LIMIT / 1000}K`;            // 50K
+	const PRO_GROUPED      = PRO_TIER_DAILY_LIMIT.toLocaleString('en-US');     // 200,000
+
+	it('the enforced limit and the quoted figure are the same number', async () => {
+		// The contract a customer reads must be the contract the gate enforces.
+		// getPlanDailyLimit is what actually rate-limits the key.
+		expect(getPlanDailyLimit('builder')).toBe(BUILDER_TIER_DAILY_LIMIT);
+		expect(getPlanDailyLimit('pro')).toBe(PRO_TIER_DAILY_LIMIT);
+		const pricing = await fetchJSON('/v5/pricing');
+		const tiers   = pricing.tiers as Array<Record<string, unknown>>;
+		const builder = tiers.find(t => t.id === 'builder') as Record<string, unknown>;
+		expect(String(builder.description)).toContain(`${EXPECTED_GROUPED} calls/day`);
+		expect((builder.features as string[])[0]).toBe(`${EXPECTED_GROUPED} calls/day`);
+	});
+
+	it('/llms-full.txt quotes the derived figure', async () => {
+		const full = await (await fetchWorker('/llms-full.txt')).text();
+		expect(full).toContain(`- Builder: ${EXPECTED_GROUPED} req/day ($99/mo)`);
+		expect(full).toContain(`- Pro: ${PRO_GROUPED} req/day ($299/mo)`);
+		// And it does not quote a per-MONTH allowance anywhere: the whole defect
+		// was a surface silently changing the unit.
+		expect(full).not.toContain(`${EXPECTED_GROUPED}/month`);
+	});
+
+	it('the MCP get_payment_options tool quotes the derived figure', async () => {
+		const res = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_payment_options', arguments: {} } }),
+		});
+		const body = await res.json() as Record<string, unknown>;
+		const text = JSON.stringify(body);
+		expect(text).toContain(`${EXPECTED_COMPACT}/day`);
+	});
+
+	it('the /v5/why-not-free upgrade ladder quotes the derived figures', async () => {
+		// This is the surface an agent reads after a 402 to choose a path. The
+		// trial-exhausted 402 itself carries buildUpgradePaths() WITHOUT the paid
+		// tiers by design, so the paid figures are asserted where they are served.
+		const body = await fetchJSON('/v5/why-not-free');
+		const text = JSON.stringify(body);
+		expect(text).toContain(`${EXPECTED_COMPACT}/day`);
+		// Read the field itself rather than the blob, so the assertion names the
+		// contract: the Builder line quotes exactly the derived compact form.
+		const builder = body.builder as Record<string, unknown>;
+		expect(builder.calls).toBe(`${EXPECTED_COMPACT}/day`);
+	});
+
+	it('GET /v5/keys/request states the allowance per DAY, not per month', async () => {
+		// The original defect: this surface said "50,000/month" — a different
+		// contract from every other surface, and a false one.
+		const body    = await fetchJSON('/v5/keys/request');
+		const plans   = body.plans as Record<string, Record<string, unknown>>;
+		expect(plans.builder.calls).toBe(`${EXPECTED_GROUPED}/day`);
+		expect(plans.pro.calls).toBe(`${PRO_GROUPED}/day`);
+		expect(String(plans.builder.calls)).not.toContain('month');
+	});
+
+	it('the x402 mint tier message quotes the derived figure', async () => {
+		const res  = await fetchWorker('/v5/x402/mint', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ tx_hash: '0x' + 'a'.repeat(64), tier: 'not_a_tier' }),
+		});
+		const body = await res.json() as Record<string, unknown>;
+		expect(String(body.message)).toContain(`${EXPECTED_COMPACT} calls/day`);
+	});
+
+	it('compact rendering never rounds a non-exact allowance', () => {
+		// A rounded allowance in a price quote is a wrong allowance, so the
+		// compact form falls back to the grouped form rather than lying.
+		expect(formatCallsCompact(50_000)).toBe('50K');
+		expect(formatCallsCompact(200_000)).toBe('200K');
+		expect(formatCallsCompact(1_000_000)).toBe('1M');
+		expect(formatCallsCompact(50_500)).toBe('50,500');
+		expect(formatCallsCompact(999)).toBe('999');
 	});
 });
