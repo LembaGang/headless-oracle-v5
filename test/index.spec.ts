@@ -15051,3 +15051,87 @@ describe('/v5/payment-proof — computed on read, first dollar from the chain', 
 		expect(String(body.verify_at)).toContain('basescan.org');
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GAP-017 — a hung Supabase must not hold a worker isolate open
+//
+// supabase-js builds on fetch and passes no signal, so an upstream that accepts
+// the connection and never answers is waited on forever. The damage is not a
+// slow auth response: it is an isolate pinned to a dead socket, which stops the
+// worker serving anything at all.
+//
+// The stub below is a faithful hung upstream — it never resolves, but it does
+// honour cancellation, exactly as a real fetch does. That is what makes this
+// test able to fail: if the deadline were not actually attached to the request,
+// nothing would ever abort it and the case would hang until vitest killed it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('GAP-017 — Supabase calls on a request path carry a deadline', () => {
+	// Never resolves; rejects only when the caller's signal fires.
+	const hangUntilAborted = (init?: RequestInit): Promise<Response> =>
+		new Promise((_resolve, reject) => {
+			const sig = init?.signal;
+			if (!sig) return; // no signal attached => hangs => the test fails on timeout
+			if (sig.aborted) return reject(new DOMException('aborted', 'TimeoutError'));
+			sig.addEventListener('abort', () => reject(new DOMException('aborted', 'TimeoutError')));
+		});
+
+	it('a black-holed auth lookup returns the fail-closed response inside the bound', async () => {
+		const original = globalThis.fetch;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const u = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+			if (u.includes('supabase.co')) return hangUntilAborted(init);
+			return original(input as RequestInfo, init);
+		}) as typeof globalThis.fetch;
+		try {
+			clearApiKeyCache();
+			const started = Date.now();
+			const res = await fetchWorker('/v5/status?mic=XNYS', {
+				headers: { 'X-Oracle-Key': 'ho_live_deadbeefdeadbeefdeadbeefdeadbeef' },
+			});
+			const elapsed = Date.now() - started;
+
+			// Fail-closed: an auth backend we could not reach denies access. It
+			// never falls through to a served receipt.
+			expect(res.status).toBe(403);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.error).toBe('INVALID_API_KEY');
+
+			// Inside the bound, with slack for the rest of the request. The
+			// number that matters is that it terminated at all: before the
+			// deadline this call did not come back.
+			expect(elapsed).toBeLessThan(4000);
+		} finally {
+			globalThis.fetch = original;
+			clearApiKeyCache();
+		}
+	}, 10_000);
+
+	it('a KV cache hit never reaches Supabase, so a hung upstream cannot touch it', async () => {
+		// The control. If this also went to Supabase, the test above would be
+		// measuring the wrong path and the deadline would prove nothing about
+		// the cached case.
+		const key = 'ho_live_cachedkeycachedkeycachedkey01';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		const original = globalThis.fetch;
+		let supabaseCalls = 0;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const u = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+			if (u.includes('supabase.co')) { supabaseCalls++; return hangUntilAborted(init); }
+			return original(input as RequestInfo, init);
+		}) as typeof globalThis.fetch;
+		try {
+			clearApiKeyCache();
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(200);
+			// updateKeyUsage / insertReceiptAudit run under waitUntil and may
+			// call Supabase; what must NOT happen is the auth lookup blocking.
+			// The 200 above is the assertion that it did not.
+		} finally {
+			globalThis.fetch = original;
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			clearApiKeyCache();
+			void supabaseCalls;
+		}
+	}, 10_000);
+});

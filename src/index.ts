@@ -1913,6 +1913,39 @@ export async function signPayload(payload: Record<string, string>, privKeyHex: s
 // Callers use it to update last_used_at without re-hashing.
 type AuthResult = { allowed: true; plan: string; keyHash?: string } | { allowed: false; status: 402 | 403; error: string; message: string; body?: Record<string, unknown> };
 
+// ─── Supabase on a request's own path gets a deadline (GAP-017) ─────────────
+//
+// supabase-js builds on fetch and passes no signal of its own, so a slow or
+// black-holed upstream is waited on indefinitely. The failure that matters is
+// not a slow response: it is a worker isolate held open by a socket nobody is
+// going to answer, which stops the worker serving anything else. Every call
+// made while a request is in flight therefore carries a hard deadline.
+//
+// Three call sites are on a request's path, and all three use this factory:
+//   checkApiKey step 4        — BLOCKING; the response waits on it
+//   updateKeyUsage            — ctx.waitUntil, but per authenticated request
+//   insertReceiptAudit        — ctx.waitUntil, but per authenticated request
+// Webhook and admin handlers construct their own clients and are deliberately
+// out of scope here; they are not on a request's hot path.
+const SUPABASE_HOT_PATH_TIMEOUT_MS = 2000;
+
+function supabaseHotPath(env: Env, timeoutMs: number = SUPABASE_HOT_PATH_TIMEOUT_MS) {
+	return createClient(env.SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!, {
+		global: {
+			fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				const deadline = AbortSignal.timeout(timeoutMs);
+				// Compose rather than clobber: if supabase-js ever starts
+				// passing its own signal, dropping it here would silently
+				// disable the caller's cancellation.
+				const signal = init?.signal && typeof AbortSignal.any === 'function'
+					? AbortSignal.any([init.signal, deadline])
+					: deadline;
+				return fetch(input as RequestInfo, { ...init, signal });
+			},
+		},
+	});
+}
+
 async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	// Step 1: master key — fastest possible path
 	if (key === env.MASTER_API_KEY) return { allowed: true, plan: 'internal' };
@@ -2000,14 +2033,29 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 		}
 	}
 
-	// Step 4: KV miss → Supabase lookup
+	// Step 4: KV miss → Supabase lookup (bounded — see supabaseHotPath)
 	if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-		const { data } = await supabase
+		const supabase = supabaseHotPath(env);
+		const { data, error } = await supabase
 			.from('api_keys')
 			.select('plan, status')
 			.eq('key_hash', keyHash)
 			.single();
+
+		// supabase-js does not throw on a network failure — it returns
+		// { data: null, error }. Without this branch a timed-out lookup is
+		// indistinguishable in the logs from a key that genuinely does not
+		// exist, and an auth backend degrading looks like a wave of bad keys.
+		// PGRST116 is "no rows", which is the ordinary not-found case.
+		if (error && error.code !== 'PGRST116') {
+			console.error(JSON.stringify({
+				event: 'AUTH_BACKEND_LOOKUP_FAILED',
+				code:  error.code ?? 'unknown',
+				// Never the key or its hash — only that a lookup failed.
+				detail: error.message?.slice(0, 200) ?? '',
+				timeout_ms: SUPABASE_HOT_PATH_TIMEOUT_MS,
+			}));
+		}
 
 		if (data) {
 			const kvValue = JSON.stringify({ plan: data.plan, status: data.status });
@@ -2041,7 +2089,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 async function updateKeyUsage(keyHash: string, env: Env): Promise<void> {
 	if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return;
 	try {
-		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+		const supabase = supabaseHotPath(env);
 		const { error } = await supabase
 			.from('api_keys')
 			.update({ last_used_at: new Date().toISOString() })
@@ -2059,7 +2107,7 @@ async function insertReceiptAudit(
 ): Promise<void> {
 	if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return;
 	try {
-		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+		const supabase = supabaseHotPath(env);
 		const { error } = await supabase.from('receipt_audit').insert({
 			key_hash:       keyHash,
 			mic:            String(receipt.mic ?? ''),
