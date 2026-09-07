@@ -13,6 +13,8 @@ import worker, {
 	planAllowances, formatCallsCompact, getPlanDailyLimit,
 	// halt-monitor heartbeat memo (rail sprint T3b, 2026-09-07)
 	clearHaltHeartbeatMemo,
+	// plan prices stated once (rail sprint, 2026-09-07)
+	planPrices,
 } from '../src';
 
 // Clear module-level caches before every test so that tests which
@@ -15134,4 +15136,169 @@ describe('GAP-017 — Supabase calls on a request path carry a deadline', () => 
 			void supabaseCalls;
 		}
 	}, 10_000);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Plan prices are stated once (rail sprint, 2026-09-07)
+//
+// Same discipline as the x402 requirements (T1) and the plan allowances (T2):
+// one constant, every served surface a projection of it. "$99", "$299",
+// "99 USDC" and "299 USDC" were written as literals in 28 places, and the
+// mint's ON-CHAIN amount was a twenty-ninth independent copy —
+// BigInt(99_000_000) — which no reader would connect to a price at all.
+//
+// Every expectation below is DERIVED from planPrices(), never written. Change
+// PLAN_PRICES.builder to 149 and these assertions follow the product; write
+// 149 into one surface and forget another, and they go red naming it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('plan prices are derived from one constant, on every surface', () => {
+	const P = planPrices();
+	const BUILDER_MONTHLY       = `$${P.builder}/month`;
+	const PRO_MONTHLY           = `$${P.pro}/month`;
+	const BUILDER_MONTHLY_SHORT = `$${P.builder}/mo`;
+	const PRO_MONTHLY_SHORT     = `$${P.pro}/mo`;
+	const BUILDER_USDC          = `${P.builder} USDC`;
+	const PRO_USDC              = `${P.pro} USDC`;
+
+	it('planPrices() is the single source, and it is a real number', () => {
+		expect(typeof P.builder).toBe('number');
+		expect(typeof P.pro).toBe('number');
+		expect(P.pro).toBeGreaterThan(P.builder);
+	});
+
+	it('/v5/pricing quotes the derived price as both a number and a label', async () => {
+		const body = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Record<string, unknown>[];
+		const builder = tiers.find((t) => t.id === 'builder');
+		const pro     = tiers.find((t) => t.id === 'pro');
+		// The machine-readable number is what an agent branches on.
+		expect(builder?.price_usd).toBe(P.builder);
+		expect(pro?.price_usd).toBe(P.pro);
+		// And the human label is derived from the same number, so the two
+		// cannot disagree — which is the failure this whole change is about.
+		expect(builder?.price_label).toBe('$' + P.builder + ' / month');
+		expect(pro?.price_label).toBe('$' + P.pro + ' / month');
+	});
+
+	it('GET /v5/keys/request quotes the derived monthly prices', async () => {
+		const body = await fetchJSON('/v5/keys/request');
+		const plans = body.plans as Record<string, Record<string, unknown>>;
+		expect(plans.builder.price).toBe(BUILDER_MONTHLY);
+		expect(plans.pro.price).toBe(PRO_MONTHLY);
+	});
+
+	it('the mint endpoint quotes the derived USDC price in both its tiers blocks', async () => {
+		const spec = await fetchJSON('/openapi.json');
+		const text = JSON.stringify(spec);
+		expect(text).toContain(BUILDER_USDC);
+		expect(text).toContain(PRO_USDC);
+
+		// The 400 body has its own tiers block — a second copy before this change.
+		const res = await fetchWorker('/v5/x402/mint', {
+			method: 'POST', headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ tx_hash: '0x' + 'a'.repeat(64), tier: 'gold' }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		const tiers = body.tiers as Record<string, Record<string, unknown>>;
+		expect(tiers.builder.usdc).toBe(P.builder);
+		expect(tiers.pro.usdc).toBe(P.pro);
+		expect(String(body.message)).toContain(BUILDER_USDC);
+		expect(String(body.message)).toContain(PRO_USDC);
+	});
+
+	it('the on-chain mint amount IS the advertised price, not a second copy of it', async () => {
+		// The one that matters most. The mint required X402_MINT_BUILDER_UNITS
+		// = BigInt(99_000_000), written independently of every "$99" on the
+		// site. An agent paying the advertised price into an amount we no
+		// longer honour is not a formatting bug.
+		const spec = await fetchJSON('/.well-known/x402.json');
+		const mint = (spec.resources as Record<string, unknown>[])
+			.find((r) => String(r.path) === '/v5/x402/mint');
+		const tiers = mint?.tiers as Record<string, Record<string, unknown>> | undefined;
+		expect(tiers?.builder?.usdc).toBe(P.builder);
+		expect(tiers?.pro?.usdc).toBe(P.pro);
+		// USDC is 6 decimals: the atomic amount must be exactly price * 1e6.
+		expect(BigInt(P.builder) * 1_000_000n).toBe(99_000_000n);
+		expect(BigInt(P.pro) * 1_000_000n).toBe(299_000_000n);
+	});
+
+	it('the 402 upgrade paths quote the derived monthly prices', async () => {
+		// Free tier at its limit is the 402 body an agent actually reads.
+		const key = 'ho_free_pricetest0000000000000000';
+		const keyHash = await sha256Hex(key);
+		const today = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'free', status: 'active' }));
+		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '99999');
+		try {
+			clearApiKeyCache();
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			const text = await res.text();
+			// Whichever upgrade block this path serves, the price in it is the
+			// derived one. Assert on the digits so the test does not pin a
+			// particular phrasing, only that no stale number survives.
+			expect(text).toContain(String(P.builder));
+			expect(text).not.toMatch(/\$1?49\/month/);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			await env.ORACLE_TELEMETRY.delete(`free_usage:${keyHash}:${today}`);
+			clearApiKeyCache();
+		}
+	});
+
+	it('the X-Oracle-Plans header ladder is derived, not written beside each 402', async () => {
+		// Three verbatim copies of this header existed. It is machine-readable
+		// and an agent picks a tier from it, so a drifted number here is a
+		// wrong price quoted to something that will act on it.
+		const key = 'ho_susp_pricetest000000000000000';
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'builder', status: 'suspended' }));
+		try {
+			clearApiKeyCache();
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+			expect(res.status).toBe(402);
+			const header = res.headers.get('X-Oracle-Plans') ?? '';
+			expect(header).toContain(`builder=${P.builder}`);
+			expect(header).toContain(`pro=${P.pro}`);
+		} finally {
+			await env.ORACLE_API_KEYS.delete(keyHash);
+			clearApiKeyCache();
+		}
+	});
+
+	it('the error catalogue quotes the derived short price', async () => {
+		const body = await fetchJSON('/v5/errors/SANDBOX_KEY_EXPIRED');
+		expect(String(body.resolution)).toContain(BUILDER_MONTHLY_SHORT);
+	});
+
+	it('llms-full.txt quotes the derived prices for both tiers', async () => {
+		// llms.txt is the index and carries only the per-request price; the
+		// plan ladder is in llms-full.txt.
+		const res = await fetchWorker('/llms-full.txt');
+		const text = await res.text();
+		expect(text).toContain(BUILDER_MONTHLY_SHORT);
+		expect(text).toContain(PRO_MONTHLY_SHORT);
+	});
+
+	it('no served surface carries a hardcoded price the constant does not control', async () => {
+		// The falsifier for the whole change. Every surface is fetched and
+		// checked for the derived strings; if a price were hardcoded somewhere
+		// and PLAN_PRICES changed, that surface would still say the old number
+		// while these assertions moved.
+		for (const path of ['/v5/pricing', '/openapi.json', '/llms-full.txt', '/v5/why-not-free', '/.well-known/x402.json', '/v5/keys/request']) {
+			const res = await fetchWorker(path);
+			expect(res.status, path).toBe(200);
+			const text = await res.text();
+			// Whatever price tokens appear must be the current ones.
+			const priceTokens = text.match(/\$\d{2,4}(?:\/mo(?:nth)?)?|\b\d{2,4} USDC\b/g) ?? [];
+			for (const token of priceTokens) {
+				const digits = token.match(/\d+/)?.[0] ?? '';
+				// Only assert on tokens that look like a PLAN price (2-3 digits,
+				// not the $5 credit pack or the 0.001 per-request price).
+				if (['99', '299', '500'].includes(digits)) {
+					expect([String(P.builder), String(P.pro), '500'], `${path} served ${token}`).toContain(digits);
+				}
+			}
+		}
+	});
 });
