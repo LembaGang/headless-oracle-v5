@@ -1398,13 +1398,130 @@ type SourceValue = 'SCHEDULE' | 'OVERRIDE' | 'SYSTEM' | 'REALTIME';
 // field derived from it so agents know what level of safety they are getting.
 const HALT_DETECTION_ACTIVE = new Set(['XNYS', 'XNAS']);
 
+// Why a verdict came back UNKNOWN. Stable tokens — agents branch on these, so
+// they do not change between releases. UNKNOWN always means CLOSED to a
+// consumer regardless of which reason it carries; the reason exists so an
+// operator can tell a missing calendar from an unsupported venue from a
+// determination that threw, without reading our logs.
+type UnknownReason =
+	| 'UNSUPPORTED_MIC'            // no MARKET_CONFIGS entry for this MIC
+	| 'NO_HOLIDAY_DATA_FOR_YEAR'   // calendar has no holiday list for the current local year
+	| 'DETERMINATION_ERROR';       // Tier 1 threw; Tier 2 signed the fail-closed receipt
+
 function getHaltDetection(mic: string): 'active' | 'schedule_only' {
 	return HALT_DETECTION_ACTIVE.has(mic) ? 'active' : 'schedule_only';
+}
+
+// ─── The coverage block: what a receipt actually consulted ───────────────────
+//
+// A verdict does not say what was looked at to reach it. "CLOSED" from the
+// calendar and "CLOSED" because an operator tripped a circuit breaker are the
+// same four characters, and neither tells a consumer whether an intraday halt
+// would have been seen. That gap is not hypothetical: for 26 of the 28
+// exchanges there is no intraday halt feed at all, so an unscheduled halt on
+// XLON is invisible to us — and until now the receipt said nothing about it
+// beyond a two-valued `halt_detection` hint.
+//
+// The coverage block states it explicitly, INSIDE the Ed25519 signature, so a
+// third party can hold us to the scope we claimed rather than the scope they
+// assumed:
+//   determination_tier        0 = manual override (KV), 1 = schedule, 2 = fail-closed fallback
+//   consulted                 the sources this verdict actually rests on
+//   not_consulted             the sources that did not contribute, named
+//   realtime_halt_feed_scope  the only MICs any intraday feed covers
+//   unknown_reason            why, when the verdict is UNKNOWN; null otherwise
+//
+// Encoding: a JSON-encoded STRING in the signed bytes, matching the existing
+// convention for structured signed data (`cross_venue` and `reasons` on the
+// safe-to-trade receipt, `exchanges` and `all_open` on /v5/batch). signPayload
+// enforces string-only values on purpose — canonicalization is defined as an
+// alphabetical sort of top-level keys, and a nested object would make the
+// nested key ORDER load-bearing without any rule saying so. Consumers
+// JSON.parse it after verifying the signature; the field list is published at
+// /v5/keys -> canonical_payload_spec.
+//
+// Honest about the real-time feed: this receipt does NOT query a halt feed
+// synchronously. The halt monitor runs on a one-minute cron and writes REALTIME
+// entries into ORACLE_OVERRIDES with a 2h TTL, and only for the MICs in
+// HALT_DETECTION_ACTIVE. So a feed observation reaches a receipt only through
+// the override tier — which is why it is named
+// `realtime_halt_feed_via_override` rather than `realtime_halt_feed`.
+
+type CoverageSource =
+	| 'manual_override_kv'                // ORACLE_OVERRIDES, Tier 0 (also carries REALTIME halt-monitor entries)
+	| 'schedule'                          // exchange calendar + session hours, Tier 1
+	| 'realtime_halt_feed_via_override'   // intraday halt feed, reaching us only via a REALTIME override
+	| 'realtime_halt_feed';               // the feed itself, named when it did NOT contribute
+
+interface ReceiptCoverage {
+	determination_tier:       0 | 1 | 2;
+	consulted:                CoverageSource[];
+	not_consulted:            CoverageSource[];
+	realtime_halt_feed_scope: string[];
+	unknown_reason:           UnknownReason | null;
+}
+
+// The MICs any intraday halt feed covers, sorted for a stable signature.
+const REALTIME_HALT_FEED_SCOPE = Array.from(HALT_DETECTION_ACTIVE).sort();
+
+function buildReceiptCoverage(
+	mic: string,
+	tier: 0 | 1 | 2,
+	unknownReason: UnknownReason | null,
+): ReceiptCoverage {
+	const feedCovers = HALT_DETECTION_ACTIVE.has(mic);
+	let consulted: CoverageSource[];
+	let notConsulted: CoverageSource[];
+
+	if (tier === 0) {
+		// An active override short-circuits before the schedule is read, so the
+		// schedule genuinely did not contribute to this verdict.
+		consulted    = ['manual_override_kv'];
+		notConsulted = ['schedule'];
+		if (feedCovers) consulted.push('realtime_halt_feed_via_override');
+		else notConsulted.push('realtime_halt_feed');
+	} else if (tier === 1) {
+		consulted    = ['manual_override_kv', 'schedule'];
+		notConsulted = [];
+		if (feedCovers) consulted.push('realtime_halt_feed_via_override');
+		else notConsulted.push('realtime_halt_feed');
+	} else {
+		// Tier 2 signs a fail-closed UNKNOWN after Tier 1 threw. We cannot say
+		// how far the determination got before it failed, so we claim nothing:
+		// everything is reported as not consulted. Over-claiming here would be
+		// the worst place in the system to do it.
+		consulted    = [];
+		notConsulted = ['manual_override_kv', 'schedule', 'realtime_halt_feed'];
+	}
+
+	return {
+		determination_tier:       tier,
+		consulted:                consulted.slice().sort(),
+		not_consulted:            notConsulted.slice().sort(),
+		realtime_halt_feed_scope: REALTIME_HALT_FEED_SCOPE,
+		unknown_reason:           unknownReason,
+	};
+}
+
+// The signed form: compact JSON with the object's keys in a fixed order, so the
+// bytes are reproducible by anyone rebuilding the receipt from the spec.
+function coverageField(coverage: ReceiptCoverage): string {
+	return JSON.stringify({
+		determination_tier:       coverage.determination_tier,
+		consulted:                coverage.consulted,
+		not_consulted:            coverage.not_consulted,
+		realtime_halt_feed_scope: coverage.realtime_halt_feed_scope,
+		unknown_reason:           coverage.unknown_reason,
+	});
 }
 
 interface MarketStatusResult {
 	status: StatusValue;
 	source: SourceValue;
+	// Why the verdict is UNKNOWN, when it is. Set only on UNKNOWN so an agent
+	// can tell "we have no calendar for this year" from "this MIC is not ours"
+	// without guessing. Surfaced in the signed coverage block.
+	reason?: UnknownReason;
 }
 
 function isInSession(
@@ -1424,7 +1541,7 @@ function isInSession(
 
 function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 	const config = MARKET_CONFIGS[mic];
-	if (!config) return { status: 'UNKNOWN', source: 'SCHEDULE' };
+	if (!config) return { status: 'UNKNOWN', source: 'SCHEDULE', reason: 'UNSUPPORTED_MIC' };
 
 	const { weekday, year, dateStr, hour, minute } = getLocalTimeParts(config.timezone, now);
 
@@ -1438,7 +1555,7 @@ function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 	// An agent cannot safely distinguish "no holidays" from "we forgot to update the list".
 	const yearHolidays = config.holidays[year];
 	if (!yearHolidays) {
-		return { status: 'UNKNOWN', source: 'SYSTEM' };
+		return { status: 'UNKNOWN', source: 'SYSTEM', reason: 'NO_HOLIDAY_DATA_FOR_YEAR' };
 	}
 
 	// Full holiday
@@ -2111,8 +2228,8 @@ const FREE_TRIAL_DAILY_LIMIT   = 3;     // Keyless trial: 3 real signed receipts
 //     resource/description/mimeType move OUT of accepts[] and become a single
 //     top-level "resource" ResourceInfo object on PaymentRequired.
 
-export const X402_NETWORK_V1   = 'base';           // v1 NetworkSchemaV1 — loose non-empty string
-export const X402_NETWORK_V2   = 'eip155:8453';    // v2 NetworkSchemaV2 — CAIP-2, Base mainnet
+const X402_NETWORK_V1   = 'base';           // v1 NetworkSchemaV1 — loose non-empty string
+const X402_NETWORK_V2   = 'eip155:8453';    // v2 NetworkSchemaV2 — CAIP-2, Base mainnet
 const X402_CHAIN_ID     = 8453;
 const X402_ASSET_DECIMALS = 6;              // USDC on Base
 const X402_MAX_TIMEOUT_SECONDS = 300;
@@ -2156,7 +2273,7 @@ export function x402AtomicToUsdc(atomic: string): string {
 type X402ResourceId = 'status' | 'batch';
 
 // One entry per paid resource. amountAtomic is the ONLY place a price is written.
-export const X402_RESOURCE_SPECS: Record<X402ResourceId, {
+const X402_RESOURCE_SPECS: Record<X402ResourceId, {
 	amountAtomic:       string;
 	defaultResourceUrl: string;
 	description:        string;
@@ -2323,7 +2440,35 @@ export function x402HeadersV2(c: X402Canonical, error: string, extensions?: Reco
 // Defined here, beside the canonical amount, and exported so the diff test can
 // assert that the email a real customer receives carries the current figure
 // rather than a literal someone forgot to update.
-export const X402_EMAIL_PRICE_LINE = `You can pay per-request with ${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC on Base mainnet — no subscription needed.`;
+const X402_EMAIL_PRICE_LINE = `You can pay per-request with ${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC on Base mainnet — no subscription needed.`;
+
+// ─── Test accessors ──────────────────────────────────────────────────────
+// The Workers runtime treats every named export of the entry module as a
+// potential entrypoint and rejects anything that is not a function or an
+// ExportedHandler:
+//   "Incorrect type for map entry 'X': the provided value is not of type
+//    'function or ExportedHandler'"
+// `wrangler deploy --dry-run` does NOT catch this — it only bundles — so an
+// exported const type-checks, bundles, passes the pre-commit gate, and then
+// fails the worker on start. Found 2026-09-07 by running `wrangler dev` while
+// building the T3 SDK check. Module constants therefore reach the test suite
+// through accessors, never as bare exports. The guard test
+// "every named export of the worker module is a function" pins this.
+export function x402ResourceSpecs(): typeof X402_RESOURCE_SPECS {
+	return X402_RESOURCE_SPECS;
+}
+
+export function x402Networks(): { v1: string; v2: string; chainId: number } {
+	return { v1: X402_NETWORK_V1, v2: X402_NETWORK_V2, chainId: X402_CHAIN_ID };
+}
+
+export function x402EmailPriceLine(): string {
+	return X402_EMAIL_PRICE_LINE;
+}
+
+export function planAllowances(): { builder: number; pro: number } {
+	return { builder: BUILDER_TIER_DAILY_LIMIT, pro: PRO_TIER_DAILY_LIMIT };
+}
 
 // Reads the x402 version a client's decoded payment payload declares.
 // Anything that is not an explicit 2 is treated as 1: the legacy client omits
@@ -2382,8 +2527,8 @@ const AGENT_UPGRADE_PATHS = {
 };
 const SANDBOX_DAILY_LIMIT      = 200;   // Sandbox keys: 200 calls per 7-day key lifetime — enough to evaluate without replacing credit pack
 const UNAUTH_MCP_STATUS_LIMIT  = 10;   // Unauthenticated get_market_status calls per IP per day via /mcp
-export const BUILDER_TIER_DAILY_LIMIT = 50_000;
-export const PRO_TIER_DAILY_LIMIT     = 200_000;
+const BUILDER_TIER_DAILY_LIMIT = 50_000;
+const PRO_TIER_DAILY_LIMIT     = 200_000;
 
 // ─── Plan allowances, stated once ─────────────────────────────────────────
 // P8, found 2026-09-01: src/index.ts stated the Builder allowance three ways —
@@ -9092,6 +9237,8 @@ async function buildSignedReceipt(
 						source:         'OVERRIDE',
 						reason:         override.reason,
 						halt_detection: getHaltDetection(mic),
+						// Tier 0: the override answered before the schedule was read.
+						coverage:       coverageField(buildReceiptCoverage(mic, 0, null)),
 						receipt_mode:   mode,
 						schema_version: 'v5.0',
 						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -9103,7 +9250,7 @@ async function buildSignedReceipt(
 		}
 
 		// ─ TIER 1: Normal schedule-based operation ───────────────────
-		const { status, source } = getScheduleStatus(mic, now);
+		const { status, source, reason: scheduleReason } = getScheduleStatus(mic, now);
 		const payload = {
 			receipt_id:     crypto.randomUUID(),
 			issued_at:      now.toISOString(),
@@ -9113,6 +9260,9 @@ async function buildSignedReceipt(
 			status,
 			source,
 			halt_detection: getHaltDetection(mic),
+			// Tier 1: override tier checked and empty, schedule decided. The
+			// reason is carried only when the schedule engine returned UNKNOWN.
+			coverage:       coverageField(buildReceiptCoverage(mic, 1, status === 'UNKNOWN' ? (scheduleReason ?? 'DETERMINATION_ERROR') : null)),
 			receipt_mode:   mode,
 			schema_version: 'v5.0',
 			public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -9135,6 +9285,9 @@ async function buildSignedReceipt(
 				status:         'UNKNOWN',
 				source:         'SYSTEM',
 				halt_detection: getHaltDetection(mic),
+				// Tier 2: Tier 1 threw. We cannot say how far the determination
+				// got, so the coverage block claims nothing was consulted.
+				coverage:       coverageField(buildReceiptCoverage(mic, 2, 'DETERMINATION_ERROR')),
 				receipt_mode:   mode,
 				schema_version: 'v5.0',
 				public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -11010,8 +11163,18 @@ export default {
 					}],
 					canonical_payload_spec: {
 						description:          'Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.',
-						receipt_fields:       ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
-						override_fields:      ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						// `coverage` (added 2026-09-07) is a JSON-encoded STRING in the signed
+						// bytes, like `cross_venue` / `reasons` below. Consumers JSON.parse it
+						// AFTER verifying the signature. It states what the verdict actually
+						// rests on: { determination_tier (0 = manual override, 1 = schedule,
+						// 2 = fail-closed fallback), consulted[], not_consulted[],
+						// realtime_halt_feed_scope[] (the only MICs any intraday halt feed
+						// covers), unknown_reason (null unless status is UNKNOWN) }. A verifier
+						// that builds the canonical payload from THIS list keeps working; one
+						// that hardcodes an older field list will not.
+						coverage_note:        'coverage is a JSON-encoded string inside the signed bytes; JSON.parse it after signature verification. determination_tier: 0 = manual override (KV), 1 = schedule, 2 = fail-closed fallback. realtime_halt_feed_scope names the only MICs with intraday halt detection; for every other MIC realtime_halt_feed appears in not_consulted. The receipt does not query a halt feed synchronously — feed observations reach it only as REALTIME entries in the override tier, which is why the consulted token is realtime_halt_feed_via_override.',
+						receipt_fields:       ['coverage', 'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
+						override_fields:      ['coverage', 'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
 						health_fields:        ['expires_at', 'issued_at', 'issuer', 'public_key_id', 'receipt_id', 'source', 'status'],
 						// safe-to-trade receipt (GET /v1/safe-to-trade) — circuit-breaker shape.
 						// cross_venue and reasons are JSON-encoded strings in the signed bytes

@@ -6,11 +6,11 @@ import worker, {
 	parseNasdaqHaltItems, ensureHaltArchiveSchema,
 	// x402 canonical requirements module (rail sprint T1, 2026-09-07)
 	x402Canonical, x402AtomicToUsdc, x402FacilitatorRequirements, x402PayloadVersion,
-	x402SettlementHeaders, X402_RESOURCE_SPECS, X402_EMAIL_PRICE_LINE,
+	x402SettlementHeaders, x402ResourceSpecs, x402EmailPriceLine,
 	buildX402IndexHeaders, buildMainnetFacilitatorPayload, buildX402ScanPayload,
 	x402Base64Decode, x402Base64Encode,
 	// plan-allowance module (rail sprint T2, 2026-09-07)
-	BUILDER_TIER_DAILY_LIMIT, PRO_TIER_DAILY_LIMIT, formatCallsCompact, getPlanDailyLimit,
+	planAllowances, formatCallsCompact, getPlanDailyLimit,
 } from '../src';
 
 // Clear module-level caches before every test so that tests which
@@ -13464,7 +13464,13 @@ describe('GET /v1/status/{MIC}', () => {
 		// canonical-bytes path inside /v1/status is identical to signPayload's.
 		const response = await fetchWorker('/v1/status/XNYS');
 		const body = await response.json() as Record<string, unknown>;
-		const CANONICAL = ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic',
+		// `coverage` added to the signed payload 2026-09-07 (rail sprint T3). It is
+		// a JSON-encoded STRING, so it reconstructs like every other field here.
+		// This list is a hardcoded mirror of /v5/keys -> canonical_payload_spec:
+		// updating it IS the compatibility contract this change carries. A
+		// verifier that reads the spec at runtime needed no change; one that
+		// hardcodes a field list, as this test does, must be updated in step.
+		const CANONICAL = ['coverage', 'receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic',
 			'status', 'source', 'halt_detection', 'receipt_mode', 'schema_version',
 			'public_key_id'];
 		const payload: Record<string, string> = {};
@@ -13676,6 +13682,14 @@ describe('Byte-parity — signer / in-repo verifier / SDK verifier all produce i
 		status:         'OPEN',
 		source:         'SCHEDULE',
 		halt_detection: 'schedule_only',
+		// `coverage` joined the signed payload 2026-09-07 (rail sprint T3). It is
+		// a JSON-encoded STRING — the same convention `cross_venue` and `reasons`
+		// already use on the safe-to-trade receipt — so all three canonicalization
+		// implementations treat it as an ordinary string field and byte parity is
+		// unaffected by its internal structure. That is exactly why it is encoded
+		// as a string rather than nested: a nested object would make its key ORDER
+		// load-bearing with no rule in the spec saying so.
+		coverage:       '{"determination_tier":1,"consulted":["manual_override_kv","schedule"],"not_consulted":["realtime_halt_feed"],"realtime_halt_feed_scope":["XNAS","XNYS"],"unknown_reason":null}',
 		receipt_mode:   'live',
 		schema_version: 'v5.0',
 		public_key_id:  'key_2026_v1',
@@ -13712,8 +13726,9 @@ describe('Byte-parity — signer / in-repo verifier / SDK verifier all produce i
 		return JSON.stringify(out);
 	}
 
+	// Mirrors /v5/keys -> canonical_payload_spec. `coverage` added 2026-09-07.
 	const ALLOWLIST = [
-		'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic',
+		'coverage', 'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic',
 		'public_key_id', 'reason', 'receipt_id', 'receipt_mode',
 		'schema_version', 'source', 'status',
 	];
@@ -13939,8 +13954,8 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 	// goes red. Driven red during the sprint by setting status.amountAtomic to
 	// '2000' — see CC_REPORT_2026-09-07_x402-v2-rail.md, T1 DoD.
 	describe('diff test — every surface agrees with the canonical object', () => {
-		const EXPECTED_USDC   = x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic);
-		const EXPECTED_ATOMIC = X402_RESOURCE_SPECS.status.amountAtomic;
+		const EXPECTED_USDC   = x402AtomicToUsdc(x402ResourceSpecs().status.amountAtomic);
+		const EXPECTED_ATOMIC = x402ResourceSpecs().status.amountAtomic;
 
 		it('v2 header and v1 body agree on price, asset, payTo and resource', () => {
 			const v2  = JSON.parse(x402Base64Decode(buildX402IndexHeaders(PAY_TO, 'status', RESOURCE)['Payment-Required']));
@@ -13977,7 +13992,7 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 			expect(x.amount_usdc).toBe(EXPECTED_USDC);
 			expect(x.asset).toBe(canonical().asset);
 			expect(x.network).toBe(canonical().networkV2);
-			expect(x.payment_endpoint).toBe(X402_RESOURCE_SPECS.status.defaultResourceUrl);
+			expect(x.payment_endpoint).toBe(x402ResourceSpecs().status.defaultResourceUrl);
 		});
 
 		it('the A2A agent card payment block carries the canonical amounts', async () => {
@@ -13985,7 +14000,7 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 			const pay   = agent.payment as Record<string, unknown>;
 			expect(pay.amount_per_request).toBe(`${EXPECTED_USDC} USDC`);
 			expect(pay.amount_units).toBe(EXPECTED_ATOMIC);
-			expect(pay.batch_amount_units).toBe(X402_RESOURCE_SPECS.batch.amountAtomic);
+			expect(pay.batch_amount_units).toBe(x402ResourceSpecs().batch.amountAtomic);
 			expect(pay.asset).toBe(canonical().asset);
 		});
 
@@ -13993,7 +14008,7 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 			// The sentence the customer actually receives, exported from the same
 			// module as the amount, so a price change cannot leave the welcome
 			// email quoting last month's figure.
-			expect(X402_EMAIL_PRICE_LINE).toContain(`${EXPECTED_USDC} USDC on Base mainnet`);
+			expect(x402EmailPriceLine()).toContain(`${EXPECTED_USDC} USDC on Base mainnet`);
 		});
 
 		it('atomic-to-USDC conversion is exact integer arithmetic', () => {
@@ -14097,15 +14112,15 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 // BUILDER_TIER_DAILY_LIMIT and any hardcoded "50,000" fails here.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('the Builder allowance is stated once', () => {
-	const EXPECTED_GROUPED = BUILDER_TIER_DAILY_LIMIT.toLocaleString('en-US'); // 50,000
-	const EXPECTED_COMPACT = `${BUILDER_TIER_DAILY_LIMIT / 1000}K`;            // 50K
-	const PRO_GROUPED      = PRO_TIER_DAILY_LIMIT.toLocaleString('en-US');     // 200,000
+	const EXPECTED_GROUPED = planAllowances().builder.toLocaleString('en-US'); // 50,000
+	const EXPECTED_COMPACT = `${planAllowances().builder / 1000}K`;            // 50K
+	const PRO_GROUPED      = planAllowances().pro.toLocaleString('en-US');     // 200,000
 
 	it('the enforced limit and the quoted figure are the same number', async () => {
 		// The contract a customer reads must be the contract the gate enforces.
 		// getPlanDailyLimit is what actually rate-limits the key.
-		expect(getPlanDailyLimit('builder')).toBe(BUILDER_TIER_DAILY_LIMIT);
-		expect(getPlanDailyLimit('pro')).toBe(PRO_TIER_DAILY_LIMIT);
+		expect(getPlanDailyLimit('builder')).toBe(planAllowances().builder);
+		expect(getPlanDailyLimit('pro')).toBe(planAllowances().pro);
 		const pricing = await fetchJSON('/v5/pricing');
 		const tiers   = pricing.tiers as Array<Record<string, unknown>>;
 		const builder = tiers.find(t => t.id === 'builder') as Record<string, unknown>;
@@ -14174,5 +14189,257 @@ describe('the Builder allowance is stated once', () => {
 		expect(formatCallsCompact(1_000_000)).toBe('1M');
 		expect(formatCallsCompact(50_500)).toBe('50,500');
 		expect(formatCallsCompact(999)).toBe('999');
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The coverage block in every signed receipt (rail sprint T3, 2026-09-07)
+//
+// A verdict does not say what was looked at to reach it. "CLOSED" from the
+// calendar and "CLOSED" because an operator tripped a circuit breaker are the
+// same four characters, and neither tells a consumer whether an intraday halt
+// would have been seen. For 26 of the 28 exchanges there is no intraday halt
+// feed at all.
+//
+// SPEC-CONFORMANCE NOTE: this ADDS a field to the Ed25519-signed payload. The
+// signature algorithm and canonicalization rule are unchanged — coverage is a
+// JSON-encoded string, the convention `cross_venue` and `reasons` already use.
+// A verifier that builds the canonical payload from /v5/keys ->
+// canonical_payload_spec keeps working with no change; one that hardcodes an
+// older field list does not, and the assertions below pin both halves of that.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('the coverage block — what a receipt actually consulted', () => {
+	type Coverage = {
+		determination_tier: number;
+		consulted: string[];
+		not_consulted: string[];
+		realtime_halt_feed_scope: string[];
+		unknown_reason: string | null;
+	};
+	const readCoverage = (receipt: Record<string, unknown>): Coverage => {
+		// It is a STRING in the signed bytes; consumers parse it after verifying.
+		expect(typeof receipt.coverage).toBe('string');
+		return JSON.parse(receipt.coverage as string) as Coverage;
+	};
+
+	it('/v5/demo carries a coverage block naming schedule as the determinant', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		const cov  = readCoverage(body);
+		expect(cov.determination_tier).toBe(1);
+		expect(cov.consulted).toContain('schedule');
+		expect(cov.consulted).toContain('manual_override_kv');
+		expect(cov.unknown_reason).toBeNull();
+	});
+
+	it('/v5/status (trial) carries the same block', async () => {
+		const ip     = '203.0.113.90';
+		const ipHash = await sha256Hex(ip);
+		const today  = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		try {
+			const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'CF-Connecting-IP': ip } });
+			expect(res.status).toBe(200);
+			const cov = readCoverage(await res.json() as Record<string, unknown>);
+			expect(cov.determination_tier).toBe(1);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
+	});
+
+	it('names the real-time halt feed as NOT consulted for the 26 exchanges it does not cover', async () => {
+		// XLON has no intraday halt feed. Saying so inside the signature is the
+		// whole point: a consumer can hold us to the scope we claimed.
+		const body = await fetchJSON('/v5/demo?mic=XLON');
+		const cov  = readCoverage(body);
+		expect(cov.not_consulted).toContain('realtime_halt_feed');
+		expect(cov.consulted).not.toContain('realtime_halt_feed_via_override');
+		expect(cov.realtime_halt_feed_scope).toEqual(['XNAS', 'XNYS']);
+	});
+
+	it('names the feed as consulted-via-override for the two exchanges it does cover', async () => {
+		for (const mic of ['XNYS', 'XNAS']) {
+			const cov = readCoverage(await fetchJSON(`/v5/demo?mic=${mic}`));
+			// Named "via_override" deliberately: the receipt does not query a feed
+			// synchronously. The halt monitor writes REALTIME entries into the
+			// override tier on a one-minute cron, and that is the only path by
+			// which a feed observation reaches a receipt.
+			expect(cov.consulted).toContain('realtime_halt_feed_via_override');
+			expect(cov.not_consulted).not.toContain('realtime_halt_feed');
+		}
+	});
+
+	it('a manual override is tier 0 and reports the schedule as NOT consulted', async () => {
+		const future = new Date(Date.now() + 3600_000).toISOString();
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({ status: 'HALTED', reason: 'coverage-block test', expires: future }));
+		clearOverrideCache();
+		try {
+			const body = await fetchJSON('/v5/demo?mic=XNYS');
+			expect(body.status).toBe('HALTED');
+			const cov = readCoverage(body);
+			// An active override short-circuits before the schedule is read, so
+			// claiming the schedule was consulted would be a false claim.
+			expect(cov.determination_tier).toBe(0);
+			expect(cov.consulted).toEqual(['manual_override_kv', 'realtime_halt_feed_via_override']);
+			expect(cov.not_consulted).toEqual(['schedule']);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+			clearOverrideCache();
+		}
+	});
+
+	it('the coverage block is INSIDE the signature — tampering with it invalidates the receipt', async () => {
+		// XLON deliberately: it is one of the 26 exchanges with no intraday feed,
+		// so the forgery below actually changes the bytes. On XNYS the same edit
+		// is a no-op (the feed genuinely IS consulted there) and the test would
+		// pass while proving nothing — which is how it was first written.
+		const body = await fetchJSON('/v5/demo?mic=XLON');
+		const res  = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ receipt: body }),
+		});
+		expect(((await res.json()) as Record<string, unknown>).valid).toBe(true);
+
+		// Now claim we consulted the halt feed when we did not — the exact lie
+		// this block exists to make impossible.
+		const forged = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+		const cov = JSON.parse(forged.coverage as string) as Coverage;
+		cov.not_consulted = [];
+		cov.consulted = ['manual_override_kv', 'realtime_halt_feed_via_override', 'schedule'];
+		forged.coverage = JSON.stringify(cov);
+		const res2 = await fetchWorker('/v5/verify', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ receipt: forged }),
+		});
+		const out2 = await res2.json() as Record<string, unknown>;
+		expect(out2.valid).toBe(false);
+		// Name the check that failed, not just the verdict: a `valid: false` that
+		// came from an expiry check would pass a bare assertion while proving
+		// nothing about whether coverage is inside the signature.
+		const checks = out2.checks as Record<string, { passed: boolean; detail: string }>;
+		expect(checks.signature.passed).toBe(false);
+		// And it is the SIGNATURE that failed, not schema/issuer/key/expiry —
+		// otherwise a bare `valid: false` would prove nothing about coverage.
+		expect(checks.schema.passed).toBe(true);
+		expect(checks.issuer.passed).toBe(true);
+		expect(checks.public_key.passed).toBe(true);
+	});
+
+	it('/v5/keys documents coverage in canonical_payload_spec for both receipt shapes', async () => {
+		const keys = await fetchJSON('/v5/keys');
+		const spec = keys.canonical_payload_spec as Record<string, unknown>;
+		expect(spec.receipt_fields).toContain('coverage');
+		expect(spec.override_fields).toContain('coverage');
+		// The note tells a consumer it is a JSON string, which they need before
+		// they can use it at all.
+		expect(String(spec.coverage_note)).toContain('JSON-encoded string');
+		expect(String(spec.coverage_note)).toContain('determination_tier');
+	});
+
+	it('a spec-driven verifier keeps working; a hardcoded-allowlist verifier does not', async () => {
+		// This is the compatibility contract of the change, asserted rather than
+		// asserted-about. Same receipt, two verifier strategies.
+		const receipt = await fetchJSON('/v5/demo?mic=XNYS');
+		const keys    = await fetchJSON('/v5/keys');
+		const spec    = keys.canonical_payload_spec as Record<string, string[]>;
+
+		const canonicalFrom = (fields: string[]): string => {
+			const out: Record<string, unknown> = {};
+			for (const k of fields.slice().sort()) if (k in receipt) out[k] = receipt[k];
+			return JSON.stringify(out);
+		};
+		const verify = async (bytes: string): Promise<boolean> => {
+			const ed  = await import('@noble/ed25519');
+			const hex = (h: string) => { const o = new Uint8Array(h.length / 2); for (let i = 0; i < h.length; i += 2) o[i / 2] = parseInt(h.substring(i, i + 2), 16); return o; };
+			const pub = await ed.getPublicKeyAsync(hex(env.ED25519_PRIVATE_KEY));
+			return ed.verifyAsync(hex(receipt.signature as string), new TextEncoder().encode(bytes), pub);
+		};
+
+		// Reads the field list from the spec at runtime — the documented way, and
+		// what @headlessoracle/verify does.
+		expect(await verify(canonicalFrom(spec.receipt_fields))).toBe(true);
+
+		// Hardcodes the pre-2026-09-07 field list. This MUST fail: it is the
+		// breaking half of the change, and pretending otherwise would hide it.
+		const STALE = ['expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic',
+			'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'];
+		expect(await verify(canonicalFrom(STALE))).toBe(false);
+	});
+
+	it('UNKNOWN carries a reason an operator can act on', async () => {
+		// A year with no holiday data is the fail-closed guard in getScheduleStatus.
+		// Without a reason token, an agent seeing UNKNOWN cannot tell a missing
+		// calendar from an unsupported venue from a determination that threw.
+		vi.setSystemTime(new Date('2099-06-15T14:00:00.000Z'));
+		try {
+			const body = await fetchJSON('/v5/demo?mic=XNYS');
+			expect(body.status).toBe('UNKNOWN');
+			const cov = readCoverage(body);
+			expect(cov.unknown_reason).toBe('NO_HOLIDAY_DATA_FOR_YEAR');
+			expect(cov.determination_tier).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('a non-UNKNOWN verdict carries unknown_reason: null, not an empty string', async () => {
+		// null is unambiguous; "" would make an agent guess whether the reason
+		// was absent or blank.
+		const cov = readCoverage(await fetchJSON('/v5/demo?mic=XNYS'));
+		expect(cov.unknown_reason).toBeNull();
+	});
+
+	it('coverage survives /v5/batch and the MCP tool unchanged', async () => {
+		const batch = await fetchJSON('/v5/batch?mics=XNYS,XLON', { headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
+		for (const r of batch.receipts as Record<string, unknown>[]) {
+			const cov = readCoverage(r);
+			expect(cov.realtime_halt_feed_scope).toEqual(['XNAS', 'XNYS']);
+		}
+		const mcp = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_market_status', arguments: { mic: 'XNYS' } } }),
+		});
+		const mcpBody = await mcp.json() as Record<string, unknown>;
+		expect(JSON.stringify(mcpBody)).toContain('determination_tier');
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module-export shape guard
+//
+// The Workers runtime treats every named export of the entry module as a
+// potential entrypoint and refuses to start on anything that is not a function
+// or an ExportedHandler:
+//   "Incorrect type for map entry 'BUILDER_TIER_DAILY_LIMIT': the provided
+//    value is not of type 'function or ExportedHandler'"
+//
+// `npx tsc --noEmit` and `npx wrangler deploy --dry-run` BOTH pass on such an
+// export — the dry run only bundles — so the pre-commit gate is green and the
+// worker dies on start. That happened on 2026-09-07: exporting a handful of
+// module constants for these tests would have taken production down on the
+// next deploy, and it was caught only because `wrangler dev` was run by hand
+// while building the T3 SDK check.
+//
+// This test is the gate the toolchain does not give us. Its red case is any
+// `export const` of a non-function value in src/index.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('module export shape — the Workers runtime rejects non-function exports', () => {
+	it('every named export of the worker module is a function', async () => {
+		const mod = await import('../src') as Record<string, unknown>;
+		const offenders: string[] = [];
+		for (const [name, value] of Object.entries(mod)) {
+			if (name === 'default') continue;           // the ExportedHandler
+			if (typeof value === 'function') continue;  // functions and classes
+			offenders.push(`${name}: ${value === null ? 'null' : typeof value}`);
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	it('the default export is an ExportedHandler with a fetch method', async () => {
+		const mod = await import('../src') as { default?: { fetch?: unknown } };
+		expect(typeof mod.default).toBe('object');
+		expect(typeof mod.default?.fetch).toBe('function');
 	});
 });
