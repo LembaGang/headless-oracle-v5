@@ -1453,23 +1453,148 @@ type CoverageSource =
 	| 'realtime_halt_feed_via_override'   // intraday halt feed, reaching us only via a REALTIME override
 	| 'realtime_halt_feed';               // the feed itself, named when it did NOT contribute
 
+// What the halt feed was doing at THIS determination — as distinct from
+// halt_detection, which says what is configured for this MIC and never changes
+// between requests. A receipt can honestly read halt_detection: "active" with
+// feed_state: "stale".
+type FeedState =
+	| 'live'         // heartbeat present, ok, within the freshness bound
+	| 'stale'        // heartbeat present and ok, but older than the bound
+	| 'failed'       // heartbeat present and reporting its own failure
+	| 'absent'       // no heartbeat: the monitor is not running, or KV lost it
+	| 'not_covered'; // this MIC is outside realtime_halt_feed_scope
+
 interface ReceiptCoverage {
 	determination_tier:       0 | 1 | 2;
 	consulted:                CoverageSource[];
 	not_consulted:            CoverageSource[];
 	realtime_halt_feed_scope: string[];
 	unknown_reason:           UnknownReason | null;
+	feed_state:               FeedState;
+	feed_last_run:            string | null;
+}
+
+// ─── The halt monitor's heartbeat ────────────────────────────────────────────
+//
+// The coverage block used to list `realtime_halt_feed_via_override` under
+// `consulted` for XNYS and XNAS whenever the override tier was READ. But an
+// empty override tier means one of three things a receipt could not tell
+// apart: no halt was observed; the monitor was not running; the monitor ran
+// and its source failed. Saying "the feed path was consulted" in the last two
+// is a claim with no evidence behind it — and this block exists precisely to
+// make false coverage claims impossible.
+//
+// So the monitor writes one key per run and the receipt cites it. The
+// heartbeat is NOT signed and is NOT a receipt; it is an input a receipt
+// quotes. The TTL is deliberately short: a dead cron makes the key vanish,
+// and "absent" is the honest state to report when nobody is watching.
+const HALT_MONITOR_HEARTBEAT_KEY = 'halt_monitor_heartbeat';
+// 10 minutes. Long enough that a couple of missed cron ticks do not erase the
+// record of the last good run; short enough that a stopped monitor stops
+// claiming anything within one operator coffee break.
+const HALT_MONITOR_HEARTBEAT_TTL_SECONDS = 600;
+// Three one-minute runs. Absorbs KV propagation delay and one late cron tick
+// without letting a genuinely dead monitor pass as live.
+const HALT_HEARTBEAT_FRESH_MS = 180_000;
+// A burst of receipts in one isolate should cost one KV read, not one each.
+// Freshness is still computed against the request's own clock, so memoising
+// the VALUE cannot make a stale heartbeat look live — only the read is saved.
+const HALT_HEARTBEAT_MEMO_TTL_MS = 15_000;
+
+interface HaltMonitorHeartbeat {
+	ran_at: string;
+	ok:     boolean;
+	source: string;
+	items:  number;
+	scope:  string[];
+}
+
+let _heartbeatMemo: { at: number; value: HaltMonitorHeartbeat | null } | null = null;
+
+// Test seam: the memo lives in module scope and outlives a single request, so
+// a test that writes a heartbeat must be able to invalidate it — the same
+// contract clearOverrideCache() has.
+export function clearHaltHeartbeatMemo(): void {
+	_heartbeatMemo = null;
+}
+
+async function readHaltHeartbeat(env: Env): Promise<HaltMonitorHeartbeat | null> {
+	const now = Date.now();
+	if (_heartbeatMemo && now - _heartbeatMemo.at < HALT_HEARTBEAT_MEMO_TTL_MS) {
+		return _heartbeatMemo.value;
+	}
+	let value: HaltMonitorHeartbeat | null = null;
+	try {
+		const raw = await env.ORACLE_TELEMETRY?.get(HALT_MONITOR_HEARTBEAT_KEY);
+		if (raw) {
+			const parsed = JSON.parse(raw) as Partial<HaltMonitorHeartbeat>;
+			// A malformed heartbeat is not evidence of anything. Treat it as
+			// absent rather than half-trusting it — fail-closed applies to the
+			// coverage claim exactly as it applies to the verdict.
+			if (typeof parsed.ran_at === 'string' && typeof parsed.ok === 'boolean') {
+				value = {
+					ran_at: parsed.ran_at,
+					ok:     parsed.ok,
+					source: typeof parsed.source === 'string' ? parsed.source : 'unknown',
+					items:  typeof parsed.items === 'number' ? parsed.items : 0,
+					scope:  Array.isArray(parsed.scope) ? parsed.scope : [],
+				};
+			}
+		}
+	} catch {
+		// KV unavailable or the value did not parse. `absent` is correct and
+		// safe: the receipt will decline to claim the feed was consulted.
+		value = null;
+	}
+	_heartbeatMemo = { at: now, value };
+	return value;
 }
 
 // The MICs any intraday halt feed covers, sorted for a stable signature.
 const REALTIME_HALT_FEED_SCOPE = Array.from(HALT_DETECTION_ACTIVE).sort();
 
-function buildReceiptCoverage(
+// `overrideSource` is the `source` of the Tier 0 override being reported, when
+// there is one. It matters because a REALTIME entry was written BY the monitor:
+// the override itself is the feed observation, so the feed genuinely did
+// contribute to that verdict. An operator's manual breaker is not a feed
+// observation and does not earn the token.
+async function buildReceiptCoverage(
 	mic: string,
+	env: Env,
 	tier: 0 | 1 | 2,
 	unknownReason: UnknownReason | null,
-): ReceiptCoverage {
+	now: Date,
+	overrideSource?: string,
+): Promise<ReceiptCoverage> {
 	const feedCovers = HALT_DETECTION_ACTIVE.has(mic);
+
+	// Derive what the feed was doing, from the monitor's own heartbeat. This is
+	// the whole point of T3b: reading an empty override tier is not evidence
+	// that anything was watching it.
+	let feedState: FeedState = 'not_covered';
+	let feedLastRun: string | null = null;
+	if (feedCovers) {
+		const beat = await readHaltHeartbeat(env);
+		if (!beat) {
+			feedState = 'absent';
+		} else {
+			feedLastRun = beat.ran_at;
+			const age = now.getTime() - Date.parse(beat.ran_at);
+			if (!beat.ok) feedState = 'failed';
+			// An unparseable ran_at is present but uninterpretable. `stale`
+			// states the timestamp and declines the claim, which is the safe
+			// direction; treating it as live would trust a value we cannot read.
+			else if (!Number.isFinite(age) || age > HALT_HEARTBEAT_FRESH_MS) feedState = 'stale';
+			else feedState = 'live';
+		}
+	}
+
+	// The feed is consulted only when we can cite a fresh successful run — or
+	// when the Tier 0 override we are reporting was written by the monitor
+	// itself, which is direct evidence it ran at that moment.
+	const feedConsulted = feedCovers
+		&& (feedState === 'live' || (tier === 0 && overrideSource === 'REALTIME'));
+
 	let consulted: CoverageSource[];
 	let notConsulted: CoverageSource[];
 
@@ -1478,21 +1603,23 @@ function buildReceiptCoverage(
 		// schedule genuinely did not contribute to this verdict.
 		consulted    = ['manual_override_kv'];
 		notConsulted = ['schedule'];
-		if (feedCovers) consulted.push('realtime_halt_feed_via_override');
-		else notConsulted.push('realtime_halt_feed');
 	} else if (tier === 1) {
 		consulted    = ['manual_override_kv', 'schedule'];
 		notConsulted = [];
-		if (feedCovers) consulted.push('realtime_halt_feed_via_override');
-		else notConsulted.push('realtime_halt_feed');
 	} else {
 		// Tier 2 signs a fail-closed UNKNOWN after Tier 1 threw. We cannot say
 		// how far the determination got before it failed, so we claim nothing:
 		// everything is reported as not consulted. Over-claiming here would be
 		// the worst place in the system to do it.
 		consulted    = [];
-		notConsulted = ['manual_override_kv', 'schedule', 'realtime_halt_feed'];
+		notConsulted = ['manual_override_kv', 'schedule'];
 	}
+
+	// Tier 2 claims nothing at all, including the feed — but it still STATES
+	// feed_state below, because a fail-closed receipt that names a dead feed is
+	// worth more than one that says nothing.
+	if (tier !== 2 && feedConsulted) consulted.push('realtime_halt_feed_via_override');
+	else notConsulted.push('realtime_halt_feed');
 
 	return {
 		determination_tier:       tier,
@@ -1500,6 +1627,8 @@ function buildReceiptCoverage(
 		not_consulted:            notConsulted.slice().sort(),
 		realtime_halt_feed_scope: REALTIME_HALT_FEED_SCOPE,
 		unknown_reason:           unknownReason,
+		feed_state:               feedState,
+		feed_last_run:            feedLastRun,
 	};
 }
 
@@ -1512,17 +1641,27 @@ function coverageField(coverage: ReceiptCoverage): string {
 		not_consulted:            coverage.not_consulted,
 		realtime_halt_feed_scope: coverage.realtime_halt_feed_scope,
 		unknown_reason:           coverage.unknown_reason,
+		// Appended after unknown_reason, in this order, and the order is part
+		// of the contract: the signed bytes must be reproducible by anyone
+		// rebuilding the receipt from the published spec.
+		feed_state:               coverage.feed_state,
+		feed_last_run:            coverage.feed_last_run,
 	});
 }
 
-interface MarketStatusResult {
-	status: StatusValue;
-	source: SourceValue;
-	// Why the verdict is UNKNOWN, when it is. Set only on UNKNOWN so an agent
-	// can tell "we have no calendar for this year" from "this MIC is not ours"
-	// without guessing. Surfaced in the signed coverage block.
-	reason?: UnknownReason;
-}
+// Why the verdict is UNKNOWN, when it is. Carried ONLY on UNKNOWN so an agent
+// can tell "we have no calendar for this year" from "this MIC is not ours"
+// without guessing. Surfaced in the signed coverage block.
+//
+// This is a discriminated union rather than an optional member on purpose: it
+// makes "UNKNOWN without a reason" unrepresentable, which is what lets the
+// receipt builder drop its `?? 'DETERMINATION_ERROR'` fallback. That fallback
+// could emit Tier 2's token from a Tier 1 determination — a receipt saying the
+// determination threw when it had not. Unreachable code that lies when reached
+// is worse than no code; the type now proves it cannot happen.
+type MarketStatusResult =
+	| { status: 'OPEN' | 'CLOSED' | 'HALTED'; source: SourceValue; reason?: undefined }
+	| { status: 'UNKNOWN'; source: SourceValue; reason: UnknownReason };
 
 function isInSession(
 	timeMinutes: number,
@@ -9238,6 +9377,9 @@ async function buildSignedReceipt(
 					status: string;
 					reason: string;
 					expires: string;
+					// REALTIME entries are written by runHaltMonitor; OVERRIDE
+					// entries by an operator. Only the first is a feed observation.
+					source?: string;
 				};
 				if (new Date(override.expires) > now) {
 					const payload = {
@@ -9251,7 +9393,7 @@ async function buildSignedReceipt(
 						reason:         override.reason,
 						halt_detection: getHaltDetection(mic),
 						// Tier 0: the override answered before the schedule was read.
-						coverage:       coverageField(buildReceiptCoverage(mic, 0, null)),
+						coverage:       coverageField(await buildReceiptCoverage(mic, env, 0, null, now, override.source)),
 						receipt_mode:   mode,
 						schema_version: 'v5.0',
 						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -9263,7 +9405,10 @@ async function buildSignedReceipt(
 		}
 
 		// ─ TIER 1: Normal schedule-based operation ───────────────────
-		const { status, source, reason: scheduleReason } = getScheduleStatus(mic, now);
+		// Not destructured: the UNKNOWN branch of MarketStatusResult carries a
+		// required `reason`, and only the un-destructured value narrows.
+		const sched = getScheduleStatus(mic, now);
+		const { status, source } = sched;
 		const payload = {
 			receipt_id:     crypto.randomUUID(),
 			issued_at:      now.toISOString(),
@@ -9274,8 +9419,12 @@ async function buildSignedReceipt(
 			source,
 			halt_detection: getHaltDetection(mic),
 			// Tier 1: override tier checked and empty, schedule decided. The
-			// reason is carried only when the schedule engine returned UNKNOWN.
-			coverage:       coverageField(buildReceiptCoverage(mic, 1, status === 'UNKNOWN' ? (scheduleReason ?? 'DETERMINATION_ERROR') : null)),
+			// reason is carried only when the schedule engine returned UNKNOWN,
+			// and the type guarantees there is one — no fallback token here,
+			// because emitting Tier 2's DETERMINATION_ERROR from a Tier 1
+			// determination would be a receipt claiming something that did not
+			// happen.
+			coverage:       coverageField(await buildReceiptCoverage(mic, env, 1, sched.status === 'UNKNOWN' ? sched.reason : null, now)),
 			receipt_mode:   mode,
 			schema_version: 'v5.0',
 			public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -9299,8 +9448,10 @@ async function buildSignedReceipt(
 				source:         'SYSTEM',
 				halt_detection: getHaltDetection(mic),
 				// Tier 2: Tier 1 threw. We cannot say how far the determination
-				// got, so the coverage block claims nothing was consulted.
-				coverage:       coverageField(buildReceiptCoverage(mic, 2, 'DETERMINATION_ERROR')),
+				// got, so the coverage block claims nothing was consulted — but
+				// it still states the feed's liveness, which a consumer needs
+				// most exactly when the determination failed.
+				coverage:       coverageField(await buildReceiptCoverage(mic, env, 2, 'DETERMINATION_ERROR', now)),
 				receipt_mode:   mode,
 				schema_version: 'v5.0',
 				public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
@@ -10113,6 +10264,10 @@ interface HaltMonitorResult {
 	halted:  boolean;   // true if real-time source says HALTED
 	source:  'polygon' | 'alpaca' | 'skipped' | 'schedule_only' | 'error';
 	error?:  string;
+	// Which half of the call failed. The heartbeat reports this so an operator
+	// can tell an upstream that is down from one that changed its response
+	// shape — two very different fixes.
+	fail_kind?: 'fetch_failed' | 'parse_failed';
 }
 
 // ─── Webhook subscriptions ────────────────────────────────────────────────────
@@ -10226,6 +10381,7 @@ async function runHaltMonitor(env: Env): Promise<void> {
 		let halted = false;
 		let source: HaltMonitorResult['source'] = 'error';
 		let errorMsg: string | undefined;
+		let failKind: HaltMonitorResult['fail_kind'];
 
 		// Polygon.io covers XNYS (nyse) and XNAS (nasdaq) only.
 		// No other exchange MICs are available via /v1/marketstatus/now.
@@ -10244,28 +10400,39 @@ async function runHaltMonitor(env: Env): Promise<void> {
 
 		// Primary: Polygon.io market status (covers XNYS and XNAS)
 		if (env.POLYGON_API_KEY) {
+			// Tracks which half of the call we are in, so the catch below can
+			// name the failure honestly instead of guessing.
+			let stage: 'fetch' | 'parse' = 'fetch';
 			try {
 				const polygonResp = await fetch(
 					`https://api.polygon.io/v1/marketstatus/now?apiKey=${env.POLYGON_API_KEY}`,
 					{ signal: AbortSignal.timeout(5000) },
 				);
 				if (polygonResp.ok) {
+					stage = 'parse';
 					const data = await polygonResp.json() as Record<string, unknown>;
 					const exchanges = data.exchanges as Record<string, string> | undefined;
 					const marketStatus = exchanges?.[polygonName] ?? data.market;
 					halted = typeof marketStatus === 'string' && marketStatus !== 'open';
 					source = 'polygon';
+				} else {
+					// A 4xx/5xx answered, so the transport worked and the
+					// upstream refused. Still a fetch-level failure to us.
+					failKind = 'fetch_failed';
+					errorMsg = `polygon_http_${polygonResp.status}`;
 				}
 			} catch (err) {
 				if (err instanceof Error && err.name === 'AbortError') {
 					console.log(JSON.stringify({ event: 'HALT_MONITOR_TIMEOUT', exchange: mic, source: 'polygon', timeout_ms: 5000 }));
 				}
+				failKind = stage === 'parse' ? 'parse_failed' : 'fetch_failed';
 				errorMsg = err instanceof Error ? err.message : 'polygon_fetch_failed';
 			}
 		}
 
 		// Fallback: Alpaca market clock (US markets only — runs when Polygon unavailable or fails)
 		if (source === 'error') {
+			let stage: 'fetch' | 'parse' = 'fetch';
 			try {
 				const alpacaResp = await fetch(
 					'https://paper-api.alpaca.markets/v2/clock',
@@ -10275,21 +10442,27 @@ async function runHaltMonitor(env: Env): Promise<void> {
 					},
 				);
 				if (alpacaResp.ok) {
+					stage = 'parse';
 					const clock = await alpacaResp.json() as { is_open?: boolean };
 					halted = clock.is_open === false;
 					source = 'alpaca';
+					failKind = undefined;
+				} else {
+					failKind = 'fetch_failed';
+					errorMsg = `alpaca_http_${alpacaResp.status}`;
 				}
 			} catch (err) {
 				if (err instanceof Error && err.name === 'AbortError') {
 					console.log(JSON.stringify({ event: 'HALT_MONITOR_TIMEOUT', exchange: mic, source: 'alpaca', timeout_ms: 5000 }));
 				}
+				failKind = stage === 'parse' ? 'parse_failed' : 'fetch_failed';
 				errorMsg = err instanceof Error ? err.message : 'alpaca_fetch_failed';
 			}
 		}
 
 		if (source === 'error') {
 			// Both Polygon and Alpaca failed — fail-open (do NOT write a HALTED override)
-			results.push({ mic, checked: true, halted: false, source: 'error', error: errorMsg });
+			results.push({ mic, checked: true, halted: false, source: 'error', error: errorMsg, fail_kind: failKind ?? 'fetch_failed' });
 			continue;
 		}
 
@@ -10336,9 +10509,44 @@ async function runHaltMonitor(env: Env): Promise<void> {
 		}
 	}
 
+	// ── The heartbeat the signed coverage block cites (rail sprint T3b) ──────
+	//
+	// Written on EVERY run, whether or not the fetch and parse succeeded: `ok:
+	// false` is a fact worth recording, not an error to swallow. TTL 600 s, so
+	// a stopped cron makes the key vanish and a receipt reports `absent` — the
+	// honest state when nobody is watching — rather than inheriting a claim
+	// from the last good run.
+	//
+	// Scope is the two covered MICs. A venue that was not in session was not
+	// queried, and cannot have an intraday halt to observe; the run still
+	// counts as successful, and `source: skipped_not_open` says so plainly so
+	// an operator is not left reading it as a real feed answer.
+	const coveredResults = results.filter((r) => HALT_DETECTION_ACTIVE.has(r.mic));
+	const answered = coveredResults.filter((r) => r.source === 'polygon' || r.source === 'alpaca');
+	const feedFailures = coveredResults.filter((r) => r.checked && r.source === 'error');
+	const heartbeat = {
+		ran_at: now.toISOString(),
+		ok:     feedFailures.length === 0,
+		source: feedFailures.length > 0
+			? (feedFailures[0].fail_kind ?? 'fetch_failed')
+			: (answered.length > 0 ? answered[0].source : 'skipped_not_open'),
+		items:  answered.length,
+		scope:  REALTIME_HALT_FEED_SCOPE,
+	};
+	try {
+		await env.ORACLE_TELEMETRY.put(HALT_MONITOR_HEARTBEAT_KEY, JSON.stringify(heartbeat), {
+			expirationTtl: HALT_MONITOR_HEARTBEAT_TTL_SECONDS,
+		});
+	} catch (err) {
+		// Best-effort. A failed heartbeat write must not stop the monitor, and
+		// it degrades the receipt to `absent` — the safe direction.
+		console.error(`HALT_MONITOR_HEARTBEAT_WRITE_FAILED: ${err instanceof Error ? err.message : 'unknown'}`);
+	}
+
 	console.log(JSON.stringify({
 		event:          'HALT_MONITOR_RUN',
 		timestamp:      now.toISOString(),
+		heartbeat,
 		exchanges_checked: results.filter((r) => r.checked).length,
 		halts_detected: results.filter((r) => r.halted).length,
 		results:        results.map((r) => ({ mic: r.mic, checked: r.checked, halted: r.halted, source: r.source, error: r.error })),
@@ -11185,7 +11393,7 @@ export default {
 						// covers), unknown_reason (null unless status is UNKNOWN) }. A verifier
 						// that builds the canonical payload from THIS list keeps working; one
 						// that hardcodes an older field list will not.
-						coverage_note:        'coverage is a JSON-encoded string inside the signed bytes; JSON.parse it after signature verification. determination_tier: 0 = manual override (KV), 1 = schedule, 2 = fail-closed fallback. realtime_halt_feed_scope names the only MICs with intraday halt detection; for every other MIC realtime_halt_feed appears in not_consulted. The receipt does not query a halt feed synchronously — feed observations reach it only as REALTIME entries in the override tier, which is why the consulted token is realtime_halt_feed_via_override.',
+						coverage_note:        'coverage is a JSON-encoded string inside the signed bytes; JSON.parse it after signature verification. determination_tier: 0 = manual override (KV), 1 = schedule, 2 = fail-closed fallback. realtime_halt_feed_scope names the only MICs with intraday halt detection; for every other MIC realtime_halt_feed appears in not_consulted. The receipt does not query a halt feed synchronously — feed observations reach it only as REALTIME entries in the override tier, which is why the consulted token is realtime_halt_feed_via_override. halt_detection says what is configured for this MIC; coverage.feed_state says what was live at this determination (live | stale | failed | absent | not_covered), and feed_last_run gives the timestamp of that monitor run, so a receipt may honestly read halt_detection active with feed_state stale. The feed appears under consulted only when a fresh successful monitor run can be cited.',
 						receipt_fields:       ['coverage', 'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
 						override_fields:      ['coverage', 'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'reason', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'],
 						health_fields:        ['expires_at', 'issued_at', 'issuer', 'public_key_id', 'receipt_id', 'source', 'status'],
@@ -13286,9 +13494,9 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 				let sXnysOpen:   MarketStatusResult;
 				let sXnysClosed: MarketStatusResult;
 				let sXjpxLunch:  MarketStatusResult;
-				try { sXnysOpen   = getScheduleStatus('XNYS', tXnysOpen);  } catch { sXnysOpen   = { status: 'UNKNOWN', source: 'SYSTEM' }; }
-				try { sXnysClosed = getScheduleStatus('XNYS', tXnysClosed); } catch { sXnysClosed = { status: 'UNKNOWN', source: 'SYSTEM' }; }
-				try { sXjpxLunch  = getScheduleStatus('XJPX', tXjpxLunch); } catch { sXjpxLunch  = { status: 'UNKNOWN', source: 'SYSTEM' }; }
+				try { sXnysOpen   = getScheduleStatus('XNYS', tXnysOpen);  } catch { sXnysOpen   = { status: 'UNKNOWN', source: 'SYSTEM', reason: 'DETERMINATION_ERROR' }; }
+				try { sXnysClosed = getScheduleStatus('XNYS', tXnysClosed); } catch { sXnysClosed = { status: 'UNKNOWN', source: 'SYSTEM', reason: 'DETERMINATION_ERROR' }; }
+				try { sXjpxLunch  = getScheduleStatus('XJPX', tXjpxLunch); } catch { sXjpxLunch  = { status: 'UNKNOWN', source: 'SYSTEM', reason: 'DETERMINATION_ERROR' }; }
 
 				const cvBase = {
 					issued_at:      cvIssuedAt,

@@ -11,6 +11,8 @@ import worker, {
 	x402Base64Decode, x402Base64Encode,
 	// plan-allowance module (rail sprint T2, 2026-09-07)
 	planAllowances, formatCallsCompact, getPlanDailyLimit,
+	// halt-monitor heartbeat memo (rail sprint T3b, 2026-09-07)
+	clearHaltHeartbeatMemo,
 } from '../src';
 
 // Clear module-level caches before every test so that tests which
@@ -36,6 +38,7 @@ import worker, {
 let __testEnvOriginalFetch: typeof globalThis.fetch | undefined;
 beforeEach(() => {
 	clearOverrideCache();
+	clearHaltHeartbeatMemo();
 	clearApiKeyCache();
 	__testEnvOriginalFetch = globalThis.fetch;
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -13689,7 +13692,7 @@ describe('Byte-parity — signer / in-repo verifier / SDK verifier all produce i
 		// unaffected by its internal structure. That is exactly why it is encoded
 		// as a string rather than nested: a nested object would make its key ORDER
 		// load-bearing with no rule in the spec saying so.
-		coverage:       '{"determination_tier":1,"consulted":["manual_override_kv","schedule"],"not_consulted":["realtime_halt_feed"],"realtime_halt_feed_scope":["XNAS","XNYS"],"unknown_reason":null}',
+		coverage:       '{"determination_tier":1,"consulted":["manual_override_kv","schedule"],"not_consulted":["realtime_halt_feed"],"realtime_halt_feed_scope":["XNAS","XNYS"],"unknown_reason":null,"feed_state":"not_covered","feed_last_run":null}',
 		receipt_mode:   'live',
 		schema_version: 'v5.0',
 		public_key_id:  'key_2026_v1',
@@ -14339,15 +14342,21 @@ describe('the coverage block — what a receipt actually consulted', () => {
 		expect(cov.realtime_halt_feed_scope).toEqual(['XNAS', 'XNYS']);
 	});
 
-	it('names the feed as consulted-via-override for the two exchanges it does cover', async () => {
+	it('does NOT claim the feed for the two covered exchanges without a live heartbeat', async () => {
+		// CHANGED BY T3b (2026-09-07). This test used to assert the opposite —
+		// that XNYS and XNAS always carry `realtime_halt_feed_via_override`
+		// under `consulted`. That was the defect: it held whenever the override
+		// tier was merely READ, so a receipt claimed the feed path was consulted
+		// even when the monitor was dead. Coverage for those two MICs is now
+		// conditional on a fresh successful heartbeat, and there is none in this
+		// environment. The full state machine is asserted in "the coverage block
+		// cites the halt monitor heartbeat".
 		for (const mic of ['XNYS', 'XNAS']) {
 			const cov = readCoverage(await fetchJSON(`/v5/demo?mic=${mic}`));
-			// Named "via_override" deliberately: the receipt does not query a feed
-			// synchronously. The halt monitor writes REALTIME entries into the
-			// override tier on a one-minute cron, and that is the only path by
-			// which a feed observation reaches a receipt.
-			expect(cov.consulted).toContain('realtime_halt_feed_via_override');
-			expect(cov.not_consulted).not.toContain('realtime_halt_feed');
+			expect(cov.consulted).not.toContain('realtime_halt_feed_via_override');
+			expect(cov.not_consulted).toContain('realtime_halt_feed');
+			// Still in scope — the feed covers this MIC; it just was not live.
+			expect(cov.realtime_halt_feed_scope).toContain(mic);
 		}
 	});
 
@@ -14362,8 +14371,11 @@ describe('the coverage block — what a receipt actually consulted', () => {
 			// An active override short-circuits before the schedule is read, so
 			// claiming the schedule was consulted would be a false claim.
 			expect(cov.determination_tier).toBe(0);
-			expect(cov.consulted).toEqual(['manual_override_kv', 'realtime_halt_feed_via_override']);
-			expect(cov.not_consulted).toEqual(['schedule']);
+			// CHANGED BY T3b: this override has no `source: REALTIME`, so it is
+			// an operator's manual breaker, not a feed observation — and with no
+			// heartbeat the feed earns no token at all.
+			expect(cov.consulted).toEqual(['manual_override_kv']);
+			expect(cov.not_consulted).toEqual(['realtime_halt_feed', 'schedule']);
 		} finally {
 			await env.ORACLE_OVERRIDES.delete('XNYS');
 			clearOverrideCache();
@@ -14486,6 +14498,275 @@ describe('the coverage block — what a receipt actually consulted', () => {
 		});
 		const mcpBody = await mcp.json() as Record<string, unknown>;
 		expect(JSON.stringify(mcpBody)).toContain('determination_tier');
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The feed token cites the halt monitor's heartbeat (rail sprint T3b, 2026-09-07)
+//
+// T3 listed `realtime_halt_feed_via_override` under `consulted` for XNYS and
+// XNAS whenever the override tier was READ. But an empty override tier means
+// one of three things a receipt could not tell apart: no halt was observed;
+// the monitor was not running; the monitor ran and its source failed. Claiming
+// "the feed path was consulted" in the last two is a claim with no evidence
+// behind it — exactly the kind of false coverage claim this block exists to
+// make impossible.
+//
+// So the monitor now writes a heartbeat on every run, and a receipt lists the
+// feed under `consulted` only when it can cite a fresh, successful one.
+// Otherwise the feed is `not_consulted` and the receipt says why, inside the
+// signature. Two members join the coverage string after `unknown_reason`:
+// `feed_state` (live | stale | failed | absent | not_covered) and
+// `feed_last_run`.
+//
+// SPEC-CONFORMANCE NOTE: still one signed field (`coverage`), still a
+// JSON-encoded string, still the same canonicalization. What changed is what
+// the string says. No existing field was altered.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('the coverage block cites the halt monitor heartbeat', () => {
+	type Coverage = {
+		determination_tier: number;
+		consulted: string[];
+		not_consulted: string[];
+		realtime_halt_feed_scope: string[];
+		unknown_reason: string | null;
+		feed_state: string;
+		feed_last_run: string | null;
+	};
+	const readCoverage = (receipt: Record<string, unknown>): Coverage => {
+		expect(typeof receipt.coverage).toBe('string');
+		return JSON.parse(receipt.coverage as string) as Coverage;
+	};
+
+	const putHeartbeat = async (beat: Record<string, unknown>): Promise<void> => {
+		await env.ORACLE_TELEMETRY.put('halt_monitor_heartbeat', JSON.stringify(beat));
+		clearHaltHeartbeatMemo();
+	};
+	const dropHeartbeat = async (): Promise<void> => {
+		await env.ORACLE_TELEMETRY.delete('halt_monitor_heartbeat');
+		clearHaltHeartbeatMemo();
+	};
+
+	afterEach(async () => { await dropHeartbeat(); });
+
+	// (a)
+	it('a fresh successful heartbeat puts the feed under consulted, feed_state live', async () => {
+		const ranAt = new Date(Date.now() - 30_000).toISOString();
+		await putHeartbeat({ ran_at: ranAt, ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const cov = readCoverage(await fetchJSON('/v5/demo?mic=XNYS'));
+		expect(cov.feed_state).toBe('live');
+		expect(cov.feed_last_run).toBe(ranAt);
+		expect(cov.consulted).toContain('realtime_halt_feed_via_override');
+		expect(cov.not_consulted).not.toContain('realtime_halt_feed');
+	});
+
+	// (b)
+	it('a heartbeat older than the 180s bound is stale — the feed moves to not_consulted', async () => {
+		// Ten minutes: the bound is three one-minute runs, so this is unambiguous.
+		const ranAt = new Date(Date.now() - 600_000).toISOString();
+		await putHeartbeat({ ran_at: ranAt, ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const cov = readCoverage(await fetchJSON('/v5/demo?mic=XNYS'));
+		expect(cov.feed_state).toBe('stale');
+		// The last run is still stated: "we know when it last ran, and it was
+		// too long ago" is strictly more useful than silence.
+		expect(cov.feed_last_run).toBe(ranAt);
+		expect(cov.not_consulted).toContain('realtime_halt_feed');
+		expect(cov.consulted).not.toContain('realtime_halt_feed_via_override');
+	});
+
+	// (c)
+	it('a heartbeat that reports its own failure is failed, not live', async () => {
+		// The monitor ran within the bound but its upstream did not answer. A
+		// receipt calling that "consulted" would claim coverage that
+		// demonstrably did not exist at that moment.
+		const ranAt = new Date(Date.now() - 20_000).toISOString();
+		await putHeartbeat({ ran_at: ranAt, ok: false, source: 'fetch_failed', items: 0, scope: ['XNAS', 'XNYS'] });
+		const cov = readCoverage(await fetchJSON('/v5/demo?mic=XNYS'));
+		expect(cov.feed_state).toBe('failed');
+		expect(cov.feed_last_run).toBe(ranAt);
+		expect(cov.not_consulted).toContain('realtime_halt_feed');
+		expect(cov.consulted).not.toContain('realtime_halt_feed_via_override');
+	});
+
+	// (d)
+	it('no heartbeat at all is absent — a dead cron makes the key vanish, which is the honest state', async () => {
+		await dropHeartbeat();
+		const cov = readCoverage(await fetchJSON('/v5/demo?mic=XNYS'));
+		expect(cov.feed_state).toBe('absent');
+		expect(cov.feed_last_run).toBeNull();
+		expect(cov.not_consulted).toContain('realtime_halt_feed');
+		expect(cov.consulted).not.toContain('realtime_halt_feed_via_override');
+	});
+
+	// (e)
+	it('an exchange outside the feed scope is not_covered even with a live heartbeat', async () => {
+		await putHeartbeat({ ran_at: new Date(Date.now() - 5_000).toISOString(), ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const cov = readCoverage(await fetchJSON('/v5/demo?mic=XLON'));
+		// A live monitor for XNYS says nothing about XLON. Token placement is
+		// unchanged from T3 — what is new is that the receipt now names WHY.
+		expect(cov.feed_state).toBe('not_covered');
+		expect(cov.feed_last_run).toBeNull();
+		expect(cov.not_consulted).toContain('realtime_halt_feed');
+		expect(cov.consulted).not.toContain('realtime_halt_feed_via_override');
+	});
+
+	// (f)
+	it('Tier 2 claims nothing but still states the feed state', async () => {
+		// Force Tier 1 to throw by making the override tier unparseable: the
+		// JSON.parse in the Tier 0 block sits outside any inner try, so it
+		// lands in the fail-closed catch. No mocking of internals required.
+		await putHeartbeat({ ran_at: new Date(Date.now() - 10_000).toISOString(), ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		await env.ORACLE_OVERRIDES.put('XNYS', 'this is not json');
+		clearOverrideCache();
+		try {
+			const body = await fetchJSON('/v5/demo?mic=XNYS');
+			expect(body.status).toBe('UNKNOWN');
+			const cov = readCoverage(body);
+			expect(cov.determination_tier).toBe(2);
+			expect(cov.consulted).toEqual([]);
+			expect(cov.unknown_reason).toBe('DETERMINATION_ERROR');
+			// A fail-closed receipt that names the feed's state — live here — is
+			// worth more than one that says nothing.
+			expect(cov.feed_state).toBe('live');
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+			clearOverrideCache();
+		}
+	});
+
+	// Tier 0 driven by the monitor itself: the override IS the feed observation.
+	it('a REALTIME override is itself the feed observation and is consulted as such', async () => {
+		await putHeartbeat({ ran_at: new Date(Date.now() - 15_000).toISOString(), ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const future = new Date(Date.now() + 3600_000).toISOString();
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({ status: 'HALTED', source: 'REALTIME', reason: 'halt monitor', expires: future }));
+		clearOverrideCache();
+		try {
+			const cov = readCoverage(await fetchJSON('/v5/demo?mic=XNYS'));
+			expect(cov.determination_tier).toBe(0);
+			expect(cov.consulted).toContain('realtime_halt_feed_via_override');
+			expect(cov.feed_state).toBe('live');
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+			clearOverrideCache();
+		}
+	});
+
+	it('a MANUAL tier-0 override does not borrow the feed token from a stale monitor', async () => {
+		// An operator tripping a breaker is not a feed observation. With the
+		// monitor stale, this receipt must not claim the feed was consulted.
+		await putHeartbeat({ ran_at: new Date(Date.now() - 600_000).toISOString(), ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const future = new Date(Date.now() + 3600_000).toISOString();
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({ status: 'HALTED', source: 'OVERRIDE', reason: 'operator', expires: future }));
+		clearOverrideCache();
+		try {
+			const cov = readCoverage(await fetchJSON('/v5/demo?mic=XNYS'));
+			expect(cov.determination_tier).toBe(0);
+			expect(cov.feed_state).toBe('stale');
+			expect(cov.consulted).toEqual(['manual_override_kv']);
+			expect(cov.not_consulted).toEqual(['realtime_halt_feed', 'schedule']);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+			clearOverrideCache();
+		}
+	});
+
+	// (g)
+	it('the two new members are inside the signature — forging feed_state invalidates the receipt', async () => {
+		// The lie this guards against: a stale monitor, and a receipt edited to
+		// say the feed was live. If feed_state sat outside the signed bytes,
+		// that edit would be free.
+		await putHeartbeat({ ran_at: new Date(Date.now() - 600_000).toISOString(), ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(readCoverage(body).feed_state).toBe('stale');
+
+		const ok = await fetchWorker('/v5/verify', {
+			method: 'POST', headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt: body }),
+		});
+		expect(((await ok.json()) as Record<string, unknown>).valid).toBe(true);
+
+		const forged = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+		const cov = JSON.parse(forged.coverage as string) as Coverage;
+		cov.feed_state = 'live';
+		cov.consulted = ['manual_override_kv', 'realtime_halt_feed_via_override', 'schedule'];
+		cov.not_consulted = [];
+		forged.coverage = JSON.stringify(cov);
+		const res2 = await fetchWorker('/v5/verify', {
+			method: 'POST', headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ receipt: forged }),
+		});
+		const out2 = await res2.json() as Record<string, unknown>;
+		expect(out2.valid).toBe(false);
+		// Name the check that failed: a valid:false from an expiry check would
+		// pass a bare assertion while proving nothing.
+		const checks = out2.checks as Record<string, { passed: boolean }>;
+		expect(checks.signature.passed).toBe(false);
+		expect(checks.schema.passed).toBe(true);
+		expect(checks.issuer.passed).toBe(true);
+		expect(checks.public_key.passed).toBe(true);
+	});
+
+	// (i)
+	it('/v5/keys coverage_note separates what is configured from what was live', async () => {
+		const keys = await fetchJSON('/v5/keys');
+		const spec = keys.canonical_payload_spec as Record<string, unknown>;
+		const note = String(spec.coverage_note);
+		expect(note).toContain('feed_state');
+		expect(note).toContain('halt_detection');
+		// The distinction a consumer has to understand before they can read
+		// either field correctly.
+		expect(note).toContain('configured');
+		expect(note).toContain('live at this determination');
+		expect(note).toContain('feed_last_run');
+	});
+
+	// (j)
+	it('the heartbeat read is memoised — a burst of receipts costs one KV get', async () => {
+		await putHeartbeat({ ran_at: new Date(Date.now() - 10_000).toISOString(), ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const spy = vi.spyOn(env.ORACLE_TELEMETRY, 'get');
+		try {
+			await fetchJSON('/v5/demo?mic=XNYS');
+			await fetchJSON('/v5/demo?mic=XNAS');
+			await fetchJSON('/v5/demo?mic=XNYS');
+			const heartbeatReads = spy.mock.calls.filter((c) => c[0] === 'halt_monitor_heartbeat').length;
+			expect(heartbeatReads).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	// The order of the two new members is fixed, like every other member: the
+	// signed bytes must be reproducible by anyone rebuilding from the spec.
+	it('feed_state and feed_last_run come after unknown_reason, in that order', async () => {
+		await putHeartbeat({ ran_at: new Date(Date.now() - 10_000).toISOString(), ok: true, source: 'polygon', items: 2, scope: ['XNAS', 'XNYS'] });
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(Object.keys(JSON.parse(body.coverage as string) as Record<string, unknown>)).toEqual([
+			'determination_tier', 'consulted', 'not_consulted',
+			'realtime_halt_feed_scope', 'unknown_reason', 'feed_state', 'feed_last_run',
+		]);
+	});
+
+	// The monitor's side of the contract: it writes what the receipt reads.
+	it('runHaltMonitor writes a heartbeat the receipt path can read', async () => {
+		await dropHeartbeat();
+		const origFetch = globalThis.fetch;
+		globalThis.fetch = (async () => new Response(JSON.stringify({ market: 'open', exchanges: { nyse: 'open', nasdaq: 'open' } }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof globalThis.fetch;
+		try {
+			const ctl = createScheduledController({ scheduled: Date.now(), cron: '* * * * *' });
+			const ctx = createExecutionContext();
+			await worker.scheduled!(ctl, env, ctx);
+			await waitOnExecutionContext(ctx);
+			const raw = await env.ORACLE_TELEMETRY.get('halt_monitor_heartbeat');
+			expect(raw).not.toBeNull();
+			const beat = JSON.parse(raw as string) as Record<string, unknown>;
+			expect(typeof beat.ran_at).toBe('string');
+			expect(typeof beat.ok).toBe('boolean');
+			expect(beat.scope).toEqual(['XNAS', 'XNYS']);
+			expect(Number.isInteger(beat.items)).toBe(true);
+		} finally {
+			globalThis.fetch = origFetch;
+			await dropHeartbeat();
+		}
 	});
 });
 
