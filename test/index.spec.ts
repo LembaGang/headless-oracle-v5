@@ -4,6 +4,11 @@ import worker, {
 	edgeCaseCount, clearOverrideCache, clearApiKeyCache, getISOWeek, signPayload,
 	clearHaltArchiveSchemaCache, runHaltArchiveCapture, buildHaltArchiveDigest,
 	parseNasdaqHaltItems, ensureHaltArchiveSchema,
+	// x402 canonical requirements module (rail sprint T1, 2026-09-07)
+	x402Canonical, x402AtomicToUsdc, x402FacilitatorRequirements, x402PayloadVersion,
+	x402SettlementHeaders, X402_RESOURCE_SPECS, X402_EMAIL_PRICE_LINE,
+	buildX402IndexHeaders, buildMainnetFacilitatorPayload, buildX402ScanPayload,
+	x402Base64Decode, x402Base64Encode,
 } from '../src';
 
 // Clear module-level caches before every test so that tests which
@@ -5062,11 +5067,23 @@ describe('x402 — payment verification', () => {
 			expect(res.status).toBe(402);
 			const prHeader = res.headers.get('Payment-Required');
 			expect(prHeader).toBeTruthy();
-			const decoded = JSON.parse(atob(prHeader!));
-			expect(decoded.x402Version).toBe(1);
+			// CONTRACT CHANGED 2026-09-07 (rail sprint T1). This assertion used to
+			// require x402Version 1 and network 'base' in the HEADER. That was the
+			// defect, not the contract: the header declared v1 while carrying the
+			// v2 field name `amount` and no resource/description, so it matched
+			// neither schema and a stock @x402/fetch 2.20.0 client could not pay
+			// (RAIL_T0_2026-09-07.md E5). The header is now schema-valid v2; the
+			// v1 representation lives in the BODY, asserted below.
+			const decoded = JSON.parse(x402Base64Decode(prHeader!));
+			expect(decoded.x402Version).toBe(2);
 			expect(decoded.accepts).toBeInstanceOf(Array);
-			expect(decoded.accepts[0].network).toBe('base');
+			expect(decoded.accepts[0].network).toBe('eip155:8453');
 			expect(decoded.accepts[0].asset).toBe('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+			expect(decoded.resource.url).toContain('/v5/status');
+			// The body a v1 client reads still says version 1 with 'base'.
+			const v1body = await res.json() as Record<string, unknown>;
+			expect(v1body.x402Version).toBe(1);
+			expect((v1body.accepts as Record<string, unknown>[])[0].network).toBe('base');
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
@@ -7698,10 +7715,19 @@ describe('x402 — end-to-end payment flow', () => {
 		try {
 			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Payment': mockPaymentHeader } });
 			expect(res.status).toBe(200);
-			const prHeader = res.headers.get('Payment-Response');
+			// CONTRACT CHANGED 2026-09-07 (rail sprint T1). The payer here sends a
+			// v1 payload, so the settlement comes back under the v1 header name
+			// X-PAYMENT-RESPONSE, base64-encoded, per x402 transports-v2/http.md
+			// and getPaymentSettleResponse in @x402/core 2.20.0. The old contract
+			// sent the v2 name with an unencoded body: a v1 client looking for
+			// X-PAYMENT-RESPONSE saw nothing and reported a settled payment as
+			// "Payment response header not found".
+			expect(res.headers.get('Payment-Response')).toBeNull();
+			const prHeader = res.headers.get('X-Payment-Response');
 			expect(prHeader).toBeTruthy();
-			const pr = JSON.parse(prHeader!);
-			expect(pr.status).toBe('payment-accepted');
+			const pr = JSON.parse(x402Base64Decode(prHeader!));
+			expect(pr.success).toBe(true);
+			expect(pr.transaction).toBe('0xe2e_pr_test');
 			expect(pr.network).toBe('base');
 		} finally {
 			globalThis.fetch = originalFetch;
@@ -9475,7 +9501,12 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			expect(actions).toHaveProperty('mint_persistent_key');
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
-			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
+			// CONTRACT CHANGED 2026-09-07 (rail sprint T1): the scalar 'base64-json'
+			// under-declared what the worker accepts. verifyPaymentAnyFormat takes
+			// raw JSON as well, and buildX402ScanPayload already advertised the
+			// array — two builders declaring different encodings for the same
+			// header is the drift the canonical object removes.
+			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', ['base64-json', 'json']);
 		} finally {
 			delete (env as unknown as Record<string, string>).X402_ENABLED;
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
@@ -9498,7 +9529,12 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 			expect(actions).toHaveProperty('mint_persistent_key');
 			const accepts = body.accepts as Array<Record<string, unknown>>;
 			expect(accepts[0]).toHaveProperty('paymentHeaderName', 'X-Payment');
-			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', 'base64-json');
+			// CONTRACT CHANGED 2026-09-07 (rail sprint T1): the scalar 'base64-json'
+			// under-declared what the worker accepts. verifyPaymentAnyFormat takes
+			// raw JSON as well, and buildX402ScanPayload already advertised the
+			// array — two builders declaring different encodings for the same
+			// header is the drift the canonical object removes.
+			expect(accepts[0]).toHaveProperty('paymentHeaderEncoding', ['base64-json', 'json']);
 		} finally {
 			delete (env as unknown as Record<string, string>).X402_ENABLED;
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
@@ -13733,5 +13769,313 @@ describe('Byte-parity — signer / in-repo verifier / SDK verifier all produce i
 		const ed = await import('@noble/ed25519');
 		const ok = await ed.verifyAsync(fromHexBytes(sig), msg, pub);
 		expect(ok).toBe(true);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// x402 — one canonical requirements object, served correctly in both versions
+//
+// Written 2026-09-07 for the rail sprint T1. What these tests exist to catch is
+// a real production defect, not a hypothetical: the worker's Payment-Required
+// header declared x402Version 1 while carrying the v2 field name `amount` and
+// omitting the v1-mandatory `resource` and `description`, so it validated
+// against NEITHER schema. Because @x402/core reads the header before the body,
+// every 2.x client saw only the broken header. A stock @x402/fetch 2.20.0 run
+// against production on 2026-09-07 died with
+//   "Failed to create payment payload: No client registered for x402 version: 1"
+// before signing anything (RAIL_T0_2026-09-07.md, E5).
+//
+// The schemas used below are the REAL ones from @x402/core 2.20.0, vendored
+// byte-for-byte in test/vendor/x402-schemas.mjs with their digest and
+// provenance. They are not a transcription: a hand-written validator can be
+// wrong in the same direction as the builder it is checking.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('x402 — canonical requirements object, v2 header beside v1 body', () => {
+	const PAY_TO   = '0x26D4Ffe98017D2f160E2dAaE9d119e3d8b860AD3';
+	const RESOURCE = 'https://headlessoracle.com/v5/status?mic=XNYS';
+
+	// Every assertion derives its expectation from the canonical object, never
+	// from a literal — a test that hardcodes '1000' cannot catch a price change.
+	const canonical = () => x402Canonical('status', PAY_TO, RESOURCE);
+
+	describe('the v2 PAYMENT-REQUIRED header', () => {
+		it('validates against the real PaymentRequiredV2Schema from @x402/core 2.20.0', async () => {
+			const { PaymentRequiredV2Schema } = await import('./vendor/x402-schemas.mjs');
+			const headers = buildX402IndexHeaders(PAY_TO, 'status', RESOURCE);
+			const decoded = JSON.parse(x402Base64Decode(headers['Payment-Required']));
+			const parsed  = PaymentRequiredV2Schema.safeParse(decoded);
+			// Print the zod issues on failure — a bare `false` tells the next
+			// reader nothing about which field drifted.
+			expect(parsed.success ? null : JSON.stringify(parsed.error.issues)).toBe(null);
+		});
+
+		it('each accepts[] entry validates against the real PaymentRequirementsV2Schema', async () => {
+			const { PaymentRequirementsV2Schema } = await import('./vendor/x402-schemas.mjs');
+			const decoded = JSON.parse(x402Base64Decode(buildX402IndexHeaders(PAY_TO, 'status', RESOURCE)['Payment-Required']));
+			expect(decoded.accepts.length).toBeGreaterThan(0);
+			for (const a of decoded.accepts) {
+				const parsed = PaymentRequirementsV2Schema.safeParse(a);
+				expect(parsed.success ? null : JSON.stringify(parsed.error.issues)).toBe(null);
+			}
+		});
+
+		it('REGRESSION (2026-09-07): the header is no longer a v1/v2 hybrid', async () => {
+			const { PaymentRequirementsV1Schema, PaymentRequirementsV2Schema } = await import('./vendor/x402-schemas.mjs');
+			// The exact accepts[0] production served on 2026-09-07 09:27:34Z
+			// (decoded header sha256 2ab0def7270adbe95e02bd0b5ba3d05609b2b1b23138c0a574545ceca6aa273c).
+			// This is the RED case: it matched neither schema, which is why a 2.x
+			// client could not pay. If either assertion below ever goes true for
+			// this shape, the vendored schemas are not doing any work.
+			const brokenAccepts = { scheme: 'exact', network: 'base', amount: '1000', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', payTo: PAY_TO, maxTimeoutSeconds: 300 };
+			expect(PaymentRequirementsV1Schema.safeParse(brokenAccepts).success).toBe(false); // no maxAmountRequired / resource / description
+			expect(PaymentRequirementsV2Schema.safeParse(brokenAccepts).success).toBe(false); // 'base' is not CAIP-2
+			// And what we serve now is not that shape.
+			const decoded = JSON.parse(x402Base64Decode(buildX402IndexHeaders(PAY_TO, 'status', RESOURCE)['Payment-Required']));
+			expect(decoded.x402Version).toBe(2);
+			expect(String(decoded.accepts[0].network)).toContain(':');
+		});
+
+		it('declares CAIP-2 Base mainnet and a top-level resource object', () => {
+			const decoded = JSON.parse(x402Base64Decode(buildX402IndexHeaders(PAY_TO, 'status', RESOURCE)['Payment-Required']));
+			const c = canonical();
+			expect(decoded.accepts[0].network).toBe(c.networkV2);
+			expect(decoded.accepts[0].network).toBe('eip155:8453');
+			// resource/description/mimeType live at the top level in v2, NOT in
+			// accepts[] — restating them inside accepts is the two-places defect.
+			expect(decoded.resource.url).toBe(RESOURCE);
+			expect(decoded.accepts[0].resource).toBeUndefined();
+			expect(decoded.accepts[0].description).toBeUndefined();
+			expect(decoded.accepts[0].maxAmountRequired).toBeUndefined();
+		});
+
+		it('Payment-Required-Json mirrors the base64 header byte for byte', () => {
+			const h = buildX402IndexHeaders(PAY_TO, 'status', RESOURCE);
+			expect(x402Base64Decode(h['Payment-Required'])).toBe(h['Payment-Required-Json']);
+			// And the encoder is the client's own: round-trip through it.
+			expect(x402Base64Encode(h['Payment-Required-Json'])).toBe(h['Payment-Required']);
+		});
+
+		it('binds the resource the caller is actually paying for, not a default', () => {
+			const other = 'https://headlessoracle.com/v1/safe-to-trade?mic=XNAS';
+			const decoded = JSON.parse(x402Base64Decode(buildX402IndexHeaders(PAY_TO, 'status', other)['Payment-Required']));
+			expect(decoded.resource.url).toBe(other);
+		});
+	});
+
+	describe('the v1 402 body', () => {
+		it('validates against the real PaymentRequiredV1Schema', async () => {
+			const { PaymentRequiredV1Schema } = await import('./vendor/x402-schemas.mjs');
+			const body   = buildMainnetFacilitatorPayload(PAY_TO, RESOURCE);
+			const parsed = PaymentRequiredV1Schema.safeParse(body);
+			expect(parsed.success ? null : JSON.stringify(parsed.error.issues)).toBe(null);
+		});
+
+		it('the x402scan / Bazaar body also validates against PaymentRequiredV1Schema', async () => {
+			const { PaymentRequiredV1Schema } = await import('./vendor/x402-schemas.mjs');
+			const body   = buildX402ScanPayload(PAY_TO, RESOURCE, 'status');
+			const parsed = PaymentRequiredV1Schema.safeParse(body);
+			expect(parsed.success ? null : JSON.stringify(parsed.error.issues)).toBe(null);
+		});
+
+		it('carries the v1 field names, not the v2 ones', () => {
+			const a = (buildMainnetFacilitatorPayload(PAY_TO, RESOURCE).accepts as Record<string, unknown>[])[0];
+			expect(a.maxAmountRequired).toBe(canonical().amountAtomic);
+			expect(a.amount).toBeUndefined();
+			expect(a.network).toBe('base');
+			expect(a.resource).toBe(RESOURCE);
+			expect(typeof a.description).toBe('string');
+		});
+	});
+
+	describe('the facilitator payload in both versions', () => {
+		it('v2 requirements validate against PaymentRequirementsV2Schema', async () => {
+			const { PaymentRequirementsV2Schema } = await import('./vendor/x402-schemas.mjs');
+			const parsed = PaymentRequirementsV2Schema.safeParse(x402FacilitatorRequirements(canonical(), 2));
+			expect(parsed.success ? null : JSON.stringify(parsed.error.issues)).toBe(null);
+		});
+
+		it('v1 requirements validate against PaymentRequirementsV1Schema', async () => {
+			const { PaymentRequirementsV1Schema } = await import('./vendor/x402-schemas.mjs');
+			const parsed = PaymentRequirementsV1Schema.safeParse(x402FacilitatorRequirements(canonical(), 1));
+			expect(parsed.success ? null : JSON.stringify(parsed.error.issues)).toBe(null);
+		});
+
+		it('CROSSED versions are rejected — this is the invalid_network failure of 2026-06-07', async () => {
+			const { PaymentRequirementsV1Schema, PaymentRequirementsV2Schema } = await import('./vendor/x402-schemas.mjs');
+			// v1-shaped requirements sent under version 2: NetworkSchemaV2 rejects
+			// the bare 'base'. That is exactly what CDP /verify did on 2026-06-07
+			// (GAP-020) and why the Bazaar settlement failed.
+			expect(PaymentRequirementsV2Schema.safeParse(x402FacilitatorRequirements(canonical(), 1)).success).toBe(false);
+			// v2-shaped requirements sent under version 1: no maxAmountRequired.
+			expect(PaymentRequirementsV1Schema.safeParse(x402FacilitatorRequirements(canonical(), 2)).success).toBe(false);
+		});
+
+		it('the version is read from the client payload, not assumed', () => {
+			expect(x402PayloadVersion({ x402Version: 2 })).toBe(2);
+			expect(x402PayloadVersion({ x402Version: 1 })).toBe(1);
+			// Fail to the legacy shape: the old client omits the field, and v1 is
+			// the only shape that has ever settled through CDP for us.
+			expect(x402PayloadVersion({})).toBe(1);
+			expect(x402PayloadVersion({ x402Version: 99 })).toBe(1);
+		});
+
+		it('the settlement header takes the name the payer version reads', () => {
+			const settle = { success: true, transaction: '0xabc', network: 'eip155:8453' };
+			expect(Object.keys(x402SettlementHeaders(2, settle))).toEqual(['Payment-Response']);
+			expect(Object.keys(x402SettlementHeaders(1, settle))).toEqual(['X-Payment-Response']);
+			// Base64 JSON per transports-v2/http.md — not the raw JSON string the
+			// worker used to send, which no client decodes.
+			const v2 = x402SettlementHeaders(2, settle)['Payment-Response'];
+			expect(JSON.parse(x402Base64Decode(v2))).toEqual(settle);
+		});
+	});
+
+	// ── The diff test (T1.5) ──────────────────────────────────────────────────
+	// Every representation of the price is built from the canonical object and
+	// must agree. It is falsifiable by construction: change amountAtomic in
+	// X402_RESOURCE_SPECS and every surface that still carries the old literal
+	// goes red. Driven red during the sprint by setting status.amountAtomic to
+	// '2000' — see CC_REPORT_2026-09-07_x402-v2-rail.md, T1 DoD.
+	describe('diff test — every surface agrees with the canonical object', () => {
+		const EXPECTED_USDC   = x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic);
+		const EXPECTED_ATOMIC = X402_RESOURCE_SPECS.status.amountAtomic;
+
+		it('v2 header and v1 body agree on price, asset, payTo and resource', () => {
+			const v2  = JSON.parse(x402Base64Decode(buildX402IndexHeaders(PAY_TO, 'status', RESOURCE)['Payment-Required']));
+			const v1  = buildMainnetFacilitatorPayload(PAY_TO, RESOURCE) as Record<string, unknown>;
+			const v1a = (v1.accepts as Record<string, unknown>[])[0];
+			expect(v2.accepts[0].amount).toBe(v1a.maxAmountRequired);
+			expect(v2.accepts[0].amount).toBe(EXPECTED_ATOMIC);
+			expect(v2.accepts[0].asset).toBe(v1a.asset);
+			expect(v2.accepts[0].payTo).toBe(v1a.payTo);
+			expect(v2.resource.url).toBe(v1a.resource);
+			expect(v2.resource.description).toBe(v1a.description);
+		});
+
+		it('/v5/pricing carries the canonical amount, not a literal', async () => {
+			const body = await fetchJSON('/v5/pricing');
+			const x    = body.x402 as Record<string, unknown>;
+			expect(x.amount_usdc).toBe(EXPECTED_USDC);
+			expect(x.amount_units).toBe(EXPECTED_ATOMIC);
+			expect(x.usdc_contract).toBe(canonical().asset);
+			expect(x.network_caip2).toBe(canonical().networkV2);
+		});
+
+		it('/llms.txt and /llms-full.txt quote the canonical price', async () => {
+			const idx  = await (await fetchWorker('/llms.txt')).text();
+			const full = await (await fetchWorker('/llms-full.txt')).text();
+			expect(idx).toContain(`Pay-per-call $${EXPECTED_USDC} USDC on Base`);
+			expect(full).toContain(`x402: ${EXPECTED_USDC} USDC/req via Base mainnet`);
+		});
+
+		it('the MCP server card carries the canonical amount, asset and resource', async () => {
+			const card = await fetchJSON('/.well-known/mcp/server-card.json');
+			const x    = card.x402 as Record<string, unknown>;
+			expect(x.amount).toBe(EXPECTED_ATOMIC);
+			expect(x.amount_usdc).toBe(EXPECTED_USDC);
+			expect(x.asset).toBe(canonical().asset);
+			expect(x.network).toBe(canonical().networkV2);
+			expect(x.payment_endpoint).toBe(X402_RESOURCE_SPECS.status.defaultResourceUrl);
+		});
+
+		it('the A2A agent card payment block carries the canonical amounts', async () => {
+			const agent = await fetchJSON('/.well-known/agent.json');
+			const pay   = agent.payment as Record<string, unknown>;
+			expect(pay.amount_per_request).toBe(`${EXPECTED_USDC} USDC`);
+			expect(pay.amount_units).toBe(EXPECTED_ATOMIC);
+			expect(pay.batch_amount_units).toBe(X402_RESOURCE_SPECS.batch.amountAtomic);
+			expect(pay.asset).toBe(canonical().asset);
+		});
+
+		it('the key-delivery email template quotes the canonical price', () => {
+			// The sentence the customer actually receives, exported from the same
+			// module as the amount, so a price change cannot leave the welcome
+			// email quoting last month's figure.
+			expect(X402_EMAIL_PRICE_LINE).toContain(`${EXPECTED_USDC} USDC on Base mainnet`);
+		});
+
+		it('atomic-to-USDC conversion is exact integer arithmetic', () => {
+			expect(x402AtomicToUsdc('1000')).toBe('0.001');
+			expect(x402AtomicToUsdc('5000')).toBe('0.005');
+			expect(x402AtomicToUsdc('1000000')).toBe('1');
+			expect(x402AtomicToUsdc('99000000')).toBe('99');
+			expect(x402AtomicToUsdc('1')).toBe('0.000001');
+		});
+	});
+
+	// ── The free trial (T1.6) ────────────────────────────────────────────────
+	// Product behaviour is UNCHANGED by this sprint; it is asserted here because
+	// it decides what any client test measures. /v5/status serves three signed
+	// receipts a day per caller before it will ever return a 402, so a
+	// compatibility test that does not exhaust the trial first is measuring a
+	// 200 and learning nothing about the payment path (RAIL_T0 E2).
+	describe('the free trial gates the 402', () => {
+		it('serves 3 trial receipts per IP per day, then 402 on the 4th', async () => {
+			const ip     = '203.0.113.77';
+			const ipHash = await sha256Hex(ip);
+			const today  = new Date().toISOString().slice(0, 10);
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+			try {
+				for (let i = 0; i < 3; i++) {
+					const r = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'CF-Connecting-IP': ip } });
+					expect(r.status).toBe(200);
+					expect(r.headers.get('X-Trial-Remaining')).toBe(String(2 - i));
+				}
+				const fourth = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'CF-Connecting-IP': ip } });
+				expect(fourth.status).toBe(402);
+				// And the 402 an agent finally reaches carries the schema-correct
+				// v2 header — the whole point of T1.
+				const hdr = fourth.headers.get('Payment-Required');
+				expect(hdr).toBeTruthy();
+				expect(JSON.parse(x402Base64Decode(hdr as string)).x402Version).toBe(2);
+			} finally {
+				await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+			}
+		});
+
+		it('the trial resets at 00:00Z — the 402 body says so', async () => {
+			const ip     = '203.0.113.78';
+			const ipHash = await sha256Hex(ip);
+			const today  = new Date().toISOString().slice(0, 10);
+			await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+			try {
+				const r = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'CF-Connecting-IP': ip } });
+				expect(r.status).toBe(402);
+				const b  = await r.json() as Record<string, unknown>;
+				const ts = b.trial_status as Record<string, unknown>;
+				expect(ts.limit).toBe(3);
+				expect(String(ts.resets_at)).toMatch(/T00:00:00\.000Z$/);
+			} finally {
+				await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+			}
+		});
+	});
+
+	// ── Live 402 shape, end to end ───────────────────────────────────────────
+	it('a real trial-exhausted 402 serves the v2 header AND the v1 body together', async () => {
+		const ip     = '203.0.113.79';
+		const ipHash = await sha256Hex(ip);
+		const today  = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const { PaymentRequiredV1Schema, PaymentRequiredV2Schema } = await import('./vendor/x402-schemas.mjs');
+			const r = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'CF-Connecting-IP': ip } });
+			expect(r.status).toBe(402);
+			// The header a 2.x client reads.
+			const hdr = JSON.parse(x402Base64Decode(r.headers.get('Payment-Required') as string));
+			const hv2 = PaymentRequiredV2Schema.safeParse(hdr);
+			expect(hv2.success ? null : JSON.stringify(hv2.error.issues)).toBe(null);
+			// The body a v1 / JSON-parsing client reads.
+			const body = await r.json() as Record<string, unknown>;
+			const bv1  = PaymentRequiredV1Schema.safeParse(body);
+			expect(bv1.success ? null : JSON.stringify(bv1.error.issues)).toBe(null);
+			// And they agree on what is being sold and for how much.
+			const bodyAccepts = (body.accepts as Record<string, unknown>[])[0];
+			expect(hdr.accepts[0].amount).toBe(bodyAccepts.maxAmountRequired);
+			expect(hdr.resource.url).toBe(bodyAccepts.resource);
+			expect(hdr.accepts[0].payTo).toBe(bodyAccepts.payTo);
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
 	});
 });

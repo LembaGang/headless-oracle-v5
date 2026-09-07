@@ -2075,6 +2075,272 @@ const BASE_RPC_URL          = 'https://mainnet.base.org';
 const FREE_TIER_DAILY_LIMIT    = 500;
 const FREE_TRIAL_DAILY_LIMIT   = 3;     // Keyless trial: 3 real signed receipts/day per IP before 402
 
+// ═══ x402 — the ONE canonical payment-requirements object ═════════════════════
+//
+// Every representation of the price is serialised from here: the v2
+// PAYMENT-REQUIRED header, the v1 402 body, the CDP /verify and /settle
+// paymentRequirements, /v5/pricing, /llms.txt, the MCP server card and the
+// key-delivery email. If a price, asset, payTo or resource is written as a
+// literal anywhere else, the diff test in test/index.spec.ts fails.
+//
+// Why this exists (2026-09-07, ruling in LEAD_RATIFICATION_2026-09-07_rail-t0):
+// the worker built the Payment-Required header and the 402 body from two
+// separate literals, and they drifted. The header declared x402Version 1 but
+// carried the v2 field name "amount" and omitted the v1-mandatory "resource"
+// and "description", so it validated against neither schema. Because
+// x402HTTPClient.getPaymentRequiredResponse reads the header FIRST and falls
+// back to the body only when the header is absent, every current client saw the
+// broken header and never the correct body: a stock @x402/fetch 2.20.0 client
+// died at "No client registered for x402 version: 1" before signing anything.
+//
+// Schema source of truth:
+//   @x402/core 2.20.0, dist/esm/chunk-N4QXZG2Z.mjs lines 13-59
+//     sha256 19c189f7417214b211ee4abdaada531a80e5adc8504d593c172fe1e2ce61c03e
+//   coinbase/x402 specs/x402-specification-v2.md §5.1, fetched 2026-09-07
+//     sha256 aa6dc5e8ccc7758689945fc7502674f51cd0f21f09ec886aa1dbc4cd86bc81b6
+//   coinbase/x402 specs/transports-v2/http.md, fetched 2026-09-07
+//     sha256 4594c224c7a42f3ba3f3e5ea4e3d888bbfa040138ea51e5dae825ae73b0869b7
+//
+// The two shapes differ in more than a field name, which is why one object with
+// two serialisers is the only safe form:
+//   v1 PaymentRequirements: scheme, network (loose string, "base"),
+//     maxAmountRequired, resource (URL string, REQUIRED), description
+//     (REQUIRED), mimeType?, payTo, maxTimeoutSeconds, asset, extra?
+//   v2 PaymentRequirements: scheme, network (CAIP-2, MUST contain ":"),
+//     amount, asset, payTo, maxTimeoutSeconds, extra? — and nothing else.
+//     resource/description/mimeType move OUT of accepts[] and become a single
+//     top-level "resource" ResourceInfo object on PaymentRequired.
+
+export const X402_NETWORK_V1   = 'base';           // v1 NetworkSchemaV1 — loose non-empty string
+export const X402_NETWORK_V2   = 'eip155:8453';    // v2 NetworkSchemaV2 — CAIP-2, Base mainnet
+const X402_CHAIN_ID     = 8453;
+const X402_ASSET_DECIMALS = 6;              // USDC on Base
+const X402_MAX_TIMEOUT_SECONDS = 300;
+// EIP-712 domain params for USDC on Base — clients need these to build a valid
+// transferWithAuthorization signature. Carried in `extra` in both versions.
+const X402_EXTRA_USDC = { name: 'USD Coin', version: '2' } as const;
+
+// UTF-8-safe base64, byte-identical to the client's own safeBase64Encode /
+// safeBase64Decode (@x402/core 2.20.0, dist/esm/chunk-ABS7D6VX.mjs:87-106).
+//
+// A bare btoa() throws on any code point above U+00FF, and our resource
+// description contains an em dash. The first run of the v2 header test caught
+// exactly that: the route returned 500 instead of 402. Encoding via TextEncoder
+// is not a nicety — it is what makes the header serveable at all, and what
+// makes our bytes round-trip through the client that has to read them.
+export function x402Base64Encode(data: string): string {
+	const bytes = new TextEncoder().encode(data);
+	let binary = '';
+	for (const b of bytes) binary += String.fromCharCode(b);
+	return btoa(binary);
+}
+
+export function x402Base64Decode(data: string): string {
+	// Normalise URL-safe base64 (- to +, _ to /) — clients emit either form.
+	const binary = atob(data.replace(/-/g, '+').replace(/_/g, '/'));
+	const bytes  = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return new TextDecoder('utf-8').decode(bytes);
+}
+
+// Renders atomic token units as a decimal USDC string ('1000' -> '0.001').
+// Integer arithmetic only — no float ever touches a price.
+export function x402AtomicToUsdc(atomic: string): string {
+	const units = BigInt(atomic);
+	const scale = BigInt(10) ** BigInt(X402_ASSET_DECIMALS);
+	const whole = units / scale;
+	const frac  = (units % scale).toString().padStart(X402_ASSET_DECIMALS, '0').replace(/0+$/, '');
+	return frac ? `${whole}.${frac}` : String(whole);
+}
+
+type X402ResourceId = 'status' | 'batch';
+
+// One entry per paid resource. amountAtomic is the ONLY place a price is written.
+export const X402_RESOURCE_SPECS: Record<X402ResourceId, {
+	amountAtomic:       string;
+	defaultResourceUrl: string;
+	description:        string;
+	mimeType:           string;
+	input:              Record<string, unknown>;
+}> = {
+	status: {
+		amountAtomic:       '1000',
+		defaultResourceUrl: 'https://headlessoracle.com/v5/status',
+		description:        'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN — Ed25519 signed, 60s TTL.',
+		mimeType:           'application/json',
+		input: {
+			type:       'object',
+			properties: { mic: { type: 'string', description: 'ISO 10383 Market Identifier Code (e.g. XNYS, XNAS, XLON)', example: 'XNYS' } },
+			required:   ['mic'],
+		},
+	},
+	batch: {
+		amountAtomic:       '5000',
+		defaultResourceUrl: 'https://headlessoracle.com/v5/batch',
+		description:        'Signed market-state receipts for multiple exchanges in one request. Each receipt Ed25519 signed, 60s TTL.',
+		mimeType:           'application/json',
+		input: {
+			type:       'object',
+			properties: { mics: { type: 'string', description: 'Comma-separated list of MIC codes (e.g. XNYS,XNAS,XLON)', example: 'XNYS,XNAS,XLON' } },
+			required:   ['mics'],
+		},
+	},
+};
+
+interface X402Canonical {
+	id:                X402ResourceId;
+	amountAtomic:      string;
+	amountUsdc:        string;
+	asset:             string;
+	assetDecimals:     number;
+	payTo:             string;
+	maxTimeoutSeconds: number;
+	resourceUrl:       string;
+	description:       string;
+	mimeType:          string;
+	input:             Record<string, unknown>;
+	networkV1:         string;
+	networkV2:         string;
+	chainId:           number;
+}
+
+// The canonical object. Everything downstream is a projection of this.
+// resourceUrl overrides the default so a per-request URL (with its query
+// string) is bound into the requirements the client signs against.
+export function x402Canonical(id: X402ResourceId, paymentAddress: string, resourceUrl?: string): X402Canonical {
+	const spec = X402_RESOURCE_SPECS[id];
+	return {
+		id,
+		amountAtomic:      spec.amountAtomic,
+		amountUsdc:        x402AtomicToUsdc(spec.amountAtomic),
+		asset:             X402_USDC_CONTRACT,
+		assetDecimals:     X402_ASSET_DECIMALS,
+		payTo:             paymentAddress,
+		maxTimeoutSeconds: X402_MAX_TIMEOUT_SECONDS,
+		resourceUrl:       resourceUrl || spec.defaultResourceUrl,
+		description:       spec.description,
+		mimeType:          spec.mimeType,
+		input:             spec.input,
+		networkV1:         X402_NETWORK_V1,
+		networkV2:         X402_NETWORK_V2,
+		chainId:           X402_CHAIN_ID,
+	};
+}
+
+// v2 PaymentRequirements — exactly the seven fields PaymentRequirementsV2Schema
+// accepts. No resource, no description, no mimeType: those belong to the
+// top-level ResourceInfo. Restating them here would not fail zod (the schema is
+// non-strict) but would put the resource in two places, which is the defect
+// this module exists to prevent.
+export function x402AcceptsV2(c: X402Canonical): Record<string, unknown> {
+	return {
+		scheme:            'exact',
+		network:           c.networkV2,
+		amount:            c.amountAtomic,
+		asset:             c.asset,
+		payTo:             c.payTo,
+		maxTimeoutSeconds: c.maxTimeoutSeconds,
+		extra:             { ...X402_EXTRA_USDC },
+	};
+}
+
+// v2 ResourceInfo — url is REQUIRED and non-empty.
+export function x402ResourceInfo(c: X402Canonical): Record<string, unknown> {
+	return { url: c.resourceUrl, description: c.description, mimeType: c.mimeType };
+}
+
+// A complete, schema-valid v2 PaymentRequired object.
+export function x402PaymentRequiredV2(c: X402Canonical, error: string, extensions?: Record<string, unknown>): Record<string, unknown> {
+	const out: Record<string, unknown> = {
+		x402Version: 2,
+		error,
+		resource:    x402ResourceInfo(c),
+		accepts:     [x402AcceptsV2(c)],
+	};
+	if (extensions) out.extensions = extensions;
+	return out;
+}
+
+// v1 PaymentRequirements — resource and description are MANDATORY here.
+// paymentHeaderName/paymentHeaderEncoding/input are HO hints outside the schema
+// (zod is non-strict); they tell a body-reading agent which header to set.
+export function x402AcceptsV1(c: X402Canonical): Record<string, unknown> {
+	return {
+		scheme:                'exact',
+		network:               c.networkV1,
+		maxAmountRequired:     c.amountAtomic,
+		resource:              c.resourceUrl,
+		description:           c.description,
+		mimeType:              c.mimeType,
+		payTo:                 c.payTo,
+		maxTimeoutSeconds:     c.maxTimeoutSeconds,
+		asset:                 c.asset,
+		paymentHeaderName:     'X-Payment',
+		paymentHeaderEncoding: ['base64-json', 'json'],
+		extra:                 { ...X402_EXTRA_USDC },
+		input:                 c.input,
+	};
+}
+
+// The single paymentRequirements object CDP /verify and /settle are given.
+// It MUST be serialised in the version the client's payload declares — CDP
+// validates it against that version's zod schema, and v2's NetworkSchemaV2
+// rejects the bare 'base' string exactly as v1's schema has no `amount` field.
+export function x402FacilitatorRequirements(c: X402Canonical, version: 1 | 2): Record<string, unknown> {
+	if (version === 2) return x402AcceptsV2(c);
+	// v1: the facilitator's PaymentRequirementsSchema requires description and
+	// mimeType — omitting them returns unexpected_error on a zod failure. The
+	// HO-only hint fields are dropped: they are not in the schema and CDP has no
+	// use for them.
+	return {
+		scheme:            'exact',
+		network:           c.networkV1,
+		maxAmountRequired: c.amountAtomic,
+		asset:             c.asset,
+		payTo:             c.payTo,
+		maxTimeoutSeconds: c.maxTimeoutSeconds,
+		description:       c.description,
+		mimeType:          c.mimeType,
+		resource:          c.resourceUrl,
+		extra:             { ...X402_EXTRA_USDC },
+	};
+}
+
+// The v2 header set. Payment-Required is base64 JSON per transports-v2/http.md.
+// Payment-Required-Json is a non-standard HO mirror, KEPT rather than dropped:
+// 402-index crawlers already read it, a plain-JSON mirror costs nothing, and it
+// now carries byte-identical JSON to what Payment-Required base64-encodes. The
+// diff test asserts atob(header) === mirror so the two can never drift again.
+export function x402HeadersV2(c: X402Canonical, error: string, extensions?: Record<string, unknown>): Record<string, string> {
+	const json = JSON.stringify(x402PaymentRequiredV2(c, error, extensions));
+	return {
+		'Payment-Required':      x402Base64Encode(json),
+		'Payment-Required-Json': json,
+	};
+}
+
+// The one sentence the key-delivery email uses to quote the x402 price.
+// Defined here, beside the canonical amount, and exported so the diff test can
+// assert that the email a real customer receives carries the current figure
+// rather than a literal someone forgot to update.
+export const X402_EMAIL_PRICE_LINE = `You can pay per-request with ${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC on Base mainnet — no subscription needed.`;
+
+// Reads the x402 version a client's decoded payment payload declares.
+// Anything that is not an explicit 2 is treated as 1: the legacy client omits
+// the field, and v1 is the only shape that has ever settled through CDP for us.
+export function x402PayloadVersion(decoded: Record<string, unknown>): 1 | 2 {
+	return (decoded['x402Version'] as number | undefined) === 2 ? 2 : 1;
+}
+
+// Settlement response header. v2 clients read PAYMENT-RESPONSE (base64 JSON of
+// the SettlementResponse); v1 clients read X-PAYMENT-RESPONSE. Serving the
+// wrong name is invisible to the client, which then reports "Payment response
+// header not found" for a payment that actually settled.
+export function x402SettlementHeaders(version: 1 | 2, settle: Record<string, unknown>): Record<string, string> {
+	const encoded = x402Base64Encode(JSON.stringify(settle));
+	return version === 2 ? { 'Payment-Response': encoded } : { 'X-Payment-Response': encoded };
+}
+
 // Machine-readable upgrade paths for agents hitting 402 after trial exhaustion.
 // Structured so an agent can read this and autonomously choose a path forward.
 // Ordered by friction: instant_key (zero) → x402 (low) → email (medium) → demo (none but unsigned).
@@ -2122,8 +2388,11 @@ const PRO_TIER_DAILY_LIMIT     = 200_000;
 // ─── Canonical pricing table ──────────────────────────────────────────────
 // Single source of truth for dollar amounts. Both build402Payload and
 // /v5/pricing derive from this — don't hardcode prices anywhere else.
+// x402_per_request_usdc is NOT written here: it is derived from the atomic
+// amount in X402_RESOURCE_SPECS so the dollar figure a human reads and the
+// atomic figure a client signs can never disagree.
 const PRICING = {
-	x402_per_request_usdc: '0.001',
+	x402_per_request_usdc: x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic),
 	credit_pack_usd:       5,
 	builder_monthly_usd:   99,
 	pro_monthly_usd:       299,
@@ -2166,13 +2435,15 @@ async function computeHmacSignature(secret: string, payload: string): Promise<st
 }
 
 // Response headers signalling to HTTP clients that a payment is required.
-// Includes both legacy X-Payment-* headers and the x402 v2 standard Payment-Required header.
+// Legacy X-Payment-* hints only — the protocol headers (Payment-Required /
+// Payment-Required-Json) come from x402HeadersV2, which needs the per-request
+// resource URL. Every value here is derived from the canonical object.
 const X402_RESPONSE_HEADERS: Record<string, string> = {
 	'X-Payment-Required': 'true',
 	'X-Payment-Scheme':   'x402',
-	'X-Payment-Network':  'base',
-	'X-Payment-Chain-ID': '8453',
-	'X-Payment-Amount':   '0.001 USDC',
+	'X-Payment-Network':  X402_NETWORK_V1,
+	'X-Payment-Chain-ID': String(X402_CHAIN_ID),
+	'X-Payment-Amount':   `${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC`,
 };
 
 // Read the payment header from the request, checking both x402 v2 (Payment-Signature)
@@ -2383,39 +2654,26 @@ async function verifyX402ViaFacilitator(
 	paymentAddress: string,
 	env: Env,
 	resource?: string,
-): Promise<{ valid: boolean; txHash?: string; detail?: string; status: 'payment-accepted' | 'payment-rejected' | 'facilitator-error' }> {
-	// paymentRequirements must be a single object (not an array).
-	// network must use the standard x402 name "base", not the CAIP-2 format "eip155:8453".
-	// extra carries the USDC EIP-712 domain params needed for signature verification.
-	const paymentRequirements: Record<string, unknown> = {
-		scheme:            'exact',
-		network:           'base',          // Standard x402 network name (not CAIP-2)
-		maxAmountRequired: '1000',          // 0.001 USDC at 6 decimals
-		asset:             X402_USDC_CONTRACT,
-		payTo:             paymentAddress,
-		maxTimeoutSeconds: 300,
-		// description and mimeType are required by PaymentRequirementsSchema — omitting them
-		// causes the facilitator to return unexpected_error (zod validation failure).
-		description:       'Signed market-state receipt. Ed25519 signed, 60s TTL. $0.001 USDC on Base mainnet.',
-		mimeType:          'application/json',
-		extra:             { name: 'USD Coin', version: '2' },
-	};
-	if (resource) paymentRequirements.resource = resource;
-
+): Promise<{ valid: boolean; txHash?: string; detail?: string; status: 'payment-accepted' | 'payment-rejected' | 'facilitator-error'; version?: 1 | 2; settlement?: Record<string, unknown> }> {
 	// Decode base64 payment header to get the PaymentPayload object.
-	// The x402.org facilitator expects: { paymentPayload: <object>, paymentRequirements: <object> }
+	// The facilitator expects: { x402Version, paymentPayload, paymentRequirements }.
 	let decodedPaymentPayload: Record<string, unknown>;
 	try {
-		// Normalize URL-safe base64 (- → +, _ → /) before decoding.
-		// The x402 client may emit standard or URL-safe base64; atob() requires standard.
-		const normalized = paymentHeader.replace(/-/g, '+').replace(/_/g, '/');
-		decodedPaymentPayload = JSON.parse(atob(normalized));
+		// x402Base64Decode normalises URL-safe base64 and decodes as UTF-8 —
+		// a bare atob() mangles any non-ASCII the client echoed back to us.
+		decodedPaymentPayload = JSON.parse(x402Base64Decode(paymentHeader));
 	} catch {
 		return { valid: false, status: 'payment-rejected', detail: 'INVALID_PAYMENT_HEADER: base64 decode failed' };
 	}
-	// CDP facilitator (api.cdp.coinbase.com) requires x402Version at the root level.
-	// Extract from inside paymentPayload (field added by x402 client library).
-	const x402Version = (decodedPaymentPayload.x402Version as number | undefined) ?? 1;
+	// Settle under the version the CLIENT declares, not a version we assume.
+	// CDP validates paymentRequirements against that version's zod schema:
+	// v2's NetworkSchemaV2 rejects the bare 'base' string, and v1's schema has
+	// no `amount` field. Sending one shape under the other version is exactly
+	// the invalid_network failure of 2026-06-07 (GAP-020), in reverse.
+	const x402Version = x402PayloadVersion(decodedPaymentPayload);
+	const canonical   = x402Canonical('status', paymentAddress, resource);
+	// paymentRequirements must be a single object (not an array).
+	const paymentRequirements = x402FacilitatorRequirements(canonical, x402Version);
 	const payload = JSON.stringify({ x402Version, paymentPayload: decodedPaymentPayload, paymentRequirements });
 
 	// Build CDP auth headers — generate a fresh JWT for each request (120s TTL).
@@ -2452,12 +2710,12 @@ async function verifyX402ViaFacilitator(
 		if (!isValid) {
 			const reason = (verifyBody.invalidReason ?? verifyBody.error ?? verifyBody.message ?? 'unknown') as string;
 			console.error(JSON.stringify({ event: 'FACILITATOR_VERIFY_REJECTED', status: verifyRes.status, reason, body_keys: Object.keys(verifyBody) }));
-			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_VERIFY_FAILED: ${reason}` };
+			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_VERIFY_FAILED: ${reason}`, version: x402Version };
 		}
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'unknown';
 		console.error('x402 facilitator /verify error:', msg);
-		return { valid: false, status: 'facilitator-error', detail: `FACILITATOR_VERIFY_FETCH_FAILED: ${msg}` };
+		return { valid: false, status: 'facilitator-error', detail: `FACILITATOR_VERIFY_FETCH_FAILED: ${msg}`, version: x402Version };
 	}
 
 	// Step 2: settle
@@ -2473,11 +2731,17 @@ async function verifyX402ViaFacilitator(
 		if (!settleRes.ok) console.error(JSON.stringify({ event: 'FACILITATOR_SETTLE_NON_OK', status: settleRes.status, body_preview: settleText.slice(0, 200) }));
 		const settleBody = JSON.parse(settleText) as Record<string, unknown>;
 		if (!settleBody.success) {
-			const reason = (settleBody.error ?? settleBody.message ?? 'unknown') as string;
+			// Fail closed. Any non-success settle body — including a state we do
+			// not recognise — means no receipt is served. There is no "probably
+			// settled" branch: an unknown settlement state is an unpaid request.
+			const reason = (settleBody.errorReason ?? settleBody.error ?? settleBody.errorMessage ?? settleBody.message ?? 'unknown') as string;
 			console.error(JSON.stringify({ event: 'FACILITATOR_SETTLE_REJECTED', status: settleRes.status, reason, body_keys: Object.keys(settleBody) }));
-			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_SETTLE_REJECTED: ${reason}` };
+			return { valid: false, status: 'payment-rejected', detail: `FACILITATOR_SETTLE_REJECTED: ${reason}`, version: x402Version };
 		}
-		const settleTxHash = settleBody.txHash as string | undefined;
+		// SettlementResponse names the hash `transaction` (x402 spec §5.3 and
+		// settleResponseSchema in @x402/core 2.20.0). CDP's v1 responses have
+		// carried `txHash`; read both so neither version loses the hash.
+		const settleTxHash = (settleBody.transaction ?? settleBody.txHash) as string | undefined;
 		console.log(JSON.stringify({ event: 'X402_MAINNET_FACILITATOR_PAYMENT_VERIFIED', tx_hash: settleTxHash ?? 'n/a' }));
 		// Track payment stats for /v5/payment-proof — best-effort (errors swallowed)
 		try {
@@ -2492,11 +2756,19 @@ async function verifyX402ViaFacilitator(
 			await env.ORACLE_TELEMETRY.put('x402_payment_count',   String(count + 1)).catch(() => {});
 			await env.ORACLE_TELEMETRY.put('x402_last_payment_at', nowIso).catch(() => {});
 		} catch { /* best-effort */ }
-		return { valid: true, status: 'payment-accepted', txHash: settleTxHash };
+		// The settlement the client is handed back, in the shape its version's
+		// PAYMENT-RESPONSE / X-PAYMENT-RESPONSE header expects.
+		const settlement: Record<string, unknown> = {
+			success:     true,
+			transaction: settleTxHash ?? '',
+			network:     x402Version === 2 ? canonical.networkV2 : canonical.networkV1,
+		};
+		if (typeof settleBody.payer === 'string') settlement.payer = settleBody.payer;
+		return { valid: true, status: 'payment-accepted', txHash: settleTxHash, version: x402Version, settlement };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'unknown';
 		console.error('x402 facilitator /settle error:', msg);
-		return { valid: false, status: 'facilitator-error', detail: `FACILITATOR_SETTLE_FETCH_FAILED: ${msg}` };
+		return { valid: false, status: 'facilitator-error', detail: `FACILITATOR_SETTLE_FETCH_FAILED: ${msg}`, version: x402Version };
 	}
 }
 
@@ -2509,13 +2781,24 @@ async function verifyPaymentAnyFormat(
 	paymentAddress: string,
 	env: Env,
 	resourceUrl: string,
-): Promise<{ valid: boolean; detail?: string; txHash?: string }> {
+): Promise<{ valid: boolean; detail?: string; txHash?: string; version?: 1 | 2; settlement?: Record<string, unknown> }> {
 	// Path 1: try raw JSON (direct on-chain)
 	try {
 		const parsed = JSON.parse(header);
 		if (parsed && typeof parsed === 'object' && parsed.txHash && parsed.network) {
 			const result = await verifyX402Payment(parsed as X402Payment, paymentAddress, env);
-			return { ...result, txHash: parsed.txHash };
+			// Direct on-chain is an HO-only convenience, outside both x402
+			// versions. It is reported as v1 so the caller emits the legacy
+			// X-PAYMENT-RESPONSE name rather than a v2 header the payer's
+			// non-x402 client would not read.
+			return {
+				...result,
+				txHash:  parsed.txHash,
+				version: 1,
+				settlement: result.valid
+					? { success: true, transaction: parsed.txHash, network: X402_NETWORK_V1 }
+					: undefined,
+			};
 		}
 		// Parsed as JSON but not an X402Payment — fall through to base64
 	} catch { /* not raw JSON — try base64 x402 format */ }
@@ -2528,7 +2811,7 @@ async function verifyPaymentAnyFormat(
 		return { valid: false, detail: 'X-Payment must be JSON (direct on-chain) or base64-encoded JSON (x402 standard)' };
 	}
 	const result = await verifyX402ViaFacilitator(header, paymentAddress, env, resourceUrl);
-	return { valid: result.valid, detail: result.detail, txHash: result.txHash };
+	return { valid: result.valid, detail: result.detail, txHash: result.txHash, version: result.version, settlement: result.settlement };
 }
 
 // Unified agent action guide — included in every 402 response so any agent knows
@@ -2564,35 +2847,23 @@ function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 	};
 }
 
-// Build x402-compatible 402 payload for Base mainnet via CDP facilitator.
-// x402Version: 1 — the legacy x402 npm client (x402@1.2.0, the only published version) emits
-// v1-shape paymentPayloads regardless of the version it's told to use. CDP /verify validates
-// strictly against the declared version, and the v2 NetworkSchemaV2 requires CAIP-2 format
-// ("eip155:8453"), rejecting the bare "base" string the v1 client embeds. Until Coinbase ships
-// a v2-capable client to npm, v1 is the only path that round-trips through CDP settlement.
-// See active-priorities GAP-020.
-function buildMainnetFacilitatorPayload(paymentAddress: string, resourceUrl: string): Record<string, unknown> {
+// The 402 RESPONSE BODY, in x402 version 1.
+//
+// Which client reads what (from the installed @x402/core 2.20.0 read order at
+// dist/esm/chunk-4Y6I6537.mjs:1097-1105, x402HTTPClient.getPaymentRequiredResponse):
+//   - a 2.x client reads the Payment-Required HEADER first and never looks at
+//     this body. It is served the schema-correct v2 header by x402HeadersV2.
+//   - a client that reads the body — the legacy x402@1.2.0 the canon names, and
+//     any agent parsing JSON rather than running an SDK — gets this v1 object,
+//     which is what its `body.x402Version === 1` fallback requires.
+// So v1 here is not a downgrade: it is the body-reader's representation, served
+// beside the header-reader's v2. Both are projections of one canonical object,
+// and the diff test asserts they agree on price, asset, payTo and resource.
+export function buildMainnetFacilitatorPayload(paymentAddress: string, resourceUrl: string): Record<string, unknown> {
+	const c = x402Canonical('status', paymentAddress, resourceUrl);
 	return {
-		x402Version: 1,
-		accepts: [{
-			scheme:              'exact',
-			network:             'base',
-			maxAmountRequired:   '1000',
-			asset:               X402_USDC_CONTRACT,
-			payTo:               paymentAddress,
-			maxTimeoutSeconds:   300,
-			resource:            resourceUrl,
-			description:         'Signed market-state receipt. Ed25519 signed, 60s TTL. $0.001 USDC on Base mainnet.',
-			mimeType:            'application/json',
-			paymentHeaderName:   'X-Payment',
-			paymentHeaderEncoding: 'base64-json',
-			extra:               { name: 'USD Coin', version: '2' },
-			input: {
-				type:       'object',
-				properties: { mic: { type: 'string', description: 'ISO 10383 MIC code', example: 'XNYS' } },
-				required:   ['mic'],
-			},
-		}],
+		x402Version:    1,
+		accepts:        [x402AcceptsV1(c)],
 		error:          'Payment Required',
 		network:        'mainnet',
 		agent_actions:  buildAgentActions(paymentAddress),
@@ -2980,31 +3251,24 @@ async function verifyReceiptDetailed(
 	return { valid: allValid, checks, receipt_summary: receiptSummary };
 }
 
-// Build the Payment-Required header value required by x402 index crawlers (e.g. 402index.io).
-// Crawlers read this header (base64 JSON) rather than parsing the response body.
-// x402Version: 1 — must match the body version (buildMainnetFacilitatorPayload / buildX402ScanPayload)
-// so a header-driven crawler signing against this gets the same v1 flow that CDP /verify accepts.
-// See active-priorities GAP-020.
-function buildX402IndexHeaders(paymentAddress: string, endpoint: 'status' | 'batch' = 'status'): Record<string, string> {
-	const payload = {
-		x402Version: 1,
-		error:       'Payment Required',
-		accepts: [
-			{
-				scheme:            'exact',
-				network:           'base',
-				amount:            endpoint === 'status' ? '1000' : '5000',
-				asset:             X402_USDC_CONTRACT,
-				payTo:             paymentAddress,
-				maxTimeoutSeconds: 300,
-			},
-		],
-	};
-	const json = JSON.stringify(payload);
-	return {
-		'Payment-Required':      btoa(json),
-		'Payment-Required-Json': json,
-	};
+// The Payment-Required HEADER SET, in x402 version 2.
+//
+// This is what every current client actually reads: @x402/core 2.20.0 checks
+// the header first and only falls back to the body when it is absent
+// (dist/esm/chunk-4Y6I6537.mjs:1097-1105). 402-index crawlers read it too.
+//
+// It used to declare version 1 while carrying the v2 field name `amount` and
+// omitting the v1-mandatory `resource` and `description`, so it matched neither
+// PaymentRequirementsV1Schema nor PaymentRequirementsV2Schema, and a stock 2.x
+// client threw "No client registered for x402 version: 1" before signing. It is
+// now a schema-valid v2 PaymentRequired built from the canonical object: CAIP-2
+// network, `amount`, and a top-level `resource` ResourceInfo.
+//
+// resourceUrl must be the URL the client is actually paying for; it is signed
+// into the requirements, so a default that does not match the request would bind
+// the payment to the wrong resource.
+export function buildX402IndexHeaders(paymentAddress: string, endpoint: 'status' | 'batch' = 'status', resourceUrl?: string): Record<string, string> {
+	return x402HeadersV2(x402Canonical(endpoint, paymentAddress, resourceUrl), 'Payment Required');
 }
 
 // Build an x402scan-compatible 402 payload.
@@ -3171,57 +3435,17 @@ function buildBazaarExtension(endpoint: 'status' | 'batch'): Record<string, unkn
 	};
 }
 
-function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpoint: 'status' | 'batch' = 'status'): Record<string, unknown> {
-	const isStatus = endpoint === 'status';
-	// x402Version: 1 — see buildMainnetFacilitatorPayload note. The Bazaar `extensions` block
-	// below lives at the top level alongside `accepts`, not inside it, so the discovery payload
-	// CDP indexes is unaffected by the version downgrade. The legacy x402 npm client only emits
-	// v1-shape paymentPayloads; settlement must round-trip through CDP under x402Version 1.
+export function buildX402ScanPayload(paymentAddress: string, resourceUrl: string, endpoint: 'status' | 'batch' = 'status'): Record<string, unknown> {
+	const c = x402Canonical(endpoint, paymentAddress, resourceUrl);
+	// The x402scan / Bazaar discovery BODY, in version 1 — same reasoning as
+	// buildMainnetFacilitatorPayload: this is the body-reader's representation.
+	// A 2.x client on this route reads the v2 Payment-Required header instead.
+	// The Bazaar `extensions` block sits at the top level alongside `accepts`,
+	// where both x402 versions put it, so discovery indexing is unaffected by
+	// which representation the caller consumed.
 	return {
 		x402Version: 1,
-		accepts: [
-			{
-				scheme:              'exact',
-				network:             'base',
-				maxAmountRequired:   isStatus ? '1000' : '5000',
-				resource:            resourceUrl,
-				description:         isStatus
-					? 'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN — Ed25519 signed, 60s TTL.'
-					: 'Signed market-state receipts for multiple exchanges in one request. Each receipt Ed25519 signed, 60s TTL.',
-				mimeType:            'application/json',
-				payTo:               paymentAddress,
-				maxTimeoutSeconds:   300,
-				asset:               X402_USDC_CONTRACT,
-				paymentHeaderName:     'X-Payment',
-				paymentHeaderEncoding: ['base64-json', 'json'],
-				input: isStatus
-					? {
-						type:       'object',
-						properties: {
-							mic: {
-								type:        'string',
-								description: 'ISO 10383 Market Identifier Code (e.g. XNYS, XNAS, XLON)',
-								example:     'XNYS',
-							},
-						},
-						required: ['mic'],
-					}
-					: {
-						type:       'object',
-						properties: {
-							mics: {
-								type:        'string',
-								description: 'Comma-separated list of MIC codes (e.g. XNYS,XNAS,XLON)',
-								example:     'XNYS,XNAS,XLON',
-							},
-						},
-						required: ['mics'],
-					},
-				// EIP-712 domain params for USDC on Base — required by x402 clients to
-				// construct valid transferWithAuthorization signatures.
-				extra: { name: 'USD Coin', version: '2' },
-			},
-		],
+		accepts:     [x402AcceptsV1(c)],
 		// CDP Bazaar discovery extension. The facilitator catalogs this resource after the
 		// first settled payment; ranking is driven by completeness of this block plus
 		// l30DaysUniquePayers / l30DaysTotalCalls.
@@ -4723,7 +4947,7 @@ Headless Oracle returns cryptographically signed receipts confirming whether an 
 - [Go SDK](https://github.com/LembaGang/headless-oracle-go): go get github.com/LembaGang/headless-oracle-go
 - [LangChain](https://pypi.org/project/headless-oracle-langchain/): headless-oracle-langchain tool
 - [CrewAI](https://headlessoracle.com/docs/integrations/crewai): MCPServerStdio configuration
-- [x402 Payment](https://headlessoracle.com/docs/integrations/x402): Pay-per-call $0.001 USDC on Base
+- [x402 Payment](https://headlessoracle.com/docs/integrations/x402): Pay-per-call $${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC on Base
 
 ## Pre-Trade Verification Pattern
 
@@ -4959,7 +5183,7 @@ UNKNOWN status means the oracle cannot determine market state. Agents MUST treat
 ## Pricing
 - Free: 500 req/day (GET /v5/keys/request)
 - Sandbox: 200 req/7 days, email required (POST /v5/sandbox with { "email": "you@example.com" })
-- x402: 0.001 USDC/req via Base mainnet (no key, no signup)
+- x402: ${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC/req via Base mainnet (no key, no signup)
 - Builder: 50,000 req/day ($99/mo)
 - Pro: 200,000 req/day ($299/mo)
 - Protocol: unlimited ($500/mo)
@@ -6564,11 +6788,11 @@ const AGENT_JSON = {
 		network:               'eip155:8453',
 		chain_id:              8453,
 		currency:              'USDC',
-		amount_per_request:    '0.001 USDC',
-		amount_units:          '1000',        // 0.001 USDC at 6 decimals
-		batch_amount_units:    '5000',        // 0.005 USDC for /v5/batch (up to 28 MICs)
-		asset:                 '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
-		payment_endpoint:      'https://headlessoracle.com/v5/status',       // returns 402 with x402 details
+		amount_per_request:    `${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC`,
+		amount_units:          X402_RESOURCE_SPECS.status.amountAtomic,
+		batch_amount_units:    X402_RESOURCE_SPECS.batch.amountAtomic,
+		asset:                 X402_USDC_CONTRACT,                           // USDC on Base
+		payment_endpoint:      X402_RESOURCE_SPECS.status.defaultResourceUrl, // returns 402 with x402 details
 		subscription_endpoint: 'https://headlessoracle.com/v5/checkout',     // Paddle — persistent key
 		mint_endpoint:         'https://headlessoracle.com/v5/x402/mint',    // autonomous key minting via on-chain USDC
 		discovery:             'https://headlessoracle.com/.well-known/x402.json',
@@ -10127,7 +10351,9 @@ export default {
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment, Payment-Signature',
-			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Trial-Remaining, X-Attestation-Mode',
+			// X-Payment-Response is the v1 settlement header name. Without it exposed,
+			// a browser-context v1 client sees a settled payment as unsettled.
+			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Required-Json, Payment-Response, X-Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Trial-Remaining, X-Attestation-Mode',
 		};
 
 		if (request.method === 'OPTIONS') {
@@ -10314,7 +10540,7 @@ export default {
 				if (!mic) {
 					// Surface the same 402 even on bad input — the listing is a discovery surface,
 					// agents probing it without a mic still need to see the payment requirements.
-					return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/status/x402', 'status'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
+					return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/status/x402', 'status'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', 'https://headlessoracle.com/v5/status/x402') });
 				}
 				if (!MARKET_CONFIGS[mic]) {
 					return json({ error: 'UNSUPPORTED_MIC', message: `Unsupported MIC: ${mic}. See /v5/exchanges for the supported list.` }, 400);
@@ -10325,7 +10551,7 @@ export default {
 					return json(
 						buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, x402Resource, 'status'),
 						402,
-						{ 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') },
+						{ 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', x402Resource) },
 					);
 				}
 				// CDP-facilitator-only settlement. Direct-on-chain raw JSON is rejected with
@@ -10365,11 +10591,13 @@ export default {
 					ctx.waitUntil(env.ORACLE_TELEMETRY.put(`receipt:${mic}:${archiveDate}:${x402Receipt['receipt_id'] as string}`, JSON.stringify(x402Receipt), { expirationTtl: 2592000 }).catch(() => {}));
 					trackReceiptId(x402Receipt['receipt_id'] as string, archiveDate, mic, env, ctx);
 				}
-				return json({ ...x402Receipt, receipt: x402Receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' }, x402Status, { 'Cache-Control': 'no-store', 'X-Attestation-Mode': 'live', 'Payment-Response': JSON.stringify({ status: 'payment-accepted', network: 'base', tx_hash: verify.txHash ?? null }) });
+				return json({ ...x402Receipt, receipt: x402Receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' }, x402Status, { 'Cache-Control': 'no-store', 'X-Attestation-Mode': 'live', ...x402SettlementHeaders(verify.version ?? 1, verify.settlement ?? { success: true, transaction: verify.txHash ?? '', network: X402_NETWORK_V1 }) });
 			}
 
 			// ── Auth gate — /v5/status requires X-Oracle-Key or x402 payment ─────
 			let _x402PaymentUsed = false; // Set true when x402 payment settles successfully
+			let _x402Version: 1 | 2 = 1;  // The x402 version the payer's payload declared
+			let _x402Settlement: Record<string, unknown> | undefined; // CDP settlement, echoed to the payer
 			if (url.pathname.startsWith('/v5/status')) {
 				const apiKey = request.headers.get('X-Oracle-Key');
 				if (apiKey) {
@@ -10532,9 +10760,11 @@ export default {
 						if (!verified.valid) {
 							incrementKvCounter(`funnel_402:facilitator_rejected:${now.toISOString().slice(0, 10)}`, env, ctx);
 							const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
-							return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status') });
+							return json(errPayload, 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-X402-Network': 'mainnet', 'X-Payment-Required': 'true', 'X-Payment-Status': 'payment-rejected', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', resource) });
 						}
 						_x402PaymentUsed = true;
+						_x402Version     = verified.version ?? 1;
+						_x402Settlement  = verified.settlement ?? { success: true, transaction: verified.txHash ?? '', network: _x402Version === 2 ? X402_NETWORK_V2 : X402_NETWORK_V1 };
 						incrementKvCounter(`funnel_x402:succeeded:${now.toISOString().slice(0, 10)}`, env, ctx);
 					} else {
 						// ── Free trial: 3 signed receipts/day per IP, no key needed ──
@@ -10562,7 +10792,7 @@ export default {
 							const trialStatusBlock = { used: FREE_TRIAL_DAILY_LIMIT, limit: FREE_TRIAL_DAILY_LIMIT, resets_at: trialResetMidnight.toISOString() };
 							if (env.ORACLE_PAYMENT_ADDRESS) {
 								const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-								const x402IdxHdrs = buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status');
+								const x402IdxHdrs = buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', resource);
 								const payload = {
 									...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource),
 									error:         'TRIAL_EXHAUSTED',
@@ -10887,7 +11117,13 @@ export default {
 				const receiptWithDiscovery = { ...receipt, receipt, discovery_url: 'https://headlessoracle.com/.well-known/mcp/server-card.json' };
 				const attestationMode = mode === 'demo' ? 'demo' : (_trialUsed ? 'trial' : 'live');
 				const statusHeaders: Record<string, string> = { 'Cache-Control': 'no-store', 'X-Attestation-Mode': attestationMode };
-				if (_x402PaymentUsed) statusHeaders['Payment-Response'] = JSON.stringify({ status: 'payment-accepted', network: 'base' });
+				// Settlement is reported in the header name the payer's x402 version
+				// reads (PAYMENT-RESPONSE for v2, X-PAYMENT-RESPONSE for v1), base64
+				// JSON per the spec. Sending only the v2 name to a v1 client — or an
+				// unencoded body — makes a settled payment look unsettled to the client.
+				if (_x402PaymentUsed && _x402Settlement) {
+					for (const [hk, hv] of Object.entries(x402SettlementHeaders(_x402Version, _x402Settlement))) statusHeaders[hk] = hv;
+				}
 				if (_trialUsed) statusHeaders['X-Trial-Remaining'] = String(_trialRemaining);
 				return withRateLimitWarning(await withMigrationNotice(json(receiptWithDiscovery, status, statusHeaders)));
 			}
@@ -10901,7 +11137,7 @@ export default {
 					// No key — return x402scan-compatible 402 so the endpoint is registered as x402-native.
 					// Keyless batch execution requires a key (use /v5/status for single keyless x402 requests).
 					if (env.ORACLE_PAYMENT_ADDRESS) {
-						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/batch', 'batch'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'batch') });
+						return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/batch', 'batch'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'batch', 'https://headlessoracle.com/v5/batch') });
 					}
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401, { 'X-Oracle-Upgrade': 'https://headlessoracle.com/upgrade', 'X-Oracle-Key-Request': 'https://headlessoracle.com/v5/keys/request' });
 				}
@@ -11650,15 +11886,17 @@ export default {
 					},
 					// x402 autonomous payment: agents can call /v5/status without a key,
 					// receive a 402 with payment details, pay on-chain, and retry — no subscription needed.
+					// Derived from the canonical requirements object — never a literal.
 					x402: {
 						payable:          true,
 						scheme:           'exact',
-						network:          'eip155:8453',
+						network:          X402_NETWORK_V2,
 						currency:         'USDC',
-						amount:           '1000',           // 0.001 USDC at 6 decimals
-						asset:            '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+						amount:           X402_RESOURCE_SPECS.status.amountAtomic,
+						amount_usdc:      x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic),
+						asset:            X402_USDC_CONTRACT,
 						discovery:        'https://headlessoracle.com/.well-known/x402.json',
-						payment_endpoint: 'https://headlessoracle.com/v5/status',
+						payment_endpoint: X402_RESOURCE_SPECS.status.defaultResourceUrl,
 					},
 					// Payment capabilities — surfaced at the top level so any agent parsing the
 					// server card (without walking the x402 object) knows autonomous payment works.
@@ -13557,7 +13795,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 </ul>
 
 <p><strong>When you hit the free tier limit (500 req/day):</strong><br>
-You can pay per-request with 0.001 USDC on Base mainnet — no subscription needed. Details at <a href="https://headlessoracle.com/docs/x402-payments">headlessoracle.com/docs/x402-payments</a>.</p>
+${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x402-payments">headlessoracle.com/docs/x402-payments</a>.</p>
 
 <p>Reply to this email if you have any questions — happy to jump on a call if you're building something interesting.</p>
 
@@ -13987,12 +14225,15 @@ You can pay per-request with 0.001 USDC on Base mainnet — no subscription need
 							features:     ['Unlimited calls/day', 'Unlimited webhooks', '28 exchanges', 'Enterprise SLA', 'Paddle billing'],
 						},
 					],
+					// Derived from the canonical requirements object — never a literal.
 					x402: {
-						amount_usdc:       '0.001',
-						amount_units:      String(X402_MIN_AMOUNT_UNITS),
-						network:           'base',
-						chain_id:          8453,
+						amount_usdc:       x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic),
+						amount_units:      X402_RESOURCE_SPECS.status.amountAtomic,
+						network:           X402_NETWORK_V1,
+						network_caip2:     X402_NETWORK_V2,
+						chain_id:          X402_CHAIN_ID,
 						usdc_contract:     X402_USDC_CONTRACT,
+						resource:          X402_RESOURCE_SPECS.status.defaultResourceUrl,
 						payment_discovery: '/.well-known/x402.json',
 					},
 					checkout_url:     '/v5/checkout',
@@ -15219,7 +15460,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 							'Access-Control-Allow-Origin':  '*',
 							'X-X402-Network':               'mainnet',
 							'X-Payment-Required':           'true',
-							...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status'),
+							...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', haltsResource),
 						} : {},
 					);
 				}
@@ -15535,7 +15776,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 							'Access-Control-Allow-Origin':  '*',
 							'X-X402-Network':               'mainnet',
 							'X-Payment-Required':           'true',
-							...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status'),
+							...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', safeResource),
 						} : {},
 					);
 				}
