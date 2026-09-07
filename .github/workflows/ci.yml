@@ -74,6 +74,14 @@ jobs:
           echo "TEST_COUNT matches the suite."
 
 
+      # Boot the worker and ask it two questions. tsc, the suite and
+      # `wrangler deploy --dry-run` all pass on a bundle workerd then refuses
+      # to start, and none of them can see a served template literal that
+      # never interpolated. See scripts/start-smoke.sh.
+      - name: Start smoke (worker boots and serves)
+        shell: bash
+        run: bash scripts/start-smoke.sh
+
       - name: Security audit
         run: npm audit --audit-level=high || true
 

@@ -30,7 +30,29 @@ npx tsc --noEmit
 echo "[pre-commit] (2/3) Test suite..."
 npm test --silent
 
-echo "[pre-commit] (3/3) Wrangler deploy --dry-run..."
+echo "[pre-commit] (3/4) Wrangler deploy --dry-run..."
 npx wrangler deploy --dry-run >/dev/null
 
-echo "[pre-commit] All three gates passed. Proceeding with commit."
+# (4/4) Boot the worker for real and serve two routes.
+#
+# The first three gates never start the worker. A bundle can type-check,
+# pass the suite and dry-run clean, and still be one workerd rejects on
+# boot. Demonstrated 2026-09-07: adding a bare non-function named export to
+# src/index.ts left tsc and "wrangler deploy --dry-run" both PASSING, while
+# this step failed with "The Workers runtime failed to start".
+#
+# Honest about its marginal value, because a gate nobody understands is a
+# gate people delete. The suite already catches that specific export case
+# (it has a module-export shape guard), and the uninterpolated-placeholder
+# guard already covers ten named routes. What this adds is the wrangler dev
+# boot path itself -- its own config, binding and cron resolution, which the
+# vitest-pool-workers harness sets up differently -- and a check of served
+# bytes that does not depend on a hand-maintained route list.
+#
+# Measured at ~12s wall on this machine, under the 30s bar for keeping it in
+# the hook. If it grows past that, move it to CI only and say so here rather
+# than quietly dropping it.
+echo "[pre-commit] (4/4) Start smoke (worker boots and serves)..."
+bash scripts/start-smoke.sh
+
+echo "[pre-commit] All four gates passed. Proceeding with commit."
