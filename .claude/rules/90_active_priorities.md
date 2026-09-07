@@ -1,12 +1,52 @@
 # Active Priorities — Headless Oracle V5
 <!-- Claude: update this file after significant work to preserve state across sessions -->
-<!-- STALENESS NOTICE 2026-09-02 (Lead): the Current Status block below is dated 2026-05-21/25 and GAP-020 is superseded (v2 x402 clients exist; the worker is still v1-only). The current plan and open rows are in the founder's cc-output folder: PENDING_AND_KNOWN_STATE.md and BUSINESS_REVIEW_2026-09-02_ho-update-plan.md. Re-stamp this file in the rail sprint of 2026-09-07/08. -->
 
 ## Current Status
-**Phase**: Post-IETF-I-D-filing. Agent Readiness Stack fully shipped (2026-05-20 discovery surface + 2026-05-21 follow-ups; loose ends closed). Standards authorship remains the load-bearing positioning; engineering velocity is in service of that.
-**Day**: 85 (2026-05-21 — three small follow-ups: robots Sitemap directive, MCP-Protocol-Version header, Agenstry A2A audit log)
-**Test suite**: 1064/1064 in `wrangler.toml` TEST_COUNT + 11/11 (smoke) + 24/24 (SDK) + 26/26 (LangGraph template) + 17/17 (ai-hedge-fund). +6 since the May 21 follow-ups (5xx fix sprint, a43bb6b).
-**Worker**: src/index.ts ~13,700 lines (API-only, zero HTML). Live version: `9eddfc9d-27e1-4f29-bc0a-23ff92d7ee9c` (deployed 2026-05-25 — 5xx fix sprint; HEAD `a43bb6b`).
+**Phase**: x402 rail sprint, day two complete. GAP-020, GAP-021, GAP-017 and the CI
+count annotation are closed; the receipt coverage block cites the halt monitor's
+heartbeat; plan prices are stated once. Standards authorship remains the
+load-bearing positioning; engineering velocity is in service of that.
+**Day**: 194 (2026-09-07 — rail sprint day two, run the same afternoon as day one at
+the founder's instruction: T3b, T4, T5 ×3, plan prices, canon refresh).
+**Test suite**: 1298/1298 in `wrangler.toml` TEST_COUNT (1264 → 1298 today) + 11
+(smoke) + 24 (SDK) + 26 (LangGraph template) + 17 (ai-hedge-fund).
+**Worker**: src/index.ts ~17,150 lines (API-only, zero HTML). **Live version:
+`a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the x402
+v2 rail, HEAD `261c48a` at deploy time).
+**HEAD**: `f47df73`, seven signed commits ahead of the deployed version and
+**unpushed**. The Tuesday deploy and the push are the founder's, after this refresh.
+**Gate**: four steps (`tsc`, `npm test`, `wrangler deploy --dry-run`,
+`scripts/start-smoke.sh`). Every commit today passed all four; no `--no-verify`.
+
+### Day two, 2026-09-07 — what landed
+
+| commit | what |
+|---|---|
+| `9b37d9e` | T3b — the coverage block cites the halt monitor's heartbeat (`feed_state`, `feed_last_run`) |
+| `bba936b` | T4 — `/v5/payment-proof` computed on read; the first dollar backfilled from chain (GAP-021) |
+| `cfb4d9a` | T5.1 — GAP-017: a 2000ms deadline on every Supabase call on a request's path |
+| `61db54c` | T5.2 — the CI test-count detector reads the total, and now fails on a mismatch |
+| `b4c4fb4` | T5.3 — the start smoke: boot the worker and ask it two questions |
+| `f47df73` | the plan prices stated once (`PLAN_PRICES`; the on-chain mint amount derives) |
+| (this one) | T6 — canon refresh |
+
+Full detail, including what each change does NOT close, is in `CLAUDE.md` →
+Current State. Session report: `cc-output/CC_REPORT_2026-09-07_rail-day2.md`.
+
+### Still open after day two
+
+- The Tuesday deploy and the push to `origin/main` — both the founder's.
+- The post-deploy paid check (a stock 2.x client against the deployed worker,
+  asserting the paid receipt's `coverage` carries `feed_state`) — a separate
+  session the Lead re-issues.
+- `receipt-verify`'s `ho.receipt` adapter does not exist (0.1.2 ships four
+  formats, none of them HO's).
+- The coverage-history endpoint — not built.
+- `headless-oracle-web` calibration to "proposed, open PR #9" — still only on the
+  `didit-7day-reframe` branch.
+- The rate-limit test's wall-clock-minute flake, and the 403-vs-503 answer on an
+  auth-backend timeout — both named in `CLAUDE.md` → Current State, deliberately
+  not taken here.
 
 ### GAP-020 — x402 v2 served correctly beside v1 (closed 2026-09-07 — served by `6e2f0da`, deployed as `261c48a`, settled by tx `0x46db8fc8cfd79017375d76c5ad80256950f8437ff009ecbe90b6cd5ce97e9263` at block 50,998,385 (2026-09-07T13:01:57Z), client `@x402/fetch` 2.20.0 stock, no `registerV1`)
 

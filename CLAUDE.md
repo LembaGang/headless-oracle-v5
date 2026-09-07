@@ -149,55 +149,316 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-06-04 — environment.market_state framing calibration deploy (2ea0bb8) -->
-<!-- STALENESS NOTICE 2026-09-02 (Lead): this section is 90 days old; treat every status below as [open] until re-verified. GAP-020's premise ("no v2-capable client") is superseded: @x402/fetch 2.x has been on npm since 2025-12-11 (2.22.0 on 2026-08-11) and chirindo-x402-demo / the study rig pin 2.20.0, while this worker still emits x402Version 1 at src/index.ts 2576, 2990, 3181. The rail sprint that rewrites this section (v2 support, one Builder allowance, receipt coverage block, /v5/payment-proof, GAP-017) is planned for 2026-09-07/08. Business-level state and the plan live outside this repo in the founder's cc-output folder: PENDING_AND_KNOWN_STATE.md (rows B-1, B-2, B-19) and BUSINESS_REVIEW_2026-09-02_ho-update-plan.md. Do not remove this notice except in the commit that re-stamps this section. -->
+<!-- Last updated: 2026-09-07 — rail sprint day two (T3b, T4, T5, plan prices, this refresh) -->
 
-- **Tests**: 1064 main suite (authoritative — `wrangler.toml` TEST_COUNT) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
-- **Worker**: `src/index.ts` ~13,700 lines. API-only — zero HTML. Live version: `9f204caa-905e-4077-a7e8-e77080f13390` (deployed 2026-06-04 — env.market_state framing calibration; HEAD `2ea0bb8`, preceded by `8a8ab15` GAP-017/019; both commits pushed to `origin/main` and validated CI-green on push).
-- **Calibration deploy (2026-06-04)**: `environment.market_state` framing recalibrated to "proposed reference implementation — open PR #9" across every worker surface (`/llms.txt` blockquote + Standards section, `/v5/compliance` `spec_family.role`, `/.well-known/agent.json` `description` + `standards.verifiable_intent.role`, `/mcp` initialize description, `/openapi.json` summaries, Ampersend `skill.md`, AGENT_JSON, AMPERSEND_INTEGRATION_MD, key-delivery email). Replaces the prior "reference implementation" language while PR #9 is still in review. `docs/investor-one-pager.md` also corrected: BVNK is an **agreed acquisition, up to $1.8B** (programmable stablecoin payment rails) — not a completed acquisition. Live-verified serving on all five primary surfaces. Commit `2ea0bb8`, prose-only edits to string constants — zero test surface.
-- **Test gate (2026-06-04)**: GitHub CI is the authoritative test gate while [[gap-019-local-test-env]] is unresolved. Local `.githooks/pre-commit` hits non-deterministic workerd timeouts; WSL workaround also affected (same workerd/resource quirk, not code). The calibration (`2ea0bb8`) and GAP-017/019 (`8a8ab15`) commits went through with `--no-verify` because the local hook is broken — both were validated by the CI suite (1064 tests, clean Linux runner) on push. Bypass is justified for prose-only / docs-only commits with zero test surface; logic commits should wait for the local gate to be restored or pass via CI on a feature branch first.
-- **May 21 follow-ups**: robots.txt Sitemap directive (`10304ed`), MCP-Protocol-Version header fix (`6cb332e`), AGENT_READINESS.md §11 Agenstry A2A audit log.
-- **Agent Readiness Stack (2026-05-20)**: static agent-discovery surface added (no signing / canonical-payload / x402-settlement changes — route additions only). New live well-known endpoints: `/.well-known/mcp` (extensionless alias to the MCP server card), `/.well-known/agent-skills/index.json` + 5 `SKILL.md` docs (`verify-receipt`, `read-market-state`, `subscribe-halts`, `pay-with-x402`, `mcp-tool-catalog`; agentskills.io discovery 0.2.0 — index digests computed at request time from served bytes so they cannot drift), `/.well-known/api-catalog` (RFC 9727 / RFC 9264 linkset harvested from `AGENT_JSON.rest_api.endpoints`), `/agent-directory.json` (+ worker route — fixes the prior 200 `text/html` Pages soft-404) and `/.well-known/agent-directory.json`. `robots.txt` now declares Cloudflare `Content-Signal: ai-train=no, ai-input=yes, search=yes` plus explicit `Allow` blocks for ClaudeBot, GPTBot, OAI-SearchBot, PerplexityBot, ChatGPT-User, AgenstryBot, Open402DirectoryCrawler, YellowMCP-HealthChecker. **Audit log of record: `AGENT_READINESS.md`** (commits `54700a0` + `5639a23`). Deferred: root `/` `Link` headers (root is Pages-served — `headless-oracle-web` `_headers` follow-up).
-- **IETF Internet-Draft (2026-05-11)**: `draft-borthwick-msebenzi-environment-state-00` filed on the Independent Submission / Informational track. 43 pages. Co-authored with Douglas Borthwick (InsumerAPI). Family-definition spec for the `environment.*` constraint family — the layer above `environment.market_state` (HO, PR #9) and `environment.wallet_state` (InsumerAPI, PR #22). Live at <https://datatracker.ietf.org/doc/draft-borthwick-msebenzi-environment-state/>. Citable, archived, expires 2026-11-11 (re-file or evolve before then). This is the load-bearing artefact making HO the named reference implementation for the family rather than one of many candidates.
-- **Essay infrastructure (2026-05-13)**: `headlessoracle.com/essays/` index + two HTML-rendered essays live — `/essays/environment-internet-draft` (announcement of the I-D filing, v1.0.0, May 13) and `/essays/trust-primitive` (architectural argument for environment-state attestation, v1.6.4, April 28). Each page carries full OG/Twitter/canonical/article metadata. Canonical markdown sources live at `github.com/headlessoracle/essays`; tagged releases (`v1.0.0-environment-internet-draft-2026-05-13`, `v1.6.4-2026-04-28`) are SSH-signed. Served by Cloudflare Pages via `public/essays/<slug>/index.html` pass-through (no worker route). Sitemap + robots both list the paths.
-- **Site-wide og-image.png (2026-05-13)**: `https://headlessoracle.com/og-image.png` now returns 200 image/png (1200×630, 28.85 KB) instead of the pre-existing text/html SPA fallback. Closes the broken-preview-card gap that affected every page advertising the URL. Type-only composition (HEADLESS ORACLE wordmark, signed-market-state tagline, Ed25519 / 28 exchanges / fail-closed / 60s TTL footer). Generated via PowerShell + System.Drawing (no new deps).
-- **First Dollar**: achieved 2026-04-03 on Base mainnet — tx `0xeb9da873`, $0.001 USDC, settled via x402 on `/v5/status`. This is the load-bearing proof that an autonomous agent can discover, pay, and verify without human mediation.
-- **Bazaar-indexing settlement (2026-06-07)**: tx `0xa6bc45dc8a1aa8652e59ca605b5a1adc1ee4f9c6197cf52fe2c4dc8cfe87ee41`, block 47,022,787, 2026-06-07T12:22:01 UTC. $0.001 USDC, payer `0xa385…b079` → `0x26D4…AD3`, settled via CDP relayer (EIP-3009 TransferWithAuthorization — payer signed off-chain, CDP submitted and paid gas). First CDP-facilitated settlement against the new `/v5/status/x402` Bazaar-indexable resource. Triggers CDP catalogue indexing on the ~6h recompute cycle; check `bazaar.x402.org` discovery for "market state" from ~18:22 UTC. **Hidden win**: the v1 revert that unblocked this settlement (PR #21, commit `12bb670`, worker `949607ae`) also silently fixed `buildMainnetFacilitatorPayload` on the main `/v5/status` revenue path — yesterday's PR #20 had bumped that to `x402Version: 2` while leaving the `accepts[0]` block v1-shape, which would have rejected every real paying agent through CDP `/verify` with `invalid_network`. Caught before any real customer hit it because nothing settled between 2026-06-05 and today. See GAP-020.
-- **Daily operational rhythm**: 308–365 signed receipts/day, 6–16 authenticated calls/day. Traffic is steady, not episodic.
-- **Sustained agent discovery**: Chiark, glama, MCPRegistry, Smithery Connect, codex-mcp-client, AgentSEO, AgentPulse, nothumansearch.ai all probe on their own cadence. No outreach required to keep them warm.
-- **AI crawler coverage**: Meta-ExternalAgent, ClaudeBot, Amazonbot, Googlebot, GPTBot, Applebot all active. Recent 24h window showed a 588% increase in crawl volume — the training-data-as-distribution thesis is working.
-- **MCP prompts**: `pre_trade_check(mic)` and `market_briefing` — structured fail-closed guidance messages via `prompts/list` + `prompts/get`
-- **MCP resources**: `oracle://exchanges/directory` — static 28-exchange directory via `resources/list` + `resources/read`
-- **OpenAPI**: 81 paths, 11 semantic tags, `x-model-agnostic: true` + `x-regulatory-alignment` extensions on the `info` block
-- **Exchange count**: 28 (23 traditional + XCBT, XNYM, XCBO, XCOI, XBIN). Every surface says 28.
-- **x402 hardening**: 402 responses carry flat top-level machine-readable fields (`payment_required`, `payment_method`, `currency`, `network`, `chain_id`, `pricing`, `x402_endpoint`, `pricing_endpoint`, `documentation_url`, `alternative`) so lowest-capability models can parse without walking nested objects. `server-card.json` has a top-level `payment` section with `autonomous_payment: true`.
-- **Multi-Oracle Consensus spec v1.0.0**: we authored it. Served at `/docs/specifications/multi-oracle-consensus-v1` (markdown, MIT) and `/v1/verification/multi-oracle-guide` (JSON). Versioned `/v1/` so other oracles can adopt the same path. HO is `reference_oracles[0]`.
-- **Standards hub (web)**: `headless-oracle-web/standards.html` is live.
-- **Monitoring**: GitHub Actions health-check every 15 min — `.github/workflows/health-check.yml` + `scripts/health-check.mjs`. Verifies 5 endpoints, Ed25519 signatures, TTL window, Pages-vs-Worker classifier, and Paddle revenue events → GH issues. Full design in `.claude/rules/monitors.md`.
-- **Infrastructure cost**: ~$15.50/month
-- **Competitive landscape**: See `.claude/rules/95_competitive_landscape.md`. No direct competitor ships signed market-state. 12–24 month window before Chainlink/Pyth could.
-- **Verification SDKs (republished 2026-05-04)**: `@headlessoracle/verify@1.0.2` on npm and `headless-oracle@0.1.1` on PyPI. Both ship the canonicalization fix that aligns the consumer-side payload reconstruction with `/v5/keys → canonical_payload_spec`. Prior versions (1.0.1 / 0.1.0) silently produced `INVALID_SIGNATURE` on every real receipt for ~2 months and must not be recommended. Tags `v1.0.2` (commit `542762f`) and `v0.1.1` (commit `7e5e159`) are SSH-signed and pushed. Three sibling framework packages on PyPI (`headless-oracle-strands`, `headless-oracle-crewai`, `headless-oracle-langchain`) are thin REST wrappers, do not depend on `headless_oracle`, and are unaffected.
-- **Open follow-ups (post-calibration, 2026-06-04)**:
-  - **GAP-017 (real fix)**: wire `AbortSignal.timeout(<n>)` into the Supabase fetch calls in the auth hot path so a slow upstream cannot block worker isolates. Separate code-hardening PR — not part of the calibration. See `docs/intel/` and `90_active_priorities.md`.
-  - **GAP-019 (local test gate)**: local `.githooks/pre-commit` blocked by workerd non-deterministic timeouts during `npm test`. WSL setup completed but exhibits the same symptom — investigate as a workerd/resource quirk, not a code issue. Until resolved, CI is the gate and `--no-verify` is reserved for docs/prose-only commits.
-  - **CI test-count annotation**: `scripts/sync-test-count.sh` mis-counts (CI annotation reads `actual test count (2)` vs `wrangler.toml` `TEST_COUNT=1064`). The verify step still passes ✓ and 1064 is the correct figure; the detector itself is the bug — likely a `grep`/vitest-output drift. Dedicated fix in a follow-up commit.
-  - **Web calibration pending**: `headless-oracle-web/index.html` + `standards.html` still need the matching "proposed, open PR #9" language. Calibration currently lives on the `didit-7day-reframe` branch in the web repo; the both-branches subset still needs to land on the deployable branch so the marketing surface matches the worker surface.
-  - **GAP-020 — x402 v2 served correctly beside v1 (closed 2026-09-07 — served by `6e2f0da`, deployed as `261c48a`, settled by tx `0x46db8fc8cfd79017375d76c5ad80256950f8437ff009ecbe90b6cd5ce97e9263` at block 50,998,385 (2026-09-07T13:01:57Z), client `@x402/fetch` 2.20.0 stock, no `registerV1`)**: the rule that stood here — *"Do NOT bump to v2 again until Coinbase publishes a v2-capable client to npm"* — is **withdrawn**, and its premise was wrong in both directions. A v2-capable client has been on npm since 2025-12-11 (`@x402/fetch` 2.x; 2.25.0 current, the study rig pins 2.20.0), and the June revert to v1 did not leave us serving a valid v1 402 either. T0 of the rail sprint ran a stock 2.20.0 client against production on 2026-09-07 (`RAIL_T0_2026-09-07.md`, ratified in `LEAD_RATIFICATION_2026-09-07_rail-t0.md`): it parsed the 402 and then died at `Failed to create payment payload: No client registered for x402 version: 1`, before signing anything. **Root cause, ours (B-106):** the `Payment-Required` header declared `x402Version: 1` while carrying the v2 field name `amount` and omitting the v1-mandatory `resource` and `description`, so it validated against neither `PaymentRequirementsV1Schema` nor `PaymentRequirementsV2Schema`. Because `x402HTTPClient.getPaymentRequiredResponse` reads the header first and falls back to the body only when the header is absent (`@x402/core` 2.20.0, `dist/esm/chunk-4Y6I6537.mjs:1097-1105`), our schema-correct v1 body was never consulted by any current client. Two representations of one 402 disagreed.
-    **The rule that replaces it:** every representation of the price — the v2 header, the v1 body, the CDP `/verify` and `/settle` requirements, `/v5/pricing`, `/llms.txt`, the MCP server card, the A2A agent card and the key-delivery email — is serialised from **one canonical requirements object** (`X402_RESOURCE_SPECS` + `x402Canonical()` in `src/index.ts`), with a diff test that fails if any surface carries a literal. Do not write a price, asset, `payTo`, network or resource URL as a literal anywhere else.
-    **What is served now:** `Payment-Required` (and its `Payment-Required-Json` mirror) is a schema-valid **v2** `PaymentRequired` — CAIP-2 `eip155:8453`, `amount`, top-level `resource` ResourceInfo — for the header-reading clients that are all of them; the **v1 body** stays for the legacy `x402@1.2.0` client and any agent parsing JSON. Payment is accepted on `PAYMENT-SIGNATURE` (v2) and `X-PAYMENT` (v1); CDP `/verify` and `/settle` receive the requirements serialised in **the version the client's payload declares**, never an assumed one; settlement is returned as `PAYMENT-RESPONSE` (v2) or `X-PAYMENT-RESPONSE` (v1), base64 JSON carrying `transaction`, `network` and `payer`.
-    **Status: closed 2026-09-07 — served by `6e2f0da`, deployed as `261c48a`, settled by tx `0x46db8fc8cfd79017375d76c5ad80256950f8437ff009ecbe90b6cd5ce97e9263` at block 50,998,385 (2026-09-07T13:01:57Z), client `@x402/fetch` 2.20.0 stock, no `registerV1`.** The unit tests validate both representations against the real zod schemas vendored byte-for-byte from `@x402/core` 2.20.0 (`test/vendor/x402-schemas.mjs`), and a crossed-version test reproduces the 2026-06-07 `invalid_network` rejection. What no test could establish — that CDP settles a real v2 payment — was established live on 2026-09-07 against the deployed worker: a stock `@x402/fetch` 2.20.0 client (no `registerV1`, spend guard capped at 1000 atomic units), free trial exhausted first (`trial_used: 3 / limit: 3`), got a 402 whose decoded `Payment-Required` (sha256 `a2a4219538aca031102b024a80b83489bf7ecd04b41c2abc60b703604c36170e`, 502 B) validates against `PaymentRequiredV2Schema`, signed one EIP-3009 authorisation of 1000 atomic units, and received 200 with `PAYMENT-RESPONSE` (sha256 `8ecbb71433b0019d2fd924f87dadf9be20302660f1a848e3e7dba22670f20ca3`, 176 B) carrying `success: true`, the transaction hash, `network: eip155:8453` and the payer. On chain: status 1, one USDC `Transfer` of 1000 atomic units from the payer to `0x26D4…AD3`. Total spend 0.001 USDC, once. Evidence: `cc-output/CC_REPORT_2026-09-07_x402-v2-rail-live.md`, bytes under `cc-output/pins/live-2026-09-07/`.
-    **The free trial gates all of this:** `/v5/status` serves three signed receipts per caller per day (reset 00:00Z) before it will ever return a 402. Any client-compatibility test that does not exhaust the trial first is measuring a 200.
-  - **Receipt `coverage` block — SIGNED PAYLOAD CHANGE, 2026-09-07 (rail sprint T3)**: every receipt from `buildSignedReceipt` (`/v5/demo`, `/v5/status`, `/v5/status/x402`, `/v5/batch`, `/v1/status/{MIC}`, MCP `get_market_status`) now carries a `coverage` field **inside** the Ed25519 signature. Flagged under the spec-conformance guardrail: this changes the SMA receipt format while PR #9 is in review. Unchanged: the signature algorithm, the canonicalization rule, the 60s TTL, the fail-closed tiers, and every existing field. `coverage` is a JSON-encoded **string** (the convention `cross_venue` / `reasons` already use) holding `determination_tier` (0 = manual override, 1 = schedule, 2 = fail-closed fallback), `consulted[]`, `not_consulted[]`, `realtime_halt_feed_scope` (`["XNAS","XNYS"]` — the only MICs with intraday halt detection) and `unknown_reason` (null unless UNKNOWN). It is a string rather than a nested object because `signPayload` enforces string-only values and a nested object would make its key order load-bearing with no published rule saying so. **Compatibility:** a verifier reading `/v5/keys → canonical_payload_spec` at runtime is unaffected; one that hardcodes a field list gets `INVALID_SIGNATURE`. Verified by running the published SDKs — `@headlessoracle/verify@1.0.2` and `headless-oracle==0.1.1` both returned valid on a spec-driven check of a worker-served receipt and `INVALID_SIGNATURE` on both a stale field list and a tampered coverage block. Live production receipts carrying the block were re-verified on 2026-09-07 against the deployed worker by both published SDKs, spec-driven from live `/v5/keys` (`valid: true` on `/v5/demo?mic=XLON` and `?mic=XNYS` and on the receipt returned by the paid `/v5/status` call; `INVALID_SIGNATURE` on a tampered coverage block); `receipt-verify`'s `ho.receipt` adapter does not exist yet (0.1.2 ships four formats, none of them HO's).
-  - **`/v5/payment-proof` KV anomalies (logged 2026-06-07)**: public endpoint returned `first_payment_at: null`, `first_payment_tx: null` (April-3 first-dollar metadata lost from KV at some point), and `payment_count: 3` (likely undercount — lifetime should include the April-3 direct-on-chain settlement plus any pre-CDP payments). Endpoint is a diligence surface — surfaces to investors / auditors as "lifetime x402 payment proof". Not load-bearing for any signing or settlement path. Investigate as a separate ticket: walk `paddle_revenue_event:*` + `x402_used:*` + `x402_used_tx:*` KV prefixes to reconstruct lifetime totals, then either (a) backfill the `x402_first_*` keys, or (b) compute the displayed counts on-read from listable keys instead of relying on cached counters.
+Every version, count and transaction below cites the run that produced it. Nothing
+here is carried forward from an earlier stamp unverified.
+
+- **Tests**: 1298 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+  step by `scripts/vitest-count.sh` and enforced by CI) + 11 smoke + 24 SDK + 26
+  LangGraph + 17 ai-hedge-fund. 1264 → 1298 across the rail sprint's day two
+  (T3b +13, T4 +9, GAP-017 +2, plan prices +10, minus 6 replaced assertions).
+- **Worker**: `src/index.ts` ~17,150 lines. API-only — zero HTML. **Live version:
+  `a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the
+  x402 v2 rail; read from `npx wrangler deployments list` on 2026-09-07). The day-two
+  commits below are **committed and unpushed, pending the Tuesday deploy** — the live
+  worker does NOT yet serve T3b, T4, GAP-017, the start smoke or the derived plan
+  prices.
+- **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
+  --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
+  scripts/start-smoke.sh`. Every commit of 2026-09-07 passed all four with no
+  `--no-verify`.
+
+### GAP-019 — the local test gate: NOT REPRODUCING (2026-09-07)
+
+The canon recorded local `npm test` as blocked by non-deterministic workerd
+timeouts, with CI as the authoritative gate and `--no-verify` reserved for
+prose-only commits. It did not reproduce on any commit of 2026-09-07: seven
+commits ran the full hook clean (tsc 0, suite green, dry-run 0, and from
+`b4c4fb4` onward the start smoke too). Full-suite wall time 120–130s.
+
+Two flakes were observed and are recorded rather than swept up, because a gate
+that goes red for the wrong reason erodes trust in the gate:
+
+- `GET /v1/status/{MIC} — in-worker rate limit > exact-limit (60) all pass; 61st
+  returns 429` failed once in a full-suite run and passed 3/3 in isolation. The
+  mechanism is identified: the limiter buckets on `Math.floor(now/60_000)`, a
+  wall-clock minute, and the test fires 61 real sequential requests. If those
+  straddle a minute boundary the counter resets and the 61st returns 200. Latent
+  since the test was written; surfaced by the extra milliseconds T3b adds per
+  receipt. One-line fix: pin the clock with `vi.setSystemTime` for that test.
+  **Flagged, not fixed** — it is outside this sprint's scope.
+- One further single-test failure during the first attempt at the `b4c4fb4`
+  commit, which passed on re-run and on retry. Not identified; the output was not
+  captured. If a third flake appears, capture the full run before retrying.
+
+### The receipt `coverage` block — signed payload, T3 + T3b (2026-09-07)
+
+**SPEC-CONFORMANCE FLAG (PR #9 in review).** Every receipt from
+`buildSignedReceipt` — `/v5/demo`, `/v5/status`, `/v5/status/x402`, `/v5/batch`,
+`/v1/status/{MIC}`, MCP `get_market_status` — carries a `coverage` field **inside**
+the Ed25519 signature. Unchanged by both passes: the signature algorithm, the
+canonicalization rule (alphabetical sort of top-level keys, `JSON.stringify` with
+no whitespace), the 60s TTL, the fail-closed tiers, and every pre-existing field's
+name, type and meaning.
+
+`coverage` is a JSON-encoded **string** — the convention `cross_venue` and
+`reasons` already use. It is a string and not a nested object because
+`signPayload` enforces string-only values and a nested object would make its
+internal key order load-bearing with no published rule saying so. Members, in this
+fixed order:
+
+```
+determination_tier        0 = manual override (KV), 1 = schedule, 2 = fail-closed fallback
+consulted[] / not_consulted[]
+realtime_halt_feed_scope  ["XNAS","XNYS"] — the only MICs with intraday halt detection
+unknown_reason            null unless UNKNOWN
+feed_state                live | stale | failed | absent | not_covered   (T3b)
+feed_last_run             the monitor's ran_at, or null                  (T3b)
+```
+
+**What T3b corrected.** T3 listed `realtime_halt_feed_via_override` under
+`consulted` whenever the override tier was *read*. But an empty override tier means
+one of three things a receipt could not tell apart: no halt was observed; the
+monitor was not running; the monitor ran and its source failed. Claiming the feed
+path was consulted in the last two is a claim with no evidence behind it — the exact
+class of false coverage claim the block exists to prevent.
+
+**The rule now.** `runHaltMonitor` writes `halt_monitor_heartbeat` to
+`ORACLE_TELEMETRY` on every run (600s TTL; `{ran_at, ok, source, items, scope}`;
+written after the fetch and parse whether or not they succeeded, so `ok: false` is
+recorded rather than swallowed; a dead cron makes the key vanish, which is the
+honest state). A receipt lists the feed under `consulted` only when it can cite a
+heartbeat that is present, `ok`, and no older than 180s. Otherwise the feed is
+`not_consulted` and the receipt says why. Read once per isolate per 15s; freshness
+is still computed against the request's own clock, so the memo cannot make a stale
+heartbeat look live. A Tier 0 receipt driven by a **REALTIME** override lists the
+feed as consulted — that override *is* the feed observation; an operator's manual
+breaker is not, and does not earn the token. Tier 2 claims nothing but still states
+`feed_state`.
+
+`halt_detection` is unchanged and means something different: it says what is
+**configured** for a MIC, while `coverage.feed_state` says what was **live at this
+determination**. A receipt may honestly read `halt_detection: active` with
+`feed_state: stale`. `/v5/keys → canonical_payload_spec.coverage_note` states the
+distinction.
+
+**Compatibility.** A verifier that builds the canonical payload from `/v5/keys →
+canonical_payload_spec` at runtime is unaffected. One that hardcodes a field list
+gets `INVALID_SIGNATURE`. Both halves were run, not asserted, against a
+`wrangler dev` receipt carrying both new members, spec- and key-driven from the local
+`/v5/keys` with no override: `@headlessoracle/verify@1.0.2` and
+`headless-oracle==0.1.1` both returned valid on XNYS (`feed_state: live`) and XLON
+(`not_covered`), and `INVALID_SIGNATURE` on a rewritten `feed_state`, on the T3
+tamper claiming the feed was consulted on XLON, and on a pre-T3 hardcoded field list.
+Production receipts carrying the T3 block were verified live on 2026-09-07 by both
+SDKs. **Not closed**: `receipt-verify`'s `ho.receipt` adapter still does not exist
+(0.1.2 ships four formats, none of them HO's).
+
+### GAP-020 — x402 v2 served correctly beside v1: CLOSED 2026-09-07
+
+Closed exactly as Monday's report left it. Served by `6e2f0da`, deployed as
+`261c48a` (live version `a83fa8bf…`), settled by tx
+`0x46db8fc8cfd79017375d76c5ad80256950f8437ff009ecbe90b6cd5ce97e9263` at block
+50,998,385 (2026-09-07T13:01:57Z) — a stock `@x402/fetch` 2.20.0 client, no
+`registerV1`, spend guard 1000 atomic units, free trial exhausted first.
+
+**The rule that stands.** Every representation of a price — the v2
+`Payment-Required` header, the v1 body, the CDP `/verify` and `/settle`
+requirements, `/v5/pricing`, `/llms.txt`, the MCP server card, the A2A agent card
+and the key-delivery email — is serialised from **one canonical requirements
+object** (`X402_RESOURCE_SPECS` + `x402Canonical()`), with a diff test that fails if
+any surface carries a literal. **Do not write a price, asset, `payTo`, network or
+resource URL as a literal anywhere else.** Both versions are served; which one a
+client uses is read off its own payload, never assumed. The old rule — "do not bump
+to v2 until Coinbase publishes a v2-capable client" — is withdrawn: it was wrong in
+both directions (a v2 client had been on npm since 2025-12-11, and the June revert
+did not leave us serving a valid v1 402 either).
+
+**The free trial gates any client test.** `/v5/status` serves three signed receipts
+per caller per day (reset 00:00Z) before it will ever return a 402. A compatibility
+test that does not exhaust the trial first is measuring a 200.
+
+### The plan prices stated once (2026-09-07, `f47df73`)
+
+`PLAN_PRICES` (`builder: 99`, `pro: 299`, `protocol: 500`) is the single source, with
+display projections beside it (`BUILDER_MONTHLY`, `PRO_MONTHLY_SHORT`,
+`BUILDER_PRICE_USDC`, …). 35 sites converted. The load-bearing one is not a display
+string: `X402_MINT_BUILDER_UNITS` was `BigInt(99_000_000)`, written independently of
+every "$99" on the site, and now derives as `BigInt(PLAN_PRICES.builder) *
+USDC_DECIMALS_MULTIPLIER`. An agent paying the advertised price into an amount we no
+longer honour is not a formatting bug.
+
+**Do not write a plan price as a literal.** The check is
+`grep -nE '\b(99|299)\b.*(USDC|/month|\$)' src/index.ts`, which must return only the
+constant, its comments, and one SVG `cy="299"` geometry coordinate in the status
+card. Note that this grep is **not sufficient on its own** — it requires the digits
+to precede the currency marker, so it cannot see the `$99/mo` form, a bare
+`usdc: 99`, `required_usdc: '99'`, or the `X-Oracle-Plans` header ladder. Eleven
+literals were found beyond it by widening the pattern to any `99`/`299` token. Widen
+the pattern when checking, not just this grep.
+
+### The placeholder guard (2026-09-07, T2b)
+
+No served byte may carry a template placeholder the runtime never filled. The guard
+in `test/index.spec.ts` fetches a **hand-maintained list** of ten public text
+surfaces and asserts none matches `${...}`. **Rule: any new served-text route is
+added to that list in the same commit that adds the route.** A list-based guard only
+covers what someone remembered; `scripts/start-smoke.sh` checks `/openapi.json`
+against the real served bytes as a second, list-free net.
+
+### `/v5/payment-proof` — GAP-021 closed 2026-09-07 (`bba936b`)
+
+Computed on read from a chain-verified ledger, never from a cached counter.
+`X402_HISTORICAL_SETTLEMENTS` holds the four lifetime x402 settlements, each naming a
+transaction hash, block number and block time anyone can resolve on Basescan; new
+settlements append a durable `x402_payment:` KV row with **no TTL**.
+
+The four, from an `eth_getLogs` walk of USDC `Transfer(_, payTo, _)` over blocks
+44,192,527 → 51,000,755 (692 RPC calls, 0 failures, 2026-09-07):
+
+| tx | block | block time | note |
+|---|---|---|---|
+| `0xeb9da873…b308a` | 44,218,092 | 2026-04-03T14:12:11Z | the first dollar |
+| `0xb4b93483…5cf2`  | 44,382,001 | 2026-04-07T09:15:49Z | **was undocumented anywhere** |
+| `0xa6bc45dc…ee41`  | 47,022,787 | 2026-06-07T12:22:01Z | first CDP-facilitated settlement |
+| `0x46db8fc8…9263`  | 50,998,385 | 2026-09-07T13:01:57Z | the v2 rail run |
+
+Three causes, and the canon's earlier diagnosis was wrong on two of them. The
+first-payment keys were **never written**, not evicted: both verifiers seeded them
+under `if (count === 0)`, a branch that fires at most once in a counter's lifetime
+and had missed its window. The value would have been unusable anyway — it stored
+`txHash.slice(-12)`, a twelve-character suffix no explorer can resolve. And the
+suggested fix, computing counts on read from the listable prefixes, **cannot work**:
+a walk of production `ORACLE_TELEMETRY` on 2026-09-07 returned **zero keys** from all
+three of `x402_used:` (600s TTL), `x402_used_tx:` (365d) and
+`paddle_revenue_event:` (30d). Also corrected: `payment_count: 3` on 2026-06-07 was
+**not** an undercount — exactly three settlements had occurred by then.
+
+Production `x402_payment_count` reads 4 and the chain walk finds 4 — two sources that
+could have disagreed, agreeing. What that does **not** establish is the absence of a
+settlement before 2026-04-03: the walk starts at that day's first block, so an earlier
+one would have to have escaped both the walk's start bound and the counter. The
+endpoint reports the counter beside the ledger with an `agrees` flag rather than
+replacing it silently.
+
+### GAP-017 — closed 2026-09-07 (`cfb4d9a`)
+
+`supabaseHotPath()` injects a 2000ms `AbortSignal.timeout` into every Supabase call on
+a request's own path: `checkApiKey` step 4 (blocking), `updateKeyUsage` and
+`insertReceiptAudit` (per authenticated request under `ctx.waitUntil`). Webhook and
+admin handlers build their own clients and are deliberately out of scope.
+
+The severity is worth recording: the RED run against the unfixed code did not fail,
+it **hung** — vitest's own 10s per-test timeout could not recover the isolate, and the
+run had to be killed with workerd still holding the port. Fail-closed is unchanged (a
+timed-out lookup denies access) and now logs `AUTH_BACKEND_LOOKUP_FAILED` so a
+degrading auth backend no longer reads as a wave of bad keys.
+
+**Not closed, named deliberately**: a timeout still returns `403 INVALID_API_KEY`,
+which tells an agent to rotate a key that is probably fine. The right answer is a 503
+with `Retry-After`, so the agent retries. That changes `AuthResult` (its failure
+status is typed `402 | 403`) and an established public status code, so it is flagged
+rather than smuggled into a timeout fix.
+
+### CI test-count annotation — closed 2026-09-07 (`61db54c`)
+
+The detector was the bug, not the count. `grep -oP '\d+(?= passed)' | head -1` reads
+the `Test Files  2 passed` line, so CI annotated "actual test count (2)" for as long
+as the check existed. Extraction now lives in `scripts/vitest-count.sh`, shared by
+`scripts/sync-test-count.sh` and CI so they cannot drift apart: it anchors on the
+`Tests` summary line, strips ANSI first, uses `sed` rather than `grep -P` (which the
+Git Bash running the local hook refuses outright, so the old detector returned an
+empty string locally and `npm run test:sync-count` could never have worked on this
+machine), and refuses to report a count from a run that had failures. **The CI step
+now fails on a mismatch instead of warning** — `TEST_COUNT` is served at
+`/v5/metrics/public`, so a mismatch is a number we publish and cannot support. CI also
+no longer runs the suite twice.
+
+### Deploy procedure (amended 2026-09-07, B-115)
+
+1. Open a new shell. Confirm the identity the deploy will use: `npx wrangler whoami`.
+   It must show the account and the Workers Routes permission before you deploy.
+2. `npm run deploy` (`npx wrangler deploy`). Expect an uploaded version id and the
+   trigger list, with no red.
+3. Live-verify the changed endpoints by fetching them; record the version id.
+
+**Known benign failure, with a hard limit.** The 2026-09-07T12:41Z deploy uploaded
+successfully but failed while listing zone routes
+(`/zones/…/workers/routes`, auth code 10000) and could not read the user's email.
+That failure is benign **only while routes are unchanged** — a deploy that adds or
+changes a route will fail at that step and the route will not exist. The root cause
+(which token the deploy ran on, and which permissions it carries) is tracked
+separately as B-115 and is being corrected outside this commit; do not treat the
+symptom above as the whole diagnosis. Confirm with `whoami` before every deploy.
+
+### Steady state (unchanged, last confirmed 2026-06)
+- **Daily operational rhythm**: 308–365 signed receipts/day, 6–16 authenticated
+  calls/day. Steady, not episodic.
+- **Sustained agent discovery**: Chiark, glama, MCPRegistry, Smithery Connect,
+  codex-mcp-client, AgentSEO, AgentPulse, nothumansearch.ai all probe on their own
+  cadence. No outreach required.
+- **AI crawler coverage**: Meta-ExternalAgent, ClaudeBot, Amazonbot, Googlebot,
+  GPTBot, Applebot all active.
+- **Exchange count**: 28 (23 traditional + XCBT, XNYM, XCBO, XCOI, XBIN). Every
+  surface says 28.
+- **Infrastructure cost**: ~$15.50/month.
+- **Monitoring**: GitHub Actions health-check every 15 min. See
+  `.claude/rules/monitors.md`.
+
+### Open follow-ups
+- **Web calibration pending**: `headless-oracle-web/index.html` + `standards.html`
+  still need the "proposed, open PR #9" language. Calibration lives on the
+  `didit-7day-reframe` branch in the web repo and has not landed on the deployable
+  branch.
+- **`ho.receipt` adapter** in `receipt-verify` does not exist — the coverage block's
+  "0 unaddressed coverage items" DoD line cannot be run until it is written, in a
+  repository this sprint does not own.
+- **Coverage-history endpoint** — not built.
+- **Rate-limit test flake** — see GAP-019 above; one-line fix, deliberately not taken
+  here.
+- **403-vs-503 on an auth-backend timeout** — see GAP-017 above.
 
 ## Active standards work
 
-Three coordinated artefacts define the environment-constraint contract for autonomous agents: an IETF Internet-Draft for the family/vocabulary layer, and two sibling PRs at `agent-intent/verifiable-intent` for the individual constraint types. HO is the named reference implementation for the market-state member.
+Coordinated artefacts define the environment-constraint contract for autonomous
+agents: an IETF Internet-Draft for the family/vocabulary layer, two sibling PRs at
+`agent-intent/verifiable-intent` for the individual constraint types, and a
+composition draft in preparation. HO is the named reference implementation for the
+market-state member.
 
-- **IETF I-D (filed 2026-05-11)** — `draft-borthwick-msebenzi-environment-state-00`. Family-definition specification: membership criterion (failure mode must be gating), family-wide vocabulary (`attestation_url`, `max_attestation_age`, field-scope taxonomy), composition discipline (conjunction-with-completeness), register discipline, security considerations, IANA registry mechanics. Independent Submission / Informational. Expires 2026-11-11 — re-file or evolve before then.
-- **PR #9 (ours)** — `environment.market_state` constraint type. Current revision `v0.5.10-draft` (May 2026). Agents declare acceptable market-state conditions up front; the runtime enforces them against signed HO attestations before executing.
-- **PR #22 (Douglas Borthwick, InsumerAPI)** — sibling `environment.wallet_state` constraint type. Current revision `v0.6.5-draft`. Same structural pattern applied to on-chain payment-source state across 33 chains.
-- **Shared architecture** — all three artefacts use a common `max_attestation_age` freshness field, the RFC 8725 §3.1 algorithm-agility framework for signing, JWKS-discovered trust roots, and a fail-closed posture (unknown or expired attestation → refuse to proceed). Family-wide prose is byte-identical across PR #9 and PR #22 on the shared sections.
+- **IETF I-D — `draft-borthwick-msebenzi-environment-state-02`, filed 2026-08-27.**
+  "Verifiable Intent — environment.* Constraint Family". Independent Submission /
+  Informational, 46 pages. Co-authored with Douglas Borthwick (InsumerAPI).
+  **Expires 28 February 2027.** Archive bytes pinned 2026-09-02:
+  `https://www.ietf.org/archive/id/draft-borthwick-msebenzi-environment-state-02.txt`,
+  sha256 `d78fc31fdaafb9e3fbe22a4c97af5c485d8714bbb91b10b1c19b969026e5d922`,
+  116,519 B, 2,576 lines. Family-definition specification: membership criterion
+  (the failure mode must be gating), family-wide vocabulary (`attestation_url`,
+  `max_attestation_age`, field-scope taxonomy), composition discipline
+  (conjunction-with-completeness), register discipline, security considerations,
+  IANA registry mechanics. **Supersedes -00** (filed 2026-05-11, 43 pages, expired
+  2026-11-11) — cite -02 and its section numbers, never -00.
+- **`draft-msebenzi-evidence-action-00`** (28 July 2026, Informational, 40 pages,
+  expires 29 January 2027) — "The evidence.* Family: Post-Hoc, Independently
+  Recomputable Evidence Records for AI Agent Actions". The post-hoc sibling to the
+  pre-authorisation `environment.*` family.
+- **Composition draft — in preparation, not filed.** The registry / annex / envelope
+  text, negotiated three-way with Douglas Borthwick and Joe Krausz. The envelope
+  text is normative there rather than in the family draft. Status lives outside this
+  repo in the founder's `cc-output` folder; do not describe it as filed.
+- **PR #9 (ours)** — `environment.market_state` constraint type. Revision
+  `v0.5.10-draft` (May 2026), still in review. Agents declare acceptable
+  market-state conditions up front; the runtime enforces them against signed HO
+  attestations before executing.
+- **PR #22 (Douglas Borthwick, InsumerAPI)** — sibling `environment.wallet_state`
+  constraint type, `v0.6.5-draft`. The same structural pattern applied to on-chain
+  payment-source state across 33 chains.
+- **Shared architecture** — a common `max_attestation_age` freshness field, the RFC
+  8725 §3.1 algorithm-agility framework for signing, JWKS-discovered trust roots,
+  and a fail-closed posture (unknown or expired attestation → refuse to proceed).
+  Family-wide prose is byte-identical across PR #9 and PR #22 on the shared
+  sections.
 
 ### Spec-conformance guardrails (LOAD-BEARING)
 
@@ -217,7 +478,8 @@ Breaking spec conformance while PR #9 is in review destroys the reference-implem
 3. Run tests: `npm test` (requires `.dev.vars` to be populated)
 4. Make changes, run tests again
 5. Commit with descriptive message including test count
-6. Deploy: `npm run deploy`
+6. Deploy: `npm run deploy` — but read **Current State → Deploy procedure** first;
+   it carries the `wrangler whoami` precondition and the one known benign failure
 7. Live-verify: curl the changed endpoints
 8. Update this file's "Current State" section
 
@@ -231,8 +493,18 @@ How Mike and I collaborate on this codebase now:
   1. `npx tsc --noEmit` — zero TypeScript errors
   2. `npm test` — full suite must pass
   3. `npx wrangler deploy --dry-run` — bundle + config must validate
+  4. `bash scripts/start-smoke.sh` — the worker actually boots and serves
+     `/v5/health` and `/openapi.json` (added 2026-09-07). The first three never
+     start the worker: a bundle can clear all of them and still be one workerd
+     refuses to run. ~12s; if it grows past 30s, move it to CI only and say so in
+     the hook rather than dropping it.
   One-time setup per clone or worktree: `git config core.hooksPath .githooks`. Tests require `.dev.vars`; copy it into any new worktree before the first commit. Do not reach for `--no-verify` — if you believe an exception is warranted, surface it in the conversation first.
-- **Documented bypass class (2026-05-13).** On 2026-05-13 the worker pre-commit hook hung 40+ min on `getaddrinfo(): #11001 No such host is known.` for `sahqfuyneoeqczupmysu.supabase.co` — vitest-pool-workers making real DNS calls instead of mocking Supabase. This is the same flake-class as the "65 pre-existing Windows EBUSY failures" already documented in this file. Two commits used `--no-verify` after explicit MBeenzi approval: `59d9099` (sitemap/robots constants) and the documentation commit that landed this note. The exception class is: **pure string-constant or markdown-only edits with zero logic, route, or test surface, when the hook is failing on documented environment-flake symptoms.** Bypass requires (a) explicit approval per change, (b) the commit message stating the change is docs/data-only, naming the change, and naming the bypass reason. The next worker commit that touches logic or routes must wait for the test env to be fixed — the bypass class does not extend to those.
+- **Documented bypass class (2026-05-13) — SUPERSEDED 2026-09-07.** The
+  environment flake this class existed for did not reproduce on any commit of
+  2026-09-07; the full four-step gate ran clean on all seven, including logic
+  commits. Treat `--no-verify` as unavailable, and surface a proposed exception in
+  the conversation before committing rather than invoking this paragraph. Kept
+  below for the history of why it existed. Original text: On 2026-05-13 the worker pre-commit hook hung 40+ min on `getaddrinfo(): #11001 No such host is known.` for `sahqfuyneoeqczupmysu.supabase.co` — vitest-pool-workers making real DNS calls instead of mocking Supabase. This is the same flake-class as the "65 pre-existing Windows EBUSY failures" already documented in this file. Two commits used `--no-verify` after explicit MBeenzi approval: `59d9099` (sitemap/robots constants) and the documentation commit that landed this note. The exception class is: **pure string-constant or markdown-only edits with zero logic, route, or test surface, when the hook is failing on documented environment-flake symptoms.** Bypass requires (a) explicit approval per change, (b) the commit message stating the change is docs/data-only, naming the change, and naming the bypass reason. The next worker commit that touches logic or routes must wait for the test env to be fixed — the bypass class does not extend to those.
 - **Fail-closed posture is load-bearing.** It is the product's defining invariant and it is threaded through the codebase. Any change that introduces a permissive default, silent fallback, "temporary" bypass, or optimistic assumption in an error path must be flagged explicitly before committing. Don't reason it away — surface it.
 - **Commit signing.** Sign commits with the SSH signing key at `~/.ssh/id_ed25519_signing`. Already configured globally — no per-commit setup needed.
 
