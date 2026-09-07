@@ -182,3 +182,7 @@ mcp-publisher.exe
 
 # Local Claude project settings (machine-specific)
 .claude/settings.local.json
+
+
+# Fable strategic-session context bundle (local only — NEVER commit)
+CONTEXT_FOR_FABLE/

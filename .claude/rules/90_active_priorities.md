@@ -1,5 +1,6 @@
 # Active Priorities — Headless Oracle V5
 <!-- Claude: update this file after significant work to preserve state across sessions -->
+<!-- STALENESS NOTICE 2026-09-02 (Lead): the Current Status block below is dated 2026-05-21/25 and GAP-020 is superseded (v2 x402 clients exist; the worker is still v1-only). The current plan and open rows are in the founder's cc-output folder: PENDING_AND_KNOWN_STATE.md and BUSINESS_REVIEW_2026-09-02_ho-update-plan.md. Re-stamp this file in the rail sprint of 2026-09-07/08. -->
 
 ## Current Status
 **Phase**: Post-IETF-I-D-filing. Agent Readiness Stack fully shipped (2026-05-20 discovery surface + 2026-05-21 follow-ups; loose ends closed). Standards authorship remains the load-bearing positioning; engineering velocity is in service of that.

@@ -150,6 +150,7 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 
 ## Current State (update this section after every significant session)
 <!-- Last updated: 2026-06-04 — environment.market_state framing calibration deploy (2ea0bb8) -->
+<!-- STALENESS NOTICE 2026-09-02 (Lead): this section is 90 days old; treat every status below as [open] until re-verified. GAP-020's premise ("no v2-capable client") is superseded: @x402/fetch 2.x has been on npm since 2025-12-11 (2.22.0 on 2026-08-11) and chirindo-x402-demo / the study rig pin 2.20.0, while this worker still emits x402Version 1 at src/index.ts 2576, 2990, 3181. The rail sprint that rewrites this section (v2 support, one Builder allowance, receipt coverage block, /v5/payment-proof, GAP-017) is planned for 2026-09-07/08. Business-level state and the plan live outside this repo in the founder's cc-output folder: PENDING_AND_KNOWN_STATE.md (rows B-1, B-2, B-19) and BUSINESS_REVIEW_2026-09-02_ho-update-plan.md. Do not remove this notice except in the commit that re-stamps this section. -->
 
 - **Tests**: 1064 main suite (authoritative — `wrangler.toml` TEST_COUNT) + 11 smoke + 24 SDK + 26 LangGraph + 17 ai-hedge-fund
 - **Worker**: `src/index.ts` ~13,700 lines. API-only — zero HTML. Live version: `9f204caa-905e-4077-a7e8-e77080f13390` (deployed 2026-06-04 — env.market_state framing calibration; HEAD `2ea0bb8`, preceded by `8a8ab15` GAP-017/019; both commits pushed to `origin/main` and validated CI-green on push).
