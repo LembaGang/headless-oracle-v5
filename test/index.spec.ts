@@ -15692,4 +15692,45 @@ describe('referee prices are derived from one constant', () => {
 			}
 		}
 	});
+
+	it('B-145 DATED TRIPWIRE — INTENDED TO GO RED ON 2027-01-01: the referee introductory window has not expired', () => {
+		// THIS IS NOT A BUG WHEN IT FAILS. It is the point of the test.
+		//
+		// Every one of the six prices carries introductory_until: "2026-12-31"
+		// in its Paddle custom_data, and NOTHING read that field. On 1 January
+		// 2027 all six would go on charging the introductory amount and the only
+		// thing that would notice is someone remembering. A red suite is a
+		// better memory than a person.
+		//
+		// Deliberately real wall-clock time, not vi.setSystemTime: a tripwire
+		// that fires against a mocked clock never fires at all.
+		const R2 = refereePrices();
+		const until = new Date(`${R2.introductory_until}T23:59:59Z`);
+		const now   = new Date();
+		expect(
+			now.getTime() <= until.getTime(),
+			[
+				'',
+				`REFEREE_INTRODUCTORY_UNTIL (${R2.introductory_until}) has passed, and the six referee`,
+				'prices in REFEREE_PRICES still carry their INTRODUCTORY amounts:',
+				...(Object.keys(R2.prices) as Array<keyof typeof R2.prices>)
+					.map((k) => `  ${k}  $${R2.amount(k)}  ${R2.prices[k].price_id}`),
+				'',
+				'This test is a deliberate dated tripwire and it has done its job.',
+				'There are exactly two ways out, and both are decisions, not edits:',
+				'',
+				'  1. EXTEND — on a Lead ruling, move REFEREE_INTRODUCTORY_UNTIL in',
+				'     src/index.ts forward, AND update introductory_until in each of',
+				'     the six prices\' custom_data in Paddle so the two agree.',
+				'',
+				'  2. SUCCEED — publish successor prices in Paddle at the standard',
+				'     amounts, replace the six lines in REFEREE_PRICES with them, and',
+				'     clear the introductory flag: drop REFEREE_INTRODUCTORY_UNTIL and',
+				'     this test together, in the same commit.',
+				'',
+				'Do NOT silence this by deleting the assertion and leaving the prices.',
+				'',
+			].join('\n'),
+		).toBe(true);
+	});
 });
