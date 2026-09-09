@@ -2422,6 +2422,58 @@ function planPriceAmount(plan: string): string {
 	}
 }
 
+// ═══ Billing: the plan a caller asked for, and the plan a price id sells ═════
+// Both directions of the billing path used to fail OPEN, and neither had a
+// test that could tell an unrecognised value from a recognised one.
+//
+// Caller-supplied identifiers reach a response body and a log line from here.
+// Bound them and strip them to a plain token first, so nothing can inject a
+// newline into a log or smuggle markup into an error a human will read.
+function safeIdent(raw: string, max = 64): string {
+	return raw.replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, max);
+}
+
+// ─── /v5/checkout: which Paddle price each plan sells ────────────────────────
+// An explicit map, not a fall-through. Before this, the handler compared
+// `plan` against 'pro', 'protocol' and 'credits' and let EVERYTHING ELSE land
+// on PADDLE_PRICE_ID_BUILDER, so {"plan":"conformance_entry"} — or a typo —
+// returned a 200 carrying a $99/month Builder checkout for something the
+// caller never asked for.
+//
+// Absent and unrecognised are different cases and only the second is a defect.
+// An absent `plan` still means Builder, the documented default. An
+// unrecognised one means we do not know what to sell, and must say so.
+const CHECKOUT_PLAN_PRICE_ENV = {
+	builder:  'PADDLE_PRICE_ID_BUILDER',
+	pro:      'PADDLE_PRICE_ID_PRO',
+	protocol: 'PADDLE_PRICE_ID_PROTOCOL',
+	credits:  'PADDLE_PRICE_ID_CREDITS',
+} as const;
+type CheckoutPlan = keyof typeof CHECKOUT_PLAN_PRICE_ENV;
+const CHECKOUT_PLANS = Object.keys(CHECKOUT_PLAN_PRICE_ENV) as CheckoutPlan[];
+
+// ─── Paddle webhooks: which plan a price id sells ────────────────────────────
+// Fail-CLOSED. Both webhook branches used to open with `let plan = 'pro'` and
+// three id comparisons, under a comment calling it "fail-safe to 'pro' if
+// unrecognised". It was fail-open: an unrecognised price_id silently minted a
+// ho_live_ key on the second-highest plan. A price we do not recognise is a
+// price whose entitlement we cannot know, and granting Pro is a guess.
+//
+// null means "not recognised". Callers provision NOTHING on null — no key, no
+// Supabase row, no email — log PADDLE_UNMAPPED_PRICE_ID, record the payment
+// into the per-payment alerting path (recordPaddleRevenueEvent →
+// /v5/revenue-pulse → .github/workflows/health-check.yml opens a GitHub issue),
+// and return { received: true } so Paddle stops retrying a delivery no retry
+// can fix. The transaction stays in the Paddle dashboard, so the payment is
+// not lost; a human maps it.
+function resolvePaddlePlan(priceId: string | null, env: Env): 'builder' | 'pro' | 'protocol' | null {
+	if (!priceId) return null;
+	if (env.PADDLE_PRICE_ID_BUILDER  && priceId === env.PADDLE_PRICE_ID_BUILDER)  return 'builder';
+	if (env.PADDLE_PRICE_ID_PRO      && priceId === env.PADDLE_PRICE_ID_PRO)      return 'pro';
+	if (env.PADDLE_PRICE_ID_PROTOCOL && priceId === env.PADDLE_PRICE_ID_PROTOCOL) return 'protocol';
+	return null;
+}
+
 // 0.001 USDC = 1000 units at 6 decimals. Minimum payment per request.
 const X402_MIN_AMOUNT_UNITS     = BigInt(1000);
 // Derived, not restated: the amount an agent must actually send is the price
@@ -12942,14 +12994,21 @@ export default {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
 				}
 				const body = await request.json().catch(() => ({})) as { plan?: string };
+				// Absent → Builder, unchanged. Present-but-unrecognised → 400, and
+				// no call to Paddle: see CHECKOUT_PLAN_PRICE_ENV for why the old
+				// fall-through sold Builder to anyone who mistyped a plan name.
 				const plan = body.plan || url.searchParams.get('type') || 'builder';
-				const priceId =
-					plan === 'pro'      ? env.PADDLE_PRICE_ID_PRO :
-					plan === 'protocol' ? env.PADDLE_PRICE_ID_PROTOCOL :
-					plan === 'credits'  ? env.PADDLE_PRICE_ID_CREDITS :
-					                      env.PADDLE_PRICE_ID_BUILDER;
+				const priceEnvVar = CHECKOUT_PLAN_PRICE_ENV[plan as CheckoutPlan];
+				if (!priceEnvVar) {
+					return json({
+						error:       'UNKNOWN_PLAN',
+						message:     `Unknown plan '${safeIdent(plan, 32)}'`,
+						valid_plans: CHECKOUT_PLANS,
+					}, 400);
+				}
+				const priceId = env[priceEnvVar];
 				if (!priceId) {
-					return json({ error: 'SERVICE_UNAVAILABLE', message: `Billing plan '${plan}' is not configured` }, 503);
+					return json({ error: 'SERVICE_UNAVAILABLE', message: `Billing plan '${safeIdent(plan, 32)}' is not configured` }, 503);
 				}
 				const paddleRes = await fetch('https://api.paddle.com/transactions', {
 					method: 'POST',
@@ -13085,14 +13144,31 @@ export default {
 						.from('api_keys').select('id').eq('stripe_subscription_id', txn['subscription_id'] as string).single();
 					if (existing) return json({ received: true });
 
-					// Determine plan from transaction items price_id — fail-safe to 'pro' if unrecognised
+					// Determine plan from transaction items price_id. Fail-CLOSED: an
+					// unrecognised id provisions NOTHING — no key, no Supabase row, no
+					// email. The old comment here read "fail-safe to 'pro' if
+					// unrecognised", which was fail-open: it granted the second-highest
+					// plan to a price whose entitlement we could not know. See
+					// resolvePaddlePlan.
 					const items = txn['items'] as Array<{ price_id?: string }> | undefined;
 					const priceId = items?.[0]?.price_id ?? null;
-					let plan = 'pro';
-					if (priceId) {
-						if (env.PADDLE_PRICE_ID_BUILDER && priceId === env.PADDLE_PRICE_ID_BUILDER)       plan = 'builder';
-						else if (env.PADDLE_PRICE_ID_PRO && priceId === env.PADDLE_PRICE_ID_PRO)           plan = 'pro';
-						else if (env.PADDLE_PRICE_ID_PROTOCOL && priceId === env.PADDLE_PRICE_ID_PROTOCOL) plan = 'protocol';
+					const plan = resolvePaddlePlan(priceId, env);
+					if (!plan) {
+						console.error(`PADDLE_UNMAPPED_PRICE_ID: ${safeIdent(priceId ?? 'none')}`);
+						// Route into the per-payment alerting path so the payment that
+						// landed and was NOT provisioned reaches a human: this row is
+						// served by /v5/revenue-pulse and .github/workflows/health-check.yml
+						// opens a GitHub issue per txn_id. 'unknown' is honest — we do
+						// not know what this price charges, which is why we are here.
+						await recordPaddleRevenueEvent(env, {
+							tier:        'unmapped',
+							plan:        'unmapped',
+							amount:      'unknown',
+							currency:    'USD',
+							txn_id:      (txn['id'] as string) ?? 'unknown',
+							customer_id: (txn['customer_id'] as string) ?? null,
+						});
+						return json({ received: true });
 					}
 
 					// Fetch email from Paddle customer API (not included in transaction payload)
@@ -13284,14 +13360,30 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					const { data: existingActiv } = await supabaseActiv
 						.from('api_keys').select('id, key_hash, plan').eq('stripe_subscription_id', subscriptionId).single();
 
-					// Determine plan — items[0].price.id for subscription.activated (differs from transaction.completed)
+					// Determine plan — items[0].price.id for subscription.activated
+					// (differs from transaction.completed). Fail-CLOSED, same rule and
+					// same reason as the transaction.completed branch above: an
+					// unrecognised id provisions nothing and updates nothing, including
+					// on the existing-subscription upgrade path — we cannot upgrade a
+					// key to a plan we cannot name.
 					const activItems = sub['items'] as Array<{ price?: { id?: string } }> | undefined;
 					const activPriceId = activItems?.[0]?.price?.id ?? null;
-					let activPlan = 'pro';
-					if (activPriceId) {
-						if (env.PADDLE_PRICE_ID_BUILDER && activPriceId === env.PADDLE_PRICE_ID_BUILDER)       activPlan = 'builder';
-						else if (env.PADDLE_PRICE_ID_PRO && activPriceId === env.PADDLE_PRICE_ID_PRO)           activPlan = 'pro';
-						else if (env.PADDLE_PRICE_ID_PROTOCOL && activPriceId === env.PADDLE_PRICE_ID_PROTOCOL) activPlan = 'protocol';
+					const activPlan = resolvePaddlePlan(activPriceId, env);
+					if (!activPlan) {
+						console.error(`PADDLE_UNMAPPED_PRICE_ID: ${safeIdent(activPriceId ?? 'none')}`);
+						// Same alerting path as transaction.completed. The two events fire
+						// for the same subscription, so an unmapped subscription raises two
+						// alerts under different ids — noisier than one, and better than
+						// none.
+						await recordPaddleRevenueEvent(env, {
+							tier:        'unmapped',
+							plan:        'unmapped',
+							amount:      'unknown',
+							currency:    'USD',
+							txn_id:      subscriptionId,
+							customer_id: (sub['customer_id'] as string) ?? null,
+						});
+						return json({ received: true });
 					}
 
 					// Fetch customer email from Paddle API (not included in subscription event payload)

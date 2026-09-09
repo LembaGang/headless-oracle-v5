@@ -4074,6 +4074,87 @@ describe('POST /v5/checkout', () => {
 			globalThis.fetch = originalFetch;
 		}
 	});
+
+	// ─── B-144: /v5/checkout fails closed on an unrecognised plan ────────────
+	// Before 2026-09-09 `plan` was compared against 'pro', 'protocol' and
+	// 'credits' and anything else fell through to PADDLE_PRICE_ID_BUILDER, so
+	// {"plan":"conformance_entry"} returned a 200 carrying a $99/month Builder
+	// checkout. RED against the old code: it returned 200, not 400, and called
+	// Paddle once.
+	it('B-144: POST /v5/checkout with an unrecognised plan → 400 UNKNOWN_PLAN and ZERO calls to api.paddle.com', async () => {
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) {
+				paddleCalls += 1;
+				return new Response(JSON.stringify({ data: { id: 'txn_should_never_happen' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ plan: 'conformance_entry' }),
+			});
+			expect(res.status).toBe(400);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'UNKNOWN_PLAN');
+			expect(String(body.message)).toContain('conformance_entry');
+			// The error must tell an agent what IS sellable without a follow-up.
+			expect(body.valid_plans).toEqual(['builder', 'pro', 'protocol', 'credits']);
+			// The point of the fix: no money path is touched at all.
+			expect(paddleCalls).toBe(0);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-144: POST /v5/checkout reflects the unknown plan only as a bounded plain token', async () => {
+		// `plan` is caller-controlled and is echoed into the body. safeIdent
+		// strips it to [A-Za-z0-9_.:-] and caps it, so nothing can smuggle
+		// markup or a newline through the error a human reads.
+		const res = await fetchWorker('/v5/checkout', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body:    JSON.stringify({ plan: '<script>alert(1)</script>\nbuilder' }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		const message = String(body.message);
+		expect(message).not.toContain('<');
+		expect(message).not.toContain('\n');
+		expect(message).toContain('scriptalert1');
+	});
+
+	// The other half of the same rule: an ABSENT plan is not an unrecognised
+	// one, and must keep its documented Builder default. Without this the fix
+	// above could have been "400 on everything" and still looked green.
+	it('B-144: POST /v5/checkout with no plan at all still sells Builder', async () => {
+		let capturedPriceId = '';
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				const sent = JSON.parse((init?.body as string) ?? '{}') as { items?: Array<{ price_id?: string }> };
+				capturedPriceId = sent.items?.[0]?.price_id ?? '';
+				return new Response(JSON.stringify({ data: { id: 'txn_default_builder' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', { method: 'POST' });
+			expect(res.status).toBe(200);
+			expect(capturedPriceId).toBe('pri_test_builder_placeholder'); // matches .dev.vars
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
 });
 
 // ─── Billing: POST /webhooks/paddle ──────────────────────────────────────────
@@ -4179,22 +4260,39 @@ describe('POST /webhooks/paddle', () => {
 
 	it('transaction.completed INSERT race (23505) → 200 received:true, not 500', async () => {
 		// SELECT sees no row, but concurrent INSERT already won — our INSERT gets 23505.
+		//
+		// B-144 (2026-09-09): this test could not fail. Three things stopped it
+		// ever reaching the INSERT branch it is named for. (1) The SELECT mock
+		// returned HTTP 200, and supabase-js on a 2xx parses the whole body AS
+		// the row — so `existing` was truthy and the handler returned at the
+		// idempotency guard. (2) `data` carried no `items`, so there was no
+		// price id at all. (3) The 23505 mock wrapped the error in {data,error};
+		// supabase-js on a non-2xx sets `error` to the parsed body itself, so
+		// `dbError.code` read undefined and the 23505 branch was unreachable
+		// even if it had been reached. All three are corrected here.
 		const rawBody = JSON.stringify({
 			event_type: 'transaction.completed',
-			data: { id: 'txn_race_23505', customer_id: 'ctm_race_txn', subscription_id: 'sub_race_txn_001' },
+			data: {
+				id: 'txn_race_23505', customer_id: 'ctm_race_txn', subscription_id: 'sub_race_txn_001',
+				items: [{ price_id: 'pri_test_builder_placeholder' }],
+			},
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
+		let insertAttempted = false;
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
 			if (urlStr.includes('supabase.co') && (init?.method === 'GET' || !init?.method)) {
-				// SELECT: no existing row
-				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'No rows' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				// SELECT: no existing row. 406 is what PostgREST returns for
+				// .single() with no rows, and the status is what makes data null.
+				return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
-				// INSERT: unique constraint violation — peer already inserted
-				return new Response(JSON.stringify({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+				// INSERT: unique constraint violation — peer already inserted.
+				// The body IS the error object, as PostgREST sends it.
+				insertAttempted = true;
+				return new Response(JSON.stringify({ code: '23505', message: 'duplicate key value violates unique constraint', details: null, hint: null }), { status: 409, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (urlStr.includes('api.paddle.com/customers')) {
 				return new Response(JSON.stringify({ data: { email: 'race-txn@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -4211,6 +4309,9 @@ describe('POST /webhooks/paddle', () => {
 			const body = await response.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('received', true);
 			expect(body).not.toHaveProperty('error');
+			// The falsifier the test was missing: prove the 23505 branch was the
+			// thing that produced the 200, not an early return upstream of it.
+			expect(insertAttempted).toBe(true);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -4365,7 +4466,14 @@ describe('POST /webhooks/paddle', () => {
 		}
 	});
 
-	it('POST /webhooks/paddle transaction.completed -> defaults to pro plan for unrecognised price ID', async () => {
+	// ─── B-144: transaction.completed fails closed on an unmapped price id ───
+	// REPLACES a test that asserted the OLD behaviour — "defaults to pro plan
+	// for unrecognised price ID". That test was correct about what the code
+	// did and wrong about what the code should do: `let plan = 'pro'` under a
+	// comment calling itself "fail-safe" minted a ho_live_ key on the
+	// second-highest plan for a price whose entitlement we could not know.
+	// The assertion is inverted deliberately: nothing is provisioned now.
+	it('B-144: transaction.completed with an unmapped price_id provisions NOTHING and returns received:true', async () => {
 		const rawBody = JSON.stringify({
 			event_type: 'transaction.completed',
 			data: {
@@ -4376,7 +4484,9 @@ describe('POST /webhooks/paddle', () => {
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
-		let capturedPlan = '';
+		let insertCalled  = false;
+		let emailCalled   = false;
+		let customerCalled = false;
 
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -4387,18 +4497,17 @@ describe('POST /webhooks/paddle', () => {
 				});
 			}
 			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
-				const bodyText = typeof init.body === 'string' ? init.body : '';
-				const parsed = JSON.parse(bodyText);
-				const row = Array.isArray(parsed) ? parsed[0] : parsed;
-				if (row) capturedPlan = (row as Record<string, unknown>).plan as string;
+				insertCalled = true;
 				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (urlStr.includes('api.paddle.com/customers')) {
+				customerCalled = true;
 				return new Response(JSON.stringify({ data: { email: 'unknown@example.com' } }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
 			}
 			if (urlStr.includes('resend.com')) {
+				emailCalled = true;
 				return new Response(JSON.stringify({ id: 'email_mock_003' }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
@@ -4412,8 +4521,53 @@ describe('POST /webhooks/paddle', () => {
 				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
 				body:    rawBody,
 			});
+			// Paddle must stop retrying: no retry can map a price we do not know.
 			expect(response.status).toBe(200);
-			expect(capturedPlan).toBe('pro');
+			expect(await response.json()).toMatchObject({ received: true });
+			// No key, no row, no email — and not even the customer lookup.
+			expect(insertCalled).toBe(false);
+			expect(emailCalled).toBe(false);
+			expect(customerCalled).toBe(false);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-144: the unmapped payment reaches the per-payment alerting path as tier "unmapped"', async () => {
+		// recordPaddleRevenueEvent → paddle_revenue_event:{ISO} in KV →
+		// /v5/revenue-pulse → .github/workflows/health-check.yml opens a GitHub
+		// issue per txn_id. Without this the payment lands silently and the only
+		// thing that notices is a human reading the Paddle dashboard.
+		const before = parseInt((await env.ORACLE_TELEMETRY.get('paddle_revenue_count:unmapped')) ?? '0', 10) || 0;
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id: 'txn_unmapped_alert_001',
+				customer_id: 'ctm_unmapped_alert',
+				subscription_id: 'sub_unmapped_alert_001',
+				items: [{ price_id: 'pri_never_seen_before', quantity: 1 }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116' } }), {
+					status: 406, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			const after = parseInt((await env.ORACLE_TELEMETRY.get('paddle_revenue_count:unmapped')) ?? '0', 10) || 0;
+			expect(after).toBe(before + 1);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -6198,7 +6352,7 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 				id:          'sub_activated_new_001',
 				customer_id: 'ctm_activated_001',
 				status:      'active',
-				items:       [{ price: { id: 'test_builder_price_id' } }],
+				items:       [{ price: { id: 'pri_test_builder_placeholder' } }],
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
@@ -6216,8 +6370,12 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 				return new Response(JSON.stringify({ id: 'email_ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'GET') {
-				// select to check existing — return no match
-				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				// select to check existing — return no match. 406, NOT 200: with a
+				// 200 supabase-js parses the whole body AS the row, so `existingActiv`
+				// came back truthy and the handler took the upgrade branch and
+				// returned without provisioning anything. The test could not see it
+				// because it asserted neither capture. (B-144, 2026-09-09.)
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116' } }), { status: 406, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'POST') {
 				capturedSupabaseInsertBody = JSON.parse((init?.body as string) ?? '{}');
@@ -6235,6 +6393,15 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 			expect(response.status).toBe(200);
 			const body = await response.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('received', true);
+			// B-144: this test captured capturedEmailHtml and
+			// capturedSupabaseInsertBody and asserted NEITHER, so it would have
+			// stayed green if the handler had provisioned nothing at all. It also
+			// used a price id ('test_builder_price_id') that matches no
+			// .dev.vars value, so it was exercising the fail-open default rather
+			// than the mapped path its title claims. Both are fixed: the id is
+			// now the real builder placeholder, and the provisioning is asserted.
+			expect(capturedEmailHtml).toContain('ho_live_');
+			expect(capturedSupabaseInsertBody.plan).toBe('builder');
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -6250,21 +6417,29 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 				id:          'sub_race_test_23505',
 				customer_id: 'ctm_race_001',
 				status:      'active',
-				items:       [{ price: { id: 'test_pro_price_id' } }],
+				items:       [{ price: { id: 'pri_test_pro_placeholder' } }],
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
+		let insertAttempted = false;
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'GET') {
-				// SELECT sees no existing row — SELECT phase of TOCTOU
-				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'No rows' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				// SELECT sees no existing row — SELECT phase of TOCTOU. 406, not 200:
+				// see the sibling test above. With 200 the handler never reached the
+				// INSERT, so the 23505 branch this test is named for was never run.
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'No rows' } }), { status: 406, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'POST') {
-				// INSERT fails with unique_violation — concurrent webhook won the race
-				return new Response(JSON.stringify({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+				// INSERT fails with unique_violation — concurrent webhook won the
+				// race. The body IS the error object, as PostgREST sends it:
+				// supabase-js on a non-2xx assigns the parsed body to `error`, so
+				// the previous {data,error} wrapper left dbError.code undefined and
+				// the 23505 branch unreachable. (B-144, 2026-09-09.)
+				insertAttempted = true;
+				return new Response(JSON.stringify({ code: '23505', message: 'duplicate key value violates unique constraint', details: null, hint: null }), { status: 409, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (url.includes('api.paddle.com/customers')) {
 				return new Response(JSON.stringify({ data: { email: 'race@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -6282,6 +6457,9 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 			expect(body).toHaveProperty('received', true);
 			// Must NOT return DB_ERROR — 23505 is not an application error
 			expect(body).not.toHaveProperty('error');
+			// The falsifier the test was missing: prove the 23505 branch produced
+			// the 200, not an early return upstream of the INSERT.
+			expect(insertAttempted).toBe(true);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -6299,7 +6477,7 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 				id:          existingSubId,
 				customer_id: 'ctm_dup_001',
 				status:      'active',
-				items:       [{ price: { id: 'test_builder_price_id' } }],
+				items:       [{ price: { id: 'pri_test_builder_placeholder' } }],
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
@@ -6333,6 +6511,63 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 		} finally {
 			globalThis.fetch = originalFetch;
 			await env.ORACLE_API_KEYS.delete(existingKeyHash);
+		}
+	});
+
+	// ─── B-144: subscription.activated fails closed on an unmapped price id ──
+	// The sibling of the transaction.completed case. `let activPlan = 'pro'`
+	// here minted a ho_live_ key on Pro for any subscription whose price id we
+	// did not recognise — including the six referee prices, none of which is an
+	// API tier at all.
+	it('B-144: subscription.activated with an unmapped price id provisions NOTHING and returns received:true', async () => {
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.activated',
+			data: {
+				id:          'sub_activated_unmapped_001',
+				customer_id: 'ctm_activated_unmapped',
+				status:      'active',
+				items:       [{ price: { id: 'pri_01m22wf966bjsar9sgtbzsva2b' } }], // custody_90d — a real Paddle price, not an API tier
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		let insertCalled   = false;
+		let updateCalled   = false;
+		let emailCalled    = false;
+		let customerCalled = false;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes('api.paddle.com/customers')) {
+				customerCalled = true;
+				return new Response(JSON.stringify({ data: { email: 'unmapped@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('api.resend.com')) {
+				emailCalled = true;
+				return new Response(JSON.stringify({ id: 'email_ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('supabase') && init?.method === 'POST')  insertCalled = true;
+			if (url.includes('supabase') && init?.method === 'PATCH') updateCalled = true;
+			if (url.includes('supabase')) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input as RequestInfo, init);
+		};
+
+		try {
+			const response = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({ received: true });
+			expect(insertCalled).toBe(false);
+			expect(updateCalled).toBe(false);
+			expect(emailCalled).toBe(false);
+			expect(customerCalled).toBe(false);
+		} finally {
+			globalThis.fetch = originalFetch;
 		}
 	});
 });
