@@ -14,8 +14,11 @@ remains the load-bearing positioning; engineering velocity is in service of that
 `a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the x402
 v2 rail, HEAD `261c48a` at deploy time). **Whether the deployed worker matches this
 tree was not checked this session.**
-**HEAD**: `2c89d71` (plus a docs commit), eleven signed commits ahead of the
-deployed version and **unpushed**. The deploy and the push are the founder's.
+**HEAD**: `cac4393`. Read from git, not carried forward: `origin/main` is at
+`7a0bafe`, so **the four commits of 2026-09-09 are the unpushed ones** — the
+day-two commits of 2026-09-07 were pushed, and the previous stamp calling them
+"committed and unpushed" was stale. Twelve commits separate the deploy-time HEAD
+(`261c48a`) from `cac4393`. The deploy and the push are the founder's.
 **Gate**: four steps (`tsc`, `npm test`, `wrangler deploy --dry-run`,
 `scripts/start-smoke.sh`). Every commit today passed all four; no `--no-verify`.
 `npm run build` green.

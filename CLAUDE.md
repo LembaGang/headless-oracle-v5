@@ -160,10 +160,13 @@ here is carried forward from an earlier stamp unverified.
   1298 → 1308 on 2026-09-09 (B-144 +6 and 1 replaced, B-145 +4, tripwire +1).
 - **Worker**: `src/index.ts` ~17,300 lines. API-only — zero HTML. **Live version:
   `a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the
-  x402 v2 rail; read from `npx wrangler deployments list` on 2026-09-07). The day-two
-  commits below and the three of 2026-09-09 are **committed and unpushed, pending
-  the founder's deploy** — the live worker does NOT yet serve T3b, T4, GAP-017, the
-  start smoke, the derived plan prices, or the fail-closed billing path.
+  x402 v2 rail; read from `npx wrangler deployments list` on 2026-09-07). Twelve
+  commits separate the deploy-time HEAD (`261c48a`) from `cac4393`, so the live
+  worker does NOT serve T3b, T4, GAP-017, the start smoke, the derived plan prices,
+  or the fail-closed billing path. **Push state, read from git on 2026-09-09 rather
+  than carried forward: `origin/main` is at `7a0bafe`, so only the four commits of
+  2026-09-09 are unpushed** — the earlier stamp calling the day-two commits
+  "committed and unpushed" was stale.
   **Whether the deployed worker matches this tree has not been checked.**
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
