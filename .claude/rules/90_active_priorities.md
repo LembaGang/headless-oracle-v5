@@ -2,21 +2,53 @@
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## Current Status
-**Phase**: x402 rail sprint, day two complete. GAP-020, GAP-021, GAP-017 and the CI
-count annotation are closed; the receipt coverage block cites the halt monitor's
-heartbeat; plan prices are stated once. Standards authorship remains the
-load-bearing positioning; engineering velocity is in service of that.
-**Day**: 194 (2026-09-07 — rail sprint day two, run the same afternoon as day one at
-the founder's instruction: T3b, T4, T5 ×3, plan prices, canon refresh).
-**Test suite**: 1298/1298 in `wrangler.toml` TEST_COUNT (1264 → 1298 today) + 11
+**Phase**: B-144 and B-145 closed. The billing path fails closed on a plan or a
+price id it does not recognise, and the six referee prices are stated once, in
+source, with a dated tripwire on their introductory window. Standards authorship
+remains the load-bearing positioning; engineering velocity is in service of that.
+**Day**: 196 (2026-09-09 — one session, per handoff
+`CC_HANDOFF_2026-09-09_referee-prices-and-billing-failopen.md`).
+**Test suite**: 1308/1308 in `wrangler.toml` TEST_COUNT (1298 → 1308 today) + 11
 (smoke) + 24 (SDK) + 26 (LangGraph template) + 17 (ai-hedge-fund).
-**Worker**: src/index.ts ~17,150 lines (API-only, zero HTML). **Live version:
+**Worker**: src/index.ts ~17,300 lines (API-only, zero HTML). **Live version:
 `a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the x402
-v2 rail, HEAD `261c48a` at deploy time).
-**HEAD**: `f47df73`, seven signed commits ahead of the deployed version and
-**unpushed**. The Tuesday deploy and the push are the founder's, after this refresh.
+v2 rail, HEAD `261c48a` at deploy time). **Whether the deployed worker matches this
+tree was not checked this session.**
+**HEAD**: `2c89d71` (plus a docs commit), eleven signed commits ahead of the
+deployed version and **unpushed**. The deploy and the push are the founder's.
 **Gate**: four steps (`tsc`, `npm test`, `wrangler deploy --dry-run`,
 `scripts/start-smoke.sh`). Every commit today passed all four; no `--no-verify`.
+`npm run build` green.
+
+### 2026-09-09 — what landed
+
+| commit | what |
+|---|---|
+| `f5d3ac9` | B-144 — `/v5/checkout` 400s an unknown plan with zero calls to Paddle; both webhook branches provision nothing for an unmapped price id and alert |
+| `0c00040` | B-145 — `REFEREE_PRICES`: the six referee prices stated once, in source, with the four live plan ids recorded beside them |
+| `2c89d71` | B-145 — the dated tripwire on `REFEREE_INTRODUCTORY_UNTIL`, fires 2027-01-01 by design |
+| (this one) | canon refresh |
+
+Full detail, including what each change does NOT close, is in `CLAUDE.md` →
+Current State. Session report:
+`cc-output/CC_REPORT_2026-09-09_referee-prices-and-billing-failopen.md`.
+
+### Still open after 2026-09-09
+
+- **The deploy and the push** — both the founder's. Eleven commits are ahead of
+  the live worker, which still serves the fail-OPEN billing path.
+- **The four `PADDLE_PRICE_ID_*` secrets are not migrated to source.** The Lead's
+  ruling covers referee ids; migrating the existing four touches deploy
+  configuration and is its own row. Until then the reconciliation is a comment in
+  `src/index.ts`, not a check.
+- **Nothing quotes a referee price on any surface** — deliberate. The point of
+  landing the constant now is that the first surface to quote one derives it.
+- **No referee price has been exercised end to end** against the live Paddle
+  account: no checkout, no transaction, no webhook.
+- **403-vs-503 on an auth-backend timeout** (GAP-017) and the **rate-limit test's
+  wall-clock-minute flake** (GAP-019) — both still open, both named in `CLAUDE.md`.
+  The GAP-019 flake fired twice today, in the baseline run and once in the
+  pre-commit hook; both cleared on re-run, no `--no-verify` was used.
 
 ### Day two, 2026-09-07 — what landed
 

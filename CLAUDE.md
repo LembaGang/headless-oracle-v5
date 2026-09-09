@@ -149,21 +149,22 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-09-07 — rail sprint day two (T3b, T4, T5, plan prices, this refresh) -->
+<!-- Last updated: 2026-09-09 — B-144 fail-closed billing, B-145 referee prices -->
 
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **Tests**: 1298 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1308 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh` and enforced by CI) + 11 smoke + 24 SDK + 26
-  LangGraph + 17 ai-hedge-fund. 1264 → 1298 across the rail sprint's day two
-  (T3b +13, T4 +9, GAP-017 +2, plan prices +10, minus 6 replaced assertions).
-- **Worker**: `src/index.ts` ~17,150 lines. API-only — zero HTML. **Live version:
+  LangGraph + 17 ai-hedge-fund. 1264 → 1298 across the rail sprint's day two;
+  1298 → 1308 on 2026-09-09 (B-144 +6 and 1 replaced, B-145 +4, tripwire +1).
+- **Worker**: `src/index.ts` ~17,300 lines. API-only — zero HTML. **Live version:
   `a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the
   x402 v2 rail; read from `npx wrangler deployments list` on 2026-09-07). The day-two
-  commits below are **committed and unpushed, pending the Tuesday deploy** — the live
-  worker does NOT yet serve T3b, T4, GAP-017, the start smoke or the derived plan
-  prices.
+  commits below and the three of 2026-09-09 are **committed and unpushed, pending
+  the founder's deploy** — the live worker does NOT yet serve T3b, T4, GAP-017, the
+  start smoke, the derived plan prices, or the fail-closed billing path.
+  **Whether the deployed worker matches this tree has not been checked.**
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
   scripts/start-smoke.sh`. Every commit of 2026-09-07 passed all four with no
@@ -297,6 +298,92 @@ to precede the currency marker, so it cannot see the `$99/mo` form, a bare
 `usdc: 99`, `required_usdc: '99'`, or the `X-Oracle-Plans` header ladder. Eleven
 literals were found beyond it by widening the pattern to any `99`/`299` token. Widen
 the pattern when checking, not just this grep.
+
+### B-144 — the billing path fails closed (2026-09-09, `f5d3ac9`)
+
+Three sites decided what to sell, or what to grant, by falling through to a
+default. All three are now explicit.
+
+- **`POST /v5/checkout`** compared `plan` against `pro`, `protocol` and `credits`
+  and let everything else land on `PADDLE_PRICE_ID_BUILDER`. `{"plan":
+  "conformance_entry"}` returned a 200 carrying a $99/month Builder checkout; so
+  did a typo. Now `CHECKOUT_PLAN_PRICE_ENV`, an explicit map: an unrecognised plan
+  is **400 `UNKNOWN_PLAN`** carrying `valid_plans`, and **no call to Paddle at
+  all**. An **absent** plan still means Builder — absent and unrecognised are
+  different cases and only the second was a defect.
+- **`transaction.completed`** and **`subscription.activated`** both opened with
+  `let plan = 'pro'` under a comment calling it "fail-safe to 'pro' if
+  unrecognised". It was fail-**open**: an unrecognised `price_id` minted a
+  `ho_live_` key on the second-highest plan. `resolvePaddlePlan` now returns
+  `null` and both branches provision **nothing** — no key, no Supabase row, no
+  email, not even the customer lookup — log `PADDLE_UNMAPPED_PRICE_ID` and return
+  `{received:true}` so Paddle stops retrying a delivery no retry can fix. The
+  transaction stays in the Paddle dashboard; a human maps it.
+
+The unmapped case routes into the alerting path that **already existed**:
+`recordPaddleRevenueEvent` → `paddle_revenue_event:{ISO}` → `/v5/revenue-pulse`
+→ `.github/workflows/health-check.yml` opens a GitHub issue per `txn_id`.
+Nothing new was invented for it. `tier` and `plan` are `unmapped`, `amount` is
+`unknown` — not knowing what the price charges is why we are in that branch.
+
+**Four sibling tests could not fail** and were corrected in the same commit,
+because this change moved them from silently-passing to actively misleading.
+Two mechanisms, both worth remembering: (a) a Supabase SELECT mock returning
+**HTTP 200** with `{data:null,error:{...}}` — supabase-js on a 2xx parses the
+whole body **as the row**, so `existing` came back truthy and the handler
+returned at the idempotency guard; use **406**. (b) a 23505 mock wrapping the
+error as `{data,error}` — supabase-js on a non-2xx assigns the parsed body
+**itself** to `error`, so `dbError.code` read `undefined`; the body must **be**
+the error object, as PostgREST sends it. Both "INSERT race (23505)" tests now
+assert `insertAttempted`.
+
+**Not closed, named deliberately**: no checkout, transaction or webhook has been
+exercised end to end against the live Paddle account from this tree.
+
+### `REFEREE_PRICES` — the six referee prices stated once (2026-09-09, `0c00040`)
+
+Six prices created in the live Paddle account on 2026-09-09 existed **nowhere
+else**. `REFEREE_PRICES` sits beside `PLAN_PRICES`, one line per price carrying
+the key, the Paddle price id, the amount in **minor units**, the currency and
+the billing cycle. `refereePriceAmount()` is the only projection to a decimal
+string.
+
+**Ruling (Lead, 2026-09-09): the price ids go in SOURCE, not in Cloudflare
+secrets.** A price id is an identifier, not a credential; the existing four
+`PADDLE_PRICE_ID_*` are secrets and that is exactly why nothing in this tree
+could reconcile what the worker charges against what the record says it charges.
+The four live plan ids are recorded as a comment beside `REFEREE_PRICES`. **They
+are not migrated out of secrets** — that touches deploy configuration and is its
+own row.
+
+`resolvePaddlePlan` returns three outcomes, not two: `{kind:'api_plan'}`
+provisions a key as before; `{kind:'referee'}` is recognised, recorded under its
+own name, and mints **no API key** — evidence custody is not API access, and
+before B-144 a `custody_90d` subscription minted a Pro key; `null` is unmapped.
+
+**Do not write a referee price id or amount as a literal anywhere else.** The
+check is `git grep -n 'pri_01m22w'`, which must return exactly two hits per id —
+`REFEREE_PRICES` in `src/index.ts` and the reconciliation table in
+`test/index.spec.ts`. That table is written out independently on purpose: a test
+comparing the constant against itself would be a decoration. Note what the
+served-surface test does **not** cover: `dispute` is $500.00 and
+`PLAN_PRICES.protocol` is $500/month, so amounts colliding with a plan price are
+skipped there and only the price-id half covers them.
+
+### The referee introductory tripwire — fires 2027-01-01 (2026-09-09, `2c89d71`)
+
+`REFEREE_INTRODUCTORY_UNTIL = '2026-12-31'` mirrors the `introductory_until`
+each of the six prices carries in its Paddle `custom_data`, which **nothing
+read**. The test named `B-145 DATED TRIPWIRE — INTENDED TO GO RED ON 2027-01-01`
+runs against real wall-clock time, not `vi.setSystemTime` — a tripwire that
+fires against a mocked clock never fires at all.
+
+**A red suite on 1 January 2027 is the intended behaviour, not a bug.** The
+failure message names the constant, the date, all six prices, and the two ways
+out: extend the date on a Lead ruling (in source **and** in Paddle, so the two
+agree), or publish successor prices and drop the flag and the test together.
+Silencing it by deleting the assertion and leaving the prices is the one
+response that removes the thing that found the problem.
 
 ### The placeholder guard (2026-09-07, T2b)
 
