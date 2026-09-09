@@ -365,10 +365,13 @@ own name, and mints **no API key** — evidence custody is not API access, and
 before B-144 a `custody_90d` subscription minted a Pro key; `null` is unmapped.
 
 **Do not write a referee price id or amount as a literal anywhere else.** The
-check is `git grep -n 'pri_01m22w'`, which must return exactly two hits per id —
-`REFEREE_PRICES` in `src/index.ts` and the reconciliation table in
-`test/index.spec.ts`. That table is written out independently on purpose: a test
-comparing the constant against itself would be a decoration. Note what the
+check is `git grep -nE 'pri_01m22w[a-z0-9]+' -- src test`, which must return
+exactly six lines in `src/index.ts` (`REFEREE_PRICES`) and six in
+`test/index.spec.ts` (the reconciliation table) — two per id, and nothing else.
+Scope the grep to `src test`, or match on the full-id pattern as above: an
+unscoped `git grep 'pri_01m22w'` also hits **this paragraph**, because the rule
+quotes its own pattern. That table is written out independently on purpose: a
+test comparing the constant against itself would be a decoration. Note what the
 served-surface test does **not** cover: `dispute` is $500.00 and
 `PLAN_PRICES.protocol` is $500/month, so amounts colliding with a plan price are
 skipped there and only the price-id half covers them.
