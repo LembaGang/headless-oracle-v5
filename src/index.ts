@@ -2422,6 +2422,68 @@ function planPriceAmount(plan: string): string {
 	}
 }
 
+
+// ═══ Referee service prices — stated once, in source ══════════════════════════
+// The same discipline as PLAN_PRICES above, and for the same reason.
+//
+// These six prices were created in the live Paddle account on 2026-09-09 and
+// existed NOWHERE else. Nothing quoted them, so the first surface to do so
+// would have been a second, independent statement of the same number with
+// nothing failing when the two disagreed — which is precisely the failure the
+// plan-price consolidation was for. Doing it now, while nothing quotes them,
+// is the whole point: the first thing that quotes one derives it.
+//
+// Ruling (Lead, 2026-09-09): the price ids live in SOURCE, not in Cloudflare
+// secrets. A price id is an identifier, not a credential. The existing four
+// PADDLE_PRICE_ID_* ARE secrets, and that is exactly why nothing in this tree
+// could reconcile what the worker charges against what the record says it
+// charges. In source they are readable, diffable and assertable.
+//
+// The four live PLAN price ids, recorded so that reconciliation is possible
+// from the tree. They are NOT migrated out of secrets here — that touches
+// deploy configuration and is its own row.
+//   PADDLE_PRICE_ID_BUILDER   pri_01kkngdev5v838m6ae2391bm46    9900  1/month
+//   PADDLE_PRICE_ID_PRO       pri_01kkngnsxm0zngv6xj5982dhvs   29900  1/month
+//   PADDLE_PRICE_ID_PROTOCOL  pri_01kkngsqnfwkdqxs0mk07q5n9a   50000  1/month
+//   PADDLE_PRICE_ID_CREDITS   pri_01kmzfkbacgrpxp6bbv306b4k1     500  one-time
+//
+// Amounts are in MINOR units, as Paddle stores them, so that nothing in this
+// file has to do decimal arithmetic to state a price. Everything human- or
+// machine-facing is a projection of these lines, never a second copy.
+const REFEREE_PRICES = {
+	conformance_entry: { price_id: 'pri_01m22wcgvj15ktn5xnabf13a7p', minor_units: 250000, currency: 'USD', cycle: null },
+	regrade:           { price_id: 'pri_01m22wcz6wth6vdmhk3a9xd4ez', minor_units:  75000, currency: 'USD', cycle: null },
+	dispute:           { price_id: 'pri_01m22wda7747kb18jfat1p58dw', minor_units:  50000, currency: 'USD', cycle: null },
+	dispute_note:      { price_id: 'pri_01m22wexbdc4mr70zr1x3faqg6', minor_units: 150000, currency: 'USD', cycle: null },
+	custody_90d:       { price_id: 'pri_01m22wf966bjsar9sgtbzsva2b', minor_units:   4900, currency: 'USD', cycle: { interval: 'month', frequency: 1 } },
+	custody_1y:        { price_id: 'pri_01m22wfjtbnhjyws9ctabxhvp4', minor_units:  19900, currency: 'USD', cycle: { interval: 'month', frequency: 1 } },
+} as const;
+
+// The introductory window every one of the six carries in its Paddle
+// custom_data as `introductory_until`. Nothing read that field, so on
+// 1 January 2027 all six would have gone on charging the introductory amount
+// and the only thing that would notice is someone remembering. A dated
+// tripwire in the suite replaces the remembering — see the test named
+// "DATED TRIPWIRE".
+const REFEREE_INTRODUCTORY_UNTIL = '2026-12-31';
+
+type RefereeService = keyof typeof REFEREE_PRICES;
+
+// Minor units → the decimal string Paddle and /v5/revenue-pulse both use.
+// Derived, never written: a referee amount that appears anywhere comes through
+// here, so a change to the table above moves every quotation of it at once.
+function refereePriceAmount(service: RefereeService): string {
+	return (REFEREE_PRICES[service].minor_units / 100).toFixed(2);
+}
+
+// Test seam, matching planPrices().
+export function refereePrices(): {
+	prices: typeof REFEREE_PRICES;
+	introductory_until: string;
+	amount: (service: RefereeService) => string;
+} {
+	return { prices: REFEREE_PRICES, introductory_until: REFEREE_INTRODUCTORY_UNTIL, amount: refereePriceAmount };
+}
 // ═══ Billing: the plan a caller asked for, and the plan a price id sells ═════
 // Both directions of the billing path used to fail OPEN, and neither had a
 // test that could tell an unrecognised value from a recognised one.
@@ -2466,11 +2528,25 @@ const CHECKOUT_PLANS = Object.keys(CHECKOUT_PLAN_PRICE_ENV) as CheckoutPlan[];
 // and return { received: true } so Paddle stops retrying a delivery no retry
 // can fix. The transaction stays in the Paddle dashboard, so the payment is
 // not lost; a human maps it.
-function resolvePaddlePlan(priceId: string | null, env: Env): 'builder' | 'pro' | 'protocol' | null {
+// A referee price is RECOGNISED but is not an API tier, so it earns its own
+// result rather than falling to null. The distinction matters both ways: an
+// operator alerted about an "unmapped" price should be looking at a price we
+// genuinely do not know, not at one of our own products; and a custody
+// subscription must not mint a ho_live_ API key, because conformance custody
+// is not API access. Before B-144 a custody_90d subscription minted a Pro key.
+type PaddlePriceResolution =
+	| { kind: 'api_plan'; plan: 'builder' | 'pro' | 'protocol' }
+	| { kind: 'referee';  service: RefereeService }
+	| null;
+
+function resolvePaddlePlan(priceId: string | null, env: Env): PaddlePriceResolution {
 	if (!priceId) return null;
-	if (env.PADDLE_PRICE_ID_BUILDER  && priceId === env.PADDLE_PRICE_ID_BUILDER)  return 'builder';
-	if (env.PADDLE_PRICE_ID_PRO      && priceId === env.PADDLE_PRICE_ID_PRO)      return 'pro';
-	if (env.PADDLE_PRICE_ID_PROTOCOL && priceId === env.PADDLE_PRICE_ID_PROTOCOL) return 'protocol';
+	if (env.PADDLE_PRICE_ID_BUILDER  && priceId === env.PADDLE_PRICE_ID_BUILDER)  return { kind: 'api_plan', plan: 'builder' };
+	if (env.PADDLE_PRICE_ID_PRO      && priceId === env.PADDLE_PRICE_ID_PRO)      return { kind: 'api_plan', plan: 'pro' };
+	if (env.PADDLE_PRICE_ID_PROTOCOL && priceId === env.PADDLE_PRICE_ID_PROTOCOL) return { kind: 'api_plan', plan: 'protocol' };
+	for (const service of Object.keys(REFEREE_PRICES) as RefereeService[]) {
+		if (priceId === REFEREE_PRICES[service].price_id) return { kind: 'referee', service };
+	}
 	return null;
 }
 
@@ -13152,8 +13228,8 @@ export default {
 					// resolvePaddlePlan.
 					const items = txn['items'] as Array<{ price_id?: string }> | undefined;
 					const priceId = items?.[0]?.price_id ?? null;
-					const plan = resolvePaddlePlan(priceId, env);
-					if (!plan) {
+					const resolved = resolvePaddlePlan(priceId, env);
+					if (!resolved) {
 						console.error(`PADDLE_UNMAPPED_PRICE_ID: ${safeIdent(priceId ?? 'none')}`);
 						// Route into the per-payment alerting path so the payment that
 						// landed and was NOT provisioned reaches a human: this row is
@@ -13170,6 +13246,24 @@ export default {
 						});
 						return json({ received: true });
 					}
+					if (resolved.kind === 'referee') {
+						// A referee service, not API access: recognised, named, and
+						// deliberately provisioning no ho_live_ key. The amount is
+						// DERIVED from REFEREE_PRICES rather than restated, so this —
+						// the first thing in the tree to quote a referee price — cannot
+						// drift from the table it came from.
+						console.log(JSON.stringify({ event: 'PADDLE_REFEREE_PAYMENT', service: resolved.service, txn_id: txn['id'] ?? 'unknown' }));
+						await recordPaddleRevenueEvent(env, {
+							tier:        `referee:${resolved.service}`,
+							plan:        `referee:${resolved.service}`,
+							amount:      refereePriceAmount(resolved.service),
+							currency:    REFEREE_PRICES[resolved.service].currency,
+							txn_id:      (txn['id'] as string) ?? 'unknown',
+							customer_id: (txn['customer_id'] as string) ?? null,
+						});
+						return json({ received: true });
+					}
+					const plan = resolved.plan;
 
 					// Fetch email from Paddle customer API (not included in transaction payload)
 					let email: string | null = null;
@@ -13368,8 +13462,8 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 					// key to a plan we cannot name.
 					const activItems = sub['items'] as Array<{ price?: { id?: string } }> | undefined;
 					const activPriceId = activItems?.[0]?.price?.id ?? null;
-					const activPlan = resolvePaddlePlan(activPriceId, env);
-					if (!activPlan) {
+					const activResolved = resolvePaddlePlan(activPriceId, env);
+					if (!activResolved) {
 						console.error(`PADDLE_UNMAPPED_PRICE_ID: ${safeIdent(activPriceId ?? 'none')}`);
 						// Same alerting path as transaction.completed. The two events fire
 						// for the same subscription, so an unmapped subscription raises two
@@ -13385,7 +13479,22 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 						});
 						return json({ received: true });
 					}
-
+					if (activResolved.kind === 'referee') {
+						// The two custody prices are monthly subscriptions, so this is the
+						// branch a real referee subscription lands in. It mints no API key:
+						// evidence custody is not API access. Amount derived, not restated.
+						console.log(JSON.stringify({ event: 'PADDLE_REFEREE_PAYMENT', service: activResolved.service, subscription_id: subscriptionId }));
+						await recordPaddleRevenueEvent(env, {
+							tier:        `referee:${activResolved.service}`,
+							plan:        `referee:${activResolved.service}`,
+							amount:      refereePriceAmount(activResolved.service),
+							currency:    REFEREE_PRICES[activResolved.service].currency,
+							txn_id:      subscriptionId,
+							customer_id: (sub['customer_id'] as string) ?? null,
+						});
+						return json({ received: true });
+					}
+					const activPlan = activResolved.plan;
 					// Fetch customer email from Paddle API (not included in subscription event payload)
 					let activEmail: string | null = null;
 					if (env.PADDLE_API_KEY && sub['customer_id']) {

@@ -14,7 +14,7 @@ import worker, {
 	// halt-monitor heartbeat memo (rail sprint T3b, 2026-09-07)
 	clearHaltHeartbeatMemo,
 	// plan prices stated once (rail sprint, 2026-09-07)
-	planPrices,
+	planPrices, refereePrices,
 } from '../src';
 
 // Clear module-level caches before every test so that tests which
@@ -6526,7 +6526,7 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 				id:          'sub_activated_unmapped_001',
 				customer_id: 'ctm_activated_unmapped',
 				status:      'active',
-				items:       [{ price: { id: 'pri_01m22wf966bjsar9sgtbzsva2b' } }], // custody_90d — a real Paddle price, not an API tier
+				items:       [{ price: { id: 'pri_01mNEVERISSUEDBYPADDLE0000' } }], // genuinely unknown: not an API tier and not a referee price either
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
@@ -15533,6 +15533,162 @@ describe('plan prices are derived from one constant, on every surface', () => {
 				if (['99', '299', '500'].includes(digits)) {
 					expect([String(P.builder), String(P.pro), '500'], `${path} served ${token}`).toContain(digits);
 				}
+			}
+		}
+	});
+});
+
+// ─── B-145: the six referee prices are stated once, in source ────────────────
+
+describe('referee prices are derived from one constant', () => {
+	const R = refereePrices();
+
+	// The table as Paddle read it back on 2026-09-09 (products created and
+	// verified in CC_REPORT_2026-09-09_paddle-prices-rev2-resumed.md). This is
+	// the reconciliation the tree could not do before: if someone edits an
+	// amount here without changing it in Paddle — or the reverse is discovered
+	// and corrected here — this test is the thing that has to move with it.
+	const LIVE_PADDLE_RECORD = {
+		conformance_entry: { price_id: 'pri_01m22wcgvj15ktn5xnabf13a7p', minor_units: 250000, cycle: null },
+		regrade:           { price_id: 'pri_01m22wcz6wth6vdmhk3a9xd4ez', minor_units:  75000, cycle: null },
+		dispute:           { price_id: 'pri_01m22wda7747kb18jfat1p58dw', minor_units:  50000, cycle: null },
+		dispute_note:      { price_id: 'pri_01m22wexbdc4mr70zr1x3faqg6', minor_units: 150000, cycle: null },
+		custody_90d:       { price_id: 'pri_01m22wf966bjsar9sgtbzsva2b', minor_units:   4900, cycle: { interval: 'month', frequency: 1 } },
+		custody_1y:        { price_id: 'pri_01m22wfjtbnhjyws9ctabxhvp4', minor_units:  19900, cycle: { interval: 'month', frequency: 1 } },
+	} as const;
+
+	it('B-145: REFEREE_PRICES carries exactly the six live Paddle prices, id, minor units and cycle', () => {
+		expect(Object.keys(R.prices).sort()).toEqual(Object.keys(LIVE_PADDLE_RECORD).sort());
+		for (const [key, expected] of Object.entries(LIVE_PADDLE_RECORD)) {
+			const actual = R.prices[key as keyof typeof R.prices];
+			expect(actual.price_id, key).toBe(expected.price_id);
+			expect(actual.minor_units, key).toBe(expected.minor_units);
+			expect(actual.currency, key).toBe('USD');
+			expect(actual.cycle, key).toEqual(expected.cycle);
+		}
+	});
+
+	it('B-145: the decimal amount is a projection of minor_units, not a second copy of the price', () => {
+		// The failure this whole change is against: a second, independent
+		// statement of the same number with nothing failing when they disagree.
+		expect(R.amount('conformance_entry')).toBe('2500.00');
+		expect(R.amount('custody_90d')).toBe('49.00');
+		for (const key of Object.keys(R.prices) as Array<keyof typeof R.prices>) {
+			expect(R.amount(key), key).toBe((R.prices[key].minor_units / 100).toFixed(2));
+		}
+	});
+
+	it('B-145: a referee price id maps to its own line, NOT to the unmapped branch', async () => {
+		// Without the REFEREE_PRICES wiring, a custody subscription is an
+		// unrecognised price id and lands in the fail-closed unmapped branch —
+		// correct, but it would alert an operator about one of our own products
+		// and would mint no record of the sale under its own name. It must also
+		// mint no ho_live_ key: evidence custody is not API access, and before
+		// B-144 this exact price minted a Pro key.
+		const service = 'custody_90d';
+		const tierKey = `paddle_revenue_count:referee:${service}`;
+		const before   = parseInt((await env.ORACLE_TELEMETRY.get(tierKey)) ?? '0', 10) || 0;
+		const unmappedBefore = parseInt((await env.ORACLE_TELEMETRY.get('paddle_revenue_count:unmapped')) ?? '0', 10) || 0;
+
+		const rawBody = JSON.stringify({
+			event_type: 'subscription.activated',
+			data: {
+				id:          'sub_referee_custody_001',
+				customer_id: 'ctm_referee_custody',
+				status:      'active',
+				items:       [{ price: { id: R.prices[service].price_id } }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, 'pdl_ntfset_test_placeholder_for_local_tests');
+
+		let insertCalled = false;
+		let emailCalled  = false;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url.includes('api.resend.com')) { emailCalled = true; return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }); }
+			if (url.includes('supabase') && init?.method === 'POST') insertCalled = true;
+			if (url.includes('supabase')) {
+				return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input as RequestInfo, init);
+		};
+		try {
+			const res = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(insertCalled).toBe(false);
+			expect(emailCalled).toBe(false);
+			// Recorded under its own name...
+			expect(parseInt((await env.ORACLE_TELEMETRY.get(tierKey)) ?? '0', 10) || 0).toBe(before + 1);
+			// ...and NOT as an unmapped price.
+			expect(parseInt((await env.ORACLE_TELEMETRY.get('paddle_revenue_count:unmapped')) ?? '0', 10) || 0).toBe(unmappedBefore);
+			// And the amount on that row is the derived one, not a literal.
+			const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_event:' });
+			const rows = await Promise.all(listed.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name)));
+			const row = rows
+				.map((r) => JSON.parse(r ?? '{}') as Record<string, unknown>)
+				.find((r) => r.txn_id === 'sub_referee_custody_001');
+			expect(row?.amount).toBe(R.amount(service));
+			expect(row?.currency).toBe('USD');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-145: no served surface quotes a referee price id or a non-colliding referee amount — nothing derives one yet', async () => {
+		// The falsifier for "the first thing that quotes one derives it".
+		//
+		// What it observes: today NOTHING quotes a referee price, so the
+		// strongest true statement is that no public surface carries one of the
+		// six Paddle price ids, or one of the six amounts. The concrete red input
+		// is a person writing "$2,500" or "$150" into llms-full.txt, the OpenAPI
+		// spec or the pricing endpoint as a literal — this goes red the moment
+		// they do, and the fix is to derive it from REFEREE_PRICES and add that
+		// surface to ALLOWED_TO_QUOTE with an assertion that what it serves IS
+		// the derived value.
+		//
+		// What it does NOT observe, stated rather than hidden:
+		//  - `dispute` is $500.00 and PLAN_PRICES.protocol is $500/month. The
+		//    amount string cannot tell those two apart, so amounts that collide
+		//    with a plan price are skipped and only the price-id half covers
+		//    them. The plan amounts are read from the served /v5/pricing rather
+		//    than restated here, so the collision set follows PLAN_PRICES.
+		//  - a surface outside this list, a referee price quoted somewhere that
+		//    is not a served HTTP surface, and whether the DEPLOYED worker
+		//    matches this tree.
+		const ALLOWED_TO_QUOTE: string[] = []; // none yet, by design
+
+		const pricing   = await fetchJSON('/v5/pricing');
+		const planUsd   = new Set((pricing.tiers as Record<string, unknown>[])
+			.map((t) => Number(t.price_usd))
+			.filter((n) => Number.isFinite(n) && n > 0)
+			.map((n) => n.toFixed(2)));
+
+		const ids     = Object.values(R.prices).map((p) => p.price_id);
+		const amounts = (Object.keys(R.prices) as Array<keyof typeof R.prices>).map((k) => R.amount(k));
+		// Sanity: the collision this test documents must actually exist, or the
+		// skip below is silently weakening the check for no reason.
+		expect(planUsd.has(R.amount('dispute'))).toBe(true);
+
+		for (const path of ['/v5/pricing', '/openapi.json', '/llms-full.txt', '/llms.txt', '/v5/why-not-free', '/.well-known/x402.json', '/v5/keys/request', '/.well-known/mcp/server-card.json']) {
+			if (ALLOWED_TO_QUOTE.includes(path)) continue;
+			const res = await fetchWorker(path);
+			expect(res.status, path).toBe(200);
+			const text = await res.text();
+			// A Paddle price id has no business on a public surface at all, and
+			// it is unambiguous — no plan price can collide with it.
+			for (const id of ids) expect(text, `${path} quoted the referee price id ${id}`).not.toContain(id);
+			for (const amount of amounts) {
+				if (planUsd.has(amount)) continue; // collides with a plan price — see above
+				const whole = amount.replace('.00', '');                      // "2500"
+				const comma = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');    // "2,500"
+				expect(text, `${path} quoted the referee amount $${amount}`).not.toContain(`$${amount}`);
+				expect(text, `${path} quoted the referee amount $${comma}`).not.toContain(`$${comma}`);
 			}
 		}
 	});
