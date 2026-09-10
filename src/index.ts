@@ -2476,6 +2476,73 @@ function refereePriceAmount(service: RefereeService): string {
 	return (REFEREE_PRICES[service].minor_units / 100).toFixed(2);
 }
 
+// Where operational mail about a referee purchase or intake goes. One address,
+// stated once, because two call sites send to it and a second copy would be a
+// second thing to get wrong.
+const FOUNDER_NOTIFICATION_EMAIL = 'mike@headlessoracle.com';
+
+// Record a referee purchase, durably, and tell the founder.
+//
+// The row is keyed by the Paddle transaction id and written with NO TTL. It is
+// a business record, not telemetry: the revenue-event row beside it expires in
+// 30 days, which is fine for "alert a human this week" and useless for "what
+// did this customer buy, and when". `raw_event_digest` is SHA-256 over the raw
+// signed bytes Paddle sent, so the record can be tied back to the exact event
+// rather than to our reading of it.
+//
+// Best-effort in the same sense the other webhook side effects are: a failure
+// here must not make Paddle retry a delivery that already did its job.
+async function recordRefereePurchase(
+	env: Env,
+	args: {
+		service:        RefereeService;
+		transactionId:  string;
+		customerEmail:  string | null;
+		rawBody:        string;
+		occurredAt:     string;
+	},
+): Promise<void> {
+	const spec = REFEREE_PRICES[args.service];
+	const row = {
+		service:          args.service,
+		price_id:         spec.price_id,
+		amount_minor:     spec.minor_units,
+		currency:         spec.currency,
+		customer_email:   args.customerEmail,
+		occurred_at:      args.occurredAt,
+		raw_event_digest: await sha256Hex(args.rawBody),
+	};
+	try {
+		await env.ORACLE_TELEMETRY.put(`referee_purchase:${args.transactionId}`, JSON.stringify(row));
+	} catch (err) {
+		console.error(`REFEREE_PURCHASE_KV_WRITE_FAILED: ${args.transactionId} ${String(err)}`);
+	}
+	if (!env.RESEND_API_KEY) return;
+	try {
+		await fetch('https://api.resend.com/emails', {
+			method:  'POST',
+			headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				from:    'Headless Oracle <hello@headlessoracle.com>',
+				to:      [FOUNDER_NOTIFICATION_EMAIL],
+				subject: `Referee purchase: ${args.service}`,
+				html: `<p>A referee service was purchased. Nothing was provisioned automatically — this is the notice that a run is owed.</p>
+<ul>
+<li><strong>Service:</strong> ${args.service}</li>
+<li><strong>Amount:</strong> ${refereePriceAmount(args.service)} ${spec.currency}</li>
+<li><strong>Paddle price:</strong> ${spec.price_id}</li>
+<li><strong>Paddle transaction:</strong> ${args.transactionId}</li>
+<li><strong>Customer:</strong> ${args.customerEmail ?? 'not returned by Paddle'}</li>
+<li><strong>When:</strong> ${args.occurredAt}</li>
+</ul>
+<p>A paid entry buys the run and the published record, never the verdict.</p>`,
+			}),
+		});
+	} catch (err) {
+		console.error(`REFEREE_PURCHASE_MAIL_FAILED: ${args.transactionId} ${String(err)}`);
+	}
+}
+
 // Test seam, matching planPrices().
 export function refereePrices(): {
 	prices: typeof REFEREE_PRICES;
@@ -2512,7 +2579,83 @@ const CHECKOUT_PLAN_PRICE_ENV = {
 	credits:  'PADDLE_PRICE_ID_CREDITS',
 } as const;
 type CheckoutPlan = keyof typeof CHECKOUT_PLAN_PRICE_ENV;
-const CHECKOUT_PLANS = Object.keys(CHECKOUT_PLAN_PRICE_ENV) as CheckoutPlan[];
+
+// B-149. The till sells TEN things, from two sources of price id.
+//
+// The four API plans above read theirs from a Cloudflare secret. The six
+// referee services read theirs from REFEREE_PRICES, in source, per the Lead's
+// ruling of 2026-09-09: a price id is an identifier, not a credential. Until
+// this, all six existed in the live Paddle account and in that constant and
+// NOTHING could reach them -- POST /v5/checkout answered every one of the six
+// names with 400 UNKNOWN_PLAN. The prices were real and nobody could buy them.
+//
+// The order here is the order an agent reads out of `valid_plans` on a 400:
+// API plans first, then the referee services in the order they are priced.
+const CHECKOUT_PLANS = [
+	...(Object.keys(CHECKOUT_PLAN_PRICE_ENV) as CheckoutPlan[]),
+	...(Object.keys(REFEREE_PRICES) as RefereeService[]),
+] as const;
+
+type CheckoutPriceResolution =
+	| { kind: 'api_plan'; plan: CheckoutPlan;    priceId: string }
+	| { kind: 'referee';  service: RefereeService; priceId: string }
+	| { kind: 'unconfigured' }
+	| { kind: 'unknown' };
+
+// `plan` is caller-supplied and was used to index a plain object literal
+// directly. {"plan":"constructor"} is an own-property of no map here but IS
+// inherited from Object.prototype, so the lookup returned a truthy function
+// and the handler answered 503 "billing plan not configured" -- reporting a
+// name we do not sell as a configuration fault of ours. Own-property checks
+// only: an inherited key is not a product.
+function resolveCheckoutPrice(plan: string, env: Env): CheckoutPriceResolution {
+	if (Object.prototype.hasOwnProperty.call(CHECKOUT_PLAN_PRICE_ENV, plan)) {
+		const priceId = env[CHECKOUT_PLAN_PRICE_ENV[plan as CheckoutPlan]];
+		return priceId ? { kind: 'api_plan', plan: plan as CheckoutPlan, priceId } : { kind: 'unconfigured' };
+	}
+	if (Object.prototype.hasOwnProperty.call(REFEREE_PRICES, plan)) {
+		// No env lookup and so no 'unconfigured' branch: a referee price id is
+		// in the tree, so it is present wherever this code is.
+		const service = plan as RefereeService;
+		return { kind: 'referee', service, priceId: REFEREE_PRICES[service].price_id };
+	}
+	return { kind: 'unknown' };
+}
+
+// One Paddle transaction request, in one place. Every plan -- the four API
+// plans, the credit pack and the six referee services -- sends exactly this
+// body: Paddle decides one-time versus subscription from the price's own
+// billing cycle, so there is no second request shape and inventing one for the
+// two custody subscriptions would have been wrong. /v5/referee/intake needs a
+// conformance_entry checkout too, and gets it through here rather than
+// building a second, drifting copy of the same call.
+async function createPaddleCheckout(
+	priceId: string,
+	env: Env,
+): Promise<{ ok: true; transactionId: string; overlayUrl: string | null } | { ok: false; detail: string }> {
+	const paddleRes = await fetch('https://api.paddle.com/transactions', {
+		method: 'POST',
+		headers: {
+			'Authorization': `Bearer ${env.PADDLE_API_KEY}`,
+			'Content-Type':  'application/json',
+		},
+		body: JSON.stringify({
+			items: [{ price_id: priceId, quantity: 1 }],
+		}),
+	});
+	const paddleBody = await paddleRes.json().catch(() => ({})) as { data?: { id?: string; checkout?: { url?: string } }; error?: { detail: string } };
+	const transactionId = paddleBody.data?.id;
+	if (!paddleRes.ok || !transactionId) {
+		return { ok: false, detail: paddleBody.error?.detail ?? 'unknown' };
+	}
+	return { ok: true, transactionId, overlayUrl: paddleBody.data?.checkout?.url ?? null };
+}
+
+// The public checkout URL Paddle serves for a transaction. One place, because
+// two callers build it.
+function paddleCheckoutUrl(transactionId: string): string {
+	return `https://buy.paddle.com/checkout/${transactionId}`;
+}
 
 // ─── Paddle webhooks: which plan a price id sells ────────────────────────────
 // Fail-CLOSED. Both webhook branches used to open with `let plan = 'pro'` and
@@ -13074,38 +13217,26 @@ export default {
 				// no call to Paddle: see CHECKOUT_PLAN_PRICE_ENV for why the old
 				// fall-through sold Builder to anyone who mistyped a plan name.
 				const plan = body.plan || url.searchParams.get('type') || 'builder';
-				const priceEnvVar = CHECKOUT_PLAN_PRICE_ENV[plan as CheckoutPlan];
-				if (!priceEnvVar) {
+				const resolvedPrice = resolveCheckoutPrice(plan, env);
+				if (resolvedPrice.kind === 'unknown') {
 					return json({
 						error:       'UNKNOWN_PLAN',
 						message:     `Unknown plan '${safeIdent(plan, 32)}'`,
 						valid_plans: CHECKOUT_PLANS,
 					}, 400);
 				}
-				const priceId = env[priceEnvVar];
-				if (!priceId) {
+				if (resolvedPrice.kind === 'unconfigured') {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: `Billing plan '${safeIdent(plan, 32)}' is not configured` }, 503);
 				}
-				const paddleRes = await fetch('https://api.paddle.com/transactions', {
-					method: 'POST',
-					headers: {
-						'Authorization': `Bearer ${env.PADDLE_API_KEY}`,
-						'Content-Type':  'application/json',
-					},
-					body: JSON.stringify({
-						items: [{ price_id: priceId, quantity: 1 }],
-					}),
-				});
-				const paddleBody = await paddleRes.json() as { data?: { id?: string; checkout?: { url?: string } }; error?: { detail: string } };
-				const transactionId = paddleBody.data?.id;
-				if (!paddleRes.ok || !transactionId) {
-					console.error(`PADDLE_CHECKOUT_ERROR: ${paddleBody.error?.detail ?? 'unknown'}`);
+				const checkout = await createPaddleCheckout(resolvedPrice.priceId, env);
+				if (!checkout.ok) {
+					console.error(`PADDLE_CHECKOUT_ERROR: ${checkout.detail}`);
 					return json({ error: 'CHECKOUT_FAILED', message: 'Could not create checkout session' }, 502);
 				}
 				return json({
-					url:            `https://buy.paddle.com/checkout/${transactionId}`,
-					overlay_url:    paddleBody.data?.checkout?.url ?? null,
-					transaction_id: transactionId,
+					url:            paddleCheckoutUrl(checkout.transactionId),
+					overlay_url:    checkout.overlayUrl,
+					transaction_id: checkout.transactionId,
 				});
 			}
 
@@ -13206,6 +13337,55 @@ export default {
 						return json({ received: true });
 					}
 
+					// A referee service, not API access. This sits BEFORE the
+					// subscription guard below, beside the credits branch, and that
+					// position is the fix: four of the six referee prices are
+					// one-time and carry no subscription_id at all, so while this
+					// lived after the guard, conformance_entry, regrade, dispute and
+					// dispute_note returned received:true at the guard and were
+					// recorded nowhere — no purchase row, no revenue row, no alert,
+					// no mail. A $2,500 payment landed and the only trace of it was
+					// the Paddle dashboard.
+					//
+					// It provisions no ho_live_ key, deliberately: conformance
+					// custody is not API access, and before B-144 a custody
+					// subscription minted a Pro key. Amounts are DERIVED from
+					// REFEREE_PRICES, never restated.
+					const refereeResolved = resolvePaddlePlan(txnPriceId, env);
+					if (refereeResolved?.kind === 'referee') {
+						const refereeTxnId = (txn['id'] as string) ?? 'unknown';
+						let refereeEmail: string | null = null;
+						if (env.PADDLE_API_KEY && txn['customer_id']) {
+							const refCustRes = await fetch(`https://api.paddle.com/customers/${txn['customer_id'] as string}`, {
+								headers: { 'Authorization': `Bearer ${env.PADDLE_API_KEY}` },
+							});
+							if (refCustRes.ok) {
+								const refCustBody = await refCustRes.json() as { data?: { email?: string } };
+								refereeEmail = refCustBody.data?.email ?? null;
+							} else {
+								console.error(`PADDLE_CUSTOMER_FETCH_ERROR: ${txn['customer_id'] as string}`);
+							}
+						}
+						const refereeOccurredAt = new Date().toISOString();
+						console.log(JSON.stringify({ event: 'PADDLE_REFEREE_PAYMENT', service: refereeResolved.service, txn_id: refereeTxnId }));
+						await recordRefereePurchase(env, {
+							service:       refereeResolved.service,
+							transactionId: refereeTxnId,
+							customerEmail: refereeEmail,
+							rawBody,
+							occurredAt:    refereeOccurredAt,
+						});
+						await recordPaddleRevenueEvent(env, {
+							tier:        `referee:${refereeResolved.service}`,
+							plan:        `referee:${refereeResolved.service}`,
+							amount:      refereePriceAmount(refereeResolved.service),
+							currency:    REFEREE_PRICES[refereeResolved.service].currency,
+							txn_id:      refereeTxnId,
+							customer_id: (txn['customer_id'] as string) ?? null,
+						});
+						return json({ received: true });
+					}
+
 					// Guard: skip non-subscription transactions (e.g. other one-time payments)
 					if (!txn['subscription_id']) return json({ received: true });
 
@@ -13246,21 +13426,13 @@ export default {
 						});
 						return json({ received: true });
 					}
+					// A referee price cannot reach here: it is handled above, before
+					// the subscription guard, so that the one-time ones are not lost.
+					// The check stays because resolvePaddlePlan's type says the case
+					// exists, and a silent fall-through into API provisioning is the
+					// one outcome a referee price must never have.
 					if (resolved.kind === 'referee') {
-						// A referee service, not API access: recognised, named, and
-						// deliberately provisioning no ho_live_ key. The amount is
-						// DERIVED from REFEREE_PRICES rather than restated, so this —
-						// the first thing in the tree to quote a referee price — cannot
-						// drift from the table it came from.
-						console.log(JSON.stringify({ event: 'PADDLE_REFEREE_PAYMENT', service: resolved.service, txn_id: txn['id'] ?? 'unknown' }));
-						await recordPaddleRevenueEvent(env, {
-							tier:        `referee:${resolved.service}`,
-							plan:        `referee:${resolved.service}`,
-							amount:      refereePriceAmount(resolved.service),
-							currency:    REFEREE_PRICES[resolved.service].currency,
-							txn_id:      (txn['id'] as string) ?? 'unknown',
-							customer_id: (txn['customer_id'] as string) ?? null,
-						});
+						console.error(`PADDLE_REFEREE_REACHED_PROVISIONING: ${resolved.service} — handled above; provisioning nothing`);
 						return json({ received: true });
 					}
 					const plan = resolved.plan;

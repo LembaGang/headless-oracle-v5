@@ -4098,14 +4098,21 @@ describe('POST /v5/checkout', () => {
 			const res = await fetchWorker('/v5/checkout', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ plan: 'conformance_entry' }),
+				// Was 'conformance_entry' until B-149 made that a real plan. An
+				// UNKNOWN_PLAN test whose example became sellable would have gone
+				// on passing for the wrong reason, so it names something that is
+				// genuinely not for sale.
+				body:    JSON.stringify({ plan: 'conformance_entrie' }),
 			});
 			expect(res.status).toBe(400);
 			const body = await res.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('error', 'UNKNOWN_PLAN');
-			expect(String(body.message)).toContain('conformance_entry');
+			expect(String(body.message)).toContain('conformance_entrie');
 			// The error must tell an agent what IS sellable without a follow-up.
-			expect(body.valid_plans).toEqual(['builder', 'pro', 'protocol', 'credits']);
+			expect(body.valid_plans).toEqual([
+				'builder', 'pro', 'protocol', 'credits',
+				'conformance_entry', 'regrade', 'dispute', 'dispute_note', 'custody_90d', 'custody_1y',
+			]);
 			// The point of the fix: no money path is touched at all.
 			expect(paddleCalls).toBe(0);
 		} finally {
@@ -4151,6 +4158,112 @@ describe('POST /v5/checkout', () => {
 			const res = await fetchWorker('/v5/checkout', { method: 'POST' });
 			expect(res.status).toBe(200);
 			expect(capturedPriceId).toBe('pri_test_builder_placeholder'); // matches .dev.vars
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	// --- B-149: the six referee services are buyable -------------------------
+	// Six prices existed in the live Paddle account and in REFEREE_PRICES, and
+	// POST /v5/checkout accepted four names, none of them a referee service.
+	// The prices were real and nobody could reach them.
+	//
+	// The expected price ids below are written out INDEPENDENTLY of the
+	// constant, on purpose. A test that read REFEREE_PRICES and compared the
+	// served id against it would pass whatever the constant said, including
+	// after a typo -- it would be comparing the code against itself. These are
+	// the six ids as created in Paddle on 2026-09-09.
+	const REFEREE_CHECKOUT_CASES = [
+		{ plan: 'conformance_entry', price_id: 'pri_01m22wcgvj15ktn5xnabf13a7p' },
+		{ plan: 'regrade',           price_id: 'pri_01m22wcz6wth6vdmhk3a9xd4ez' },
+		{ plan: 'dispute',           price_id: 'pri_01m22wda7747kb18jfat1p58dw' },
+		{ plan: 'dispute_note',      price_id: 'pri_01m22wexbdc4mr70zr1x3faqg6' },
+		{ plan: 'custody_90d',       price_id: 'pri_01m22wf966bjsar9sgtbzsva2b' },
+		{ plan: 'custody_1y',        price_id: 'pri_01m22wfjtbnhjyws9ctabxhvp4' },
+	] as const;
+
+	for (const kase of REFEREE_CHECKOUT_CASES) {
+		it('B-149: POST /v5/checkout {plan:"' + kase.plan + '"} builds a Paddle checkout for ' + kase.price_id, async () => {
+			let paddleCalls = 0;
+			let sentBody: Record<string, unknown> = {};
+			let sentUrl = '';
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+				const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+				if (urlStr.includes('api.paddle.com')) {
+					paddleCalls += 1;
+					sentUrl  = urlStr;
+					sentBody = JSON.parse((init?.body as string) ?? '{}') as Record<string, unknown>;
+					return new Response(JSON.stringify({ data: { id: 'txn_' + kase.plan, checkout: { url: 'https://headlessoracle.com?_ptxn=txn_' + kase.plan } } }), {
+						status: 200, headers: { 'Content-Type': 'application/json' },
+					});
+				}
+				return originalFetch(input, init);
+			};
+			try {
+				const res = await fetchWorker('/v5/checkout', {
+					method:  'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body:    JSON.stringify({ plan: kase.plan }),
+				});
+				expect(res.status).toBe(200);
+				const body = await res.json() as Record<string, unknown>;
+				expect(body).toHaveProperty('url', 'https://buy.paddle.com/checkout/txn_' + kase.plan);
+				expect(body).toHaveProperty('transaction_id', 'txn_' + kase.plan);
+
+				// Exactly one call, to the transactions endpoint, carrying THIS
+				// service's price id and nothing else. The shape is asserted
+				// whole rather than field by field: the four API plans and the
+				// credits pack all send this same body, and Paddle -- not us --
+				// decides one-time versus subscription from the price's own
+				// billing cycle. There is no second request shape to get right,
+				// and asserting the whole object is what would catch one being
+				// invented here.
+				expect(paddleCalls).toBe(1);
+				expect(sentUrl).toBe('https://api.paddle.com/transactions');
+				expect(sentBody).toEqual({ items: [{ price_id: kase.price_id, quantity: 1 }] });
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		});
+	}
+
+	it('B-149: the six referee checkout price ids are exactly the six in REFEREE_PRICES', async () => {
+		// The table above is written out independently so the per-service tests
+		// have something to disagree with. This is the one place the two are
+		// reconciled -- it fails if a service is added to the constant and not to
+		// the table, which is how the table stays honest instead of stale.
+		const { prices } = refereePrices();
+		expect(REFEREE_CHECKOUT_CASES.map(c => c.plan).slice().sort()).toEqual(Object.keys(prices).sort());
+		for (const kase of REFEREE_CHECKOUT_CASES) {
+			expect(prices[kase.plan].price_id).toBe(kase.price_id);
+		}
+	});
+
+	it('B-149: a plan name inherited from Object.prototype is UNKNOWN_PLAN, not a 503', async () => {
+		// `plan` is caller-supplied and was used to index a plain object
+		// literal. {"plan":"constructor"} reached env[Object] and produced a
+		// 503 "not configured" -- a name we do not sell, reported as a
+		// configuration fault of ours. The lookups are own-property checks now.
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) { paddleCalls += 1; }
+			return originalFetch(input, init);
+		};
+		try {
+			for (const evil of ['constructor', 'toString', '__proto__']) {
+				const res = await fetchWorker('/v5/checkout', {
+					method:  'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body:    JSON.stringify({ plan: evil }),
+				});
+				expect(res.status).toBe(400);
+				const body = await res.json() as Record<string, unknown>;
+				expect(body).toHaveProperty('error', 'UNKNOWN_PLAN');
+			}
+			expect(paddleCalls).toBe(0);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -4461,6 +4574,225 @@ describe('POST /webhooks/paddle', () => {
 			expect(response.status).toBe(200);
 			expect(capturedEmailHtml).toContain('ho_live_');
 			expect(capturedSupabaseInsertBody.plan).toBe('builder');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	// --- B-149: a referee purchase is recorded, and mints nothing -------------
+	// Two things were wrong here, and only the second was known.
+	//
+	// KNOWN (B-145): a referee price must not mint an API key. Evidence custody
+	// is not API access.
+	//
+	// FOUND HERE: the referee branch sat AFTER `if (!txn['subscription_id'])
+	// return`, and four of the six referee prices are one-time -- they carry no
+	// subscription_id at all. conformance_entry, regrade, dispute and
+	// dispute_note therefore never reached the referee branch: the webhook
+	// returned received:true at the subscription guard, wrote no revenue row,
+	// raised no alert, and left a $2,500 payment recorded nowhere but the
+	// Paddle dashboard. The branch now sits beside the credits branch, before
+	// that guard, which is where a one-time payment can actually reach it.
+	//
+	// RED against the code before this change: no referee_purchase KV row, no
+	// mail, and PADDLE_REFEREE_PAYMENT never logged.
+	it('B-149: transaction.completed for a ONE-TIME referee price records the purchase, mails the founder, and provisions nothing', async () => {
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id:          'txn_referee_conformance_001',
+				customer_id: 'ctm_referee_001',
+				// No subscription_id: conformance_entry is a one-time price. That
+				// is the whole point of this test.
+				items:       [{ price_id: 'pri_01m22wcgvj15ktn5xnabf13a7p', quantity: 1 }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		let supabaseInsertCalled = false;
+		let mailTo               = '';
+		let mailSubject          = '';
+		let mailHtml             = '';
+		let mailCount            = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
+				supabaseInsertCalled = true;
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'not found' } }), {
+					status: 406, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'referee-buyer@example.com' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('resend.com')) {
+				mailCount += 1;
+				const mail = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { to?: string[]; subject?: string; html?: string };
+				mailTo      = mail.to?.[0] ?? '';
+				mailSubject = mail.subject ?? '';
+				mailHtml    = mail.html ?? '';
+				return new Response(JSON.stringify({ id: 'email_referee_001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const res = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ received: true });
+
+			// The durable record, keyed by the Paddle transaction id.
+			const raw = await env.ORACLE_TELEMETRY.get('referee_purchase:txn_referee_conformance_001');
+			expect(raw).not.toBeNull();
+			const row = JSON.parse(raw as string) as Record<string, unknown>;
+			expect(row.service).toBe('conformance_entry');
+			expect(row.price_id).toBe('pri_01m22wcgvj15ktn5xnabf13a7p');
+			// 250000 minor units = $2,500.00. Written here as the number Paddle
+			// stores, independently of REFEREE_PRICES.
+			expect(row.amount_minor).toBe(250000);
+			expect(row.currency).toBe('USD');
+			expect(row.customer_email).toBe('referee-buyer@example.com');
+			expect(typeof row.occurred_at).toBe('string');
+			// The digest is over the raw signed bytes, so the record can be tied
+			// back to the exact event Paddle sent. 64 hex chars of SHA-256.
+			expect(String(row.raw_event_digest)).toMatch(/^[0-9a-f]{64}$/);
+
+			// One mail, to the founder, naming the service.
+			expect(mailCount).toBe(1);
+			expect(mailTo).toBe('mike@headlessoracle.com');
+			expect(mailSubject).toBe('Referee purchase: conformance_entry');
+			expect(mailHtml).toContain('txn_referee_conformance_001');
+
+			// Provisions NOTHING: no key row, and nothing that looks like an API key.
+			expect(supabaseInsertCalled).toBe(false);
+			expect(mailHtml).not.toContain('ho_live_');
+			expect(mailHtml).not.toContain('ho_crd_');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-149: transaction.completed for a SUBSCRIPTION referee price (custody_90d) records it and provisions nothing', async () => {
+		// The other half: the two custody prices DO carry a subscription_id, so
+		// they reach the branch by the other route. Both routes must land in the
+		// same place, or one of the six behaves differently from the other five.
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id:              'txn_referee_custody_001',
+				customer_id:     'ctm_referee_custody_001',
+				subscription_id: 'sub_referee_custody_001',
+				items:           [{ price_id: 'pri_01m22wf966bjsar9sgtbzsva2b', quantity: 1 }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+
+		let supabaseInsertCalled = false;
+		let mailSubject = '';
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
+				supabaseInsertCalled = true;
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'not found' } }), {
+					status: 406, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'custody-buyer@example.com' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('resend.com')) {
+				mailSubject = (JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { subject?: string }).subject ?? '';
+				return new Response(JSON.stringify({ id: 'email_custody_001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+
+		try {
+			const res = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(res.status).toBe(200);
+			const raw = await env.ORACLE_TELEMETRY.get('referee_purchase:txn_referee_custody_001');
+			expect(raw).not.toBeNull();
+			const row = JSON.parse(raw as string) as Record<string, unknown>;
+			expect(row.service).toBe('custody_90d');
+			expect(row.amount_minor).toBe(4900);
+			expect(mailSubject).toBe('Referee purchase: custody_90d');
+			expect(supabaseInsertCalled).toBe(false);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-149: a referee price does NOT write a referee_purchase row for a non-referee price', async () => {
+		// The control that stops the row being written for everything. Without
+		// it, a handler that recorded every transaction would pass both tests
+		// above and be wrong.
+		const rawBody = JSON.stringify({
+			event_type: 'transaction.completed',
+			data: {
+				id:              'txn_builder_not_referee_001',
+				customer_id:     'ctm_builder_not_referee',
+				subscription_id: 'sub_builder_not_referee_001',
+				items:           [{ price_id: 'pri_test_builder_placeholder', quantity: 1 }],
+			},
+		});
+		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+		let supabaseInsertCalled = false;
+		let capturedEmailHtml    = '';
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
+				supabaseInsertCalled = true;
+				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('supabase.co')) {
+				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'not found' } }), {
+					status: 406, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: 'builder2@example.com' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (urlStr.includes('resend.com')) {
+				capturedEmailHtml = (JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { html?: string }).html ?? '';
+				return new Response(JSON.stringify({ id: 'email_builder_002' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/webhooks/paddle', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+				body:    rawBody,
+			});
+			expect(res.status).toBe(200);
+			// Builder still provisions exactly as before.
+			expect(supabaseInsertCalled).toBe(true);
+			expect(capturedEmailHtml).toContain('ho_live_');
+			// And no referee record was invented for it.
+			expect(await env.ORACLE_TELEMETRY.get('referee_purchase:txn_builder_not_referee_001')).toBeNull();
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
