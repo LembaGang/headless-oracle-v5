@@ -15,13 +15,15 @@ npx headless-oracle-mcp
 # REST API — demo receipt (no auth required)
 curl https://headlessoracle.com/v5/demo?mic=XNYS
 
-# Instant sandbox key (200 calls, 7 days, no signup)
-curl https://headlessoracle.com/v5/sandbox
+# Sandbox key (200 calls, 7 days, no card) - POST with an email
+curl -X POST https://headlessoracle.com/v5/sandbox \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com"}'
 ```
 
 ## Architecture
 
-Single TypeScript Cloudflare Worker (~14,000 lines). Ed25519 signing via `@noble/ed25519`. Three KV namespaces (overrides, API keys, telemetry). Two Durable Objects (webhooks, SSE streams). Deployed to 300+ edge locations globally.
+Single TypeScript Cloudflare Worker. Ed25519 signing via `@noble/ed25519`. Three KV namespaces (overrides, API keys, telemetry). Two Durable Objects (webhooks, SSE streams). Runs on Cloudflare's edge network - no origin server.
 
 4-tier fail-closed: KV override check -> schedule engine -> UNKNOWN fallback -> unsigned critical failure.
 
@@ -29,7 +31,12 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## API
 
-5 MCP tools and 25+ REST endpoints. Full references:
+Four MCP tools - `get_market_status`, `get_market_schedule`, `list_exchanges`,
+`get_payment_options`. Receipt verification is REST-only (`POST /v5/verify`) or
+offline with `@headlessoracle/verify`.
+
+The REST surface is enumerated in the OpenAPI 3.1 spec, which is served live and
+is the list of record. Full references:
 - [REST API Reference](docs/api/rest-reference.md)
 - [MCP Reference](docs/api/mcp-reference.md)
 - [OpenAPI 3.1 Spec](https://headlessoracle.com/openapi.json)
@@ -41,9 +48,14 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 ## Testing
 
 ```bash
-npm test              # 725+ unit/integration tests
-npm run test:smoke    # 11 live production smoke tests
+npm test              # the full unit/integration suite
+npm run test:smoke    # 11 smoke tests against live production
 ```
+
+The passing count is published by the worker itself at
+[`/v5/metrics/public`](https://headlessoracle.com/v5/metrics/public) as
+`tests_passing`, and CI fails if that number and the suite disagree. It is not
+restated here, because a number in a README is a number nothing checks.
 
 ## Security
 
