@@ -149,24 +149,28 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-09-09 — B-144 fail-closed billing, B-145 referee prices -->
+<!-- Last updated: 2026-09-10 — B-149 the till opens, B-146 history verification, B-122 README -->
 
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **Tests**: 1308 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1337 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh` and enforced by CI) + 11 smoke + 24 SDK + 26
   LangGraph + 17 ai-hedge-fund. 1264 → 1298 across the rail sprint's day two;
-  1298 → 1308 on 2026-09-09 (B-144 +6 and 1 replaced, B-145 +4, tripwire +1).
-- **Worker**: `src/index.ts` ~17,300 lines. API-only — zero HTML. **Live version:
+  1298 → 1308 on 2026-09-09 (B-144 +6 and 1 replaced, B-145 +4, tripwire +1);
+  **1308 → 1337 on 2026-09-10** (B-149 checkout +8, webhook +3, pricing +3,
+  intake +14, placeholder guard +1).
+- **Worker**: `src/index.ts` **17,729 lines** (`wc -l`, 2026-09-10 — the previous
+  "~17,300" was already low, and the README's "~14,000" was three passes stale).
+  API-only — zero HTML. **Live version:
   `a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the
-  x402 v2 rail; read from `npx wrangler deployments list` on 2026-09-07). Twelve
-  commits separate the deploy-time HEAD (`261c48a`) from `cac4393`, so the live
-  worker does NOT serve T3b, T4, GAP-017, the start smoke, the derived plan prices,
-  or the fail-closed billing path. **Push state, read from git on 2026-09-09 rather
-  than carried forward: `origin/main` is at `7a0bafe`, so only the four commits of
-  2026-09-09 are unpushed** — the earlier stamp calling the day-two commits
-  "committed and unpushed" was stale.
+  x402 v2 rail; read from `npx wrangler deployments list` on 2026-09-07). The
+  live worker does NOT serve T3b, T4, GAP-017, the start smoke, the derived plan
+  prices, the fail-closed billing path, or anything from 2026-09-10 — so the six
+  referee services are still unbuyable in production. **Push state, read from git
+  on 2026-09-10: `origin/main` is at `eb2f567` — the four commits of 2026-09-09
+  HAVE been pushed since the last stamp, which said `7a0bafe`. Unpushed: only
+  this session's six.**
   **Whether the deployed worker matches this tree has not been checked.**
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
@@ -365,14 +369,18 @@ own name, and mints **no API key** — evidence custody is not API access, and
 before B-144 a `custody_90d` subscription minted a Pro key; `null` is unmapped.
 
 **Do not write a referee price id or amount as a literal anywhere else.** The
-check is `git grep -nE 'pri_01m22w[a-z0-9]+' -- src test`, which must return
-exactly six lines in `src/index.ts` (`REFEREE_PRICES`) and six in
-`test/index.spec.ts` (the reconciliation table) — two per id, and nothing else.
+check is `git grep -cE 'pri_01m22w[a-z0-9]+' -- src test`. **As of 2026-09-10 it
+returns `src/index.ts:6` and `test/index.spec.ts:16`, and the sixteen are
+accounted for**: six in the B-145 reconciliation table, six in
+`REFEREE_CHECKOUT_CASES` (the B-149 checkout table, written out independently on
+purpose so the per-service tests have something to disagree with), and four
+single uses inside webhook and intake tests. Six in source is still the number
+that matters: it must be `REFEREE_PRICES` and nothing else. A seventh line in
+`src/index.ts` is the failure this rule exists to catch.
+
 Scope the grep to `src test`, or match on the full-id pattern as above: an
 unscoped `git grep 'pri_01m22w'` also hits **this paragraph**, because the rule
-quotes its own pattern. That table is written out independently on purpose: a
-test comparing the constant against itself would be a decoration. Note what the
-served-surface test does **not** cover: `dispute` is $500.00 and
+quotes its own pattern. Note what the served-surface test does **not** cover: `dispute` is $500.00 and
 `PLAN_PRICES.protocol` is $500/month, so amounts colliding with a plan price are
 skipped there and only the price-id half covers them.
 
@@ -391,11 +399,110 @@ agree), or publish successor prices and drop the flag and the test together.
 Silencing it by deleting the assertion and leaving the prices is the one
 response that removes the thing that found the problem.
 
+### B-149 — the till opens: the six referee services are buyable (2026-09-10)
+
+Six prices existed in the live Paddle account and in `REFEREE_PRICES` and
+**nothing could reach them**. `POST /v5/checkout` answered every one of the six
+names with 400 `UNKNOWN_PLAN`, and `/v5/pricing` did not mention them.
+
+- **`POST /v5/checkout` sells ten things**, from two sources of price id: the
+  four API plans from a Cloudflare secret, the six referee services from
+  `REFEREE_PRICES` in source. `valid_plans` is now `builder, pro, protocol,
+  credits, conformance_entry, regrade, dispute, dispute_note, custody_90d,
+  custody_1y`. **There is ONE Paddle request shape** —
+  `{items:[{price_id, quantity:1}]}` — for every plan: Paddle, not us, decides
+  one-time versus subscription from the price's own billing cycle. Do not invent
+  a second shape for the two custody subscriptions. `createPaddleCheckout()` is
+  the only place that call is made.
+- **A defect found and fixed.** B-145 put the referee branch in
+  `transaction.completed` **after** `if (!txn['subscription_id']) return`, and
+  four of the six referee prices are **one-time** — they carry no
+  `subscription_id`. So `conformance_entry`, `regrade`, `dispute` and
+  `dispute_note` never reached it: the webhook returned `received:true` at that
+  guard and wrote nothing at all — no purchase row, no revenue row, no alert,
+  no mail. A $2,500 conformance entry would have landed leaving no trace outside
+  the Paddle dashboard. The branch now sits **beside the credits branch, before
+  the guard**. Keep it there.
+- **New KV keys, all in `ORACLE_TELEMETRY`, all durable (no TTL) except the rate
+  counter**: `referee_purchase:{paddle_transaction_id}` (`{service, price_id,
+  amount_minor, currency, customer_email, occurred_at, raw_event_digest}`, the
+  digest being SHA-256 over the raw signed webhook bytes),
+  `referee_intake:{uuid}`, and `referee_intake_rate:{ipHash}:{YYYY-MM-DDTHH}`
+  (90-minute TTL, 10/hour, the mechanism `/v5/sandbox` uses on its own counter).
+  These are business records, not telemetry: the revenue-event row beside them
+  expires in 30 days, which is right for "alert a human this week" and useless
+  for "what did this customer buy".
+- **`/v5/pricing` carries a `referee` object**, every figure a projection of
+  `REFEREE_PRICES`. The neutrality rule is verbatim from
+  `LEAD_PLAN_2026-09-07_M5-prices-live.md` §5 — 434 characters, sha256
+  `576fa9366bdb3ab438229ada26a0e3758fedda6a9a16518f796e0f4041de793b`. It is a
+  commitment about what money does and does not buy; **do not paraphrase it**,
+  and the web surface must quote the same bytes.
+- **`POST /v5/referee/intake`** takes `{implementation, repository_or_url,
+  format, version, contact_email, consent_to_be_named, methodology_version_read}`,
+  returns `{intake_id, checkout_url}`. Every rejection **names the field**.
+  `consent_to_be_named` must be a real JSON boolean — `"true"` is a 400, and
+  `false` is accepted, because rejecting it would make consent unrefusable. The
+  Paddle checkout is created **before** the KV row is written, so a Paddle
+  failure leaves no half-state a retrying agent would duplicate. It needs no
+  `wrangler.toml` route: `headlessoracle.com/v5/*` already covers it.
+- **Also fixed**: `plan` is caller-supplied and was used to index a plain object
+  literal, so `{"plan":"constructor"}` reached `env[Object]` and returned 503
+  "billing plan is not configured" — a name we do not sell, reported as a
+  configuration fault of ours. Own-property checks only.
+
+**Not closed, named deliberately**: no referee checkout, transaction or webhook
+has been exercised against the live Paddle account from this tree; the intake's
+mail path has only ever run against a mock; and no web surface carries a referee
+section.
+
+### B-146 — the repository verifies its own history (2026-09-10)
+
+`SIGNING_KEYS` and `tools/verify-history.sh`, ported from `receipt-verify`. CI
+verifies the **pushed range**, so every commit that lands from here on must
+carry a good SSH signature or the build is red.
+
+**The whole history does not verify, and the script does not pretend it does.**
+188 commits before 2026-04-02 are unsigned; 13 between 2026-04-17 and 2026-06-17
+are GitHub web-UI merge commits **PGP**-signed by GitHub's own web-flow key,
+which `ssh-keygen -Y verify` cannot check. So the default range starts after the
+last of those (`82cec16`), where every commit is SSH-signed, and the script
+prints how many commits it is **not** covering. `sh tools/verify-history.sh
+--full` walks everything, prints the census, and **exits 1 on purpose**.
+
+`SIGNING_KEYS` lists **two principals and one key**: all 209 SSH-signed commits
+carry the same key, 134 committed under `info@bytecraftresults.com` and 75 under
+the GitHub noreply address, and `ssh-keygen` matches on the principal it is
+given. With one principal listed the census reported 134 good signatures as
+`BAD`, which reads exactly like tampering.
+
+### GAP-019 — CLOSED 2026-09-10
+
+The two 61-request rate-limit tests (`/v1/status/{MIC}` and
+`/v1/safe-to-trade/sample`) pin the clock with `vi.setSystemTime`, so all 61
+requests land in one wall-clock-minute bucket by construction. The flake fired
+in four of eight full runs on 2026-09-10 once the suite grew — what decides it
+is where in the minute the burst starts. Proved it still fails for the right
+reason: with the two limit constants temporarily at 9999 both tests went red
+with "expected 200 to be 429".
+
+### FLAGGED, NOT FIXED — `verify_receipt` is not an MCP tool
+
+`MCP_TOOLS` has **four** entries — `get_market_status`, `get_market_schedule`,
+`list_exchanges`, `get_payment_options` — and `tools/list` serves `MCP_TOOLS`.
+But `src/index.ts` contradicts itself about it: one served surface says "Do not
+expect a `verify_receipt` MCP tool" while `/SKILL.md` and the agent-skills text
+list it among the MCP tools. **This file's own "5 tools" claims are wrong too.**
+Verification is REST-only (`POST /v5/verify`) or offline. Not fixed here — it
+touches several served agent-facing surfaces and is its own row.
+
 ### The placeholder guard (2026-09-07, T2b)
 
 No served byte may carry a template placeholder the runtime never filled. The guard
-in `test/index.spec.ts` fetches a **hand-maintained list** of ten public text
-surfaces and asserts none matches `${...}`. **Rule: any new served-text route is
+in `test/index.spec.ts` fetches a **hand-maintained list** of public text
+surfaces and asserts none matches `${...}`. Since 2026-09-10 an entry may name
+its own request and expected status, so a POST-only route is covered too — the
+list was GET-200 only, which would have let every POST route escape it. **Rule: any new served-text route is
 added to that list in the same commit that adds the route.** A list-based guard only
 covers what someone remembered; `scripts/start-smoke.sh` checks `/openapi.json`
 against the real served bytes as a second, list-free net.
