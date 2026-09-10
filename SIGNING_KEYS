@@ -1,0 +1,20 @@
+# Keys allowed to sign commits in this repository, in ssh-keygen(1)
+# allowed_signers format: <principal> <keytype> <base64 key>.
+#
+# tools/verify-history.sh reads this file directly, so a reviewer with a clone
+# and a CI runner can check the history from the repository alone -- neither has
+# `gpg.ssh.allowedSignersFile` configured, and until this file existed only the
+# laptop that made the commits could verify them.
+#
+# The principal is the committer email git records on the commit, NOT the email
+# inside the .pub file: ssh-keygen -Y verify matches on the principal it is
+# given (-I), and verify-history.sh passes `git show -s --format=%ce`.
+#
+# There are two lines and ONE key. All 209 SSH-signed commits in this history
+# carry the same key (SHA256:KFZr0BiXIrvl/hsri0vzciGsj+suWiBqHYBwdnnyJXg); 134
+# of them were committed under `info@bytecraftresults.com` and 75 under the
+# GitHub noreply address. Listing only one principal made the other 134 report
+# as BAD -- a good signature under an unlisted identity, which reads exactly
+# like tampering and is not. Two principals, one key, is the honest statement.
+info@bytecraftresults.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOfm1qaoZGZpKEfKo4s8lACoWGZbYTX9frChVs3W9c94
+127877551+LembaGang@users.noreply.github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOfm1qaoZGZpKEfKo4s8lACoWGZbYTX9frChVs3W9c94
