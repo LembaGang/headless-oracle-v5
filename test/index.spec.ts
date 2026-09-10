@@ -13878,6 +13878,19 @@ describe('GET /v1/safe-to-trade/sample', () => {
 	// ── Test 6: 60/min/IP rate limit — 61st call → 429 with Retry-After ───
 	it('rate limit: 60 requests pass, 61st returns 429 with Retry-After (Cloudflare dashboard is primary; this is the in-worker safety net)', async () => {
 		const ip = '203.0.113.115';
+		// GAP-019. The limiter buckets on Math.floor(now / 60_000) -- a WALL-CLOCK
+		// minute -- and this test fires 61 real sequential requests. When those
+		// straddle a minute boundary the counter resets and the 61st returns 200,
+		// so the test went red for a reason that has nothing to do with the code
+		// under test. Latent since it was written; it fired twice on 2026-09-09
+		// and again here once the suite grew, because what decides it is where in
+		// the minute the burst happens to start.
+		//
+		// Pinning the clock is the fix canon names. All 61 requests now land in
+		// one bucket by construction. It does not weaken the assertion: the 61st
+		// must still be refused, and seeding the counter instead would have
+		// stopped testing that the first 60 pass.
+		vi.setSystemTime(new Date('2026-04-08T15:10:30Z'));
 		try {
 			for (let i = 0; i < 60; i++) {
 				const res = await fetchWorker('/v1/safe-to-trade/sample?venue=XNYS&max_age=30', { headers: { 'X-Original-IP': ip } });
@@ -13896,6 +13909,7 @@ describe('GET /v1/safe-to-trade/sample', () => {
 			expect(body.limit_per_minute).toBe(60);
 			expect(typeof body.retry_after_seconds).toBe('number');
 		} finally {
+			vi.useRealTimers();
 			await cleanupSampleRateBuckets(ip);
 		}
 	});
@@ -14408,6 +14422,19 @@ describe('GET /v1/status/{MIC} — in-worker rate limit', () => {
 
 	it('exact-limit (60) all pass; 61st returns 429 with Retry-After', async () => {
 		const ip = '203.0.113.20';
+		// GAP-019. The limiter buckets on Math.floor(now / 60_000) -- a WALL-CLOCK
+		// minute -- and this test fires 61 real sequential requests. When those
+		// straddle a minute boundary the counter resets and the 61st returns 200,
+		// so the test went red for a reason that has nothing to do with the code
+		// under test. Latent since it was written; it fired twice on 2026-09-09
+		// and again here once the suite grew, because what decides it is where in
+		// the minute the burst happens to start.
+		//
+		// Pinning the clock is the fix canon names. All 61 requests now land in
+		// one bucket by construction. It does not weaken the assertion: the 61st
+		// must still be refused, and seeding the counter instead would have
+		// stopped testing that the first 60 pass.
+		vi.setSystemTime(new Date('2026-04-08T15:00:30Z'));
 		try {
 			for (let i = 0; i < 60; i++) {
 				const res = await fetchWorker('/v1/status/XNYS', { headers: { 'X-Original-IP': ip } });
@@ -14426,6 +14453,7 @@ describe('GET /v1/status/{MIC} — in-worker rate limit', () => {
 			expect(body.limit_per_minute).toBe(60);
 			expect(typeof body.retry_after_seconds).toBe('number');
 		} finally {
+			vi.useRealTimers();
 			await cleanupRateBuckets(ip);
 		}
 	});
