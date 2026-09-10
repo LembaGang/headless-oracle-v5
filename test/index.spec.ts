@@ -4525,9 +4525,19 @@ describe('POST /v5/checkout', () => {
 				// billing cycle. There is no second request shape to get right,
 				// and asserting the whole object is what would catch one being
 				// invented here.
+				//
+				// B-168 (2026-09-10) added `checkout.url` to that one shape, and
+				// this assertion is what caught the change -- which is the point
+				// of asserting it whole. It stays whole: all ten plans still
+				// send ONE body, now with our own checkout URL in it so Paddle
+				// stops building the overlay link from the shared account's
+				// default payment link.
 				expect(paddleCalls).toBe(1);
 				expect(sentUrl).toBe('https://api.paddle.com/transactions');
-				expect(sentBody).toEqual({ items: [{ price_id: kase.price_id, quantity: 1 }] });
+				expect(sentBody).toEqual({
+					items:    [{ price_id: kase.price_id, quantity: 1 }],
+					checkout: { url: 'https://headlessoracle.com/pricing' },
+				});
 			} finally {
 				globalThis.fetch = originalFetch;
 			}
@@ -4570,6 +4580,391 @@ describe('POST /v5/checkout', () => {
 				expect(body).toHaveProperty('error', 'UNKNOWN_PLAN');
 			}
 			expect(paddleCalls).toBe(0);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	// ─── B-169: an unreadable body must not sell anything ────────────────────
+	// 2026-09-10, in production. The founder sent {"plan":"nope"} from Windows
+	// PowerShell 5.1, which does not pass \" through to a native executable
+	// reliably. The body arrived unparseable, `request.json().catch(() => ({}))`
+	// turned it into {}, the ABSENT-plan default sold Builder, and a live
+	// Paddle transaction (txn_01m25kztpkvt2hh64qdw509n97) was created for a
+	// request whose plan the worker never read. The "nope" refusal B-144 built
+	// was never reached.
+	//
+	// Absent and unreadable are different cases and only the second is a
+	// defect: an empty body still means Builder (the two controls below hold
+	// that line), but a body we cannot parse means we do not know what was
+	// asked for, and a billable object must not come out of not knowing.
+	it('B-169: POST /v5/checkout with an unparseable body → 400 INVALID_BODY and ZERO calls to api.paddle.com', async () => {
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) {
+				paddleCalls += 1;
+				// A valid-looking response on purpose: if the handler DOES call
+				// Paddle the test must fail on the assertion below, not on a 502
+				// that would hide which property actually broke.
+				return new Response(JSON.stringify({ data: { id: 'txn_should_never_happen' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			// Exactly what PowerShell 5.1 delivers when the quoting collapses.
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    '{plan:nope}',
+			});
+			expect(res.status).toBe(400);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'INVALID_BODY');
+			// An agent must be able to fix the call from the response alone.
+			expect(String(body.message)).toContain('{"plan":"builder"}');
+			expect(body.valid_plans).toEqual([
+				'builder', 'pro', 'protocol', 'credits',
+				'conformance_entry', 'regrade', 'dispute', 'dispute_note', 'custody_90d', 'custody_1y',
+			]);
+			expect(paddleCalls).toBe(0);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-169: POST /v5/checkout with a JSON string body → 400 INVALID_BODY and ZERO calls to api.paddle.com', async () => {
+		// '"builder"' is valid JSON and parses cleanly. It is not an object, so
+		// `.plan` is undefined and the old code read it as "no plan given" and
+		// sold Builder — the right answer by accident here, and the wrong one
+		// for '"pro"'. Parsing is not the same as understanding.
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) {
+				paddleCalls += 1;
+				return new Response(JSON.stringify({ data: { id: 'txn_should_never_happen' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify('builder'),
+			});
+			expect(res.status).toBe(400);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'INVALID_BODY');
+			expect(paddleCalls).toBe(0);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-169: POST /v5/checkout with a JSON value that is not an object → 400 INVALID_BODY and ZERO calls', async () => {
+		// `null` is the one that matters most: typeof null === 'object', so a
+		// naive object check lets it through and `body.plan` throws, turning a
+		// bad request into a 500 of ours.
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) {
+				paddleCalls += 1;
+				return new Response(JSON.stringify({ data: { id: 'txn_should_never_happen' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			for (const raw of ['[]', 'null', '42', 'true', '"1"']) {
+				const res = await fetchWorker('/v5/checkout', {
+					method:  'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body:    raw,
+				});
+				expect(res.status, `body ${raw}`).toBe(400);
+				const body = await res.json() as Record<string, unknown>;
+				expect(body, `body ${raw}`).toHaveProperty('error', 'INVALID_BODY');
+			}
+			expect(paddleCalls).toBe(0);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	// The two controls that keep the fix from being "400 on everything". The
+	// site's buttons all send JSON.stringify({plan}), so neither of these is a
+	// path headlessoracle.com uses — they are the documented default, and a
+	// caller that sends {} is asking for it explicitly.
+	it('B-169 CONTROL: POST /v5/checkout with an empty body still sells Builder', async () => {
+		let capturedPriceId = '';
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				paddleCalls += 1;
+				const sent = JSON.parse((init?.body as string) ?? '{}') as { items?: Array<{ price_id?: string }> };
+				capturedPriceId = sent.items?.[0]?.price_id ?? '';
+				return new Response(JSON.stringify({ data: { id: 'txn_empty_body_builder' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', { method: 'POST' });
+			expect(res.status).toBe(200);
+			expect(capturedPriceId).toBe('pri_test_builder_placeholder'); // matches .dev.vars
+			expect(paddleCalls).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-169 CONTROL: POST /v5/checkout with body {} still sells Builder', async () => {
+		let capturedPriceId = '';
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				paddleCalls += 1;
+				const sent = JSON.parse((init?.body as string) ?? '{}') as { items?: Array<{ price_id?: string }> };
+				capturedPriceId = sent.items?.[0]?.price_id ?? '';
+				return new Response(JSON.stringify({ data: { id: 'txn_empty_object_builder' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    '{}',
+			});
+			expect(res.status).toBe(200);
+			expect(capturedPriceId).toBe('pri_test_builder_placeholder');
+			expect(paddleCalls).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-169 CONTROL: a well-formed body naming an unknown plan is still UNKNOWN_PLAN, not INVALID_BODY', async () => {
+		// The two refusals must stay distinguishable: INVALID_BODY says "I
+		// could not read what you sent", UNKNOWN_PLAN says "I read it and do
+		// not sell that". An agent recovers from them differently.
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) { paddleCalls += 1; }
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ plan: 'nope' }),
+			});
+			expect(res.status).toBe(400);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'UNKNOWN_PLAN');
+			expect(paddleCalls).toBe(0);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	// ─── B-168: overlay_url must not carry another venture's domain ──────────
+	// The same production call returned
+	// overlay_url: "https://texasentitlement.com?_ptxn=txn_01m25kzt…" — Austin
+	// Dev Watch's domain. It is Paddle's data.checkout.url, which Paddle builds
+	// from the account's DEFAULT payment link, and the two ventures share a
+	// Paddle account whose default link is ADW's. The site never follows
+	// overlay_url (Paddle.js takes transaction_id), but an agent that does is
+	// sent to the wrong business.
+	it('B-168: overlay_url is null when Paddle returns a checkout URL on a foreign host', async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				return new Response(JSON.stringify({
+					data: {
+						id:       'txn_foreign_overlay',
+						// The exact shape production returned on 2026-09-10.
+						checkout: { url: 'https://texasentitlement.com?_ptxn=txn_foreign_overlay' },
+					},
+				}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ plan: 'builder' }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.overlay_url).toBeNull();
+			// The transaction is still usable — we withhold the wrong link, we
+			// do not fail a checkout the customer can still complete.
+			expect(body).toHaveProperty('transaction_id', 'txn_foreign_overlay');
+			expect(body).toHaveProperty('url', 'https://buy.paddle.com/checkout/txn_foreign_overlay');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-168: overlay_url passes through on our own host, and we ask Paddle for one', async () => {
+		let sentCheckoutUrl: string | undefined;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				const sent = JSON.parse((init?.body as string) ?? '{}') as { checkout?: { url?: string } };
+				sentCheckoutUrl = sent.checkout?.url;
+				return new Response(JSON.stringify({
+					data: {
+						id:       'txn_own_overlay',
+						checkout: { url: 'https://headlessoracle.com/pricing?_ptxn=txn_own_overlay' },
+					},
+				}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ plan: 'builder' }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('overlay_url', 'https://headlessoracle.com/pricing?_ptxn=txn_own_overlay');
+			// The other half of B-168: we stop relying on whatever the shared
+			// Paddle account has as its default link and name our own.
+			expect(sentCheckoutUrl).toBe('https://headlessoracle.com/pricing');
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-169: POST /v5/checkout with a non-string plan → 400 INVALID_BODY, not a 500', async () => {
+		// Found while fixing B-169, same family. {"plan":42} is a readable
+		// object naming something that is not a plan. The old code took 42 as
+		// truthy, missed both price maps, and handed it to safeIdent(), whose
+		// .replace() is not a method on a number — so the request died in the
+		// outer catch and came back as a fault of ours rather than of the call.
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) { paddleCalls += 1; }
+			return originalFetch(input, init);
+		};
+		try {
+			for (const raw of ['{"plan":42}', '{"plan":true}', '{"plan":{"name":"builder"}}', '{"plan":["builder"]}']) {
+				const res = await fetchWorker('/v5/checkout', {
+					method:  'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body:    raw,
+				});
+				expect(res.status, `body ${raw}`).toBe(400);
+				const body = await res.json() as Record<string, unknown>;
+				expect(body, `body ${raw}`).toHaveProperty('error', 'INVALID_BODY');
+			}
+			expect(paddleCalls).toBe(0);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-168: a Paddle rejection of our checkout URL retries once without it rather than failing the sale', async () => {
+		// We cannot verify from here that headlessoracle.com is approved in the
+		// shared Paddle account's checkout settings, and an unapproved domain
+		// would turn every checkout into a 502. So the failure — not a guess at
+		// Paddle's error text — triggers one retry without the field. The
+		// overlay guard still holds, because it reads the response, not what we
+		// asked for.
+		let paddleCalls = 0;
+		let sawCheckoutFieldOn: boolean[] = [];
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				paddleCalls += 1;
+				const sent = JSON.parse((init?.body as string) ?? '{}') as { checkout?: { url?: string } };
+				const hasCheckout = sent.checkout !== undefined;
+				sawCheckoutFieldOn.push(hasCheckout);
+				if (hasCheckout) {
+					// What an unapproved checkout domain looks like from Paddle.
+					return new Response(JSON.stringify({ error: { detail: 'checkout.url is not an approved domain' } }), {
+						status: 400, headers: { 'Content-Type': 'application/json' },
+					});
+				}
+				return new Response(JSON.stringify({ data: { id: 'txn_retry_no_url' } }), {
+					status: 200, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ plan: 'builder' }),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('transaction_id', 'txn_retry_no_url');
+			// Paddle returned no checkout block at all on the retry.
+			expect(body.overlay_url).toBeNull();
+			// Exactly two: the attempt with our URL, then the fallback. Not a loop.
+			expect(paddleCalls).toBe(2);
+			expect(sawCheckoutFieldOn).toEqual([true, false]);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
+	it('B-168: a Paddle failure unrelated to the checkout URL still ends in 502, and does not retry forever', async () => {
+		// The control on the retry: it is one extra attempt on the failure
+		// path, and a genuinely broken Paddle still fails the sale.
+		let paddleCalls = 0;
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com/transactions')) {
+				paddleCalls += 1;
+				return new Response(JSON.stringify({ error: { detail: 'Invalid API key' } }), {
+					status: 401, headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			return originalFetch(input, init);
+		};
+		try {
+			const res = await fetchWorker('/v5/checkout', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body:    JSON.stringify({ plan: 'builder' }),
+			});
+			expect(res.status).toBe(502);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body).toHaveProperty('error', 'CHECKOUT_FAILED');
+			expect(paddleCalls).toBe(2);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}

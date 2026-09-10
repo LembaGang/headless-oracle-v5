@@ -159,19 +159,19 @@ here is carried forward from an earlier stamp unverified.
   LangGraph + 17 ai-hedge-fund. 1264 → 1298 across the rail sprint's day two;
   1298 → 1308 on 2026-09-09 (B-144 +6 and 1 replaced, B-145 +4, tripwire +1);
   **1308 → 1337 on 2026-09-10** (B-149 checkout +8, webhook +3, pricing +3,
-  intake +14, placeholder guard +1).
-- **Worker**: `src/index.ts` **17,729 lines** (`wc -l`, 2026-09-10 — the previous
-  "~17,300" was already low, and the README's "~14,000" was three passes stale).
-  API-only — zero HTML. **Live version:
-  `a83fa8bf-b77f-4fe9-97b7-bf9553fa6477`** (deployed 2026-09-07T12:41:23Z — the
-  x402 v2 rail; read from `npx wrangler deployments list` on 2026-09-07). The
-  live worker does NOT serve T3b, T4, GAP-017, the start smoke, the derived plan
-  prices, the fail-closed billing path, or anything from 2026-09-10 — so the six
-  referee services are still unbuyable in production. **Push state, read from git
-  on 2026-09-10: `origin/main` is at `eb2f567` — the four commits of 2026-09-09
-  HAVE been pushed since the last stamp, which said `7a0bafe`. Unpushed: only
-  this session's six.**
-  **Whether the deployed worker matches this tree has not been checked.**
+  intake +14, placeholder guard +1); **1337 → 1348 later on 2026-09-10** (B-169
+  body validation +7, B-168 overlay host +4).
+- **Worker**: `src/index.ts` **17,820 lines** (`wc -l`, 2026-09-10, after B-169
+  and B-168). API-only — zero HTML. **Live version:
+  `5bf9588f-9d42-41a0-a62b-005f5a6fff32`** (the founder's deploy of
+  2026-09-10). The previous stamp here named `a83fa8bf…` from 2026-09-07, which
+  was already stale when it was written (B-117). **This id is carried from the
+  Lead's handoff of 2026-09-10 and was NOT read from `npx wrangler deployments
+  list` in the session that wrote this line; which commit it was built from is
+  not established here.** What IS established: it does not serve B-169 or B-168,
+  because nothing from that session was pushed or deployed. **Push state, read
+  from git on 2026-09-10: `origin/main` is at `6c55ffd` — the six commits of the
+  morning HAVE been pushed. Unpushed: the B-169/B-168 commits.**
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
   scripts/start-smoke.sh`. Every commit of 2026-09-07 passed all four with no
@@ -398,6 +398,58 @@ out: extend the date on a Lead ruling (in source **and** in Paddle, so the two
 agree), or publish successor prices and drop the flag and the test together.
 Silencing it by deleting the assertion and leaving the prices is the one
 response that removes the thing that found the problem.
+
+### B-169 — an unreadable body sells nothing (2026-09-10)
+
+`POST /v5/checkout` read its body with `await request.json().catch(() => ({}))`,
+which gave the same answer to three different requests: no body, a JSON object,
+and bytes it could not parse. On 2026-09-10 a `{"plan":"nope"}` sent from
+PowerShell 5.1 — which does not pass `\"` through to a native executable
+reliably — arrived mangled, parsed to `{}`, took the **absent**-plan default and
+created a live Builder transaction (`txn_01m25kztpkvt2hh64qdw509n97`) for a
+request whose plan the worker never read. B-144 closed this family for a plan we
+can read and do not sell; a body we cannot read at all was still open.
+
+**The rule.** The body is read as text first. Empty (or whitespace) means absent
+and still defaults to Builder — the documented default, held by two control
+tests. Anything else must parse to a **JSON object**: a parse failure, or a value
+that is not an object (`null` and arrays included — `typeof null === 'object'`),
+is **400 `INVALID_BODY`** carrying `valid_plans`, with **no call to Paddle**. A
+`plan` that is present but not a string is the same refusal: it used to reach
+`safeIdent()`, whose `.replace()` is not a method on a number, so `{"plan":42}`
+returned **500** — a fault of ours reported for a fault of the call. `INVALID_BODY`
+and `UNKNOWN_PLAN` stay distinct on purpose: "I could not read what you sent"
+and "I read it and do not sell that" are different recoveries for an agent.
+
+**No site button takes this path.** Every button in `headless-oracle-web/pricing.html`
+sends `JSON.stringify({plan})`. The Builder default survives for the legacy
+`?type=` callers and for anyone posting an empty body, not for the site.
+
+### B-168 — `overlay_url` never carries another venture's domain (2026-09-10)
+
+The same production call returned
+`overlay_url: "https://texasentitlement.com?_ptxn=txn_01m25kzt…"`. That is
+Paddle's `data.checkout.url`, which Paddle builds from the **account's default
+payment link** when the transaction does not name one — and this Paddle account
+is shared with Austin Dev Watch, whose default link is that domain. Nothing on
+headlessoracle.com follows the field (Paddle.js takes `transaction_id`, the
+hosted `buy.paddle.com` URL is the fallback), but an agent that follows it is
+sent to the wrong business.
+
+Two halves, and the second does not depend on the first. `createPaddleCheckout`
+now sends `checkout: { url: PADDLE_CHECKOUT_URL }` — one field added to the ONE
+request shape all ten plans share; **do not invent a second shape**. And whatever
+Paddle returns, `ownHostOverlayUrl()` serves it only when its host is exactly
+`PADDLE_OVERLAY_HOST`, otherwise `null` plus a `PADDLE_OVERLAY_URL_FOREIGN_HOST`
+warning. Withholding the link is safe: the transaction is still completable by
+the other two paths.
+
+**Paddle requires the checkout domain to be approved in the account's settings,
+and that approval has not been verified from this tree.** So a failed create is
+retried **once** without the field — keyed on the failure itself, never on
+parsing Paddle's error text — and only then becomes a 502. A checkout that
+worked must not start failing because we asked for a nicer overlay URL. Exactly
+two attempts, asserted; the second failure is the answer.
 
 ### B-149 — the till opens: the six referee services are buyable (2026-09-10)
 

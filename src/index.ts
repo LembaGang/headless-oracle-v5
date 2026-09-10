@@ -2677,22 +2677,64 @@ async function createPaddleCheckout(
 	priceId: string,
 	env: Env,
 ): Promise<{ ok: true; transactionId: string; overlayUrl: string | null } | { ok: false; detail: string }> {
-	const paddleRes = await fetch('https://api.paddle.com/transactions', {
-		method: 'POST',
-		headers: {
-			'Authorization': `Bearer ${env.PADDLE_API_KEY}`,
-			'Content-Type':  'application/json',
-		},
-		body: JSON.stringify({
-			items: [{ price_id: priceId, quantity: 1 }],
-		}),
-	});
-	const paddleBody = await paddleRes.json().catch(() => ({})) as { data?: { id?: string; checkout?: { url?: string } }; error?: { detail: string } };
+	const send = async (withCheckoutUrl: boolean) => {
+		const requestBody: Record<string, unknown> = { items: [{ price_id: priceId, quantity: 1 }] };
+		if (withCheckoutUrl) { requestBody.checkout = { url: PADDLE_CHECKOUT_URL }; }
+		const res = await fetch('https://api.paddle.com/transactions', {
+			method: 'POST',
+			headers: {
+				'Authorization': `Bearer ${env.PADDLE_API_KEY}`,
+				'Content-Type':  'application/json',
+			},
+			body: JSON.stringify(requestBody),
+		});
+		const parsed = await res.json().catch(() => ({})) as { data?: { id?: string; checkout?: { url?: string } }; error?: { detail: string } };
+		return { res, parsed };
+	};
+
+	// B-168, first half: name our own checkout URL. Left unset, Paddle builds
+	// data.checkout.url from the ACCOUNT's default payment link — and this
+	// Paddle account is shared with another venture whose default link is its
+	// own domain, so on 2026-09-10 a Headless Oracle checkout handed the caller
+	// a link to that business.
+	let { res: paddleRes, parsed: paddleBody } = await send(true);
+	if (!paddleRes.ok) {
+		// Paddle requires the domain to be approved in the account's checkout
+		// settings. We cannot verify that approval from here, so a failure is
+		// retried once WITHOUT the field rather than assumed to be about it:
+		// keyed on the failure itself, not on guessing at Paddle's error text.
+		// A checkout that used to work must not start failing because we asked
+		// for a nicer overlay URL, and the host guard below holds either way.
+		console.warn(`PADDLE_CHECKOUT_RETRY_WITHOUT_URL: ${paddleBody.error?.detail ?? 'unknown'}`);
+		({ res: paddleRes, parsed: paddleBody } = await send(false));
+	}
 	const transactionId = paddleBody.data?.id;
 	if (!paddleRes.ok || !transactionId) {
 		return { ok: false, detail: paddleBody.error?.detail ?? 'unknown' };
 	}
-	return { ok: true, transactionId, overlayUrl: paddleBody.data?.checkout?.url ?? null };
+	return { ok: true, transactionId, overlayUrl: ownHostOverlayUrl(paddleBody.data?.checkout?.url ?? null) };
+}
+
+// B-168, second half. Whatever Paddle returns, we serve an overlay URL only
+// when it is ours. Nothing on headlessoracle.com follows this field — the site
+// hands transaction_id to Paddle.js and falls back to the buy.paddle.com URL —
+// but an agent that follows it would be sent to whichever business the shared
+// account's default payment link happens to name. Withholding the link is
+// safe; the transaction is still completable through the other two paths.
+function ownHostOverlayUrl(raw: string | null): string | null {
+	if (!raw) { return null; }
+	let host: string;
+	try {
+		host = new URL(raw).hostname;
+	} catch {
+		console.warn('PADDLE_OVERLAY_URL_UNPARSEABLE');
+		return null;
+	}
+	if (host !== PADDLE_OVERLAY_HOST) {
+		console.warn(`PADDLE_OVERLAY_URL_FOREIGN_HOST: ${safeIdent(host, 120)}`);
+		return null;
+	}
+	return raw;
 }
 
 // The public checkout URL Paddle serves for a transaction. One place, because
@@ -2700,6 +2742,12 @@ async function createPaddleCheckout(
 function paddleCheckoutUrl(transactionId: string): string {
 	return `https://buy.paddle.com/checkout/${transactionId}`;
 }
+
+// The page we ask Paddle to build its overlay checkout URL from, and the only
+// host we will serve that URL back on. Both are ours by definition: see B-168
+// in createPaddleCheckout for what happened when neither was stated.
+const PADDLE_CHECKOUT_URL  = 'https://headlessoracle.com/pricing';
+const PADDLE_OVERLAY_HOST  = 'headlessoracle.com';
 
 // ─── Paddle webhooks: which plan a price id sells ────────────────────────────
 // Fail-CLOSED. Both webhook branches used to open with `let plan = 'pro'` and
@@ -13256,11 +13304,54 @@ export default {
 				if (!env.PADDLE_API_KEY || !env.PADDLE_PRICE_ID_BUILDER) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
 				}
-				const body = await request.json().catch(() => ({})) as { plan?: string };
+				// B-169. An unreadable body must not sell anything.
+				//
+				// This was `await request.json().catch(() => ({}))`, which
+				// collapsed three different requests into one answer. On
+				// 2026-09-10 a {"plan":"nope"} sent from PowerShell 5.1 arrived
+				// with its quoting mangled, failed to parse, became {}, took the
+				// ABSENT-plan default, and created a live Builder transaction
+				// for a request whose plan the worker never read. B-144 closed
+				// this family for a plan we can read and do not sell; a body we
+				// cannot read at all was still open.
+				//
+				// Reading the raw text first is what keeps the three cases
+				// apart: no body (the documented Builder default), a JSON
+				// object (read the plan out of it), and anything else (we do
+				// not know what was asked for, so we sell nothing).
+				const invalidCheckoutBody = () => json({
+					error:       'INVALID_BODY',
+					message:     'Send a JSON object, for example {"plan":"builder"}',
+					valid_plans: CHECKOUT_PLANS,
+				}, 400);
+
+				const rawCheckoutBody = await request.text().catch(() => '');
+				let checkoutBody: Record<string, unknown> = {};
+				if (rawCheckoutBody.trim() !== '') {
+					let parsed: unknown;
+					try {
+						parsed = JSON.parse(rawCheckoutBody);
+					} catch {
+						return invalidCheckoutBody();
+					}
+					// typeof null === 'object', and so is an array. Both reach
+					// `.plan` as undefined and would have read as "no plan given".
+					if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+						return invalidCheckoutBody();
+					}
+					checkoutBody = parsed as Record<string, unknown>;
+				}
+				// A `plan` that is not a string is not a plan. It also used to
+				// reach safeIdent(), whose .replace() threw on a number and
+				// turned a bad request into a 500 of ours.
+				const planField = checkoutBody.plan;
+				if (planField !== undefined && typeof planField !== 'string') {
+					return invalidCheckoutBody();
+				}
 				// Absent → Builder, unchanged. Present-but-unrecognised → 400, and
 				// no call to Paddle: see CHECKOUT_PLAN_PRICE_ENV for why the old
 				// fall-through sold Builder to anyone who mistyped a plan name.
-				const plan = body.plan || url.searchParams.get('type') || 'builder';
+				const plan = planField || url.searchParams.get('type') || 'builder';
 				const resolvedPrice = resolveCheckoutPrice(plan, env);
 				if (resolvedPrice.kind === 'unknown') {
 					return json({
