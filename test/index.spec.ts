@@ -2089,6 +2089,312 @@ describe('GET /v5/pricing', () => {
 		const builder = tiers.find((t) => t.id === 'builder')!;
 		expect(builder.calls_per_day).toBe(50_000);
 	});
+
+	// --- B-149: the referee block --------------------------------------------
+	// /v5/pricing served seven tiers and said nothing about the six referee
+	// services, so the only machine-readable price list we publish did not
+	// mention half of what the till sells.
+	//
+	// The expected figures below are written out INDEPENDENTLY of
+	// REFEREE_PRICES, in the minor units Paddle stores, exactly as the checkout
+	// table above is. Two links are checked separately, and each has its own
+	// red case:
+	//   (a) served usd === (minor_units / 100) read from the constant
+	//       -- goes red if the served figure is a literal that drifted;
+	//   (b) the constant's minor_units === the numbers below
+	//       -- goes red if the constant itself is wrong.
+	// Checking only (a) would compare the code against itself.
+	//
+	// The constant is NOT mutated to force the red. It is module-level and
+	// shared by every test in this file, so mutating it would leak into
+	// unrelated assertions and make a later failure unattributable. The red was
+	// taken by running these tests before the handler served a `referee` key at
+	// all.
+	const REFEREE_PRICING_EXPECTED = [
+		{ plan: 'conformance_entry', name: 'Conformance entry',                       minor_units: 250000, cycle: null },
+		{ plan: 'regrade',           name: 'Re-grade',                                minor_units:  75000, cycle: null },
+		{ plan: 'dispute',           name: 'Dispute package',                         minor_units:  50000, cycle: null },
+		{ plan: 'dispute_note',      name: 'Dispute package with verification note',  minor_units: 150000, cycle: null },
+		{ plan: 'custody_90d',       name: 'Evidence custody 90 days',                minor_units:   4900, cycle: { interval: 'month', frequency: 1 } },
+		{ plan: 'custody_1y',        name: 'Evidence custody one year',               minor_units:  19900, cycle: { interval: 'month', frequency: 1 } },
+	] as const;
+
+	// Byte-for-byte from LEAD_PLAN_2026-09-07_M5-prices-live.md section 5. 434
+	// characters, sha256 576fa9366bdb3ab438229ada26a0e3758fedda6a9a16518f796e0f4041de793b.
+	// It is written out here rather than imported so that a change to the served
+	// string is a diff against the plan, not a diff against itself.
+	const NEUTRALITY_RULE = 'A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: the referee is the author of a competing format; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.';
+
+	it('B-149: /v5/pricing serves a referee block with the six services', async () => {
+		const res  = await fetchWorker('/v5/pricing');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const referee = body.referee as Record<string, unknown>;
+		expect(referee).toBeDefined();
+
+		expect(referee.introductory).toBe(true);
+		expect(referee.introductory_until).toBe(refereePrices().introductory_until);
+		expect(referee.intake_url).toBe('https://headlessoracle.com/v5/referee/intake');
+		expect(referee.programmes).toBe('by invoice after a conversation; use the intake');
+
+		const services = referee.services as Array<Record<string, unknown>>;
+		expect(services).toHaveLength(6);
+		expect(services.map(x => x.plan)).toEqual(REFEREE_PRICING_EXPECTED.map(x => x.plan));
+		for (const expected of REFEREE_PRICING_EXPECTED) {
+			const served = services.find(x => x.plan === expected.plan)!;
+			expect(served.name).toBe(expected.name);
+			expect(served.cycle).toEqual(expected.cycle);
+		}
+	});
+
+	it('B-149: the neutrality rule is served verbatim, and is 434 characters', async () => {
+		const res  = await fetchWorker('/v5/pricing');
+		const body = await res.json() as Record<string, unknown>;
+		const referee = body.referee as Record<string, unknown>;
+		expect(referee.neutrality).toBe(NEUTRALITY_RULE);
+		// The length is asserted separately so a whitespace-only edit -- the one
+		// change toBe() reports least legibly -- names itself.
+		expect(String(referee.neutrality)).toHaveLength(434);
+	});
+
+	it('B-149: every served referee usd is DERIVED from REFEREE_PRICES, and the constant matches Paddle', async () => {
+		const res  = await fetchWorker('/v5/pricing');
+		const body = await res.json() as Record<string, unknown>;
+		const services = (body.referee as Record<string, unknown>).services as Array<Record<string, unknown>>;
+		const { prices, amount } = refereePrices();
+
+		for (const expected of REFEREE_PRICING_EXPECTED) {
+			const served = services.find(x => x.plan === expected.plan)!;
+			// (a) served <- constant. A literal that drifted from the table fails here.
+			expect(served.usd).toBe(amount(expected.plan));
+			expect(served.usd).toBe((prices[expected.plan].minor_units / 100).toFixed(2));
+			// (b) constant <- Paddle. A wrong table fails here, independently.
+			expect(prices[expected.plan].minor_units).toBe(expected.minor_units);
+			expect(prices[expected.plan].cycle).toEqual(expected.cycle);
+		}
+		// And nothing is quoted that the constant does not have.
+		expect(services.map(x => x.plan).slice().sort()).toEqual(Object.keys(prices).sort());
+	});
+});
+
+// --- B-149: POST /v5/referee/intake ------------------------------------------
+// The purchase path needs a front door. A conformance entry is not a thing to
+// sell to an anonymous card: we need to know which implementation, at which
+// version, read which methodology, and whether the submitter consents to being
+// named. The intake collects that, records it, tells the founder, and hands
+// back the conformance_entry checkout URL so the same request that describes
+// the work can pay for it.
+
+describe('POST /v5/referee/intake', () => {
+	const VALID_INTAKE = {
+		implementation:           'acme-receipts',
+		repository_or_url:        'https://github.com/acme/receipts',
+		format:                   'acta.receipt/0',
+		version:                  '1.4.2',
+		contact_email:            'submitter@example.com',
+		consent_to_be_named:      true,
+		methodology_version_read: 'v1.0.0',
+	};
+
+	// Every intake test that reaches the Paddle call needs it mocked. No test
+	// in this file may touch api.paddle.com for real.
+	function withPaddle(transactionId: string, opts?: { fail?: boolean }) {
+		const state = { paddleCalls: 0, paddlePriceId: '', mailCount: 0, mailTo: '', mailSubject: '', mailHtml: '' };
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
+			if (urlStr.includes('api.paddle.com')) {
+				state.paddleCalls += 1;
+				const sent = JSON.parse((init?.body as string) ?? '{}') as { items?: Array<{ price_id?: string }> };
+				state.paddlePriceId = sent.items?.[0]?.price_id ?? '';
+				if (opts?.fail) {
+					return new Response(JSON.stringify({ error: { detail: 'price archived' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+				}
+				return new Response(JSON.stringify({ data: { id: transactionId } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (urlStr.includes('resend.com')) {
+				state.mailCount += 1;
+				const mail = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { to?: string[]; subject?: string; html?: string };
+				state.mailTo      = mail.to?.[0] ?? '';
+				state.mailSubject = mail.subject ?? '';
+				state.mailHtml    = mail.html ?? '';
+				return new Response(JSON.stringify({ id: 'email_intake' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			return originalFetch(input, init);
+		};
+		return { state, restore: () => { globalThis.fetch = originalFetch; } };
+	}
+
+	function post(body: unknown, ip = '198.51.100.7') {
+		return fetchWorker('/v5/referee/intake', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+			body:    JSON.stringify(body),
+		});
+	}
+
+	it('GET /v5/referee/intake → 405', async () => {
+		const res = await fetchWorker('/v5/referee/intake');
+		expect(res.status).toBe(405);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body).toHaveProperty('error', 'METHOD_NOT_ALLOWED');
+	});
+
+	it('B-149: a complete intake round-trips: KV row, founder mail, {intake_id, checkout_url}', async () => {
+		const h = withPaddle('txn_intake_roundtrip');
+		try {
+			const res  = await post(VALID_INTAKE, '198.51.100.11');
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+
+			// The response an agent acts on, with no follow-up question in it.
+			expect(String(body.intake_id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+			expect(body.checkout_url).toBe('https://buy.paddle.com/checkout/txn_intake_roundtrip');
+
+			// The checkout is for conformance_entry, through the same code path
+			// POST /v5/checkout uses -- asserted on the price id that actually
+			// reached Paddle, not on our intent.
+			expect(h.state.paddleCalls).toBe(1);
+			expect(h.state.paddlePriceId).toBe('pri_01m22wcgvj15ktn5xnabf13a7p');
+
+			// The durable record.
+			const raw = await env.ORACLE_TELEMETRY.get(`referee_intake:${body.intake_id as string}`);
+			expect(raw).not.toBeNull();
+			const row = JSON.parse(raw as string) as Record<string, unknown>;
+			expect(row.implementation).toBe('acme-receipts');
+			expect(row.repository_or_url).toBe('https://github.com/acme/receipts');
+			expect(row.format).toBe('acta.receipt/0');
+			expect(row.version).toBe('1.4.2');
+			expect(row.contact_email).toBe('submitter@example.com');
+			expect(row.consent_to_be_named).toBe(true);
+			expect(row.methodology_version_read).toBe('v1.0.0');
+			expect(typeof row.received_at).toBe('string');
+
+			// One mail, to the founder, naming the implementation.
+			expect(h.state.mailCount).toBe(1);
+			expect(h.state.mailTo).toBe('mike@headlessoracle.com');
+			expect(h.state.mailSubject).toBe('Referee intake: acme-receipts');
+		} finally {
+			h.restore();
+		}
+	});
+
+	// Each field, one at a time. A single "some field missing" test would pass
+	// with five of the seven unchecked.
+	for (const field of Object.keys(VALID_INTAKE)) {
+		it(`B-149: intake missing '${field}' → 400 naming that field`, async () => {
+			const h = withPaddle('txn_should_not_happen');
+			try {
+				const body = { ...VALID_INTAKE } as Record<string, unknown>;
+				delete body[field];
+				const res = await post(body, '198.51.100.12');
+				expect(res.status).toBe(400);
+				const parsed = await res.json() as Record<string, unknown>;
+				expect(parsed).toHaveProperty('error', 'INVALID_INTAKE');
+				// The named field is the point: an agent must not have to guess
+				// which of seven it got wrong.
+				expect(parsed.field).toBe(field);
+				// Nothing is bought and nobody is mailed for a request we rejected.
+				expect(h.state.paddleCalls).toBe(0);
+				expect(h.state.mailCount).toBe(0);
+			} finally {
+				h.restore();
+			}
+		});
+	}
+
+	it('B-149: consent_to_be_named must be a real boolean — the string "true" is 400', async () => {
+		// The one that would slip through a truthiness check. "true", "false"
+		// and "no" are all truthy strings; consent recorded from any of them is
+		// consent we cannot show was given.
+		const h = withPaddle('txn_should_not_happen');
+		try {
+			for (const notABoolean of ['true', 'false', 1, 0, null]) {
+				const res = await post({ ...VALID_INTAKE, consent_to_be_named: notABoolean }, '198.51.100.13');
+				expect(res.status).toBe(400);
+				const parsed = await res.json() as Record<string, unknown>;
+				expect(parsed).toHaveProperty('error', 'INVALID_INTAKE');
+				expect(parsed.field).toBe('consent_to_be_named');
+			}
+			expect(h.state.paddleCalls).toBe(0);
+		} finally {
+			h.restore();
+		}
+	});
+
+	it('B-149: consent_to_be_named false is accepted — it is a choice, not a failure', async () => {
+		// The control for the test above. Rejecting `false` would make the
+		// boolean check look right while making consent unrefusable.
+		const h = withPaddle('txn_intake_no_consent');
+		try {
+			const res = await post({ ...VALID_INTAKE, consent_to_be_named: false }, '198.51.100.14');
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			const raw  = await env.ORACLE_TELEMETRY.get(`referee_intake:${body.intake_id as string}`);
+			expect(JSON.parse(raw as string).consent_to_be_named).toBe(false);
+		} finally {
+			h.restore();
+		}
+	});
+
+	it('B-149: an invalid contact_email is 400, by the same rule /v5/sandbox uses', async () => {
+		const h = withPaddle('txn_should_not_happen');
+		try {
+			for (const bad of ['not-an-email', 'a@b', 'a b@example.com', '@example.com']) {
+				const res = await post({ ...VALID_INTAKE, contact_email: bad }, '198.51.100.15');
+				expect(res.status).toBe(400);
+				const parsed = await res.json() as Record<string, unknown>;
+				expect(parsed.field).toBe('contact_email');
+			}
+			expect(h.state.paddleCalls).toBe(0);
+		} finally {
+			h.restore();
+		}
+	});
+
+	it('B-149: the intake rate limit fires on the 11th request from one IP in an hour', async () => {
+		const ip     = '198.51.100.99';
+		const ipHash = await sha256Hex(ip);
+		const hour   = new Date().toISOString().slice(0, 13);
+		const rateKey = `referee_intake_rate:${ipHash}:${hour}`;
+		await env.ORACLE_TELEMETRY.put(rateKey, '10');
+		const h = withPaddle('txn_should_not_happen');
+		try {
+			const res = await post(VALID_INTAKE, ip);
+			expect(res.status).toBe(429);
+			const parsed = await res.json() as Record<string, unknown>;
+			expect(parsed).toHaveProperty('error', 'REFEREE_INTAKE_RATE_LIMIT');
+			expect(res.headers.get('Retry-After')).toBeTruthy();
+			// Rate-limited means the money path is not touched either.
+			expect(h.state.paddleCalls).toBe(0);
+			expect(h.state.mailCount).toBe(0);
+		} finally {
+			h.restore();
+			await env.ORACLE_TELEMETRY.delete(rateKey);
+		}
+	});
+
+	it('B-149: when Paddle cannot create the checkout, nothing is recorded and nobody is mailed', async () => {
+		// Ordering matters and is asserted, not assumed. The checkout is created
+		// BEFORE the intake row is written, so a failure leaves no half-state
+		// for a retrying agent to duplicate. A 200 carrying checkout_url:null
+		// would be the alternative, and an agent cannot act on it.
+		const h = withPaddle('txn_never', { fail: true });
+		try {
+			const res = await post({ ...VALID_INTAKE, implementation: 'paddle-down-case' }, '198.51.100.16');
+			expect(res.status).toBe(502);
+			const parsed = await res.json() as Record<string, unknown>;
+			expect(parsed).toHaveProperty('error', 'CHECKOUT_FAILED');
+			expect(h.state.mailCount).toBe(0);
+			const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'referee_intake:' });
+			for (const k of listed.keys) {
+				const row = JSON.parse((await env.ORACLE_TELEMETRY.get(k.name)) as string) as Record<string, unknown>;
+				expect(row.implementation).not.toBe('paddle-down-case');
+			}
+		} finally {
+			h.restore();
+		}
+	});
 });
 
 // ─── MCP fast path — no telemetry KV for protocol handshake methods ──────────
@@ -15412,7 +15718,15 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 	const PRO_COMPACT     = formatCallsCompact(planAllowances().pro);
 
 	// Every surface that serves prose an agent or indexer reads.
-	const TEXT_SURFACES: Array<[label: string, path: string]> = [
+	//
+	// A surface may name its own request and expected status. Most are plain
+	// GETs that answer 200; /v5/referee/intake is POST-only, and the entry
+	// below drives it to the 400 it serves for an empty body — a served-text
+	// response that makes no outbound call, so this guard never touches
+	// api.paddle.com. Restricting the guard to GET-200 surfaces would have
+	// meant every POST route silently escaping it.
+	type Surface = [label: string, path: string, init?: RequestInit, expectStatus?: number];
+	const TEXT_SURFACES: Surface[] = [
 		['/openapi.json',                        '/openapi.json'],
 		['/.well-known/x402.json',               '/.well-known/x402.json'],
 		['/.well-known/mcp/server-card.json',    '/.well-known/mcp/server-card.json'],
@@ -15423,6 +15737,8 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		['/llms.txt',                            '/llms.txt'],
 		['/llms-full.txt',                       '/llms-full.txt'],
 		['/v5/why-not-free',                     '/v5/why-not-free'],
+		['/v5/referee/intake',                   '/v5/referee/intake',
+			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 400],
 	];
 
 	// No served byte may carry a template placeholder the runtime never filled.
@@ -15430,10 +15746,10 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 	// escaped `\${` anywhere, so every occurrence is a conversion that failed.
 	const PLACEHOLDER = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
 
-	for (const [label, path] of TEXT_SURFACES) {
+	for (const [label, path, init, expectStatus] of TEXT_SURFACES) {
 		it(`${label} serves no uninterpolated \${...} placeholder`, async () => {
-			const response = await fetchWorker(path);
-			expect(response.status).toBe(200);
+			const response = await fetchWorker(path, init);
+			expect(response.status).toBe(expectStatus ?? 200);
 			const text = await response.text();
 			const match = text.match(PLACEHOLDER);
 			expect(

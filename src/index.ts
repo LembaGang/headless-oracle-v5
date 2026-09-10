@@ -2476,6 +2476,50 @@ function refereePriceAmount(service: RefereeService): string {
 	return (REFEREE_PRICES[service].minor_units / 100).toFixed(2);
 }
 
+// The human-readable name of each referee service. Separate from the price
+// table on purpose: a name is copy and a price is money, and the two change for
+// different reasons and under different care.
+const REFEREE_SERVICE_NAMES: Record<RefereeService, string> = {
+	conformance_entry: 'Conformance entry',
+	regrade:           'Re-grade',
+	dispute:           'Dispute package',
+	dispute_note:      'Dispute package with verification note',
+	custody_90d:       'Evidence custody 90 days',
+	custody_1y:        'Evidence custody one year',
+};
+
+// Verbatim from LEAD_PLAN_2026-09-07_M5-prices-live.md section 5. 434
+// characters, sha256
+// 576fa9366bdb3ab438229ada26a0e3758fedda6a9a16518f796e0f4041de793b.
+//
+// It is a plain string literal and must stay one: it is a commitment about
+// what money does and does not buy, printed beside the prices, and it is
+// quoted identically on the web surface. Nothing in it is interpolated.
+const REFEREE_NEUTRALITY_RULE = 'A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: the referee is the author of a competing format; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.';
+
+const REFEREE_INTAKE_URL = 'https://headlessoracle.com/v5/referee/intake';
+
+// The referee half of /v5/pricing, every figure a projection of REFEREE_PRICES.
+// Nothing here writes an amount: `usd` comes through refereePriceAmount and the
+// cycle is the constant's own, so the first surface to quote a referee price
+// derives it -- which is the entire reason the constant was landed before
+// anything quoted it.
+function refereePricingBlock(): Record<string, unknown> {
+	return {
+		introductory:       true,
+		introductory_until: REFEREE_INTRODUCTORY_UNTIL,
+		neutrality:         REFEREE_NEUTRALITY_RULE,
+		intake_url:         REFEREE_INTAKE_URL,
+		programmes:         'by invoice after a conversation; use the intake',
+		services: (Object.keys(REFEREE_PRICES) as RefereeService[]).map(service => ({
+			plan:  service,
+			name:  REFEREE_SERVICE_NAMES[service],
+			usd:   refereePriceAmount(service),
+			cycle: REFEREE_PRICES[service].cycle,
+		})),
+	};
+}
+
 // Where operational mail about a referee purchase or intake goes. One address,
 // stated once, because two call sites send to it and a second copy would be a
 // second thing to get wrong.
@@ -15332,10 +15376,170 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						resource:          X402_RESOURCE_SPECS.status.defaultResourceUrl,
 						payment_discovery: '/.well-known/x402.json',
 					},
+					// The six referee services. They are not `tiers`: a tier is an
+					// API allowance ladder and these are conformance work, bought
+					// once or held as custody, granting no API access at all.
+					referee:          refereePricingBlock(),
 					checkout_url:     '/v5/checkout',
 					sandbox_url:      '/v5/sandbox',
 					free_key_url:     '/v5/keys/request',
 					pricing_page_url: 'https://headlessoracle.com/pricing',
+				});
+			}
+
+			// ── POST /v5/referee/intake — the front door to a conformance run ──
+			// Public, no auth. A conformance entry is not a thing to sell to an
+			// anonymous card: the run needs to know which implementation, at
+			// which version, reading which methodology, and whether the
+			// submitter consents to being named in the published record. This
+			// collects that, records it, tells the founder, and hands back the
+			// conformance_entry checkout URL so the request that describes the
+			// work can also pay for it.
+			//
+			// Nothing is scheduled automatically. A paid entry buys the run and
+			// the published record, never the verdict.
+			if (url.pathname === '/v5/referee/intake') {
+				if (request.method !== 'POST') {
+					return json({
+						error:   'METHOD_NOT_ALLOWED',
+						message: 'POST /v5/referee/intake with a JSON body. See /v5/pricing for the fields and the neutrality rule.',
+					}, 405);
+				}
+				if (!env.PADDLE_API_KEY) {
+					return json({ error: 'SERVICE_UNAVAILABLE', message: 'Billing not configured' }, 503);
+				}
+
+				const intakeBody = await request.json().catch(() => null) as Record<string, unknown> | null;
+				if (!intakeBody || typeof intakeBody !== 'object') {
+					return json({ error: 'INVALID_INTAKE', field: 'body', message: 'Send a JSON object.' }, 400);
+				}
+
+				// Every field is required and every rejection names the field
+				// that failed. An agent that is told only "invalid" has to guess
+				// which of seven it got wrong, and guessing is a follow-up
+				// question we said we would not make it ask.
+				const INTAKE_STRING_FIELDS = ['implementation', 'repository_or_url', 'format', 'version', 'methodology_version_read'] as const;
+				const intakeValues: Record<string, string> = {};
+				for (const field of INTAKE_STRING_FIELDS) {
+					const raw = intakeBody[field];
+					if (typeof raw !== 'string' || !raw.trim()) {
+						return json({ error: 'INVALID_INTAKE', field, message: `'${field}' is required and must be a non-empty string.` }, 400);
+					}
+					intakeValues[field] = raw.trim().slice(0, 500);
+				}
+
+				const intakeEmailRaw = intakeBody['contact_email'];
+				if (typeof intakeEmailRaw !== 'string' || !intakeEmailRaw.trim()) {
+					return json({ error: 'INVALID_INTAKE', field: 'contact_email', message: "'contact_email' is required." }, 400);
+				}
+				const intakeEmail = intakeEmailRaw.trim().toLowerCase();
+				// The same rule /v5/sandbox applies, deliberately: two different
+				// notions of a valid address on one site is one too many.
+				if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(intakeEmail)) {
+					return json({ error: 'INVALID_INTAKE', field: 'contact_email', message: 'Invalid email format.' }, 400);
+				}
+
+				// A real boolean, not a truthy value. "true", "false" and "no"
+				// are all truthy strings, and consent recorded from any of them
+				// is consent we could not show was given. `false` is a choice
+				// and is accepted; only a non-boolean is rejected.
+				const intakeConsent = intakeBody['consent_to_be_named'];
+				if (typeof intakeConsent !== 'boolean') {
+					return json({
+						error:   'INVALID_INTAKE',
+						field:   'consent_to_be_named',
+						message: "'consent_to_be_named' must be a JSON boolean (true or false), not a string.",
+					}, 400);
+				}
+
+				// Rate limit, by the mechanism and the shape /v5/sandbox uses,
+				// on its own counter: an intake burst must not consume someone
+				// else's sandbox allocation.
+				const intakeIp     = request.headers.get('CF-Connecting-IP') ||
+					request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || 'unknown';
+				const intakeIpHash = await sha256Hex(intakeIp);
+				const intakeRateKey   = `referee_intake_rate:${intakeIpHash}:${now.toISOString().slice(0, 13)}`; // YYYY-MM-DDTHH
+				const intakeRateCount = parseInt(await env.ORACLE_TELEMETRY.get(intakeRateKey).catch(() => '0') || '0', 10);
+				if (intakeRateCount >= 10) {
+					const intakeNextHour = new Date(now);
+					intakeNextHour.setUTCMinutes(0, 0, 0);
+					intakeNextHour.setUTCHours(intakeNextHour.getUTCHours() + 1);
+					return json({
+						error:   'REFEREE_INTAKE_RATE_LIMIT',
+						message: 'Too many intake submissions from this IP.',
+						contact: FOUNDER_NOTIFICATION_EMAIL,
+					}, 429, { 'Retry-After': String(Math.max(1, Math.floor((intakeNextHour.getTime() - now.getTime()) / 1000))) });
+				}
+
+				// The checkout is created BEFORE anything is recorded. If Paddle
+				// cannot produce one there is no half-state: the agent retries
+				// and does not leave a second intake row behind. The alternative
+				// -- 200 with checkout_url:null -- is a response an agent cannot
+				// act on without asking what to do next.
+				const intakeCheckout = await createPaddleCheckout(REFEREE_PRICES.conformance_entry.price_id, env);
+				if (!intakeCheckout.ok) {
+					console.error(`PADDLE_CHECKOUT_ERROR: ${intakeCheckout.detail}`);
+					return json({ error: 'CHECKOUT_FAILED', message: 'Could not create checkout session' }, 502);
+				}
+
+				const intakeId  = crypto.randomUUID();
+				const intakeRow = {
+					implementation:           intakeValues.implementation,
+					repository_or_url:        intakeValues.repository_or_url,
+					format:                   intakeValues.format,
+					version:                  intakeValues.version,
+					contact_email:            intakeEmail,
+					consent_to_be_named:      intakeConsent,
+					methodology_version_read: intakeValues.methodology_version_read,
+					received_at:              now.toISOString(),
+					transaction_id:           intakeCheckout.transactionId,
+				};
+				// Durable, no TTL: an intake is the record of who asked for a run
+				// and on what terms, and it outlives any telemetry window.
+				await env.ORACLE_TELEMETRY.put(`referee_intake:${intakeId}`, JSON.stringify(intakeRow));
+
+				console.log(JSON.stringify({
+					event:          'REFEREE_INTAKE',
+					intake_id:      intakeId,
+					implementation: intakeValues.implementation,
+					format:         intakeValues.format,
+					consent:        intakeConsent,
+				}));
+
+				if (env.RESEND_API_KEY) {
+					await fetch('https://api.resend.com/emails', {
+						method:  'POST',
+						headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							from:    'Headless Oracle <hello@headlessoracle.com>',
+							to:      [FOUNDER_NOTIFICATION_EMAIL],
+							subject: `Referee intake: ${intakeValues.implementation}`,
+							html: `<p>A conformance entry intake was submitted. Nothing is scheduled automatically.</p>
+<ul>
+<li><strong>Implementation:</strong> ${intakeValues.implementation}</li>
+<li><strong>Repository or URL:</strong> ${intakeValues.repository_or_url}</li>
+<li><strong>Format:</strong> ${intakeValues.format}</li>
+<li><strong>Version:</strong> ${intakeValues.version}</li>
+<li><strong>Methodology version read:</strong> ${intakeValues.methodology_version_read}</li>
+<li><strong>Consents to be named:</strong> ${intakeConsent ? 'yes' : 'no'}</li>
+<li><strong>Contact:</strong> ${intakeEmail}</li>
+<li><strong>Intake id:</strong> ${intakeId}</li>
+<li><strong>Paddle transaction:</strong> ${intakeCheckout.transactionId}</li>
+</ul>
+<p>The entry is not paid until that transaction completes; the webhook records it separately.</p>`,
+						}),
+					}).catch((err: unknown) => { console.error(`REFEREE_INTAKE_MAIL_FAILED: ${intakeId} ${String(err)}`); });
+				}
+
+				await env.ORACLE_TELEMETRY.put(intakeRateKey, String(intakeRateCount + 1), { expirationTtl: 90 * 60 }).catch(() => {});
+
+				return json({
+					intake_id:    intakeId,
+					checkout_url: paddleCheckoutUrl(intakeCheckout.transactionId),
+					service:      'conformance_entry',
+					usd:          refereePriceAmount('conformance_entry'),
+					neutrality:   REFEREE_NEUTRALITY_RULE,
+					note:         'Nothing is scheduled automatically. Payment opens the run; the published record follows the methodology.',
 				});
 			}
 
