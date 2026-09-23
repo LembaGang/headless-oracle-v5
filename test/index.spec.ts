@@ -11440,8 +11440,11 @@ describe('llms.txt and llms-full.txt (AI-discoverable documentation)', () => {
 		expect(body).toContain('@headlessoracle/verify');
 		// Has MCP config
 		expect(body).toContain('headless-oracle-mcp');
-		// Has compliance table
-		expect(body).toContain('ESMA');
+		// Has the regulatory references section, its two cited documents, and no uncited framework rows
+		expect(body).toContain('## Regulatory References');
+		expect(body).toContain('CFTC Staff Letter 25-39');
+		expect(body).not.toContain('SOC 2');
+		expect(body).not.toContain('ESMA');
 	});
 
 	it('JSON responses include Link header for llms.txt discovery', async () => {
@@ -16799,4 +16802,45 @@ describe('referee prices are derived from one constant', () => {
 			].join('\n'),
 		).toBe(true);
 	});
+});
+
+// B-224c: the claim class removed by B-224, B-224b and B-224c must not return on any
+// surface an agent reads first. Status is asserted so a route that stops serving
+// cannot pass the absence check vacuously.
+describe('served text surfaces make no regulatory-alignment claim', () => {
+	const BANNED = [
+		'SEC/CFTC Technical Framework',
+		'Compliance Alignment',
+		'Regulatory alignment:',
+		'regulatory_alignment',
+		'x-regulatory-alignment',
+		'consistent with emerging regulatory direction',
+		'Architecturally consistent with emerging regulatory',
+		'SOC 2',
+		'Singapore MAS',
+		'uptime_sla',
+		'Regulatory Alignment',
+		'architecturally consistent',
+	];
+	const SURFACES: { path: string; json: boolean }[] = [
+		{ path: '/llms.txt', json: false },
+		{ path: '/llms-full.txt', json: false },
+		{ path: '/AGENTS.md', json: false },
+		{ path: '/SKILL.md', json: false },
+		{ path: '/openapi.json', json: true },
+		{ path: '/.well-known/mcp/server-card.json', json: true },
+		{ path: '/docs/specifications/multi-oracle-consensus-v1', json: false },
+		{ path: '/v1/verification/multi-oracle-guide', json: true },
+	];
+	for (const { path, json } of SURFACES) {
+		it(`${path} carries none of the banned claim strings`, async () => {
+			const res = await fetchWorker(path);
+			expect(res.status).toBe(200);
+			const body = await res.text();
+			if (json) JSON.parse(body);
+			const lower = body.toLowerCase();
+			const found = BANNED.filter((s) => lower.includes(s.toLowerCase()));
+			expect(found).toEqual([]);
+		});
+	}
 });

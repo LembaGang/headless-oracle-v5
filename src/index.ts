@@ -5852,10 +5852,10 @@ Headless Oracle is the reference implementation of \`environment.market_state\`,
 The specification is in coordinated drafting across PR #9 (\`environment.market_state\`, https://github.com/agent-intent/verifiable-intent/pull/9) and PR #22 (\`environment.wallet_state\`, https://github.com/agent-intent/verifiable-intent/pull/22) on the upstream \`agent-intent/verifiable-intent\` repository.`;
 
 const REGULATORY_DIRECTION_SHORT =
-  "Provides cryptographic venue-state attestation consistent with emerging regulatory direction on tokenized collateral and digital-asset derivatives (CFTC Staff Letter 25-39, Dec 2025; SEC Project Blueprint on Tokenized Collateral, Nov 2025). Final CFTC rulemaking expected Aug 2026.";
+  "Provides cryptographic venue-state attestation. The Multi-Oracle Consensus spec this operator publishes takes its architectural direction from CFTC Staff Letter 25-39 (December 2025) and the SEC Crypto Task Force Project Blueprint on Tokenized Collateral (November 2025), both cited with their source URLs under regulatory_references. No regulator has reviewed or endorsed this service. Final CFTC rulemaking on tokenized collateral is expected August 2026.";
 
 const REGULATORY_DIRECTION_PARAGRAPH =
-  "Regulatory direction on tokenized collateral and digital-asset derivatives is moving toward cryptographic attestation, multiple independent oracles, and verifiable data provenance as technical primitives. CFTC Staff Letter 25-39 (December 2025) provides technology-neutral guidance on tokenized collateral; the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025) discusses oracle governance and signed attestations as architectural building blocks. Final CFTC rulemaking on tokenized collateral is expected by August 2026. Signed Market-State Attestations provide the cryptographic evidence regulated parties need to incorporate authentic, timely venue state into their own compliance frameworks as the regulatory picture crystallizes.";
+  "Regulatory direction on tokenized collateral and digital-asset derivatives is moving toward cryptographic attestation, multiple independent oracles, and verifiable data provenance as technical primitives. CFTC Staff Letter 25-39 (December 2025) provides technology-neutral guidance on tokenized collateral; the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025) discusses oracle governance and signed attestations as architectural building blocks. Final CFTC rulemaking on tokenized collateral is expected by August 2026. This operator publishes signed market-state attestations and makes no claim about any party's regulatory obligations; whether such an attestation is useful evidence under a given framework is for that party and its advisers to judge. No regulator has reviewed or endorsed this service.";
 
 const REGULATORY_REFERENCES_STRUCTURED = [
   {
@@ -5890,7 +5890,7 @@ The environment.* constraint family is a sibling-type namespace: environment.mar
 
 Model-agnostic infrastructure. Works with any AI agent regardless of model tier — from GPT-5 nano to frontier reasoning models like Anthropic Mythos. Receipts are the same $0.05/MTok agents and $125/MTok agents both consume.
 
-Regulatory alignment: ${REGULATORY_DIRECTION_SHORT}
+Regulatory references: ${REGULATORY_DIRECTION_SHORT}
 
 Agents can pay for access autonomously via x402 protocol (USDC on Base mainnet) — no human API key provisioning required.
 
@@ -5932,7 +5932,7 @@ Headless Oracle returns cryptographically signed receipts confirming whether an 
 
 ## Multi-Oracle Verification
 
-Autonomous agents executing against regulated workflows or tokenized collateral SHOULD query multiple independent market-state oracles and confirm consensus before committing capital. The pattern is architecturally consistent with the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025), which discusses multiple independent oracles and cryptographic attestation as architectural building blocks. Headless Oracle provides one such feed; agents should combine it with at least two additional independent sources and verify each source's cryptographic signature independently. When feeds disagree or any feed is unreachable, treat the result as UNKNOWN and halt execution (fail-closed). See [Multi-Oracle Consensus Protocol v1.0.1](https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1).
+Autonomous agents executing against regulated workflows or tokenized collateral SHOULD query multiple independent market-state oracles and confirm consensus before committing capital. The SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025) discusses multiple independent oracles and cryptographic attestation as architectural building blocks, and this operator took the pattern's direction from it. No regulator has reviewed or endorsed this service. Headless Oracle provides one such feed; agents should combine it with at least two additional independent sources and verify each source's cryptographic signature independently. When feeds disagree or any feed is unreachable, treat the result as UNKNOWN and halt execution (fail-closed). See [Multi-Oracle Consensus Protocol v1.0.1](https://headlessoracle.com/docs/specifications/multi-oracle-consensus-v1).
 
 ## Standards
 
@@ -5950,7 +5950,6 @@ Autonomous agents executing against regulated workflows or tokenized collateral 
 ## Optional
 
 - [OpenAPI Spec](https://headlessoracle.com/openapi.json): Machine-readable API definition
-- [Compliance](https://headlessoracle.com/docs/compliance): ESMA, NIST, Singapore MAS alignment
 - [Conformance Vectors](https://headlessoracle.com/v5/conformance-vectors): 5 live-signed test vectors for SDK authors
 - [Receipt Schema](https://headlessoracle.com/v5/keys): Full canonical payload specification
 `;
@@ -6323,18 +6322,16 @@ if receipt["status"] != "OPEN":
 
 No API key needed. No signup. No human in the loop.
 
-## Compliance Alignment
+## Regulatory References
 
 ${REGULATORY_DIRECTION_PARAGRAPH}
 
 The following frameworks are listed for architectural orientation. Operators MUST evaluate their own regulatory obligations independently; Headless Oracle is not a compliance product.
 
-| Framework | Architectural Relevance | Headless Oracle Feature |
+| Document | What the document discusses | The operator's corresponding design choice |
 |-----------|------------------------|------------------------|
 | CFTC Staff Letter 25-39 (Dec 2025) | Tokenized collateral, technology-neutral | Ed25519 signed attestations, 60s TTL |
 | SEC Project Blueprint on Tokenized Collateral (Nov 2025) | Multiple oracles + cryptographic attestation | Multi-Oracle Consensus Protocol v1.0.1 |
-| ESMA MiFID II | Pre-trade transparency | Signed receipts with Ed25519 |
-| SOC 2 | Audit trail | Receipt audit log (/v5/receipts) |
 `
 
 // SKILL.md — step-by-step integration guide optimised for AI agents.
@@ -7177,8 +7174,8 @@ Apache 2.0
 `;
 
 // ─── Multi-Oracle Consensus Protocol v1.0.1 ──────────────────────────────────
-// First published standard for market-state verification across independent
-// oracle feeds. Architecturally consistent with emerging regulatory direction
+// A standard published by this operator for market-state verification across
+// independent oracle feeds, taking its architectural direction from
 // on tokenized collateral — CFTC Staff Letter 25-39 (Dec 2025) and the SEC
 // Crypto Task Force Project Blueprint on Tokenized Collateral (Nov 2025) —
 // both of which discuss cryptographic attestation and multiple independent
@@ -7273,10 +7270,10 @@ const MULTI_ORACLE_CONSENSUS_SPEC_MD = `# Multi-Oracle Consensus Protocol for Ma
 This specification defines how an autonomous agent SHOULD query multiple
 independent market-state oracles and reach consensus before executing a
 financial transaction. It establishes a minimum-oracle-count threshold and
-a fail-closed consensus algorithm consistent with the architectural
-direction in emerging regulatory guidance on tokenized collateral (CFTC
+a fail-closed consensus algorithm. This operator took its architectural
+direction from emerging regulatory guidance on tokenized collateral (CFTC
 Staff Letter 25-39, December 2025; SEC Crypto Task Force Project Blueprint
-on Tokenized Collateral, November 2025).
+on Tokenized Collateral, November 2025); neither body has reviewed this spec.
 
 This is a verification standard for *market state* — whether an exchange is
 open, closed, halted, in pre-market, after-hours, on a scheduled break, or
@@ -7389,9 +7386,9 @@ Headless Oracle is the first compliant implementation.
 
 A second and third independent implementation are required to satisfy the minimum oracle count in production.
 
-## 10. Regulatory Alignment
+## 10. Regulatory References
 
-This specification is architecturally consistent with emerging regulatory direction on tokenized collateral and algorithmic execution:
+This operator took the direction below from emerging regulatory guidance on tokenized collateral and algorithmic execution. Neither body has reviewed this specification and neither endorses it:
 
 - **CFTC Staff Letter 25-39** (December 2025) — technology-neutral guidance on tokenized collateral; final rulemaking expected August 2026.
 - **SEC Crypto Task Force Project Blueprint on Tokenized Collateral** (November 2025) — discusses multiple independent oracles and cryptographic attestation as architectural building blocks.
@@ -9899,7 +9896,7 @@ const OPENAPI_SPEC = {
 			get: {
 				tags:        ['Documentation'],
 				summary:     'Multi-Oracle Consensus Protocol v1.0.1 (Published Standard)',
-				description: 'First published standard for market-state verification across independent oracle feeds. Defines minimum oracle count (3), consensus algorithm (majority_with_fail_closed), attestation format, verification flow, and cryptographic requirements. Architecturally consistent with emerging regulatory direction on tokenized collateral (CFTC Staff Letter 25-39, December 2025; SEC Crypto Task Force Project Blueprint on Tokenized Collateral, November 2025). License: MIT. text/markdown.',
+				description: 'A standard published by this operator for market-state verification across independent oracle feeds. Defines minimum oracle count (3), consensus algorithm (majority_with_fail_closed), attestation format, verification flow, and cryptographic requirements. Takes its architectural direction from CFTC Staff Letter 25-39 (December 2025) and the SEC Crypto Task Force Project Blueprint on Tokenized Collateral (November 2025); no regulator has reviewed or endorsed this service. License: MIT. text/markdown.',
 				responses: {
 					'200': { description: 'Specification document', content: { 'text/markdown': { schema: { type: 'string' } } } },
 				},
