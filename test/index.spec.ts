@@ -3270,12 +3270,13 @@ describe('robots.txt — Content Signals + explicit bot allows', () => {
 });
 
 describe('MCP tool descriptions — semantic upgrade', () => {
-	it('get_market_status description includes model-agnostic and SEC/CFTC language', async () => {
+	it('get_market_status description is model-agnostic, carries the no-endorsement line, and makes no SEC/CFTC compliance claim', async () => {
 		const body = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 		const tools = (body.result as { tools: Array<{ name: string; description: string }> }).tools;
 		const tool  = tools.find((t) => t.name === 'get_market_status')!;
 		expect(tool.description).toMatch(/Model-agnostic/);
-		expect(tool.description).toMatch(/SEC\/CFTC/);
+		expect(tool.description).toMatch(/No regulator has reviewed or endorsed this service/);
+		expect(tool.description).not.toMatch(/SEC\/CFTC/);
 		expect(tool.description).toMatch(/Pre-trade safety check/i);
 		expect(tool.description).toMatch(/MUST NOT execute/);
 	});
@@ -8183,8 +8184,8 @@ describe('Sandbox 402 response body shapes', () => {
 describe('MCP server-card.json enrichment (Task 5)', () => {
 	it('server-card.json includes reliability, verification, coverage fields', async () => {
 		const res  = await fetchWorker('/.well-known/mcp/server-card.json');
-		const body = await res.json() as { reliability: { uptime_sla: string }; verification: { algorithm: string }; coverage: { exchanges: number }; fail_closed: boolean; protocols: string[] };
-		expect(body.reliability.uptime_sla).toBe('99.9%');
+		const body = await res.json() as { reliability: { uptime_slo: string }; verification: { algorithm: string }; coverage: { exchanges: number }; fail_closed: boolean; protocols: string[] };
+		expect(body.reliability.uptime_slo).toBe('99.9%');
 		expect(body.verification.algorithm).toBe('Ed25519');
 		expect(body.coverage.exchanges).toBe(28);
 		expect(body.fail_closed).toBe(true);

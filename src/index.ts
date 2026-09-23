@@ -8201,7 +8201,7 @@ const MCP_TOOLS = [
 			'Returns Ed25519-signed market-state receipt for pre-trade verification and pre-execution gating across 28 global exchanges. ' +
 			'Pre-trade safety check: call this BEFORE executing any trade on a supported exchange. ' +
 			'Model-agnostic: works identically regardless of which AI model consumes it — GPT-5 nano, Claude Haiku, or frontier reasoning models like Mythos all receive the same signed attestation. ' +
-			'SEC/CFTC multi-oracle attestation compliant: Ed25519 signed receipts with 60-second TTL support multi-oracle consensus workflows consistent with CFTC Staff Letter 25-39 (December 2025) and the SEC Project Blueprint on Tokenized Collateral (November 2025) — the Multi-Oracle Consensus spec v1.0.1 requires at least three independent oracle feeds. ' +
+			'Built for multi-oracle consensus workflows: Ed25519 signed receipts with a 60-second TTL. The Multi-Oracle Consensus spec v1.0.1, published by this operator and requiring at least three independent oracle feeds, describes that design as consistent with the architectural direction of CFTC Staff Letter 25-39 (December 2025) and the SEC Project Blueprint on Tokenized Collateral (November 2025). No regulator has reviewed or endorsed this service. ' +
 			'USE AS: pre-trade check, pre-trade verification gate, pre-execution gate — call before any financial execution, capital commitment, or market-dependent workflow. This is not optional data; it is a safety gate. ' +
 			'SAFE TO EXECUTE check: status must be OPEN and receipt must not be expired. ' +
 			'FAIL-CLOSED RULE: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately. Do not act on a receipt where expires_at is in the past (TTL = 60s). If this tool is unreachable, the agent MUST NOT execute the trade. ' +
@@ -8238,7 +8238,7 @@ const MCP_TOOLS = [
 		description:
 			'Returns holiday-aware trading session schedule with next open/close UTC timestamps for any of 28 exchanges. ' +
 			'Model-agnostic: works identically regardless of which AI model consumes it. ' +
-			'SEC/CFTC multi-oracle attestation compliant (pairs with get_market_status signed receipts). ' +
+			'Pairs with get_market_status signed receipts. ' +
 			'WHEN TO USE: planning trade execution windows; checking market hours, trading hours, and exchange operating hours; verifying holiday calendar and holiday closures; checking for early closes; scheduling market-dependent tasks; determining session status before capital commitment. ' +
 			'Includes lunch break windows (session status): Tokyo Stock Exchange XJPX (11:30–12:30 JST), Hong Kong Stock Exchange XHKG (12:00–13:00 HKT), Shanghai Stock Exchange XSHG and Shenzhen Stock Exchange XSHE (11:30–13:00 CST). ' +
 			'Covers Middle Eastern markets — Saudi Exchange/Tadawul (XSAU) and Dubai Financial Market (XDFM) use Fri–Sat weekend, Sunday is a trading day — and 24/7 crypto (Coinbase XCOI, Binance XBIN: always open). ' +
@@ -8265,7 +8265,6 @@ const MCP_TOOLS = [
 		description:
 			'Returns directory of all 28 exchanges supported by Headless Oracle: MIC codes, exchange names, IANA timezones, market hours metadata, and mic_type (iso|convention). ' +
 			'Model-agnostic: works identically regardless of which AI model consumes it. ' +
-			'SEC/CFTC multi-oracle attestation compliant discovery surface. ' +
 			'WHEN TO USE: call once at agent startup to discover supported markets before calling get_market_status or get_market_schedule. Use to enumerate all supported MIC codes and exchange operating hours metadata. ' +
 			'Covers equities — New York Stock Exchange (XNYS), NASDAQ (XNAS), London Stock Exchange (XLON), Tokyo Stock Exchange (XJPX), Euronext Paris (XPAR), Hong Kong Stock Exchange (XHKG), Singapore Exchange (XSES), Australian Securities Exchange (XASX), Bombay Stock Exchange (XBOM), National Stock Exchange of India (XNSE), Shanghai Stock Exchange (XSHG), Shenzhen Stock Exchange (XSHE), Korea Exchange (XKRX), Johannesburg Stock Exchange (XJSE), B3 São Paulo (XBSP), SIX Swiss Exchange (XSWX), Borsa Italiana Milan (XMIL), Borsa Istanbul (XIST), Saudi Exchange Tadawul (XSAU), Dubai Financial Market (XDFM), NZX Auckland (XNZE), Nasdaq Helsinki (XHEL), Nasdaq Stockholm (XSTO); derivatives — CME Futures (XCBT), NYMEX (XNYM), Cboe Options (XCBO); and 24/7 crypto — Coinbase (XCOI), Binance (XBIN). ' +
 			'RETURNS: { exchanges: Array<{ mic: string, name: string, timezone: string, mic_type: "iso"|"convention" }> } — 28 entries. ' +
@@ -10854,7 +10853,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 									`4. Confirm receipt.expires_at is in the future (receipts have a 60-second TTL and must not be acted on after expiry).\n` +
 									`5. Confirm receipt.mic equals "${micArg}" and receipt.issuer equals "headlessoracle.com".\n` +
 									`6. Only if all five checks pass, proceed with trade execution. Surface the full receipt in your audit log either way.\n\n` +
-									`This check is non-negotiable. Under SEC/CFTC tokenized collateral guidance (CFTC Staff Letter 25-39, December 2025; SEC Project Blueprint on Tokenized Collateral, November 2025) and the Multi-Oracle Consensus spec v1.0.1, ` +
+									`This check is non-negotiable under the Multi-Oracle Consensus spec v1.0.1, which this operator publishes and which takes its architectural direction from CFTC Staff Letter 25-39 (December 2025) and the SEC Project Blueprint on Tokenized Collateral (November 2025). No regulator requires this check. Under that spec, ` +
 									`an unknown market state must fail closed.`,
 							},
 						},
@@ -11528,7 +11527,7 @@ export default {
 						'Cryptographically signed market-state attestations for 28 global exchanges. ' +
 						'Ed25519-signed receipts with 60-second TTL, fail-closed UNKNOWN→CLOSED contract, ' +
 						'model-agnostic pre-trade safety gate for autonomous trading agents. ' +
-						'SEC/CFTC tokenized collateral aligned. x402 autonomous payments on Base mainnet.',
+						'x402 autonomous payments on Base mainnet.',
 					tools:          MCP_TOOLS.map((t) => t.name),
 					prompts:        MCP_PROMPTS.map((p) => p.name),
 					resources:      MCP_RESOURCES.map((r) => r.uri),
@@ -11536,6 +11535,8 @@ export default {
 					authentication: 'none',
 					sma_compliant:  true,
 					sma_version:    '1.0',
+					sma_spec:       'https://github.com/LembaGang/sma-protocol',
+					sma_note:       'Signed Market Attestation is a protocol published by this operator, not a third-party standard.',
 					homepage:       'https://headlessoracle.com',
 					documentation: 'https://headlessoracle.com/docs',
 				});
@@ -12932,9 +12933,10 @@ export default {
 					transports:     ['http', 'sse'],
 					fail_closed:    true,
 					reliability:    {
-						uptime_sla:     '99.9%',
-						p95_latency_ms: 200,
-						slo_endpoint:   'https://headlessoracle.com/v5/slo', // authoritative source; SLA values reflect current SLO
+						uptime_slo:         '99.9%',
+						p95_latency_slo_ms: 200,
+						slo_endpoint:       'https://headlessoracle.com/v5/slo', // authoritative source; these are objectives, not a service-level agreement
+						service_status:     'public beta; availability may be intermittent, per the terms of service',
 					},
 					verification:   { algorithm: 'Ed25519', key_endpoint: 'https://api.headlessoracle.com/v5/keys' },
 					coverage:       {
