@@ -1380,15 +1380,12 @@ describe('GET /openapi.json', () => {
 		expect(response.status).toBe(200);
 	});
 
-	it('info block exposes x-model-agnostic and x-regulatory-alignment extensions', async () => {
+	it('info block exposes x-model-agnostic, cites the regulator documents as references only, and makes no regulatory-alignment claim', async () => {
 		const body = await fetchJSON('/openapi.json');
 		const info = body.info as Record<string, unknown>;
 		expect(info['x-model-agnostic']).toBe(true);
-		const reg = info['x-regulatory-alignment'] as string[];
-		expect(Array.isArray(reg)).toBe(true);
-		expect(reg).toContain('CFTC_SL_25_39');
-		expect(reg).toContain('SEC_project_blueprint_tokenized_collateral');
-		expect(reg).toContain('ISO_10383');
+		expect(info).not.toHaveProperty('x-regulatory-alignment');
+		expect(info['x-regulatory-references']).toBeDefined();
 		expect(Array.isArray(info['x-regulatory-references'])).toBe(true);
 		expect((info['x-regulatory-references'] as unknown[]).length).toBeGreaterThanOrEqual(2);
 		expect(JSON.stringify(info)).not.toContain('SEC/CFTC Technical Framework');
@@ -3105,14 +3102,11 @@ describe('GET /.well-known/mcp/server-card.json', () => {
 		expect(auth).toContain('x402');
 	});
 
-	it('exposes model_agnostic, regulatory_alignment, and category tags', async () => {
+	it('exposes model_agnostic and category tags, cites the regulator documents as references only, and makes no regulatory-alignment claim', async () => {
 		const body = await fetchJSON('/.well-known/mcp/server-card.json');
 		expect(body).toHaveProperty('model_agnostic', true);
-		const reg = body.regulatory_alignment as string[];
-		expect(Array.isArray(reg)).toBe(true);
-		expect(reg).toContain('CFTC_SL_25_39');
-		expect(reg).toContain('SEC_project_blueprint_tokenized_collateral');
-		expect(reg).toContain('ISO_10383');
+		expect(body).not.toHaveProperty('regulatory_alignment');
+		expect(body.regulatory_references).toBeDefined();
 		// Structured references present as sibling field
 		expect(Array.isArray(body.regulatory_references)).toBe(true);
 		expect((body.regulatory_references as unknown[]).length).toBeGreaterThanOrEqual(2);

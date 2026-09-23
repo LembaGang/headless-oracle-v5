@@ -7194,7 +7194,7 @@ const MULTI_ORACLE_CONSENSUS_GUIDE_JSON = {
 	minimum_oracles: 3,
 	fail_closed_default: true,
 	consensus_rule: 'Execute only if at least floor(N/2)+1 valid oracle responses agree on status="open". All other outcomes fail closed.',
-	regulatory_alignment: [
+	standards_alignment: [
 		'ISO 10383 Market Identifier Codes',
 	],
 	regulatory_references: REGULATORY_REFERENCES_STRUCTURED,
@@ -8340,7 +8340,6 @@ const OPENAPI_SPEC = {
 		contact: { name: 'Headless Oracle', email: 'api@headlessoracle.com', url: 'https://headlessoracle.com' },
 		license: { name: 'MIT', url: 'https://github.com/LembaGang/headless-oracle-v5/blob/main/LICENSE' },
 		'x-model-agnostic':        true,
-		'x-regulatory-alignment':  ['CFTC_SL_25_39', 'SEC_project_blueprint_tokenized_collateral', 'ISO_10383'],
 		'x-regulatory-references': REGULATORY_REFERENCES_STRUCTURED,
 	},
 	externalDocs: { description: 'Full documentation for LLMs and agents', url: 'https://headlessoracle.com/llms-full.txt' },
@@ -12915,9 +12914,8 @@ export default {
 						'MCP tools: get_market_status, get_market_schedule, list_exchanges. Receipt verification is REST-only (POST /v5/verify) or offline via @headlessoracle/verify. ' +
 						`REST API + x402 micropayments ($${X402_PRICE_USDC} USDC on Base mainnet). ` +
 						'Handles DST transitions, exchange holidays, lunch breaks, and circuit breaker detection. ' +
-						'Consistent with emerging regulatory direction on tokenized collateral (CFTC Staff Letter 25-39, Dec 2025; SEC Project Blueprint on Tokenized Collateral, Nov 2025).',
+						'The Multi-Oracle Consensus spec this operator publishes takes its architectural direction from CFTC Staff Letter 25-39 (December 2025) and the SEC Project Blueprint on Tokenized Collateral (November 2025). No regulator has reviewed or endorsed this service.',
 					model_agnostic:       true,
-					regulatory_alignment: ['CFTC_SL_25_39', 'SEC_project_blueprint_tokenized_collateral', 'ISO_10383'],
 					regulatory_references: REGULATORY_REFERENCES_STRUCTURED,
 					categories:           ['finance', 'market-data', 'attestation', 'verification', 'pre-trade-safety', 'rwa', 'tokenization'],
 					mcp_endpoint:   'https://headlessoracle.com/mcp',
