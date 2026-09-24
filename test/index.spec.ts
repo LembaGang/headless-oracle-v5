@@ -16861,11 +16861,25 @@ describe('served text surfaces make no regulatory-alignment claim', () => {
 			const lower = body.toLowerCase();
 			const legacy = LEGACY.filter((s) => lower.includes(s.toLowerCase()));
 			expect(legacy).toEqual([]);
-			const sentences = body.match(/[^.\n]*[.\n]/g) ?? [];
+			// Split at a sentence end followed by a capital, or at a newline, so a
+			// version number like v1.0.1 does not cut a disclaimer off its claim.
+			const sentences = body.split(/(?<=[.!?])\s+(?=[A-Z])|\n/);
 			const claims = sentences
 				.filter((s) => CLAIM.test(s) && REGULATOR.test(s) && !DISCLAIMER.test(s))
 				.map((s) => s.trim().slice(0, 160));
 			expect(claims).toEqual([]);
 		});
 	}
+	it('POST /mcp tools/list carries no undisclaimed regulatory claim in any tool description', async () => {
+		const body = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		const text = JSON.stringify(body);
+		const lower = text.toLowerCase();
+		const legacy = LEGACY.filter((s) => lower.includes(s.toLowerCase()));
+		expect(legacy).toEqual([]);
+		const sentences = text.split(/(?<=[.!?])\s+(?=[A-Z])|\\n/);
+		const claims = sentences
+			.filter((s) => CLAIM.test(s) && REGULATOR.test(s) && !DISCLAIMER.test(s))
+			.map((s) => s.trim().slice(0, 160));
+		expect(claims).toEqual([]);
+	});
 });
