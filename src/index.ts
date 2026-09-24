@@ -7306,7 +7306,7 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY in this document are t
 
 ## 3. Minimum Oracle Count
 
-An agent MUST query at least three independent oracle feeds before executing any trade where venue-state verification is load-bearing for capital safety. Fewer than three valid responses MUST result in a fail-closed outcome. This threshold reflects standard Byzantine-fault-tolerance practice (tolerance of one faulty feed in three) and is consistent with the architectural direction in the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025).
+An agent MUST query at least three independent oracle feeds before executing any trade where venue-state verification is load-bearing for capital safety. Fewer than three valid responses MUST result in a fail-closed outcome. This threshold reflects standard Byzantine-fault-tolerance practice (tolerance of one faulty feed in three) and this operator took the threshold's direction from the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025), which neither body has reviewed.
 
 ## 4. Consensus Algorithm
 

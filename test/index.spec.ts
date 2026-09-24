@@ -16808,7 +16808,15 @@ describe('referee prices are derived from one constant', () => {
 // surface an agent reads first. Status is asserted so a route that stops serving
 // cannot pass the absence check vacuously.
 describe('served text surfaces make no regulatory-alignment claim', () => {
-	const BANNED = [
+	// B-224d. A claim word and a regulator word in the same sentence is a claim
+	// unless the sentence is one of the disclaimers this operator publishes on
+	// purpose. This replaced a fixed list of banned strings after that list missed
+	// four rewordings across four passes; the exact strings are kept as a second,
+	// cheaper check so a known phrase fails with its own name.
+	const CLAIM = /\b(align\w*|compliant|compliance|conform\w*|consistent with|in line with|adhere\w*|mandat\w*|endorse\w*|approved by|certifi\w*|accredit\w*)\b/i;
+	const REGULATOR = /\b(CFTC|SEC\b|ESMA|MiFID|FCA|FINRA|NIST|MAS\b|SOC ?2|regulat\w*)/i;
+	const DISCLAIMER = /No regulator has reviewed|not a compliance product|took (its|the pattern|the threshold|the direction)|takes its architectural direction|neither body has reviewed/i;
+	const LEGACY = [
 		'SEC/CFTC Technical Framework',
 		'Compliance Alignment',
 		'Regulatory alignment:',
@@ -16829,18 +16837,35 @@ describe('served text surfaces make no regulatory-alignment claim', () => {
 		{ path: '/SKILL.md', json: false },
 		{ path: '/openapi.json', json: true },
 		{ path: '/.well-known/mcp/server-card.json', json: true },
+		{ path: '/.well-known/agent-card.json', json: true },
+		{ path: '/.well-known/x402.json', json: true },
 		{ path: '/docs/specifications/multi-oracle-consensus-v1', json: false },
+		{ path: '/docs/specifications/multi-oracle-consensus-v1.md', json: false },
+		{ path: '/docs/specs/MULTI-ORACLE-CONSENSUS-v1.md', json: false },
+		{ path: '/docs/specifications/cpvr-1', json: false },
+		{ path: '/docs/specifications/cpvr-1.md', json: false },
+		{ path: '/docs/specifications/pre-trade-stack', json: false },
+		{ path: '/docs/specifications/pre-trade-stack.md', json: false },
+		{ path: '/docs/integrations/ampersend', json: false },
+		{ path: '/docs/integrations/ampersend.md', json: false },
 		{ path: '/v1/verification/multi-oracle-guide', json: true },
+		{ path: '/v5/pre-trade-stack', json: false },
+		{ path: '/v5/why-not-free', json: false },
 	];
 	for (const { path, json } of SURFACES) {
-		it(`${path} carries none of the banned claim strings`, async () => {
+		it(`${path} carries no undisclaimed regulatory claim`, async () => {
 			const res = await fetchWorker(path);
 			expect(res.status).toBe(200);
 			const body = await res.text();
 			if (json) JSON.parse(body);
 			const lower = body.toLowerCase();
-			const found = BANNED.filter((s) => lower.includes(s.toLowerCase()));
-			expect(found).toEqual([]);
+			const legacy = LEGACY.filter((s) => lower.includes(s.toLowerCase()));
+			expect(legacy).toEqual([]);
+			const sentences = body.match(/[^.\n]*[.\n]/g) ?? [];
+			const claims = sentences
+				.filter((s) => CLAIM.test(s) && REGULATOR.test(s) && !DISCLAIMER.test(s))
+				.map((s) => s.trim().slice(0, 160));
+			expect(claims).toEqual([]);
 		});
 	}
 });
