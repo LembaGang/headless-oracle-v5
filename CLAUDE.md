@@ -149,7 +149,8 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-09-24 — B-224/B-224b/B-224c pushed and deployed; TEST_COUNT 1356; live version read from wrangler -->
+<!-- Last updated: 2026-09-24T10:04Z — B-224d/B-224f pushed and deployed (f20ba28c); TEST_COUNT 1369 -->
+<!-- Previous: 2026-09-24T08:25Z (0e437a6) — B-224/B-224b/B-224c pushed and deployed (e4cf7f87); TEST_COUNT 1356 -->
 <!-- Previous: 2026-09-10 — B-149 the till opens, B-146 history verification, B-122 README -->
 
 Every version, count and transaction below cites the run that produced it. Nothing
@@ -163,20 +164,26 @@ here is carried forward from an earlier stamp unverified.
   intake +14, placeholder guard +1); **1337 → 1348 later on 2026-09-10** (B-169
   body validation +7, B-168 overlay host +4); **1348 → 1356 on 2026-09-24**
   (B-224c's eight-surface guard, `0bff1f8`; counted by `npm run test:sync-count`
-  and again by the pre-commit hook, both `1356 passed (1356)`).
-- **Worker**: `src/index.ts` **17,817 lines** (`wc -l`, 2026-09-24, at `0bff1f8`).
-  API-only — zero HTML. **Live version: `e4cf7f87-cdd0-4e53-b884-8dcdd7d5fa5d`**,
-  deployed 2026-09-24T08:17:05Z from `0bff1f8`, read from `npx wrangler
-  deployments list` in the session that deployed it. It therefore serves B-169,
-  B-168 and B-224/b/c. The version it replaced was `9151bbeb-bb0b-4d8f-b12e-628e2cd50a91`
-  (2026-09-10T12:46:33Z, also read from `wrangler deployments list`) — **not**
-  `5bf9588f…`, which the previous stamp here carried from a handoff unverified.
-  The deploy exited 1 on the known B-115 route-listing failure after a successful
-  upload; routes were unchanged, so it was benign. Live-verified: `/v5/metrics/public`
-  serves `tests_passing: 1356`, `/v5/health` and `/v5/demo?mic=XNYS` 200, and
-  the B-224c banned-string list is absent from all eight guarded surfaces and
-  from MCP `tools/list`. **Push state, read from git on 2026-09-24:
-  `origin/main` is at `0bff1f8`; nothing unpushed before this canon commit.**
+  and again by the pre-commit hook, both `1356 passed (1356)`); **1356 → 1368**
+  (B-224d, `20404e4`: the guard rebuilt, 8 cases replaced by 20); **1368 → 1369**
+  (B-224f, `78fa1cd`: the `tools/list` case). Each count observed by
+  `npm run test:sync-count` and again by the pre-commit hook.
+- **Worker**: `src/index.ts` **17,817 lines** (`wc -l`, 2026-09-24, at `78fa1cd`).
+  API-only — zero HTML. **Live version: `f20ba28c-571b-4e92-b1f0-0489688ce60d`**,
+  deployed 2026-09-24T09:59:40Z from `78fa1cd` after CI and Tests both passed on
+  that commit, read from `npx wrangler deployments list` in the session that
+  deployed it. It serves B-169, B-168 and B-224 through B-224f. It replaced
+  `e4cf7f87-cdd0-4e53-b884-8dcdd7d5fa5d` (08:17:05Z the same day, from `0bff1f8`),
+  which replaced `9151bbeb-bb0b-4d8f-b12e-628e2cd50a91` (2026-09-10T12:46:33Z) —
+  **not** `5bf9588f…`, which an earlier stamp here carried from a handoff
+  unverified. Both deploys of 2026-09-24 exited 1 on the known B-115
+  route-listing failure after a successful upload; routes were unchanged each
+  time, so it was benign. Live-verified after `f20ba28c`: `/v5/metrics/public`
+  serves `tests_passing: 1369`, `/v5/health` and `/v5/demo?mic=XNYS` 200, and the
+  guard's own rule (legacy strings plus sentence-level check) flags nothing on
+  its twenty GET surfaces or on `POST /mcp tools/list`. **Push state, read from
+  git on 2026-09-24: `origin/main` is at `78fa1cd`; nothing unpushed before this
+  canon commit.**
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
   scripts/start-smoke.sh`. Every commit of 2026-09-07 passed all four with no
@@ -456,7 +463,7 @@ parsing Paddle's error text — and only then becomes a 502. A checkout that
 worked must not start failing because we asked for a nicer overlay URL. Exactly
 two attempts, asserted; the second failure is the answer.
 
-### B-224 — served text claims no regulatory alignment (2026-09-24 deploy; `3b2a2c0`, `4347051`, `5f0ec3a`)
+### B-224 — served text claims no regulatory alignment (2026-09-24; `3b2a2c0`, `4347051`, `5f0ec3a`, `20404e4`, `78fa1cd`)
 
 The MCP tool descriptions, the `pre_trade_check` prompt, the openapi `info`
 block, the server card, `/llms.txt`, `/llms-full.txt` and §10 of the consensus
@@ -477,13 +484,24 @@ CFTC Staff Letter 25-39 and the SEC Project Blueprint on Tokenized Collateral.
   SOC 2 is an attestation this operator does not hold); the `/llms.txt` link that
   described `/docs/compliance` by content the page does not have.
 - **`sma_compliant: true` stays** — SMA is this operator's own protocol.
-- **The guard.** `served text surfaces make no regulatory-alignment claim` fetches
-  eight surfaces (`/llms.txt`, `/llms-full.txt`, `/AGENTS.md`, `/SKILL.md`,
-  `/openapi.json`, the server card, the consensus spec, the multi-oracle guide),
-  asserts 200, and asserts none of twelve banned strings. **It covers only those
-  eight** — a new surface carrying the claim escapes it unless added to the list,
-  the same limit as the placeholder guard. MCP `tools/list` is not in the list;
-  it was checked live on 2026-09-24 by hand.
+- **B-224d and B-224f** (`20404e4`, `78fa1cd`) removed the last two claim
+  sentences: §3 of the consensus spec ("consistent with the architectural
+  direction in the SEC …", found by the Lead's proximity sweep of production GET
+  routes) and the `get_market_status` description (the same phrase, attributed
+  and disclaimed, served only by `POST /mcp tools/list`, which the GET sweep could
+  not see). Both now use the "took / takes its architectural direction from"
+  idiom. Each was the third sentence of a line whose other sentences were fine:
+  **judge sentences, not lines.**
+- **The guard.** `served text surfaces make no regulatory-alignment claim`, rebuilt
+  by B-224d. Two checks on each surface: twelve legacy strings (a known phrase fails
+  by name), and a sentence-level rule — any sentence carrying a claim word
+  (`CLAIM`) and a regulator word (`REGULATOR`) fails unless it matches a published
+  disclaimer (`DISCLAIMER`). Sentences split at a sentence end followed by a
+  capital, or at a newline, so `v1.0.1` does not cut a disclaimer off its claim
+  (B-224f; the first splitter broke at every full stop). It covers **twenty GET
+  surfaces** (each asserted 200) **plus `POST /mcp tools/list`**. A new surface
+  still escapes it unless added to the list, the same limit as the placeholder
+  guard; a new disclaimer wording must be added to `DISCLAIMER` or it fails.
 - **Not in scope**: `headless-oracle-web` was not swept, and this repo's internal
   docs (e.g. `.claude/rules/01_business_context.md` "Regulatory Tailwinds",
   `docs/business/compliance.md`) were not changed.

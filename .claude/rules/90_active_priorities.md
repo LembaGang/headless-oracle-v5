@@ -1,6 +1,36 @@
 # Active Priorities — Headless Oracle V5
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
+## 2026-09-24 (later) — B-224d and B-224f pushed and deployed; TEST_COUNT 1369
+
+Two handoffs from the Lead, executed in this session:
+`cc-output/CC_REPORT_2026-09-24_b224d.md` and `…_b224f.md`.
+
+| commit | what |
+|---|---|
+| `0e437a6` | canon refresh (the entry below) |
+| `20404e4` | B-224d — consensus spec §3 sentence; guard rebuilt to a sentence-level rule over 20 GET surfaces (1356 → 1368) |
+| `78fa1cd` | B-224f — `get_market_status` tool description; sentence splitter fixed for `v1.0.1`; `tools/list` case (1368 → 1369) |
+| (this one) | canon refresh |
+
+**Gate**: every commit passed the four-step hook; no `--no-verify`. Suite
+1369/1369. `tools/verify-history.sh` 35/35 at `78fa1cd`. Controls run: the
+rebuilt guard went red on the old §3 sentence (3 paths) and on the old tool
+description, and green after each fix. **Pushed**: `origin/main` at `78fa1cd`;
+CI and Tests both green on it before the deploy. **Deployed**:
+`f20ba28c-571b-4e92-b1f0-0489688ce60d` at 2026-09-24T09:59:40Z, replacing
+`e4cf7f87…`. Same benign B-115 exit 1; routes unchanged. Live-verified as
+recorded in `CLAUDE.md` → Current State.
+
+### Still open after 2026-09-24 (later)
+
+- **B-115** — unchanged.
+- **The guard is still list-based** — twenty GET surfaces plus `tools/list`; a
+  new served text surface escapes it unless added. `headless-oracle-web` is
+  outside it. A new disclaimer wording must be added to `DISCLAIMER` or the
+  guard fails.
+- The Paddle, `verify_receipt` and GAP-017 rows below are unchanged.
+
 ## 2026-09-24 — B-224 pushed and deployed; TEST_COUNT 1356
 
 The served text stops claiming regulatory compliance or alignment (cite, never
