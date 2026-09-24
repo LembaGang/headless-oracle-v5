@@ -4,7 +4,7 @@
 	"private": true,
 	"license": "MIT",
 	"scripts": {
-		"deploy": "wrangler deploy",
+		"deploy": "npx vitest run -t \"served text surfaces make no regulatory-alignment claim\" && wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"build": "vite build",
