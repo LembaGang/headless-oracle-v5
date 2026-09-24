@@ -101,8 +101,8 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `GET /v5/health` — Signed liveness probe
 - `GET /v5/briefing` — Daily market intelligence snapshot
 - `GET /v5/pricing` — Machine-readable pricing tiers (sandbox/x402/credits/builder/pro/protocol)
-- `GET /openapi.json` — OpenAPI 3.1 spec (81 paths, `x-model-agnostic` + `x-regulatory-alignment` extensions)
-- `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, 5 tools) — descriptions are model-agnostic + SEC/CFTC-aligned + regional exchange names
+- `GET /openapi.json` — OpenAPI 3.1 spec (83 paths and `x-model-agnostic` + `x-regulatory-references` extensions, read from production 2026-09-24; `x-regulatory-alignment` was removed by B-224b)
+- `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, 4 tools — `tools/list` read from production 2026-09-24) — descriptions are model-agnostic + regional exchange names, and claim no regulatory compliance (B-224)
 - `POST /v5/sandbox` — Sandbox key via email or x402 (200 calls, 7-day TTL)
 - `GET /v5/audit/digest` — Daily attestation digest with Merkle root
 - `GET /v5/audit/chain` — Hash chain of last N daily digests
@@ -149,7 +149,8 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-09-10 — B-149 the till opens, B-146 history verification, B-122 README -->
+<!-- Last updated: 2026-09-24 — B-224/B-224b/B-224c pushed and deployed; TEST_COUNT 1356; live version read from wrangler -->
+<!-- Previous: 2026-09-10 — B-149 the till opens, B-146 history verification, B-122 README -->
 
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
@@ -160,18 +161,22 @@ here is carried forward from an earlier stamp unverified.
   1298 → 1308 on 2026-09-09 (B-144 +6 and 1 replaced, B-145 +4, tripwire +1);
   **1308 → 1337 on 2026-09-10** (B-149 checkout +8, webhook +3, pricing +3,
   intake +14, placeholder guard +1); **1337 → 1348 later on 2026-09-10** (B-169
-  body validation +7, B-168 overlay host +4).
-- **Worker**: `src/index.ts` **17,820 lines** (`wc -l`, 2026-09-10, after B-169
-  and B-168). API-only — zero HTML. **Live version:
-  `5bf9588f-9d42-41a0-a62b-005f5a6fff32`** (the founder's deploy of
-  2026-09-10). The previous stamp here named `a83fa8bf…` from 2026-09-07, which
-  was already stale when it was written (B-117). **This id is carried from the
-  Lead's handoff of 2026-09-10 and was NOT read from `npx wrangler deployments
-  list` in the session that wrote this line; which commit it was built from is
-  not established here.** What IS established: it does not serve B-169 or B-168,
-  because nothing from that session was pushed or deployed. **Push state, read
-  from git on 2026-09-10: `origin/main` is at `6c55ffd` — the six commits of the
-  morning HAVE been pushed. Unpushed: the B-169/B-168 commits.**
+  body validation +7, B-168 overlay host +4); **1348 → 1356 on 2026-09-24**
+  (B-224c's eight-surface guard, `0bff1f8`; counted by `npm run test:sync-count`
+  and again by the pre-commit hook, both `1356 passed (1356)`).
+- **Worker**: `src/index.ts` **17,817 lines** (`wc -l`, 2026-09-24, at `0bff1f8`).
+  API-only — zero HTML. **Live version: `e4cf7f87-cdd0-4e53-b884-8dcdd7d5fa5d`**,
+  deployed 2026-09-24T08:17:05Z from `0bff1f8`, read from `npx wrangler
+  deployments list` in the session that deployed it. It therefore serves B-169,
+  B-168 and B-224/b/c. The version it replaced was `9151bbeb-bb0b-4d8f-b12e-628e2cd50a91`
+  (2026-09-10T12:46:33Z, also read from `wrangler deployments list`) — **not**
+  `5bf9588f…`, which the previous stamp here carried from a handoff unverified.
+  The deploy exited 1 on the known B-115 route-listing failure after a successful
+  upload; routes were unchanged, so it was benign. Live-verified: `/v5/metrics/public`
+  serves `tests_passing: 1356`, `/v5/health` and `/v5/demo?mic=XNYS` 200, and
+  the B-224c banned-string list is absent from all eight guarded surfaces and
+  from MCP `tools/list`. **Push state, read from git on 2026-09-24:
+  `origin/main` is at `0bff1f8`; nothing unpushed before this canon commit.**
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
   scripts/start-smoke.sh`. Every commit of 2026-09-07 passed all four with no
@@ -450,6 +455,38 @@ retried **once** without the field — keyed on the failure itself, never on
 parsing Paddle's error text — and only then becomes a 502. A checkout that
 worked must not start failing because we asked for a nicer overlay URL. Exactly
 two attempts, asserted; the second failure is the answer.
+
+### B-224 — served text claims no regulatory alignment (2026-09-24 deploy; `3b2a2c0`, `4347051`, `5f0ec3a`)
+
+The MCP tool descriptions, the `pre_trade_check` prompt, the openapi `info`
+block, the server card, `/llms.txt`, `/llms-full.txt` and §10 of the consensus
+spec told agents the service was "SEC/CFTC … compliant", "aligned", or that a
+regulator required the check. None of that is a claim this operator can make:
+our own spec says only that the design takes its architectural direction from
+CFTC Staff Letter 25-39 and the SEC Project Blueprint on Tokenized Collateral.
+
+- **The rule.** Cite, never claim. `regulatory_references` (the documents plus
+  their source URLs) stays everywhere; `regulatory_alignment` and
+  `x-regulatory-alignment` are gone. Where a regulator is named, the text says
+  the spec is this operator's and that no regulator has reviewed or endorsed the
+  service. The multi-oracle guide's field is `standards_alignment` (ISO 10383 is
+  a format standard, not a regulation).
+- **Also removed**: the `uptime_sla` field (it contradicted the beta disclaimer
+  in terms.html — now `uptime_slo` / `p95_latency_slo_ms` beside a public-beta
+  caveat); the ESMA MiFID II and SOC 2 rows in `/llms-full.txt` (uncited, and
+  SOC 2 is an attestation this operator does not hold); the `/llms.txt` link that
+  described `/docs/compliance` by content the page does not have.
+- **`sma_compliant: true` stays** — SMA is this operator's own protocol.
+- **The guard.** `served text surfaces make no regulatory-alignment claim` fetches
+  eight surfaces (`/llms.txt`, `/llms-full.txt`, `/AGENTS.md`, `/SKILL.md`,
+  `/openapi.json`, the server card, the consensus spec, the multi-oracle guide),
+  asserts 200, and asserts none of twelve banned strings. **It covers only those
+  eight** — a new surface carrying the claim escapes it unless added to the list,
+  the same limit as the placeholder guard. MCP `tools/list` is not in the list;
+  it was checked live on 2026-09-24 by hand.
+- **Not in scope**: `headless-oracle-web` was not swept, and this repo's internal
+  docs (e.g. `.claude/rules/01_business_context.md` "Regulatory Tailwinds",
+  `docs/business/compliance.md`) were not changed.
 
 ### B-149 — the till opens: the six referee services are buyable (2026-09-10)
 

@@ -1,6 +1,38 @@
 # Active Priorities — Headless Oracle V5
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
+## 2026-09-24 — B-224 pushed and deployed; TEST_COUNT 1356
+
+The served text stops claiming regulatory compliance or alignment (cite, never
+claim — detail in `CLAUDE.md` → B-224). The founder authorised the push and the
+deploy in this session.
+
+| commit | what |
+|---|---|
+| `3b2a2c0` | B-224 — MCP tool text and prompt: no SEC/CFTC compliance claim; `uptime_sla` → `uptime_slo` |
+| `4347051` | B-224b — `regulatory_alignment` removed from openapi `info` and the server card |
+| `5f0ec3a` | B-224c — `/llms.txt`, `/llms-full.txt`, spec §10; eight-surface guard (+8 tests) |
+| `0bff1f8` | `TEST_COUNT` 1348 → 1356 |
+| (this one) | canon refresh |
+
+**Gate**: every commit passed the four-step hook; no `--no-verify`. Suite
+1356/1356. `tools/verify-history.sh` 32/32 at `0bff1f8`. **Pushed**: `origin/main`
+`268af1c..0bff1f8`; CI and Tests both green on `0bff1f8`. **Deployed**:
+`e4cf7f87-cdd0-4e53-b884-8dcdd7d5fa5d` at 2026-09-24T08:17:05Z, replacing
+`9151bbeb…` (2026-09-10T12:46Z). The deploy exited 1 on the B-115 route-listing
+step after a good upload; routes unchanged, so benign. Live-verified as recorded
+in `CLAUDE.md` → Current State.
+
+### Still open after 2026-09-24
+
+- **B-115** — the deploy token cannot list zone routes; a route change would fail.
+- **The B-224c guard is list-based** — a new surface carrying the claim escapes
+  it; MCP `tools/list` and `headless-oracle-web` are outside it.
+- **No referee price exercised end to end** against live Paddle — unchanged.
+- **`verify_receipt` described as an MCP tool where it is not one** — unchanged.
+  (`tools/list` on production serves four tools, read 2026-09-24.)
+- **403-vs-503 on an auth-backend timeout** (GAP-017) — unchanged.
+
 ## 2026-09-10 — B-149, B-146, B-122 (one session)
 
 **The till is open.** Six referee prices existed in Paddle and in
