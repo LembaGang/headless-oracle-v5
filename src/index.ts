@@ -7613,6 +7613,66 @@ Environment.* family specifications:
 - Agent card (A2A v1): https://headlessoracle.com/.well-known/agent-card.json
 `;
 
+// /auth.md: how an agent obtains and presents a credential here. Every number is
+// interpolated from the constant the handler enforces; where a handler enforces a
+// literal with no named constant, the document gives no number. This is not the
+// auth.md agent registration protocol and makes no claim to be.
+const AUTH_MD = `# Headless Oracle auth.md
+
+## Who this is for
+
+Autonomous agents, and the people who run them, that need a credential to call Headless Oracle. Each section below names one way to get a credential (or to pay without one), what you send, what comes back, how you present it, and its limits.
+
+API keys are presented in the \`X-Oracle-Key\` request header on every keyed endpoint, for example \`GET https://headlessoracle.com/v5/status?mic=XNYS\`. \`GET /v1/halts\` and \`GET /v1/safe-to-trade\` also accept the same API key as \`Authorization: Bearer <api key>\`.
+
+## 1. POST /v5/keys/instant
+
+- Request: \`POST https://headlessoracle.com/v5/keys/instant\` with JSON body \`{"agent_id": "<your unique id>"}\`. \`agent_id\` is a required string of at most 256 characters. No email.
+- Response: a free-plan key beginning \`ho_free_\` in \`api_key\`, with \`plan: "free"\` and \`daily_limit\`. The full key is shown once. Calling again with the same \`agent_id\` returns the same key's \`key_prefix\` with the rest masked, not a new key.
+- Present it as: \`X-Oracle-Key: <api_key>\`.
+- Limits: ${FREE_TIER_DAILY_LIMIT} calls per day on the free plan. Key creation is rate-limited per IP.
+
+## 2. POST /v5/keys/request
+
+- Request: \`POST https://headlessoracle.com/v5/keys/request\` with JSON body \`{"email": "<address>"}\`.
+- Response: \`{"plan": "free", "message": "API key sent to your email"}\`. The key, beginning \`ho_free_\`, is delivered by email and is not in the response.
+- Present it as: \`X-Oracle-Key: <key>\`.
+- Limits: ${FREE_TIER_DAILY_LIMIT} calls per day on the free plan. Requests are rate-limited per IP.
+
+## 3. POST /v5/sandbox
+
+- Request, email path: \`POST https://headlessoracle.com/v5/sandbox\` with JSON body \`{"email": "<address>"}\` and an optional \`use_case\` string. Response: a sandbox key beginning \`sb_\` in \`api_key\`, with \`expires_at\`.
+- Request, x402 path: the same \`POST\` with an x402 payment in the \`Payment-Signature\` or \`X-Payment\` header and no email. Response: a prepaid credits key beginning \`ho_crd_\` in \`api_key\`.
+- Present either as: \`X-Oracle-Key: <api_key>\`.
+- Limits: the sandbox key is time-limited and call-limited; sandbox provisioning is rate-limited per IP and per email. The credits key draws down a prepaid balance.
+
+## 4. POST /v5/x402/mint
+
+- Request: first send USDC on Base mainnet to the \`payTo\` address published at \`https://headlessoracle.com/.well-known/x402.json\`, then \`POST https://headlessoracle.com/v5/x402/mint\` with JSON body \`{"tx_hash": "<0x...>", "tier": "builder" | "pro", "network": "base"}\` and an optional \`email\`. The transaction must be no older than ${X402_MINT_MAX_AGE_SECONDS} seconds and each transaction hash mints at most one key.
+- Price: ${PLAN_PRICES.builder} USDC for \`builder\`, ${PLAN_PRICES.pro} USDC for \`pro\`.
+- Response: a persistent key beginning \`ho_live_\` in \`api_key\`, shown once.
+- Present it as: \`X-Oracle-Key: <api_key>\`.
+- Limits: ${BUILDER_CALLS_PER_DAY} calls per day on \`builder\`, ${PRO_CALLS_PER_DAY} on \`pro\`.
+
+## 5. x402 pay-per-call
+
+- No credential is issued. Each request is paid.
+- \`GET https://headlessoracle.com/v5/status?mic=<MIC>\` without a key serves ${FREE_TRIAL_DAILY_LIMIT} signed receipts per IP per UTC day, then answers 402 with x402 payment requirements. \`GET https://headlessoracle.com/v5/status/x402?mic=<MIC>\` has no trial and always requires payment.
+- Pay by retrying the request with the x402 payment in the \`Payment-Signature\` (x402 v2) or \`X-Payment\` (x402 v1) header. The price is ${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC per receipt.
+- Requirements (asset, network, amount, \`payTo\`): \`https://headlessoracle.com/.well-known/x402.json\`.
+
+## 6. POST /oauth/token
+
+- This exchanges an existing API key for a short-lived access token. It is not a way to obtain a first credential.
+- Request: \`POST https://headlessoracle.com/oauth/token\` with a form-encoded body \`grant_type=client_credentials&client_id=<existing API key>\`.
+- Response: \`{"access_token": "...", "token_type": "bearer", "expires_in": <seconds>, "scope": "oracle:read"}\`.
+- Present it as: \`Authorization: Bearer <access_token>\` on \`POST https://headlessoracle.com/mcp\`. The REST endpoints read the API key itself, not this token.
+
+## Scope
+
+Headless Oracle does not implement the auth.md agent registration protocol and publishes no agent registration metadata; the paths above are its own.
+`;
+
 // Canonical issuer identifier — included in every signed payload so receipts are self-describing.
 // Agents encountering an unfamiliar receipt can resolve {issuer}/v5/keys to find the public key.
 const ORACLE_ISSUER = 'headlessoracle.com';
@@ -12775,6 +12835,13 @@ export default {
 			if (url.pathname === '/AGENTS.md') {
 				return new Response(AGENTS_MD, {
 					headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+				});
+			}
+			// /auth.md (wrangler route headlessoracle.com/auth.md): credential paths. Without
+			// the route Pages served its SPA fallback here, a 200 text/html soft-404.
+			if (url.pathname === '/auth.md') {
+				return new Response(AUTH_MD, {
+					headers: { ...SECURITY_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'public, max-age=300' },
 				});
 			}
 			// ── /v5/errors/{code} — machine-readable error documentation ─────────

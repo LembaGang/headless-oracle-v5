@@ -692,6 +692,39 @@ describe('W2: /.well-known/ai-catalog.json', () => {
 	});
 });
 
+// ─── W3: /auth.md (2026-10-01) ───────────────────────────────────────────────
+// Self-contained credential document. It describes only this worker's own
+// paths and never the auth.md registration protocol, which nothing here speaks.
+describe('W3: /auth.md', () => {
+	it('serves Markdown whose first line is the auth.md H1', async () => {
+		const res = await fetchWorker('/auth.md');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type') ?? '').toMatch(/^text\/markdown/);
+		const text = await res.text();
+		expect(text.split('\n')[0]).toBe('# Headless Oracle auth.md');
+	});
+
+	it('names every credential path and no registration-protocol field', async () => {
+		const text = await (await fetchWorker('/auth.md')).text();
+		for (const p of ['/v5/keys/instant', '/v5/keys/request', '/v5/sandbox', '/v5/x402/mint', '/oauth/token', 'x402']) {
+			expect(text, p).toContain(p);
+		}
+		for (const forbidden of ['agent_auth', 'register_uri', '/agent/identity']) {
+			expect(text, forbidden).not.toContain(forbidden);
+		}
+	});
+
+	it('every /v5/ and /oauth/ path it names is answered by the worker (not 404)', async () => {
+		const text = await (await fetchWorker('/auth.md')).text();
+		const paths = Array.from(new Set(Array.from(text.matchAll(/\/(?:v5|oauth)\/[A-Za-z0-9_\-/]+/g), (m) => m[0].replace(/\/$/, ''))));
+		expect(paths.length).toBeGreaterThanOrEqual(6);
+		for (const p of paths) {
+			const res = await fetchWorker(p);
+			expect(res.status, p).not.toBe(404);
+		}
+	});
+});
+
 // ─── GET /v5/keys ────────────────────────────────────────────────────────────
 
 describe('GET /v5/keys', () => {
@@ -16341,6 +16374,7 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		['/llms-full.txt',                       '/llms-full.txt'],
 		['/v5/why-not-free',                     '/v5/why-not-free'],
 		['/.well-known/ai-catalog.json',         '/.well-known/ai-catalog.json'],
+		['/auth.md',                             '/auth.md'],
 		['/v5/referee/intake',                   '/v5/referee/intake',
 			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 400],
 	];
@@ -17035,6 +17069,7 @@ describe('served text surfaces make no regulatory-alignment claim', () => {
 		{ path: '/v5/pre-trade-stack', json: false },
 		{ path: '/v5/why-not-free', json: false },
 		{ path: '/.well-known/ai-catalog.json', json: true },
+		{ path: '/auth.md', json: false },
 	];
 	for (const { path, json } of SURFACES) {
 		it(`${path} carries no undisclaimed regulatory claim`, async () => {

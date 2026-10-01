@@ -29,6 +29,7 @@ routes = [
   { pattern = "headlessoracle.com/SKILL.md", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/skill.md", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/AGENTS.md", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/auth.md", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/agent-directory.json", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/badge/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/x402", zone_name = "headlessoracle.com" },
