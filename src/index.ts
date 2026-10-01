@@ -2891,7 +2891,7 @@ const X402_RESOURCE_SPECS: Record<X402ResourceId, {
 	status: {
 		amountAtomic:       '1000',
 		defaultResourceUrl: 'https://headlessoracle.com/v5/status',
-		description:        'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN — Ed25519 signed, 60s TTL.',
+		description:        'Signed market-state receipt for one exchange. OPEN/CLOSED/HALTED/UNKNOWN - Ed25519 signed, 60s TTL.',
 		mimeType:           'application/json',
 		input: {
 			type:       'object',
@@ -3458,6 +3458,22 @@ async function generateCdpJwt(
 // Verifies an x402 payment via the CDP mainnet facilitator (JWT-authenticated).
 // Calls /verify first to validate the signature, then /settle to finalize.
 // Does NOT perform direct on-chain RPC calls — the facilitator handles EVM verification.
+// Diagnostics only. CDP may report whether it catalogued the Bazaar listing in an
+// EXTENSION-RESPONSES header (base64 JSON) on /verify and /settle. We log it so a
+// paid call can be checked from `wrangler tail`; it never changes a result, and any
+// failure to read it is swallowed here rather than reaching the payment path.
+function logBazaarExtensionResponse(res: Response, phase: 'verify' | 'settle'): void {
+	try {
+		const raw = res.headers.get('EXTENSION-RESPONSES');
+		if (!raw) return;
+		const parsed = JSON.parse(x402Base64Decode(raw)) as Record<string, unknown>;
+		const bazaar = (parsed.bazaar ?? {}) as Record<string, unknown>;
+		console.log(JSON.stringify({ event: 'X402_BAZAAR_EXTENSION_RESPONSE', phase, status: bazaar.status ?? null, rejectedReason: bazaar.rejectedReason ?? null }));
+	} catch {
+		// Unreadable diagnostics header: ignored by design.
+	}
+}
+
 async function verifyX402ViaFacilitator(
 	paymentHeader: string,
 	paymentAddress: string,
@@ -3513,6 +3529,7 @@ async function verifyX402ViaFacilitator(
 			signal:  AbortSignal.timeout(5000),
 		});
 		const verifyText = await verifyRes.text();
+		logBazaarExtensionResponse(verifyRes, 'verify');
 		if (!verifyRes.ok) console.error(JSON.stringify({ event: 'FACILITATOR_VERIFY_NON_OK', status: verifyRes.status }));
 		const verifyBody = JSON.parse(verifyText) as Record<string, unknown>;
 		const isValid = (verifyBody.isValid ?? verifyBody.valid) as boolean | undefined;
@@ -3537,6 +3554,7 @@ async function verifyX402ViaFacilitator(
 			signal:  AbortSignal.timeout(5000),
 		});
 		const settleText = await settleRes.text();
+		logBazaarExtensionResponse(settleRes, 'settle');
 		if (!settleRes.ok) console.error(JSON.stringify({ event: 'FACILITATOR_SETTLE_NON_OK', status: settleRes.status, body_preview: settleText.slice(0, 200) }));
 		const settleBody = JSON.parse(settleText) as Record<string, unknown>;
 		if (!settleBody.success) {
@@ -4242,8 +4260,8 @@ async function verifyReceiptDetailed(
 // resourceUrl must be the URL the client is actually paying for; it is signed
 // into the requirements, so a default that does not match the request would bind
 // the payment to the wrong resource.
-export function buildX402IndexHeaders(paymentAddress: string, endpoint: 'status' | 'batch' = 'status', resourceUrl?: string): Record<string, string> {
-	return x402HeadersV2(x402Canonical(endpoint, paymentAddress, resourceUrl), 'Payment Required');
+export function buildX402IndexHeaders(paymentAddress: string, endpoint: 'status' | 'batch' = 'status', resourceUrl?: string, extensions?: Record<string, unknown>): Record<string, string> {
+	return x402HeadersV2(x402Canonical(endpoint, paymentAddress, resourceUrl), 'Payment Required', extensions);
 }
 
 // Build an x402scan-compatible 402 payload.
@@ -4279,7 +4297,7 @@ const BAZAAR_RECEIPT_SCHEMA = {
 	properties: {
 		receipt_id:     { type: 'string', format: 'uuid' },
 		issued_at:      { type: 'string', format: 'date-time' },
-		expires_at:     { type: 'string', format: 'date-time', description: 'issued_at + 60s. Signed into the canonical payload — consumers must reject expired receipts.' },
+		expires_at:     { type: 'string', format: 'date-time', description: 'issued_at + 60s. Signed into the canonical payload - consumers must reject expired receipts.' },
 		issuer:         { const: 'headlessoracle.com' },
 		mic:            { type: 'string', description: 'ISO 10383 Market Identifier Code' },
 		status:         { enum: ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'], description: 'UNKNOWN must be treated as CLOSED (fail-closed contract).' },
@@ -4313,12 +4331,12 @@ function buildBazaarExtension(endpoint: 'status' | 'batch'): Record<string, unkn
 				},
 				category:        'financial-data',
 				family:          'market-state',
-				description:     'Ed25519-signed market-state receipt for one of 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED (fail-closed). 60-second TTL. Holiday-aware, DST-correct, real-time halt detection active.',
-				tags:            ['market-state', 'exchange-status', 'pre-trade', 'attestation', 'Ed25519', 'trading-hours', 'holiday-calendar', 'fail-closed', '28-exchanges', 'signed-receipt', 'MIC', 'ISO-10383'],
+				description:     `Ed25519-signed market-state receipt for one of ${BAZAAR_MIC_ENUM.length} global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED (fail-closed). 60-second TTL. Holiday-aware, DST-correct, real-time halt detection for ${REALTIME_HALT_FEED_SCOPE.join(' and ')} only; schedule-based for the other ${BAZAAR_MIC_ENUM.length - REALTIME_HALT_FEED_SCOPE.length}.`,
+				tags:            ['market-state', 'exchange-status', 'pre-trade', 'attestation', 'Ed25519', 'trading-hours', 'holiday-calendar', 'fail-closed', `${BAZAAR_MIC_ENUM.length}-exchanges`, 'signed-receipt', 'MIC', 'ISO-10383'],
 				metadataUrl:     'https://headlessoracle.com/.well-known/mcp/server-card.json',
 				documentationUrl: 'https://headlessoracle.com/docs',
 				pricingUrl:      'https://headlessoracle.com/v5/pricing',
-				exampleNote:     'output.example is a real receipt captured 2026-06-05T16:03:15Z. Its Ed25519 signature verifies against key_2026_v1 published at /v5/keys (now expired by TTL — schema-illustrative).',
+				exampleNote:     'output.example is a real receipt captured 2026-06-05T16:03:15Z. Its Ed25519 signature verifies against key_2026_v1 published at /v5/keys (now expired by TTL - schema-illustrative).',
 			},
 			schema: {
 				$schema:  'https://json-schema.org/draft/2020-12/schema',
@@ -11589,7 +11607,7 @@ export default {
 				if (!mic) {
 					// Surface the same 402 even on bad input — the listing is a discovery surface,
 					// agents probing it without a mic still need to see the payment requirements.
-					return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/status/x402', 'status'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', 'https://headlessoracle.com/v5/status/x402') });
+					return json(buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, 'https://headlessoracle.com/v5/status/x402', 'status'), 402, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', 'https://headlessoracle.com/v5/status/x402', { bazaar: buildBazaarExtension('status') }) });
 				}
 				if (!MARKET_CONFIGS[mic]) {
 					return json({ error: 'UNSUPPORTED_MIC', message: `Unsupported MIC: ${mic}. See /v5/exchanges for the supported list.` }, 400);
@@ -11600,7 +11618,7 @@ export default {
 					return json(
 						buildX402ScanPayload(env.ORACLE_PAYMENT_ADDRESS, x402Resource, 'status'),
 						402,
-						{ 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', x402Resource) },
+						{ 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...buildX402IndexHeaders(env.ORACLE_PAYMENT_ADDRESS, 'status', x402Resource, { bazaar: buildBazaarExtension('status') }) },
 					);
 				}
 				// CDP-facilitator-only settlement. Direct-on-chain raw JSON is rejected with

@@ -510,6 +510,147 @@ describe('GET /v5/status/x402 — dedicated CDP-Bazaar-indexable resource', () =
 	});
 });
 
+// ─── W1: Bazaar extension in the v2 PAYMENT-REQUIRED header (2026-10-01) ─────
+// CDP's validator reads the v2 header, and before W1 the header carried no
+// `extensions`, so the listing was rejected with "no bazaar discovery extension
+// found" while the v1 body had it. These pin the header and the body to the same
+// extension object, the bytes to ASCII, and every other 402 to no extension.
+describe('W1: Bazaar extension in the v2 PAYMENT-REQUIRED header', () => {
+	// The bytes base64-decoded from Payment-Required, as a binary string (one char per byte).
+	const headerBytes = (res: Response): string => atob(res.headers.get('Payment-Required') ?? '');
+	const decodedHeader = (res: Response): Record<string, unknown> =>
+		JSON.parse(x402Base64Decode(res.headers.get('Payment-Required') ?? '')) as Record<string, unknown>;
+
+	for (const path of ['/v5/status/x402?mic=XNYS', '/v5/status/x402']) {
+		it(`T1/T2 ${path}: header carries extensions.bazaar equal to the body's, mirror equals decoded header`, async () => {
+			const res = await fetchWorker(path);
+			expect(res.status).toBe(402);
+			const decoded = decodedHeader(res);
+			const ext = decoded.extensions as Record<string, unknown> | undefined;
+			expect(ext).toBeDefined();
+			expect(ext!.bazaar).toBeDefined();
+			const body = await res.json() as Record<string, unknown>;
+			expect(ext!.bazaar).toEqual((body.extensions as Record<string, unknown>).bazaar);
+			expect(res.headers.get('Payment-Required-Json')).toBe(x402Base64Decode(res.headers.get('Payment-Required') ?? ''));
+		});
+	}
+
+	it('T2b both header representations are pure ASCII and byte-identical', async () => {
+		const res = await fetchWorker('/v5/status/x402?mic=XNYS');
+		const bytes = headerBytes(res);
+		const mirror = res.headers.get('Payment-Required-Json') ?? '';
+		expect(bytes.length).toBeGreaterThan(0);
+		const high = (s: string): number[] => Array.from(s, (ch) => ch.charCodeAt(0)).filter((c) => c >= 0x80);
+		expect(high(bytes)).toEqual([]);
+		expect(high(mirror)).toEqual([]);
+		const mirrorBytes = Array.from(new TextEncoder().encode(mirror), (b) => String.fromCharCode(b)).join('');
+		expect(bytes).toBe(mirrorBytes);
+	});
+
+	it('T3 the decoded header passes the real PaymentRequiredV2Schema (@x402/core 2.20.0, vendored)', async () => {
+		const { PaymentRequiredV2Schema } = await import('./vendor/x402-schemas.mjs');
+		const res = await fetchWorker('/v5/status/x402?mic=XNYS');
+		const parsed = PaymentRequiredV2Schema.safeParse(decodedHeader(res));
+		expect(parsed.success ? null : JSON.stringify(parsed.error.issues)).toBe(null);
+	});
+
+	it('T4 bazaar protocol invariants (x402 facilitator.ts 350-366, 450-525) and the CDP 500-character description limit', async () => {
+		const res = await fetchWorker('/v5/status/x402?mic=XNYS');
+		const decoded = decodedHeader(res);
+		const bazaar = (decoded.extensions as Record<string, unknown>).bazaar as Record<string, unknown>;
+		const info = bazaar.info as Record<string, unknown>;
+		const input = info.input as Record<string, unknown>;
+		const schema = bazaar.schema as Record<string, unknown>;
+		expect(input.type).toBe('http');
+		expect(['GET', 'HEAD', 'DELETE']).toContain(input.method);
+		expect(input).not.toHaveProperty('bodyType');
+		expect(schema.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
+		expect(schema.required as string[]).toContain('input');
+		const refs: string[] = [];
+		const walk = (v: unknown): void => {
+			if (Array.isArray(v)) { v.forEach(walk); return; }
+			if (v && typeof v === 'object') {
+				for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+					if ((k === '$ref' || k === '$id') && !(typeof x === 'string' && x.startsWith('#'))) refs.push(`${k}=${String(x)}`);
+					walk(x);
+				}
+			}
+		};
+		walk(schema);
+		expect(refs).toEqual([]);
+		expect(((decoded.resource as Record<string, unknown>).description as string).length).toBeLessThanOrEqual(500);
+		expect((info.description as string).length).toBeLessThanOrEqual(500);
+	});
+
+	it('T5 the listing description names every MIC with a realtime halt feed and does not claim halt detection is active everywhere', async () => {
+		const res = await fetchWorker('/v5/status/x402?mic=XNYS');
+		const info = (((decodedHeader(res).extensions as Record<string, unknown>).bazaar as Record<string, unknown>).info) as Record<string, unknown>;
+		const description = info.description as string;
+		// The scope as the signed receipt states it (REALTIME_HALT_FEED_SCOPE in src).
+		const demo = await fetchJSON('/v5/demo?mic=XNYS');
+		const scope = (JSON.parse(demo.coverage as string) as { realtime_halt_feed_scope: string[] }).realtime_halt_feed_scope;
+		expect(scope.length).toBeGreaterThan(0);
+		for (const mic of scope) expect(description).toContain(mic);
+		expect(description).not.toContain('halt detection active');
+	});
+
+	it('T6 all response headers together fit under node http.maxHeaderSize', async () => {
+		// 16384 is what `node -p "require('http').maxHeaderSize"` printed in the W1
+		// session's pre-flight (Node v24.13.0, 2026-10-01).
+		const NODE_MAX_HEADER_SIZE = 16384;
+		const res = await fetchWorker('/v5/status/x402?mic=XNYS');
+		let total = 0;
+		res.headers.forEach((value, name) => { total += new TextEncoder().encode(name).length + new TextEncoder().encode(value).length; });
+		console.log(JSON.stringify({ event: 'W1_T6_HEADER_BYTES', total }));
+		expect(total).toBeLessThan(NODE_MAX_HEADER_SIZE);
+	});
+
+	it('T7 the keyless 402s of /v5/batch, /v1/halts and /v1/safe-to-trade carry no extensions in the v2 header', async () => {
+		for (const path of ['/v5/batch?mics=XNYS', '/v1/halts', '/v1/safe-to-trade?venue=XNYS&max_age=30']) {
+			const res = await fetchWorker(path);
+			expect(res.status, path).toBe(402);
+			expect(res.headers.get('Payment-Required'), path).not.toBeNull();
+			expect(decodedHeader(res), path).not.toHaveProperty('extensions');
+		}
+	});
+
+	it('T8 an EXTENSION-RESPONSES header on the CDP settle response is logged and changes nothing', async () => {
+		const extHeader = btoa(JSON.stringify({ bazaar: { status: 'rejected', rejectedReason: 'x' } }));
+		const run = async (withHeader: boolean, tx: string) => {
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+				if (url.includes('cdp.coinbase.com') && url.includes('/verify')) {
+					return new Response(JSON.stringify({ isValid: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+				}
+				if (url.includes('cdp.coinbase.com') && url.includes('/settle')) {
+					const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+					if (withHeader) headers['EXTENSION-RESPONSES'] = extHeader;
+					return new Response(JSON.stringify({ success: true, transaction: tx, network: 'eip155:8453', payer: '0x0000000000000000000000000000000000000001' }), { status: 200, headers });
+				}
+				return originalFetch(input as RequestInfo, init);
+			};
+			try {
+				const payment = btoa(JSON.stringify({ x402Version: 2, accepted: {}, payload: { signature: '0xmocksig' } }));
+				const res = await fetchWorker('/v5/status/x402?mic=XNYS', { headers: { 'Payment-Signature': payment } });
+				const body = await res.json() as Record<string, unknown>;
+				return { status: res.status, keys: Object.keys(body).sort(), mic: body.mic, receipt_mode: body.receipt_mode };
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
+		};
+		const logSpy = vi.spyOn(console, 'log');
+		const without = await run(false, '0x' + 'a'.repeat(64));
+		const withH   = await run(true, '0x' + 'b'.repeat(64));
+		const logged = logSpy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('X402_BAZAAR_EXTENSION_RESPONSE'));
+		logSpy.mockRestore();
+		expect(withH).toEqual(without);
+		expect(without.status).toBe(200);
+		expect(logged.length).toBe(1);
+		expect(JSON.parse(logged[0])).toEqual({ event: 'X402_BAZAAR_EXTENSION_RESPONSE', phase: 'settle', status: 'rejected', rejectedReason: 'x' });
+	});
+});
+
 // ─── GET /v5/keys ────────────────────────────────────────────────────────────
 
 describe('GET /v5/keys', () => {
