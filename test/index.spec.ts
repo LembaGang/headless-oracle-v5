@@ -775,6 +775,92 @@ describe('W4: discovery surfaces claim only what the code does', () => {
 	});
 });
 
+// ─── W5: no worker surface links a page that does not exist (2026-10-01) ─────
+// Pages serves its homepage with 200 for any unknown path, so a dead link here
+// reads as a live page to a crawler. Every /docs/, /blog/ or Pages passthrough
+// path these four surfaces link must either be a page headless-oracle-web serves
+// (listed below with its source file) or be served by this worker as non-HTML.
+describe('W5: no worker surface links a page that does not exist', () => {
+	const SITEMAP_LOCS = [
+		'/', '/docs', '/pricing', '/status', '/docs/x402-payments', '/docs/integrations/datacamp-workspace',
+		'/v5/metrics/public', '/docs/integrations/tradingagents-risk', '/docs/specifications/pre-trade-stack',
+		'/docs/integrations/ampersend', '/docs/specifications/cpvr-1', '/standards', '/essays/',
+		'/essays/environment-internet-draft', '/essays/trust-primitive', '/halt-gate',
+	].map((p) => `https://headlessoracle.com${p}`);
+
+	// Pages served by headless-oracle-web at 9dee09c (each file confirmed tracked there).
+	const WEB_SERVED_PATHS = new Set([
+		'/',                                     // index.html
+		'/docs',                                 // docs.html
+		'/pricing',                              // pricing.html
+		'/status',                               // status.html
+		'/verify',                               // verify.html
+		'/docs/quickstart',                      // public/docs/quickstart/index.html
+		'/docs/x402-payments',                   // public/docs/x402-payments/index.html
+		'/docs/integrations/datacamp-workspace', // public/docs/integrations/datacamp-workspace/index.html
+		'/upgrade',                              // no file; redirect to /pricing via headless-oracle-web public/_redirects, web session E1
+	]);
+
+	// The worker's Pages passthrough list (src/index.ts, "Pages passthrough").
+	const PASSTHROUGH = new Set(['/', '/pricing', '/status', '/verify', '/traction', '/refund', '/upgrade', '/terms', '/privacy', '/docs', '/docs/', '/blog', '/blog/']);
+
+	const SURFACE_PATHS = ['/sitemap.xml', '/llms.txt', '/llms-full.txt', '/AGENTS.md'];
+
+	it('/sitemap.xml lists exactly the sixteen pages that exist', async () => {
+		const xml = await (await fetchWorker('/sitemap.xml')).text();
+		const locs = Array.from(xml.matchAll(/<loc>([^<]+)<\/loc>/g), (m) => m[1]);
+		expect([...locs].sort()).toEqual([...SITEMAP_LOCS].sort());
+	});
+
+	it('every /docs/, /blog/ or passthrough link on the four surfaces is a real page', async () => {
+		const paths = new Set<string>();
+		for (const surface of SURFACE_PATHS) {
+			const text = await (await fetchWorker(surface)).text();
+			for (const m of text.matchAll(/https:\/\/(?:api\.)?headlessoracle\.com(\/[^\s)"'<>`\]]*)?/g)) {
+				const p = (m[1] ?? '/').replace(/[?#].*$/, '').replace(/[.,;:]+$/, '') || '/';
+				if (p.startsWith('/docs/') || p.startsWith('/blog/') || PASSTHROUGH.has(p)) paths.add(p);
+			}
+		}
+		expect(paths.size).toBeGreaterThan(0);
+		// A path that reaches the Pages passthrough here gets what Pages gives an
+		// unknown path: the homepage, 200 text/html. That must count as a failure.
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			if (url.startsWith('http://example.com')) return new Response('<!doctype html><title>home</title>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+			return originalFetch(input as RequestInfo, init);
+		}) as typeof globalThis.fetch;
+		const dead: string[] = [];
+		try {
+			for (const p of paths) {
+				if (WEB_SERVED_PATHS.has(p)) continue;
+				const res = await fetchWorker(p);
+				const type = res.headers.get('Content-Type') ?? '';
+				if (res.status !== 200 || type.startsWith('text/html')) dead.push(`${p} -> ${res.status} ${type}`);
+			}
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+		expect(dead).toEqual([]);
+	});
+
+	it('none of the removed links appears on the four surfaces', async () => {
+		const removed = [
+			'/docs/cline', '/docs/continue', '/docs/integrations/olas', '/docs/integrations/autogpt',
+			'/docs/integrations/google-adk', '/docs/integrations/agno', '/docs/integrations/strands',
+			'/blog/why-your-trading-agent-needs-a-pre-trade-gate', '/blog/market-hours-api-vs-signed-attestation',
+			'/docs/integrations/trading-agents', '/docs/integrations/crewai', '/docs/integrations/x402',
+			'/docs/integrations/mcp', '/docs/integrations/langchain', '/docs/api', '/docs/verification',
+			'/docs/sma-protocol/rfc-001', '/docs/sdks/', '/docs/cursor-setup', '/docs/windsurf-config',
+			'/docs/integrations/claude-managed-agents',
+		].map((p) => `https://headlessoracle.com${p}`);
+		for (const surface of SURFACE_PATHS) {
+			const text = await (await fetchWorker(surface)).text();
+			for (const url of removed) expect(text, `${surface}: ${url}`).not.toContain(url);
+		}
+	});
+});
+
 // ─── GET /v5/keys ────────────────────────────────────────────────────────────
 
 describe('GET /v5/keys', () => {

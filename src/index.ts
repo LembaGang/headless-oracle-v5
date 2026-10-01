@@ -5675,12 +5675,6 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://headlessoracle.com/upgrade</loc>
-    <lastmod>2026-03-26</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
     <loc>https://headlessoracle.com/docs/x402-payments</loc>
     <lastmod>2026-03-26</lastmod>
     <changefreq>weekly</changefreq>
@@ -5693,69 +5687,15 @@ const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://headlessoracle.com/docs/cline</loc>
-    <lastmod>2026-04-05</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/docs/continue</loc>
-    <lastmod>2026-04-05</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/docs/integrations/olas</loc>
-    <lastmod>2026-04-03</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/docs/integrations/autogpt</loc>
-    <lastmod>2026-04-03</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/blog/why-your-trading-agent-needs-a-pre-trade-gate</loc>
-    <lastmod>2026-04-03</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
     <loc>https://headlessoracle.com/v5/metrics/public</loc>
     <lastmod>2026-04-04</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://headlessoracle.com/docs/integrations/google-adk</loc>
+    <loc>https://headlessoracle.com/docs/integrations/tradingagents-risk</loc>
     <lastmod>2026-04-04</lastmod>
     <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/docs/integrations/trading-agents</loc>
-    <lastmod>2026-04-04</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/docs/integrations/agno</loc>
-    <lastmod>2026-04-04</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/docs/integrations/strands</loc>
-    <lastmod>2026-04-04</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://headlessoracle.com/blog/market-hours-api-vs-signed-attestation</loc>
-    <lastmod>2026-04-04</lastmod>
-    <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
@@ -5938,8 +5878,8 @@ Headless Oracle returns cryptographically signed receipts confirming whether an 
 - [JavaScript SDK](https://www.npmjs.com/package/@headlessoracle/verify): npm install @headlessoracle/verify
 - [Go SDK](https://github.com/LembaGang/headless-oracle-go): go get github.com/LembaGang/headless-oracle-go
 - [LangChain](https://pypi.org/project/headless-oracle-langchain/): headless-oracle-langchain tool
-- [CrewAI](https://headlessoracle.com/docs/integrations/crewai): MCPServerStdio configuration
-- [x402 Payment](https://headlessoracle.com/docs/integrations/x402): Pay-per-call $${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC on Base
+- [CrewAI](https://pypi.org/project/headless-oracle-crewai/): headless-oracle-crewai package on PyPI
+- [x402 Payment](https://headlessoracle.com/docs/x402-payments): Pay-per-call $${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC on Base
 
 ## Pre-Trade Verification Pattern
 
@@ -6023,20 +5963,18 @@ Receipt verification is a REST-only surface. Verify Ed25519 signatures offline w
 
 - [Quick Start (.mcp.json setup)](https://headlessoracle.com/docs/quickstart)
 - [Full Documentation](https://headlessoracle.com/docs)
-- [MCP Integration Guide](https://headlessoracle.com/docs/integrations/mcp)
-- [LangChain Integration](https://headlessoracle.com/docs/integrations/langchain)
-- [CrewAI Integration](https://headlessoracle.com/docs/integrations/crewai)
-- [REST API Reference](https://headlessoracle.com/docs/api)
-- [Receipt Verification](https://headlessoracle.com/docs/verification)
-- [SMA Protocol RFC-001](https://headlessoracle.com/docs/sma-protocol/rfc-001) — earlier working-spec name for what is now \`environment.market_state\` in the Verifiable Intent environment.* family. The RFCs linked above are the canonical specifications.
+- [LangChain Integration](https://pypi.org/project/headless-oracle-langchain/)
+- [CrewAI Integration](https://pypi.org/project/headless-oracle-crewai/)
+- [Receipt Verification](https://headlessoracle.com/verify)
+- [SMA Protocol RFC-001](https://github.com/LembaGang/sma-protocol) — earlier working-spec name for what is now \`environment.market_state\` in the Verifiable Intent environment.* family. The RFCs linked above are the canonical specifications.
 - [Multi-Party Attestation Spec (MPAS-1.0)](https://github.com/LembaGang/mpas-spec) — earlier working-spec name; the concepts are now consolidated into the Verifiable Intent environment.* family and related constraint types.
 - Known implementations across SMA, MPAS, and APTS: GET /v5/implementations (public). Submit yours via the submit_url field. Note: SMA/MPAS/APTS are retired working-spec names; see the RFCs above for canonical specifications.
 
 ## SDK Documentation
 
-- [JavaScript/TypeScript (@headlessoracle/verify)](https://headlessoracle.com/docs/sdks/javascript)
-- [Python (headless-oracle)](https://headlessoracle.com/docs/sdks/python)
-- [Go (headless-oracle-go)](https://headlessoracle.com/docs/sdks/go)
+- [JavaScript/TypeScript (@headlessoracle/verify)](https://www.npmjs.com/package/@headlessoracle/verify)
+- [Python (headless-oracle)](https://pypi.org/project/headless-oracle/)
+- [Go (headless-oracle-go)](https://github.com/LembaGang/headless-oracle-go)
 
 ## Quick Start
 # Path A — email sandbox (human onboarding):
@@ -6193,20 +6131,9 @@ Endpoint: POST https://headlessoracle.com/mcp
 Tools: get_market_status, get_market_schedule, list_exchanges
 Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 
-## IDE Setup Guides
-- [Cline (VS Code)](https://headlessoracle.com/docs/cline) — VS Code Cline extension setup
-- [Continue.dev](https://headlessoracle.com/docs/continue) — Continue.dev VS Code extension setup
-- [Cursor](https://headlessoracle.com/docs/cursor-setup) — Cursor IDE setup
-- [Windsurf](https://headlessoracle.com/docs/windsurf-config) — Windsurf IDE setup
-
 ## Agent Framework Integrations
-- [Claude Managed Agents](https://headlessoracle.com/docs/integrations/claude-managed-agents) — Pre-trade verification gate for Anthropic's production agent hosting platform (MCP native, batch checks, audit trail)
-- [Google ADK Integration](https://headlessoracle.com/docs/integrations/google-adk) — Google Agent Development Kit via McpToolset (stdio + HTTP transport)
-- [TradingAgents Integration](https://headlessoracle.com/docs/integrations/trading-agents) — Pre-trade gate for TauricResearch/TradingAgents multi-agent framework
-- [Agno Integration](https://headlessoracle.com/docs/integrations/agno) — Agno (22K stars) via MCPTools or Python SDK
-- [Strands Integration](https://headlessoracle.com/docs/integrations/strands) — AWS Strands Agents SDK with first-party headless-oracle-strands PyPI package
-- [Olas Integration](https://headlessoracle.com/docs/integrations/olas) — Pre-trade gate for Olas autonomous services
-- [AutoGPT Integration](https://headlessoracle.com/docs/integrations/autogpt) — AutoGPT plugin for pre-trade verification
+- [TradingAgents Integration](https://headlessoracle.com/docs/integrations/tradingagents-risk) — Pre-trade gate for TauricResearch/TradingAgents multi-agent framework
+- [Strands Integration](https://pypi.org/project/headless-oracle-strands/) - headless-oracle-strands package on PyPI for the AWS Strands Agents SDK
 - [Ampersend Integration](https://headlessoracle.com/docs/integrations/ampersend) — Composable deployment pattern: execution-environment verification (environment.market_state) composed with spend authorization.
 
 ## Pre-Trade Verification Pattern
@@ -6214,15 +6141,8 @@ Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 - [Machine-Readable Pattern](https://headlessoracle.com/v5/pre-trade-stack) — JSON: 5 steps, normative specification references, fail-closed composition semantics.
 - [CPVR-1 Specification](https://headlessoracle.com/docs/specifications/cpvr-1) — Composable Pre-Trade Verification Receipt: proposed JSON envelope wrapping all step proofs into a single verifiable artifact.
 
-## Blog
-- [Market Hours APIs Are Not Enough for Autonomous Agents](https://headlessoracle.com/blog/market-hours-api-vs-signed-attestation) — Why boolean is_open fails agents; the signed attestation model
-- [Why Your Trading Agent Needs a Pre-Trade Gate](https://headlessoracle.com/blog/why-your-trading-agent-needs-a-pre-trade-gate) — DST post-mortem and fail-closed contract
-
 ## Discovery
 - [/.well-known/mcp-servers.json](https://headlessoracle.com/.well-known/mcp-servers.json) — Self-describing registry feed for MCP directories (auto-updateable, proposed convention)
-
-## Blog
-- [Why Your Trading Agent Needs a Pre-Trade Gate](https://headlessoracle.com/blog/why-your-trading-agent-needs-a-pre-trade-gate) — DST bug post-mortem and fail-closed contract
 
 ## MCP Client Configuration
 
@@ -7589,9 +7509,7 @@ expired receipts.
 ## Using with Claude Managed Agents
 If you are a Claude Managed Agent running financial workflows, add
 headless-oracle-mcp as an MCP server and call get_market_status before
-any trade execution. Full integration guide with batch checks, audit
-trail patterns, and multi-exchange verification:
-https://headlessoracle.com/docs/integrations/claude-managed-agents
+any trade execution.
 
 ## Pre-Trade Verification Pattern
 
