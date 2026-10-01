@@ -156,6 +156,20 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-01: agent readiness (handoff `CC_HANDOFF_2026-10-01_hov5-agent-readiness_rev2`),
+  committed, NOT deployed; the founder deploys.** W1 `1de0c53` Bazaar extension in the
+  v2 `PAYMENT-REQUIRED` header of `/v5/status/x402` only, payment-header inputs folded
+  to ASCII, `EXTENSION-RESPONSES` logged; W2 `4640b06` `/.well-known/ai-catalog.json`
+  (MCP card, agent-skills index, API catalog; no A2A); W3 `f10a48d` `/auth.md` plus the
+  `headlessoracle.com/auth.md` route (a route change: B-115 is not benign for this
+  deploy); W4 `3486ac8` server card tools derive from `MCP_TOOLS`, `A2A` removed from
+  `protocols`, halt-detection lists derived, past-dated CFTC sentence and model-tier
+  paragraph removed, Bazaar schema enums fixed; W5 `25a65d9` dead links removed from
+  `/sitemap.xml` (26 to 16), `/llms.txt`, `/llms-full.txt`, `/AGENTS.md`; W6 `89b96cf`
+  `docs/receipt-spec.md` (B-254) agrees with `/v5/keys`. Suite **1369 to 1395**, read
+  from `npm run test:sync-count` and the pre-commit hook. Post-deploy check:
+  `node scripts/verify-agent-readiness.mjs` (failed every check but liveness against
+  production before the deploy, as it should).
 - **Tests**: 1337 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh` and enforced by CI) + 11 smoke + 24 SDK + 26
   LangGraph + 17 ai-hedge-fund. 1264 → 1298 across the rail sprint's day two;
