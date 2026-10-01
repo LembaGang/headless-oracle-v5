@@ -8179,6 +8179,39 @@ const AGENT_DIRECTORY_JSON = {
 	}],
 };
 
+// AI catalog (Agent-Card/ai-catalog) served at /.well-known/ai-catalog.json.
+// Lists only what this worker actually serves: the MCP server card, the
+// agent-skills index and the RFC 9727 API catalog. No A2A card is listed,
+// because no endpoint speaks A2A. No did:web identifier: no DID document is
+// published. Each representative query is one its target answers.
+const AI_CATALOG_JSON = {
+	specVersion: '1.0',
+	host: { displayName: 'Headless Oracle', identifier: 'headlessoracle.com', documentationUrl: 'https://headlessoracle.com/docs' },
+	entries: [
+		{
+			identifier:            'urn:air:headlessoracle.com:mcp:headless-oracle',
+			displayName:           'Headless Oracle MCP server',
+			type:                  'application/mcp-server-card+json',
+			url:                   'https://headlessoracle.com/.well-known/mcp/server-card.json',
+			representativeQueries: ['is the New York Stock Exchange open right now', 'signed market status receipt for XLON', 'next open time for the Japan Exchange Group'],
+		},
+		{
+			identifier:            'urn:air:headlessoracle.com:skills:headless-oracle',
+			displayName:           'Headless Oracle agent skills',
+			type:                  'application/agent-skills+json',
+			url:                   'https://headlessoracle.com/.well-known/agent-skills/index.json',
+			representativeQueries: ['how do I verify a signed market-state receipt', 'how do I pay for a market status receipt with x402'],
+		},
+		{
+			identifier:            'urn:air:headlessoracle.com:api:headless-oracle',
+			displayName:           'Headless Oracle REST API catalog',
+			type:                  'application/linkset+json',
+			url:                   'https://headlessoracle.com/.well-known/api-catalog',
+			representativeQueries: ['market status API with Ed25519 signed receipts', 'exchange trading schedule API'],
+		},
+	],
+};
+
 // ─── MCP (Model Context Protocol) ────────────────────────────────────────────
 // Implements JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05).
 // Three tools wrap existing Oracle logic — no new npm dependencies.
@@ -12837,6 +12870,18 @@ export default {
 					'Content-Type':  'application/linkset+json',
 					'Cache-Control': 'public, max-age=3600',
 					'Link':          '<https://www.rfc-editor.org/info/rfc9727>; rel="profile"',
+				});
+			}
+
+			// ── AI catalog ─────────────────────────────────────────────────────────
+			// application/json as the isitagentready ARD check asks; the ai-catalog
+			// spec names application/ai-catalog+json (open point, recorded in the
+			// 2026-10-01 agent-readiness report).
+			if (url.pathname === '/.well-known/ai-catalog.json') {
+				return json(AI_CATALOG_JSON, 200, {
+					'Content-Type':                'application/json; charset=utf-8',
+					'Access-Control-Allow-Origin': '*',
+					'Cache-Control':               'public, max-age=300',
 				});
 			}
 

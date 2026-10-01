@@ -651,6 +651,47 @@ describe('W1: Bazaar extension in the v2 PAYMENT-REQUIRED header', () => {
 	});
 });
 
+// ─── W2: /.well-known/ai-catalog.json (2026-10-01) ───────────────────────────
+// Structure per the isitagentready ARD check; lists only the three discovery
+// documents this worker serves, never an A2A card.
+describe('W2: /.well-known/ai-catalog.json', () => {
+	it('serves the catalog as JSON with CORS open, a spec version and a host', async () => {
+		const res = await fetchWorker('/.well-known/ai-catalog.json');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type') ?? '').toMatch(/^application\/json/);
+		expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		const body = await res.json() as Record<string, unknown>;
+		expect(typeof body.specVersion).toBe('string');
+		expect((body.specVersion as string).length).toBeGreaterThan(0);
+		const host = body.host as Record<string, unknown>;
+		expect(typeof host.displayName).toBe('string');
+		expect((host.displayName as string).length).toBeGreaterThan(0);
+		expect(typeof host.identifier).toBe('string');
+		expect((host.identifier as string).length).toBeGreaterThan(0);
+	});
+
+	it('has exactly three well-formed entries, none of them an A2A card, each resolving to 200', async () => {
+		const body = await fetchJSON('/.well-known/ai-catalog.json');
+		const entries = body.entries as Array<Record<string, unknown>>;
+		expect(entries.length).toBe(3);
+		for (const e of entries) {
+			const hasUrl = 'url' in e, hasData = 'data' in e;
+			expect(hasUrl !== hasData, String(e.identifier)).toBe(true);
+			expect(String(e.identifier)).toMatch(/^urn:air:headlessoracle\.com:/);
+			expect(typeof e.displayName).toBe('string');
+			expect(String(e.type).toLowerCase()).not.toContain('a2a');
+			const queries = e.representativeQueries as string[];
+			expect(queries.length).toBeGreaterThanOrEqual(2);
+			expect(queries.length).toBeLessThanOrEqual(5);
+			const target = String(e.url);
+			expect(target).not.toContain('agent-card');
+			expect(target).not.toContain('agent.json');
+			const res = await fetchWorker(new URL(target).pathname);
+			expect(res.status, target).toBe(200);
+		}
+	});
+});
+
 // ─── GET /v5/keys ────────────────────────────────────────────────────────────
 
 describe('GET /v5/keys', () => {
@@ -16299,6 +16340,7 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		['/llms.txt',                            '/llms.txt'],
 		['/llms-full.txt',                       '/llms-full.txt'],
 		['/v5/why-not-free',                     '/v5/why-not-free'],
+		['/.well-known/ai-catalog.json',         '/.well-known/ai-catalog.json'],
 		['/v5/referee/intake',                   '/v5/referee/intake',
 			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 400],
 	];
@@ -16992,6 +17034,7 @@ describe('served text surfaces make no regulatory-alignment claim', () => {
 		{ path: '/v1/verification/multi-oracle-guide', json: true },
 		{ path: '/v5/pre-trade-stack', json: false },
 		{ path: '/v5/why-not-free', json: false },
+		{ path: '/.well-known/ai-catalog.json', json: true },
 	];
 	for (const { path, json } of SURFACES) {
 		it(`${path} carries no undisclaimed regulatory claim`, async () => {
