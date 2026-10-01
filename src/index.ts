@@ -4293,7 +4293,7 @@ const BAZAAR_EXAMPLE_RECEIPT_STATUS = {
 // list at /v5/keys → canonical_payload_spec.receipt_fields plus the signature.
 const BAZAAR_RECEIPT_SCHEMA = {
 	type:     'object',
-	required: ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic', 'status', 'source', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
+	required: ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic', 'status', 'source', 'halt_detection', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
 	properties: {
 		receipt_id:     { type: 'string', format: 'uuid' },
 		issued_at:      { type: 'string', format: 'date-time' },
@@ -4302,8 +4302,9 @@ const BAZAAR_RECEIPT_SCHEMA = {
 		mic:            { type: 'string', description: 'ISO 10383 Market Identifier Code' },
 		status:         { enum: ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'], description: 'UNKNOWN must be treated as CLOSED (fail-closed contract).' },
 		source:         { enum: ['SCHEDULE', 'OVERRIDE', 'SYSTEM', 'REALTIME'] },
-		halt_detection: { enum: ['active', 'inactive'] },
-		receipt_mode:   { enum: ['demo', 'trial', 'live'] },
+		halt_detection: { enum: ['active', 'schedule_only'] },
+		receipt_mode:   { enum: ['demo', 'live'] },
+		coverage:       { type: 'string', description: 'JSON-encoded string inside the signed bytes; JSON.parse it after verifying the signature. Added to the signed payload by commit 19ccb28 (2026-09-07); the example below predates it.' },
 		schema_version: { const: 'v5.0' },
 		public_key_id:  { type: 'string', description: 'Active key ID published at /v5/keys' },
 		signature:      { type: 'string', pattern: '^[0-9a-f]{128}$', description: 'Ed25519 signature over canonical (alphabetical, no-whitespace) JSON of the payload, hex-encoded.' },
@@ -5870,10 +5871,10 @@ Headless Oracle is the reference implementation of \`environment.market_state\`,
 The specification is in coordinated drafting across PR #9 (\`environment.market_state\`, https://github.com/agent-intent/verifiable-intent/pull/9) and PR #22 (\`environment.wallet_state\`, https://github.com/agent-intent/verifiable-intent/pull/22) on the upstream \`agent-intent/verifiable-intent\` repository.`;
 
 const REGULATORY_DIRECTION_SHORT =
-  "Provides cryptographic venue-state attestation. The Multi-Oracle Consensus spec this operator publishes takes its architectural direction from CFTC Staff Letter 25-39 (December 2025) and the SEC Crypto Task Force Project Blueprint on Tokenized Collateral (November 2025), both cited with their source URLs under regulatory_references. No regulator has reviewed or endorsed this service. Final CFTC rulemaking on tokenized collateral is expected August 2026.";
+  "Provides cryptographic venue-state attestation. The Multi-Oracle Consensus spec this operator publishes takes its architectural direction from CFTC Staff Letter 25-39 (December 2025) and the SEC Crypto Task Force Project Blueprint on Tokenized Collateral (November 2025), both cited with their source URLs under regulatory_references. No regulator has reviewed or endorsed this service.";
 
 const REGULATORY_DIRECTION_PARAGRAPH =
-  "Regulatory direction on tokenized collateral and digital-asset derivatives is moving toward cryptographic attestation, multiple independent oracles, and verifiable data provenance as technical primitives. CFTC Staff Letter 25-39 (December 2025) provides technology-neutral guidance on tokenized collateral; the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025) discusses oracle governance and signed attestations as architectural building blocks. Final CFTC rulemaking on tokenized collateral is expected by August 2026. This operator publishes signed market-state attestations and makes no claim about any party's regulatory obligations; whether such an attestation is useful evidence under a given framework is for that party and its advisers to judge. No regulator has reviewed or endorsed this service.";
+  "Regulatory direction on tokenized collateral and digital-asset derivatives is moving toward cryptographic attestation, multiple independent oracles, and verifiable data provenance as technical primitives. CFTC Staff Letter 25-39 (December 2025) provides technology-neutral guidance on tokenized collateral; the SEC Crypto Task Force's Project Blueprint on Tokenized Collateral (November 2025) discusses oracle governance and signed attestations as architectural building blocks. This operator publishes signed market-state attestations and makes no claim about any party's regulatory obligations; whether such an attestation is useful evidence under a given framework is for that party and its advisers to judge. No regulator has reviewed or endorsed this service.";
 
 const REGULATORY_REFERENCES_STRUCTURED = [
   {
@@ -5905,8 +5906,6 @@ const LLMS_TXT_INDEX = `# Headless Oracle
 Execution-environment verification for autonomous financial agents. At Layer 3 of a Verifiable Intent mandate, an agent holding a valid L2 credential still needs cryptographic proof that the market it is about to execute into is actually open. Amount validation at L2 is not evidence of market state at L3. Headless Oracle provides that evidence as a signed receipt.
 
 The environment.* constraint family is a sibling-type namespace: environment.market_state covers exchange-session state, and environment.wallet_state covers on-chain payment-source state. Both specs share the same fail-closed posture, JWKS caching discipline, cross-spec composition semantics, and family-wide register conventions — the result of coordinated drafting across sibling reference implementations rather than isolated per-type work.
-
-Model-agnostic infrastructure. Works with any AI agent regardless of model tier — from GPT-5 nano to frontier reasoning models like Anthropic Mythos. Receipts are the same $0.05/MTok agents and $125/MTok agents both consume.
 
 Regulatory references: ${REGULATORY_DIRECTION_SHORT}
 
@@ -13038,7 +13037,7 @@ export default {
 						'Provides Ed25519-signed market-state attestations for 28 global exchanges with 60-second TTL. ' +
 						'Autonomous agents gate trade execution on cryptographically verified venue state; fail-closed UNKNOWN. ' +
 						'Composes with environment.wallet_state for multi-venue mandates. ' +
-						'MCP tools: get_market_status, get_market_schedule, list_exchanges. Receipt verification is REST-only (POST /v5/verify) or offline via @headlessoracle/verify. ' +
+						'MCP tools: ' + MCP_TOOLS.map((t) => t.name).join(', ') + '. Receipt verification is REST-only (POST /v5/verify) or offline via @headlessoracle/verify. ' +
 						`REST API + x402 micropayments ($${X402_PRICE_USDC} USDC on Base mainnet). ` +
 						'Handles DST transitions, exchange holidays, lunch breaks, and circuit breaker detection. ' +
 						'The Multi-Oracle Consensus spec this operator publishes takes its architectural direction from CFTC Staff Letter 25-39 (December 2025) and the SEC Project Blueprint on Tokenized Collateral (November 2025). No regulator has reviewed or endorsed this service.',
@@ -13046,7 +13045,7 @@ export default {
 					regulatory_references: REGULATORY_REFERENCES_STRUCTURED,
 					categories:           ['finance', 'market-data', 'attestation', 'verification', 'pre-trade-safety', 'rwa', 'tokenization'],
 					mcp_endpoint:   'https://headlessoracle.com/mcp',
-					tools:          ['get_market_status', 'get_market_schedule', 'list_exchanges'],
+					tools:          MCP_TOOLS.map((t) => t.name),
 					authentication: ['bearer', 'apiKey', 'x402'],
 					homepage:       'https://headlessoracle.com',
 					docs:           'https://headlessoracle.com/docs',
@@ -13054,7 +13053,7 @@ export default {
 					key_request:    'https://headlessoracle.com/v5/keys/request',
 					openapi:        'https://headlessoracle.com/openapi.json',
 					protocol:       '2024-11-05',
-					protocols:      ['MCP-2024-11-05', 'A2A', 'x402', 'OAuth2'],
+					protocols:      ['MCP-2024-11-05', 'x402', 'OAuth2'],
 					transports:     ['http', 'sse'],
 					fail_closed:    true,
 					reliability:    {
@@ -13068,8 +13067,8 @@ export default {
 						exchanges: SUPPORTED_EXCHANGES.length,
 						mic_codes: SUPPORTED_EXCHANGES.map((e) => e.mic),
 						halt_detection: {
-							active:        ['XNYS', 'XNAS'],
-							schedule_only: ['XLON','XJPX','XPAR','XHKG','XSES','XASX','XBOM','XNSE','XSHG','XSHE','XKRX','XJSE','XBSP','XSWX','XMIL','XIST','XSAU','XDFM','XNZE','XHEL','XSTO'],
+							active:        [...REALTIME_HALT_FEED_SCOPE],
+							schedule_only: SUPPORTED_EXCHANGES.map((e) => e.mic).filter((m) => !HALT_DETECTION_ACTIVE.has(m)),
 							note: 'Real-time intraday halt detection (Polygon.io + Alpaca fallback) covers XNYS and XNAS only. All other exchanges use schedule-based status: calendar hours and holidays are correct, but unscheduled intraday circuit breaker halts are not detected. Every signed receipt carries a halt_detection field ("active" | "schedule_only") so agents know which applies.',
 						},
 					},

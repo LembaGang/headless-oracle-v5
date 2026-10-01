@@ -725,6 +725,56 @@ describe('W3: /auth.md', () => {
 	});
 });
 
+// ─── W4: truthfulness fixes on the discovery surfaces (2026-10-01) ───────────
+// Each claim below is checked against what the code actually serves, never
+// against a literal, so a tool added or a MIC added keeps the surfaces honest.
+describe('W4: discovery surfaces claim only what the code does', () => {
+	it('server card protocols do not claim A2A (no endpoint speaks it)', async () => {
+		const body = await fetchJSON('/.well-known/mcp/server-card.json');
+		expect(body.protocols as string[]).not.toContain('A2A');
+	});
+
+	it('server card halt_detection lists are disjoint and together cover every MIC', async () => {
+		const body = await fetchJSON('/.well-known/mcp/server-card.json');
+		const coverage = body.coverage as { mic_codes: string[]; halt_detection: { active: string[]; schedule_only: string[] } };
+		const active = coverage.halt_detection.active, scheduleOnly = coverage.halt_detection.schedule_only;
+		expect(active.filter((m) => scheduleOnly.includes(m))).toEqual([]);
+		expect([...active, ...scheduleOnly].sort()).toEqual([...coverage.mic_codes].sort());
+	});
+
+	it('/llms.txt and /llms-full.txt carry no past-dated rulemaking claim and no model-tier pricing', async () => {
+		for (const path of ['/llms.txt', '/llms-full.txt']) {
+			const text = await (await fetchWorker(path)).text();
+			for (const s of ['August 2026', 'Mythos', 'GPT-5 nano', 'MTok']) expect(text, `${path}: ${s}`).not.toContain(s);
+		}
+	});
+
+	it('the Bazaar receipt schema halt_detection enum matches what receipts carry, and the example has every required key', async () => {
+		const body = await fetchJSON('/v5/status/x402?mic=XNYS');
+		const bazaar = (body.extensions as Record<string, unknown>).bazaar as Record<string, unknown>;
+		const receiptSchema = (((((bazaar.schema as Record<string, unknown>).properties as Record<string, unknown>).output as Record<string, unknown>).properties as Record<string, unknown>).example) as { required: string[]; properties: Record<string, { enum?: string[] }> };
+		const enumValues = receiptSchema.properties.halt_detection.enum;
+		expect(enumValues).toEqual(['active', 'schedule_only']);
+		const xnys = await fetchJSON('/v5/demo?mic=XNYS');
+		const xlon = await fetchJSON('/v5/demo?mic=XLON');
+		expect(xnys.halt_detection).toBe('active');
+		expect(xlon.halt_detection).toBe('schedule_only');
+		expect(enumValues).toContain(xnys.halt_detection);
+		expect(enumValues).toContain(xlon.halt_detection);
+		const example = ((bazaar.info as Record<string, unknown>).output as Record<string, unknown>).example as Record<string, unknown>;
+		for (const key of receiptSchema.required) expect(example, key).toHaveProperty(key);
+	});
+
+	it('the Bazaar receipt schema receipt_mode enum is demo and live only', async () => {
+		const body = await fetchJSON('/v5/status/x402?mic=XNYS');
+		const bazaar = (body.extensions as Record<string, unknown>).bazaar as Record<string, unknown>;
+		const receiptSchema = (((((bazaar.schema as Record<string, unknown>).properties as Record<string, unknown>).output as Record<string, unknown>).properties as Record<string, unknown>).example) as { properties: Record<string, { enum?: string[] }> };
+		expect(receiptSchema.properties.receipt_mode.enum).toEqual(['demo', 'live']);
+		const demo = await fetchJSON('/v5/demo?mic=XNYS');
+		expect(demo.receipt_mode).toBe('demo');
+	});
+});
+
 // ─── GET /v5/keys ────────────────────────────────────────────────────────────
 
 describe('GET /v5/keys', () => {
@@ -3300,13 +3350,15 @@ describe('GET /.well-known/mcp/server-card.json', () => {
 		expect(typeof body.description).toBe('string');
 	});
 
-	it('lists 3 MCP tools', async () => {
+	it('lists exactly the tools POST /mcp tools/list serves, and names each in the description', async () => {
 		const body  = await fetchJSON('/.well-known/mcp/server-card.json');
 		const tools = body.tools as string[];
-		expect(tools).toContain('get_market_status');
-		expect(tools).toContain('get_market_schedule');
-		expect(tools).toContain('list_exchanges');
+		const listed = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		const served = ((listed.result as Record<string, unknown>).tools as Array<{ name: string }>).map((t) => t.name);
+		expect(tools.length).toBe(served.length);
+		expect([...tools].sort()).toEqual([...served].sort());
 		expect(tools).not.toContain('verify_receipt');
+		for (const name of served) expect(body.description as string).toContain(name);
 	});
 
 	it('lists all authentication schemes', async () => {
