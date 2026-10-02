@@ -9,13 +9,17 @@ receipts/day/IP).
 
 ## Operational Defaults (Solo Founder Repo)
 
-Auto-approved — no confirmation needed:
-- Auto-deploy after all tests pass
-- Push directly to main — no PR required
+Auto-approved, no confirmation needed:
 - File edits, test runs, npm installs
-- Cloudflare deployments when tests pass
 - New endpoint additions
 - Documentation updates
+- Signed local commits that pass the pre-commit gate
+
+The founder's alone; an agent never does these, even when tests pass
+(Orchestration Directive v2.0, 2026-07-15, in `~/.claude/CLAUDE.md`):
+- Deploys: `npm run deploy`, `wrangler deploy`, or any other write to Cloudflare
+- `git push`, of any kind
+- npm or PyPI publishes, payments, public posts
 
 Still requires explicit confirmation in the message:
 - `git push --force`
@@ -52,37 +56,6 @@ Still requires explicit confirmation in the message:
 6. PRs to external repos must compile against the target repo's build system
 7. No hardcoded UTC offsets — DST handled exclusively via IANA timezone names
 
-## File Layout
-
-| Path | Purpose |
-|---|---|
-| `src/index.ts` | The entire worker: routing, signing, billing, MCP, telemetry, schedule engine |
-| `test/index.spec.ts` | Main test suite (973 tests) |
-| `test/x402_mint_telemetry.spec.ts` | x402 mint + per-tool telemetry tests |
-| `wrangler.toml` | Worker config, KV bindings, env vars, cron triggers, routes |
-| `.dev.vars` | Local dev/test secrets (test-only keypair, NOT production) |
-| `vitest.config.mts` | Points to `wrangler.toml` (NOT wrangler.jsonc) |
-| `.claude/rules/` | Persistent rules that survive context compaction |
-| `.claude/website-inventory.md` | Historical website-state inventory dated 2026-05-04. Reconciled against live site state 2026-05-13 — every item it listed has been addressed. Kept as a reference artefact, not an action list. |
-| `docs/` | Organized: architecture/, api/, operations/, legal/, business/, security/, integrations/, distribution/, blog/ |
-| `CHANGELOG.md` | Keep a Changelog format — major milestones |
-| `.github/actions/market-gate/` | Reusable GitHub Action for CI/CD market checks |
-| `scripts/` | Deployment helpers, test sync, payment testing |
-| `packages/headless-oracle-mcp/` | npm stdio MCP package |
-| `packages/sdk-typescript/` | @headlessoracle/sdk TypeScript SDK (not published) |
-| `packages/sdk-python/` | headless-oracle-sdk Python SDK (not published) |
-
-## Supported Exchanges (28 total)
-
-23 traditional (XNYS, XNAS, XLON, XJPX, XPAR, XHKG, XSES, XASX, XBOM, XNSE,
-XSHG, XSHE, XKRX, XJSE, XBSP, XSWX, XMIL, XIST, XSAU, XDFM, XNZE, XHEL,
-XSTO) + 5 extended (XCBT, XNYM overnight CME, XCBO Cboe options, XCOI Coinbase
-24/7, XBIN Binance 24/7). `mic_type: "iso" | "convention"` on all entries.
-
-Middle Eastern exchanges (XSAU, XDFM) use `weekends: ['Fri', 'Sat']`.
-XSHG/XSHE have lunch break 11:30-13:00 CST. XJPX 11:30-12:30 JST. XHKG 12:00-13:00 HKT.
-DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
-
 ## 4-Tier Fail-Closed Architecture
 
 - **Tier 0**: KV override check — if `ORACLE_OVERRIDES[mic]` exists and not expired → return HALTED/OVERRIDE
@@ -90,43 +63,6 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 - **Tier 2**: If Tier 1 throws — sign and return UNKNOWN/SYSTEM receipt (fail-closed)
 - **Tier 3**: If signing itself fails — return unsigned CRITICAL_FAILURE 500 with UNKNOWN status
 - Consumers MUST treat UNKNOWN as CLOSED and halt all execution
-
-## Routes (key endpoints)
-
-### Public (no auth)
-- `GET /v5/demo?mic=<MIC>` — Signed receipt (receipt_mode: demo)
-- `GET /v5/schedule?mic=<MIC>` — Next open/close times in UTC
-- `GET /v5/exchanges` — Directory of all 28 exchanges
-- `GET /v5/keys` — Public key registry + canonical signing spec
-- `GET /v5/health` — Signed liveness probe
-- `GET /v5/briefing` — Daily market intelligence snapshot
-- `GET /v5/pricing` — Machine-readable pricing tiers (sandbox/x402/credits/builder/pro/protocol)
-- `GET /openapi.json` — OpenAPI 3.1 spec (83 paths and `x-model-agnostic` + `x-regulatory-references` extensions, read from production 2026-09-24; `x-regulatory-alignment` was removed by B-224b)
-- `POST /mcp` — MCP Streamable HTTP (JSON-RPC 2.0, 4 tools — `tools/list` read from production 2026-09-24) — descriptions are model-agnostic + regional exchange names, and claim no regulatory compliance (B-224)
-- `POST /v5/sandbox` — Sandbox key via email or x402 (200 calls, 7-day TTL)
-- `GET /v5/audit/digest` — Daily attestation digest with Merkle root
-- `GET /v5/audit/chain` — Hash chain of last N daily digests
-- `GET /v1/verification/multi-oracle-guide` — JSON discovery doc for the Multi-Oracle Consensus standard (spec v1.0.0 — we authored it)
-- `GET /docs/specifications/multi-oracle-consensus-v1` — Full markdown spec (MIT). Aliases: `.md`, `/docs/specs/MULTI-ORACLE-CONSENSUS-v1.md`
-
-### Authenticated (X-Oracle-Key header)
-- `GET /v5/status?mic=<MIC>` — Signed receipt (receipt_mode: live). Also supports free trial (3/day/IP) and x402 payment.
-- `GET /v5/batch?mics=<MIC,MIC,...>` — Batch signed receipts
-- `GET /v5/usage` — Per-key usage stats
-- `GET /v5/receipts` — Audit log query (builder+ only)
-- `POST /v5/webhooks/subscribe` — Register webhook
-
-### Billing
-- `POST /v5/checkout` — Paddle transaction (subscription or credits)
-- `POST /webhooks/paddle` — Paddle webhook handler
-- `POST /v5/x402/mint` — Mint API key via on-chain USDC payment
-- `POST /v5/credits/purchase` — Buy credits via x402
-- `GET /v5/revenue-pulse` — Admin-only Paddle + x402 revenue feed (master-key gated). Consumed by `.github/workflows/health-check.yml` to surface new payments as GitHub issues.
-
-### Discovery files
-- `/llms.txt`, `/llms-full.txt`, `/AGENTS.md`, `/SKILL.md`
-- `/.well-known/agent.json`, `/.well-known/mcp/server-card.json`, `/.well-known/x402.json`
-- `/.well-known/oracle-keys.json`, `/.well-known/oauth-authorization-server`
 
 ## KV Namespaces
 
@@ -137,16 +73,6 @@ DST handled automatically via IANA timezone names in `Intl.DateTimeFormat`.
 | `ORACLE_TELEMETRY` | Usage metrics, MCP analytics, telemetry | See `04_telemetry_guide.md` |
 
 **ORACLE_OVERRIDES must never contain telemetry data.** Operators scan it for active circuit breakers.
-
-## Secrets (Cloudflare — via `wrangler secret put`)
-- `ED25519_PRIVATE_KEY` / `ED25519_PUBLIC_KEY` — Production signing keypair (hex)
-- `MASTER_API_KEY` — Primary API key
-- `BETA_API_KEYS` — Comma-separated beta keys
-- `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_ID_*` — Billing
-- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — Key management DB
-- `RESEND_API_KEY` — Email delivery
-- `ORACLE_PAYMENT_ADDRESS` — Base mainnet wallet for USDC micropayments
-- `CDP_API_KEY_NAME`, `CDP_API_KEY_PRIVATE_KEY` — CDP facilitator auth
 
 ## Current State (update this section after every significant session)
 <!-- Last updated: 2026-09-24T10:04Z — B-224d/B-224f pushed and deployed (f20ba28c); TEST_COUNT 1369 -->
@@ -851,25 +777,6 @@ If you don't update them, the next session starts with wrong assumptions.
 4. **02_architecture_map.md** — if routes or functions were added/changed
 5. **04_telemetry_guide.md** — if new evaluator fingerprints appeared
 
-## Commands
-- `npm test` — Run full test suite (requires `.dev.vars`)
-- `npm run dev` — Local development server
-- `npm run deploy` — Deploy to Cloudflare Workers
-- `npm run test:smoke` — Run smoke tests against live production
-
-## Context Files (read at session start)
-
-| File | Purpose |
-|---|---|
-| `.claude/rules/00_engineering_standards.md` | Hard rules for this codebase |
-| `.claude/rules/01_business_context.md` | Market position, revenue model, metrics |
-| `.claude/rules/02_architecture_map.md` | Route map, key functions, data flows |
-| `.claude/rules/03_sprint_playbook.md` | Sprint patterns, failure modes, checklists |
-| `.claude/rules/04_telemetry_guide.md` | KV key patterns, evaluator fingerprints |
-| `.claude/rules/05_strategic_vision.md` | North star, decision filters |
-| `.claude/rules/10_decisions.md` | Architecture Decision Records |
-| `.claude/rules/90_active_priorities.md` | Current sprint state and next actions |
-
 ## Scaling Reminders
 
 - **>100 unique MCP clients/day**: Add cursor pagination to 17:00 cron KV list()
@@ -895,12 +802,6 @@ Full strategic context: `.claude/rules/05_strategic_vision.md`
 - **Acquisition target priority (in order).** Cloudflare → Coinbase → Mastercard. Each has a distinct story: Cloudflare owns the edge layer we already live on, Coinbase owns the x402 rails the payment path depends on, Mastercard owns the standard the market-state constraint sits inside.
 - **Standards adoption > feature velocity.** A shipped feature moves the product one step. A standard we're cited in moves the category around us. When the two conflict, standards adoption wins — because acquisition positioning follows standard adoption, not feature count.
 - **Long-term thesis.** HO is the trust layer for autonomous financial agents. Fail-closed signed attestations, verifiable by any consumer, issued by an operator whose economic incentives are aligned with correctness rather than coverage.
-
-## DST Calendar — Critical Dates 2026
-- **March 8**: US spring forward (EST→EDT) — XNYS, XNAS
-- **March 29**: UK/EU spring forward (GMT→BST / CET→CEST) — XLON, XPAR, XSWX, XMIL, XHEL, XSTO
-- **October 25**: UK/EU fall back — same exchanges
-- **November 1**: US fall back — XNYS, XNAS
 
 ## Ecosystem
 

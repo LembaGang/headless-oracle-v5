@@ -24,10 +24,16 @@ if [ ! -f .dev.vars ]; then
 	exit 1
 fi
 
-echo "[pre-commit] (1/3) TypeScript check..."
+# (0/4) Always-loaded memory size. Runs first because it takes milliseconds.
+# CLAUDE.md and .claude/rules/*.md load into every Claude session; this fails the
+# commit when one file or the total outgrows its limit (see the script header).
+echo "[pre-commit] (0/4) Always-loaded memory size..."
+bash scripts/check-memory-size.sh
+
+echo "[pre-commit] (1/4) TypeScript check..."
 npx tsc --noEmit
 
-echo "[pre-commit] (2/3) Test suite..."
+echo "[pre-commit] (2/4) Test suite..."
 npm test --silent
 
 echo "[pre-commit] (3/4) Wrangler deploy --dry-run..."
