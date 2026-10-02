@@ -3369,26 +3369,24 @@ describe('GET /.well-known/agent.json', () => {
 		expect(response.headers.get('Content-Type')).toContain('application/json');
 	});
 
-	it('contains A2A required fields and Oracle trust anchors', async () => {
+	it('contains identity fields and Oracle trust anchors', async () => {
 		const body = await fetchWorker('/.well-known/agent.json').then((r) => r.json()) as Record<string, unknown>;
-		// A2A identity
+		// Identity
 		expect(body).toHaveProperty('name', 'Headless Oracle');
 		expect(body).toHaveProperty('version', 'v5.0');
 		expect(body).toHaveProperty('url', 'https://headlessoracle.com');
 		expect(body).toHaveProperty('documentationUrl', 'https://headlessoracle.com/docs');
-		// A2A provider
+		// Provider
 		const provider = body.provider as Record<string, unknown>;
 		expect(provider.organization).toBe('LembaGang');
-		// A2A capabilities struct
-		const caps = body.capabilities as Record<string, unknown>;
-		expect(caps.streaming).toBe(false);
-		expect(caps.pushNotifications).toBe(false);
-		// A2A authentication
+		// No capabilities struct: that was A2A AgentCard shape, and no endpoint speaks A2A
+		expect(Object.keys(body)).not.toContain('capabilities');
+		// Authentication
 		const auth = body.authentication as Record<string, unknown>;
 		expect((auth.schemes as string[])).toContain('bearer');
 		expect((auth.schemes as string[])).toContain('apiKey');
 		expect((auth.schemes as string[])).toContain('x402');
-		// A2A skills — 4 skills including verify_receipt
+		// Skills, including verify_receipt
 		const skills = body.skills as Array<{ id: string }>;
 		expect(Array.isArray(skills)).toBe(true);
 		const skillIds = skills.map((s) => s.id);
@@ -3586,7 +3584,8 @@ describe('Agent directory (soft-404 trap fix)', () => {
 		const b = await fetchJSON('/.well-known/agent-directory.json');
 		expect(a).toEqual(b);
 		const agents = a.agents as Array<Record<string, unknown>>;
-		expect(agents[0].agent_card).toBe('/.well-known/agent-card.json');
+		expect(Object.keys(agents[0])).not.toContain('agent_card');
+		expect(JSON.stringify(a)).not.toContain('agent-card');
 	});
 });
 
@@ -13465,40 +13464,11 @@ describe('GET /docs/specifications/multi-oracle-consensus-v1', () => {
 	});
 });
 
-// ─── A2A Agent Card v1 ──────────────────────────────────────────────────────
+// --- agent.json content (moved from the removed agent-card.json block) ------
 
-describe('GET /.well-known/agent-card.json (A2A v1)', () => {
-	it('returns 200 with same content as agent.json', async () => {
-		const agentJson = await fetchJSON('/.well-known/agent.json');
-		const agentCard = await fetchJSON('/.well-known/agent-card.json');
-		expect(agentCard.name).toBe(agentJson.name);
-		expect(agentCard.schemaVersion).toBe('1.0');
-		expect(agentCard.humanReadableId).toBe('lembagang/headless-oracle');
-	});
-
-	it('contains A2A v1 required fields', async () => {
-		const body = await fetchJSON('/.well-known/agent-card.json');
-		expect(body.schemaVersion).toBe('1.0');
-		expect(body.humanReadableId).toBeDefined();
-		expect(body.agentVersion).toBe('5.0.0');
-		expect(body.name).toBe('Headless Oracle');
-		expect(body.url).toBe('https://headlessoracle.com');
-		expect(body.defaultInputModes).toContain('application/json');
-		expect(body.defaultOutputModes).toContain('application/json');
-	});
-
-	it('contains authSchemes array with api_key and oauth2', async () => {
-		const body = await fetchJSON('/.well-known/agent-card.json');
-		const schemes = body.authSchemes as Array<{ scheme: string }>;
-		expect(Array.isArray(schemes)).toBe(true);
-		const schemeNames = schemes.map((s) => s.scheme);
-		expect(schemeNames).toContain('api_key');
-		expect(schemeNames).toContain('oauth2');
-		expect(schemeNames).toContain('bearer_token');
-	});
-
+describe('GET /.well-known/agent.json content', () => {
 	it('includes pre_trade_stack reference', async () => {
-		const body = await fetchJSON('/.well-known/agent-card.json');
+		const body = await fetchJSON('/.well-known/agent.json');
 		const stack = body.pre_trade_stack as { role: string; pattern: string; composes_with: Record<string, unknown> };
 		expect(stack.role).toBe('execution-environment verification (environment.market_state)');
 		expect(stack.pattern).toBe('Composable Pre-Trade Verification Pattern (v2.0)');
@@ -13506,7 +13476,7 @@ describe('GET /.well-known/agent-card.json (A2A v1)', () => {
 	});
 
 	it('includes tags array for discovery', async () => {
-		const body = await fetchJSON('/.well-known/agent-card.json');
+		const body = await fetchJSON('/.well-known/agent.json');
 		const tags = body.tags as string[];
 		expect(Array.isArray(tags)).toBe(true);
 		expect(tags).toContain('finance');
@@ -15655,7 +15625,7 @@ describe('x402 — canonical requirements object, v2 header beside v1 body', () 
 			expect(x.payment_endpoint).toBe(x402ResourceSpecs().status.defaultResourceUrl);
 		});
 
-		it('the A2A agent card payment block carries the canonical amounts', async () => {
+		it('the agent.json payment block carries the canonical amounts', async () => {
 			const agent = await fetchJSON('/.well-known/agent.json');
 			const pay   = agent.payment as Record<string, unknown>;
 			expect(pay.amount_per_request).toBe(`${EXPECTED_USDC} USDC`);
@@ -16505,7 +16475,6 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		['/.well-known/x402.json',               '/.well-known/x402.json'],
 		['/.well-known/mcp/server-card.json',    '/.well-known/mcp/server-card.json'],
 		['/.well-known/agent.json',              '/.well-known/agent.json'],
-		['/.well-known/agent-card.json',         '/.well-known/agent-card.json'],
 		['/v5/pricing',                          '/v5/pricing'],
 		['/v5/keys/request',                     '/v5/keys/request'],
 		['/llms.txt',                            '/llms.txt'],
@@ -17192,7 +17161,7 @@ describe('served text surfaces make no regulatory-alignment claim', () => {
 		{ path: '/SKILL.md', json: false },
 		{ path: '/openapi.json', json: true },
 		{ path: '/.well-known/mcp/server-card.json', json: true },
-		{ path: '/.well-known/agent-card.json', json: true },
+		{ path: '/.well-known/agent.json', json: true },
 		{ path: '/.well-known/x402.json', json: true },
 		{ path: '/docs/specifications/multi-oracle-consensus-v1', json: false },
 		{ path: '/docs/specifications/multi-oracle-consensus-v1.md', json: false },
@@ -17238,5 +17207,150 @@ describe('served text surfaces make no regulatory-alignment claim', () => {
 			.filter((s) => CLAIM.test(s) && REGULATOR.test(s) && !DISCLAIMER.test(s))
 			.map((s) => s.trim().slice(0, 160));
 		expect(claims).toEqual([]);
+	});
+});
+
+// --- A2A: no served surface claims A2A support (2026-10-02) -----------------
+// No endpoint here implements A2A (the agent-to-agent protocol), so no served
+// surface may claim, imply or advertise it (founder ruling R2, extended by the
+// Lead on 2026-10-02). /.well-known/agent-card.json is A2A's registered
+// well-known URI and answers 404; /.well-known/agent.json stays as plain JSON
+// metadata without the fields that exist only to make an A2A AgentCard.
+describe('A2A: no served surface claims A2A support', () => {
+	// A2A as a word, the old a2aVersion key, the protocol's long name, and "agent
+	// card" in any spelling (AgentCard, agent card, agent-card), which also
+	// catches any link to /.well-known/agent-card.json. Word boundaries keep hex
+	// and base64 runs that happen to contain "a2a" from matching.
+	const A2A_CLAIM = /\bA2A\b|\ba2aVersion\b|agent-to-agent|\bagent[ -]?card\b/i;
+
+	// The only text a surface may carry that mentions A2A without claiming it,
+	// as exact strings. Each must be present (so this list cannot go stale) and
+	// is cut out before the check.
+	const A2A_ALLOWED: Record<string, string[]> = {
+		// A third party's description of its own framework; the guide's next
+		// sentence says Headless Oracle drops in as an MCP tool.
+		'/docs/integrations/agentictrading-mcp': ['using MCP tool calling, A2A messaging,'],
+		// The historical 5.2 entry, kept byte-identical, and the 2026-10-02 entry
+		// that withdraws the label.
+		'/v5/changelog': [
+			'A2A Agent Card at /.well-known/agent.json',
+			'A2A label withdrawn because Headless Oracle does not implement A2A: /.well-known/agent.json is now plain JSON metadata without A2A AgentCard fields, and /.well-known/agent-card.json is no longer served.',
+		],
+	};
+
+	// Discovery and documentation surfaces an agent or indexer reads (36). The
+	// source search in CC_HANDOFF_2026-10-02_hov5-a2a-claims_rev3 section 5
+	// covered every line of src/index.ts at c6f9098; this list guards the
+	// surfaces that carried, or sit beside, the claims it found.
+	const A2A_SURFACES: string[] = [
+		'/llms.txt',
+		'/llms-full.txt',
+		'/AGENTS.md',
+		'/SKILL.md',
+		'/skill.md',
+		'/auth.md',
+		'/openapi.json',
+		'/sitemap.xml',
+		'/robots.txt',
+		'/.well-known/agent.json',
+		'/.well-known/mcp/server-card.json',
+		'/.well-known/x402.json',
+		'/.well-known/ai-catalog.json',
+		'/.well-known/api-catalog',
+		'/.well-known/agent-skills/index.json',
+		'/.well-known/agent-skills/verify-receipt/SKILL.md',
+		'/.well-known/agent-skills/read-market-state/SKILL.md',
+		'/.well-known/agent-skills/subscribe-halts/SKILL.md',
+		'/.well-known/agent-skills/pay-with-x402/SKILL.md',
+		'/.well-known/agent-skills/mcp-tool-catalog/SKILL.md',
+		'/agent-directory.json',
+		'/.well-known/agent-directory.json',
+		'/v5/changelog',
+		'/v5/pricing',
+		'/v5/why-not-free',
+		'/v5/pre-trade-stack',
+		'/v1/verification/multi-oracle-guide',
+		'/docs/specifications/pre-trade-stack',
+		'/docs/specifications/cpvr-1',
+		'/docs/specifications/multi-oracle-consensus-v1',
+		'/docs/integrations/ampersend',
+		'/docs/integrations/korea-investment-mcp',
+		'/docs/integrations/agentictrading-mcp',
+		'/docs/integrations/openalgo-zerodha',
+		'/docs/integrations/tradingagents-risk',
+		'/docs/integrations/composio-listing',
+	];
+
+	// Fields that exist only to make a document an A2A AgentCard.
+	const A2A_ONLY_FIELDS = [
+		'capabilities', 'defaultInputModes', 'defaultOutputModes', 'authSchemes',
+		'schemaVersion', 'humanReadableId', 'agentVersion', 'protocolVersion',
+		'supportedInterfaces', 'preferredTransport', 'additionalInterfaces',
+		'securitySchemes', 'supportsAuthenticatedExtendedCard',
+	];
+
+	it('GET /.well-known/agent-card.json answers 404', async () => {
+		const res = await fetchWorker('/.well-known/agent-card.json');
+		expect(res.status).toBe(404);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('NOT_FOUND');
+	});
+
+	it('GET /.well-known/agent.json is plain JSON metadata with no A2A-only field', async () => {
+		const res = await fetchWorker('/.well-known/agent.json');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type') ?? '').toContain('application/json');
+		const body = await res.json() as Record<string, unknown>;
+		for (const k of A2A_ONLY_FIELDS) expect(Object.keys(body), k).not.toContain(k);
+		const skills = body.skills as Array<Record<string, unknown>>;
+		expect(skills.length).toBeGreaterThan(0);
+		for (const s of skills) {
+			expect(Object.keys(s), String(s.id)).not.toContain('inputModes');
+			expect(Object.keys(s), String(s.id)).not.toContain('outputModes');
+		}
+		// What the x402 tests and the API catalog still read from it.
+		expect((body.authentication as { schemes: string[] }).schemes).toContain('x402');
+		expect((body.payment as Record<string, unknown>).network).toBe('eip155:8453');
+		expect((body.rest_api as { endpoints: unknown[] }).endpoints.length).toBeGreaterThan(0);
+	});
+
+	for (const path of A2A_SURFACES) {
+		it(`${path} carries no A2A claim`, async () => {
+			const res = await fetchWorker(path);
+			expect(res.status, path).toBe(200);
+			let text = await res.text();
+			for (const allowed of A2A_ALLOWED[path] ?? []) {
+				expect(text.includes(allowed), `${path} no longer carries the allowlisted text: ${allowed}`).toBe(true);
+				text = text.split(allowed).join('');
+			}
+			const m = A2A_CLAIM.exec(text);
+			expect(m === null, m ? `${path}: ...${text.slice(Math.max(0, m.index - 60), m.index + 60)}...` : '').toBe(true);
+		});
+	}
+
+	it('/skill.md and the agent directory carry no agent_card key', async () => {
+		for (const path of ['/skill.md', '/agent-directory.json', '/.well-known/agent-directory.json']) {
+			const res = await fetchWorker(path);
+			expect(res.status, path).toBe(200);
+			expect(await res.text(), path).not.toContain('agent_card');
+		}
+	});
+
+	it('POST /mcp initialize and tools/list, and GET /mcp, carry no A2A claim', async () => {
+		const bodies = [
+			JSON.stringify(await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'claim-guard', version: '1' } } })),
+			JSON.stringify(await postMcpJSON({ jsonrpc: '2.0', id: 2, method: 'tools/list' })),
+			await (await fetchWorker('/mcp')).text(),
+		];
+		for (const b of bodies) expect(A2A_CLAIM.exec(b)).toBeNull();
+	});
+
+	it('/openapi.json documents no /.well-known/agent-card.json path, and no capabilities field on agent.json', async () => {
+		const spec = await fetchJSON('/openapi.json');
+		const paths = spec.paths as Record<string, { get: { responses: Record<string, { content: Record<string, { schema: { properties: Record<string, unknown> } }> }> } }>;
+		expect(Object.keys(paths)).not.toContain('/.well-known/agent-card.json');
+		expect(Object.keys(paths)).toContain('/.well-known/agent.json');
+		const props = paths['/.well-known/agent.json'].get.responses['200'].content['application/json'].schema.properties;
+		expect(Object.keys(props)).not.toContain('capabilities');
 	});
 });

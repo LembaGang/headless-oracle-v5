@@ -5915,7 +5915,7 @@ Autonomous agents executing against regulated workflows or tokenized collateral 
 // Complete reference for LLM crawlers — all sections fully expanded.
 const LLMS_FULL_TXT = `# Headless Oracle
 
-> Cryptographically signed market state verification for autonomous financial agents. Ed25519-signed receipts ("SMA receipts") for 28 global exchanges — equities, derivatives, and 24/7 crypto. MCP-native, A2A-discoverable, x402-payable, fail-closed. UNKNOWN always means CLOSED.
+> Cryptographically signed market state verification for autonomous financial agents. Ed25519-signed receipts ("SMA receipts") for 28 global exchanges: equities, derivatives, and 24/7 crypto. MCP-native, x402-payable, fail-closed. UNKNOWN always means CLOSED.
 
 **In this documentation, SMA denotes "Signed Market Attestation" — not the statistical "Simple Moving Average" used in technical analysis.**
 
@@ -6028,7 +6028,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /openapi.json | GET | No | OpenAPI 3.1 machine-readable spec | OpenAPI document |
 | /.well-known/oracle-keys.json | GET | No | RFC 8615 key discovery (hex public_key — source of truth for deployed SDKs) | Key lifecycle metadata + jwks_uri |
 | /.well-known/jwks.json | GET | No | RFC 7517 JWKSet for JOSE-aware verifiers — discovery-only in this release | application/jwk-set+json |
-| /.well-known/agent.json | GET | No | A2A Agent Card | A2A agent capabilities |
+| /.well-known/agent.json | GET | No | Agent metadata (JSON) | Identity, skills, MCP and REST endpoints, payment, trust anchors |
 | /.well-known/mcp/server-card.json | GET | No | MCP server card | Tool list, reliability, coverage |
 | /.well-known/security.txt | GET | No | RFC 9116 security contact | Contact, Expires, Preferred-Languages |
 | /v5/errors/{code} | GET | No | Machine-readable error definition | { message, resolution, http_status } |
@@ -6119,7 +6119,7 @@ UNKNOWN status means the oracle cannot determine market state. Agents MUST treat
 Upgrade: https://headlessoracle.com/upgrade
 
 ## Discovery Endpoints
-- [Agent Card (A2A)](https://headlessoracle.com/.well-known/agent.json)
+- [Agent metadata (JSON)](https://headlessoracle.com/.well-known/agent.json)
 - [MCP Server Card](https://headlessoracle.com/.well-known/mcp/server-card.json)
 - [Oracle Public Keys (hex, RFC 8615)](https://headlessoracle.com/.well-known/oracle-keys.json) — source of truth for deployed SDKs
 - [JWKS (RFC 7517)](https://headlessoracle.com/.well-known/jwks.json) — discovery-only in this release; receipts do not yet carry a kid. Deployed SDKs (@headlessoracle/verify, headless-oracle) continue to verify against oracle-keys.json. JOSE-aware verifiers may use this endpoint for key discovery; kid-aware receipt verification is planned for a future major release.
@@ -6512,7 +6512,7 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 
 - \`GET /v5/keys\` — public key + canonical payload spec for independent verification
 - \`GET /.well-known/oracle-keys.json\` — RFC 8615 key discovery
-- \`GET /.well-known/agent.json\` — structured agent metadata (capabilities, tools, endpoints)
+- \`GET /.well-known/agent.json\`: structured agent metadata (identity, skills, MCP and REST endpoints, payment, trust anchors)
 - \`GET /openapi.json\` — OpenAPI 3.1 machine-readable spec
 - \`GET /v5/health\` — signed liveness probe (verify oracle is up before a batch)
 - \`GET /v5/schedule?mic=XNYS\` — next open/close times, lunch breaks, public holidays
@@ -6569,7 +6569,7 @@ metadata:
     testnet: eip155:84532
     asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   erc8004: "8453:38413"
-  agent_card: https://headlessoracle.com/.well-known/agent.json
+  agent_metadata: https://headlessoracle.com/.well-known/agent.json
   agents_md: https://headlessoracle.com/AGENTS.md
   mcp_endpoint: https://headlessoracle.com/mcp
 ---
@@ -6681,7 +6681,7 @@ Receipt verification is REST-only: use \`@headlessoracle/verify\` (npm) for offl
 
 ## Discovery
 
-- **Agent card (A2A)**: https://headlessoracle.com/.well-known/agent.json
+- **Agent metadata (JSON)**: https://headlessoracle.com/.well-known/agent.json
 - **AGENTS.md**: https://headlessoracle.com/AGENTS.md
 - **MCP server card**: https://headlessoracle.com/.well-known/mcp/server-card.json
 - **OpenAPI 3.1**: https://headlessoracle.com/openapi.json
@@ -7526,8 +7526,7 @@ Environment.* family specifications:
 - REST: https://api.headlessoracle.com/v5/status?mic={MIC}
 - OpenAPI: https://headlessoracle.com/openapi.json
 - Public key: https://headlessoracle.com/.well-known/oracle-keys.json
-- Agent card: https://headlessoracle.com/.well-known/agent.json
-- Agent card (A2A v1): https://headlessoracle.com/.well-known/agent-card.json
+- Agent metadata (JSON): https://headlessoracle.com/.well-known/agent.json
 `;
 
 // /auth.md: how an agent obtains and presents a credential here. Every number is
@@ -7594,15 +7593,13 @@ Headless Oracle does not implement the auth.md agent registration protocol and p
 // Agents encountering an unfamiliar receipt can resolve {issuer}/v5/keys to find the public key.
 const ORACLE_ISSUER = 'headlessoracle.com';
 
-// agent.json — A2A Agent Card (a2a-protocol.org/latest/specification/) + Oracle extensions.
-// A2A v1 fields appear first; Oracle extensions follow as non-standard additions.
-// Serves both /.well-known/agent.json (legacy) and /.well-known/agent-card.json (A2A v1).
-// Additive only — existing consumers see a strict superset of the previous structure.
+// agent.json: plain JSON metadata (identity, skills, MCP and REST endpoints,
+// payment, trust anchors). It is not an A2A AgentCard: no endpoint here implements
+// A2A, so the fields that exist only to make an AgentCard (capabilities,
+// defaultInputModes, defaultOutputModes, skill inputModes/outputModes, authSchemes,
+// schemaVersion, humanReadableId, agentVersion) were removed on 2026-10-02.
+// Served at /.well-known/agent.json only; /.well-known/agent-card.json answers 404.
 const AGENT_JSON = {
-	// ── A2A v1 AgentCard required fields ──────────────────────────────────────
-	schemaVersion:     '1.0',
-	humanReadableId:   'lembagang/headless-oracle',
-	agentVersion:      '5.0.0',
 	name:              'Headless Oracle',
 	version:           'v5.0',
 	description:       'Proposed reference implementation of environment.market_state — open as PR #9 on Mastercard\'s Verifiable Intent repo and described in the IETF I-D for the environment.* family. Provides Ed25519-signed market-state receipts (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges. Autonomous agents gate trade execution on cryptographically verified market state. Composes with environment.wallet_state for multi-venue mandates. Fail-closed: UNKNOWN always means CLOSED.',
@@ -7615,40 +7612,11 @@ const AGENT_JSON = {
 	privacyPolicyUrl:    'https://headlessoracle.com/privacy',
 	termsOfServiceUrl:   'https://headlessoracle.com/terms',
 	quickstartUrl:       'https://headlessoracle.com/docs/quickstart',
-	// A2A capabilities object — streaming/push/history are all false (pure request/response).
-	capabilities: {
-		a2aVersion:             '1.0',
-		streaming:              false,
-		pushNotifications:      false,
-		stateTransitionHistory: false,
-	},
-	// A2A v1 auth declaration. The `authentication` field below (5206-5209) is retained
-	// for backward compatibility with older agent runtimes that consume the v0 shape.
-	// Both fields intentionally coexist; they describe the same underlying auth methods.
-	authSchemes: [
-		{
-			scheme:      'api_key',
-			description: 'API key in X-Oracle-Key header',
-			header_name: 'X-Oracle-Key',
-		},
-		{
-			scheme:      'bearer_token',
-			description: 'OAuth 2.0 Bearer token (RFC 6749 client_credentials grant)',
-		},
-		{
-			scheme:      'oauth2',
-			description: 'OAuth 2.0 token endpoint',
-			tokenUrl:    'https://headlessoracle.com/oauth/token',
-			scopes:      ['oracle:read'],
-		},
-	],
-	// Retained for backward compatibility
+	// The auth schemes this service accepts (read by the agent.json x402 tests).
 	authentication: {
 		schemes:     ['bearer', 'apiKey', 'x402'],
 		credentials: 'https://headlessoracle.com/v5/keys/request',
 	},
-	defaultInputModes:  ['application/json'],
-	defaultOutputModes: ['application/json'],
 	tags: ['finance', 'market-data', 'pre-trade', 'safety', 'ed25519', 'signed-receipts', 'fail-closed', 'mcp', 'x402', 'autonomous-agents'],
 	skills: [
 		{
@@ -7657,8 +7625,6 @@ const AGENT_JSON = {
 			description: 'Pre-trade verification gate: returns Ed25519-signed market-state receipt (OPEN/CLOSED/HALTED/UNKNOWN) for any of 28 global exchanges. Use before any financial execution, capital commitment, or market-dependent workflow. UNKNOWN and HALTED must be treated as CLOSED (fail-closed). Receipt includes attestation_ref (signature) for x402 payment flows and audit trails. 60-second TTL.',
 			tags:        ['finance', 'market-data', 'safety', 'signed-receipt', 'fail-closed'],
 			examples:    ['Is NYSE open right now?', 'Verify XLON is trading before executing this payment'],
-			inputModes:  ['application/json'],
-			outputModes: ['application/json'],
 		},
 		{
 			id:          'get_market_schedule',
@@ -7666,8 +7632,6 @@ const AGENT_JSON = {
 			description: 'Returns holiday-aware trading session schedule: next open/close UTC times, market hours, trading hours, exchange operating hours, holiday calendar, lunch break windows (XJPX/XHKG/XSHG/XSHE), and session status across 28 exchanges.',
 			tags:        ['finance', 'schedule', 'market-hours'],
 			examples:    ['When does Tokyo Stock Exchange open next?', 'What are XJPX trading hours?'],
-			inputModes:  ['application/json'],
-			outputModes: ['application/json'],
 		},
 		{
 			id:          'list_exchanges',
@@ -7675,8 +7639,6 @@ const AGENT_JSON = {
 			description: 'Returns directory of all 28 supported exchanges with MIC codes, names, IANA timezones, and exchange operating hours metadata. Use at agent startup to discover supported markets before calling get_market_status or get_market_schedule.',
 			tags:        ['finance', 'exchange-directory'],
 			examples:    ['Which exchanges does this oracle cover?'],
-			inputModes:  ['application/json'],
-			outputModes: ['application/json'],
 		},
 		{
 			id:          'verify_receipt',
@@ -8147,7 +8109,6 @@ const AGENT_DIRECTORY_JSON = {
 	agents: [{
 		name:         'headless-oracle',
 		url:          'https://headlessoracle.com',
-		agent_card:   '/.well-known/agent-card.json',
 		mcp:          '/.well-known/mcp/server-card.json',
 		api_catalog:  '/.well-known/api-catalog',
 		agent_skills: '/.well-known/agent-skills/index.json',
@@ -9310,7 +9271,7 @@ const OPENAPI_SPEC = {
 		'/.well-known/agent.json': {
 			get: {
 				summary:     'Structured agent metadata',
-				description: 'Machine-readable JSON describing Oracle capabilities, MCP tools, REST endpoints, auth requirements, and trust anchors. Includes spec_version (YYYY-MM-DD) for staleness detection.',
+				description: 'Machine-readable JSON describing Oracle identity, skills, MCP tools, REST endpoints, auth requirements, payment and trust anchors. Includes spec_version (YYYY-MM-DD) for staleness detection.',
 				responses: {
 					'200': {
 						description: 'Agent metadata',
@@ -9320,7 +9281,6 @@ const OPENAPI_SPEC = {
 								schema_version: { type: 'string', example: '1.0' },
 								spec_version:   { type: 'string', example: '2026-02-26', description: 'YYYY-MM-DD — compare against cached value to detect stale metadata.' },
 								name:           { type: 'string' },
-								capabilities:   { type: 'array', items: { type: 'string' } },
 								mcp:            { type: 'object' },
 								rest_api:       { type: 'object' },
 								trust:          { type: 'object' },
@@ -9947,16 +9907,6 @@ const OPENAPI_SPEC = {
 				description: 'Integration recipe: Headless Oracle (proposed environment.market_state reference implementation) + Ampersend (spend authorization service). Code examples, batch verification, MCP integration.',
 				responses: {
 					'200': { description: 'Integration guide', content: { 'text/markdown': { schema: { type: 'string' } } } },
-				},
-			},
-		},
-		'/.well-known/agent-card.json': {
-			get: {
-				tags:        ['Discovery'],
-				summary:     'A2A v1 Agent Card (alias)',
-				description: 'A2A Protocol v1 agent card. Same content as /.well-known/agent.json. Some A2A crawlers check agent-card.json per the latest spec.',
-				responses: {
-					'200': { description: 'Agent card', content: { 'application/json': { schema: { type: 'object' } } } },
 				},
 			},
 		},
@@ -12800,7 +12750,10 @@ export default {
 				});
 			}
 
-			if (url.pathname === '/.well-known/agent.json' || url.pathname === '/.well-known/agent-card.json') {
+			// /.well-known/agent-card.json is A2A's registered well-known URI. No endpoint
+			// here implements A2A, so it is not served: it falls through to the 404 at the
+			// end of fetch. agent.json stays as plain JSON metadata (no AgentCard fields).
+			if (url.pathname === '/.well-known/agent.json') {
 				return json(AGENT_JSON);
 			}
 
@@ -16682,8 +16635,15 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 		if (url.pathname === '/v5/changelog') {
 			return json({
 				version: 'v5.0',
-				updated: '2026-03-24',
+				updated: '2026-10-02',
 				entries: [
+					{
+						date:    '2026-10-02',
+						version: '5.5',
+						changes: [
+							'A2A label withdrawn because Headless Oracle does not implement A2A: /.well-known/agent.json is now plain JSON metadata without A2A AgentCard fields, and /.well-known/agent-card.json is no longer served.',
+						],
+					},
 					{
 						date:    '2026-03-24',
 						version: '5.4',
