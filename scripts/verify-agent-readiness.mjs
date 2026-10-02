@@ -17,6 +17,14 @@ const SCAN_URL = 'https://isitagentready.com/api/scan';
 const HOMEPAGE_CANONICAL = '<link rel="canonical" href="https://headlessoracle.com/">';
 const TIMEOUT_MS = 30_000;
 
+// --only N[,N...] runs only the named checks, for example --only 10.
+const onlyAt = process.argv.indexOf('--only');
+const ONLY = onlyAt > -1 ? new Set(String(process.argv[onlyAt + 1] ?? '').split(',').map(Number)) : null;
+if (ONLY && (ONLY.size === 0 || [...ONLY].some((n) => !Number.isInteger(n) || n < 1 || n > 10))) {
+	console.log('usage: node scripts/verify-agent-readiness.mjs [--only N[,N...]] with N from 1 to 10');
+	process.exit(2);
+}
+
 let failed = 0;
 const pass = (n, msg) => console.log(`PASS ${n} ${msg}`);
 const fail = (n, msg) => { failed++; console.log(`FAIL ${n} ${msg}`); };
@@ -26,6 +34,7 @@ const warn = (n, msg) => console.log(`WARN ${n} ${msg}`);
 const get = (path, init = {}) => fetch(path.startsWith('http') ? path : `${BASE}${path}`, { redirect: 'follow', signal: AbortSignal.timeout(TIMEOUT_MS), ...init });
 
 async function check(n, fn) {
+	if (ONLY && !ONLY.has(n)) return;
 	try { await fn(); } catch (err) { fail(n, `threw: ${err instanceof Error ? err.message : String(err)}`); }
 }
 
@@ -166,5 +175,83 @@ await check(9, async () => {
 	pick('checks.discovery.ard')?.status === 'pass' ? pass(9, 'isitagentready ard pass') : fail(9, `isitagentready ard ${pick('checks.discovery.ard')?.status}`);
 });
 
-console.log(failed ? `RESULT ${failed} check(s) failed` : 'RESULT all checks passed');
+// 10. A2A: no served surface claims A2A support (handoff
+// CC_HANDOFF_2026-10-02_hov5-a2a-claims_rev3). Same rule, surface list and
+// allowlist as the suite's 'A2A: no served surface claims A2A support'.
+const A2A_CLAIM = /\bA2A\b|\ba2aVersion\b|agent-to-agent|\bagent[ -]?card\b/i;
+const A2A_ALLOWED = {
+	'/docs/integrations/agentictrading-mcp': ['using MCP tool calling, A2A messaging,'],
+	'/v5/changelog': [
+		'A2A Agent Card at /.well-known/agent.json',
+		'A2A label withdrawn because Headless Oracle does not implement A2A: /.well-known/agent.json is now plain JSON metadata without A2A AgentCard fields, and /.well-known/agent-card.json is no longer served.',
+	],
+};
+const A2A_SURFACES = [
+	'/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md', '/skill.md', '/auth.md', '/openapi.json',
+	'/sitemap.xml', '/robots.txt', '/.well-known/agent.json', '/.well-known/mcp/server-card.json',
+	'/.well-known/x402.json', '/.well-known/ai-catalog.json', '/.well-known/api-catalog',
+	'/.well-known/agent-skills/index.json', '/.well-known/agent-skills/verify-receipt/SKILL.md',
+	'/.well-known/agent-skills/read-market-state/SKILL.md', '/.well-known/agent-skills/subscribe-halts/SKILL.md',
+	'/.well-known/agent-skills/pay-with-x402/SKILL.md', '/.well-known/agent-skills/mcp-tool-catalog/SKILL.md',
+	'/agent-directory.json', '/.well-known/agent-directory.json', '/v5/changelog', '/v5/pricing',
+	'/v5/why-not-free', '/v5/pre-trade-stack', '/v1/verification/multi-oracle-guide',
+	'/docs/specifications/pre-trade-stack', '/docs/specifications/cpvr-1',
+	'/docs/specifications/multi-oracle-consensus-v1', '/docs/integrations/ampersend',
+	'/docs/integrations/korea-investment-mcp', '/docs/integrations/agentictrading-mcp',
+	'/docs/integrations/openalgo-zerodha', '/docs/integrations/tradingagents-risk',
+	'/docs/integrations/composio-listing',
+];
+const A2A_ONLY_FIELDS = [
+	'capabilities', 'defaultInputModes', 'defaultOutputModes', 'authSchemes',
+	'schemaVersion', 'humanReadableId', 'agentVersion', 'protocolVersion',
+	'supportedInterfaces', 'preferredTransport', 'additionalInterfaces',
+	'securitySchemes', 'supportsAuthenticatedExtendedCard',
+];
+const a2aHit = (path, text) => {
+	for (const allowed of A2A_ALLOWED[path] ?? []) {
+		if (!text.includes(allowed)) return `${path} lacks its allowlisted text`;
+		text = text.split(allowed).join('');
+	}
+	const m = A2A_CLAIM.exec(text);
+	return m ? `${path}: "${text.slice(Math.max(0, m.index - 40), m.index + 40).replace(/\s+/g, ' ')}"` : null;
+};
+await check(10, async () => {
+	const problems = [];
+	const card = await get('/.well-known/agent-card.json');
+	if (card.status !== 404) problems.push(`/.well-known/agent-card.json ${card.status}, expected 404`);
+	if (!process.env.HEADLESS_ORACLE_BASE_URL) {
+		const apiCard = await get('https://api.headlessoracle.com/.well-known/agent-card.json');
+		if (apiCard.status !== 404) problems.push(`api.headlessoracle.com/.well-known/agent-card.json ${apiCard.status}, expected 404`);
+	}
+	const aj = await get('/.well-known/agent.json');
+	if (aj.status !== 200) problems.push(`/.well-known/agent.json ${aj.status}`);
+	else {
+		const body = await aj.json();
+		for (const k of A2A_ONLY_FIELDS) if (k in body) problems.push(`agent.json has ${k}`);
+		for (const s of body.skills ?? []) for (const k of ['inputModes', 'outputModes']) if (k in s) problems.push(`agent.json skill ${s.id} has ${k}`);
+	}
+	for (const path of A2A_SURFACES) {
+		const res = await get(path);
+		if (res.status !== 200) { problems.push(`${path} ${res.status}`); continue; }
+		const hit = a2aHit(path, await res.text());
+		if (hit) problems.push(hit);
+	}
+	for (const path of ['/skill.md', '/agent-directory.json', '/.well-known/agent-directory.json']) {
+		if ((await (await get(path)).text()).includes('agent_card')) problems.push(`${path} has an agent_card key`);
+	}
+	const mcp = await get('/mcp', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+		body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+	});
+	const mcpHit = a2aHit('POST /mcp tools/list', await mcp.text());
+	if (mcpHit) problems.push(mcpHit);
+	const spec = await (await get('/openapi.json')).json();
+	if (Object.keys(spec.paths ?? {}).includes('/.well-known/agent-card.json')) problems.push('openapi.json documents /.well-known/agent-card.json');
+	problems.length
+		? fail(10, problems.join('; '))
+		: pass(10, `no A2A claim on ${A2A_SURFACES.length} surfaces or MCP tools/list; agent-card.json 404; agent.json has no A2A-only field`);
+});
+
+console.log(failed ? `RESULT ${failed} check(s) failed` : ONLY ? `RESULT all selected checks passed (${[...ONLY].join(',')})` : 'RESULT all checks passed');
 process.exit(failed ? 1 : 0);
