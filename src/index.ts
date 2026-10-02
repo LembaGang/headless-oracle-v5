@@ -3455,9 +3455,6 @@ async function generateCdpJwt(
 	return `${signingInput}.${b64url(sigBytes)}`;
 }
 
-// Verifies an x402 payment via the CDP mainnet facilitator (JWT-authenticated).
-// Calls /verify first to validate the signature, then /settle to finalize.
-// Does NOT perform direct on-chain RPC calls — the facilitator handles EVM verification.
 // Diagnostics only. CDP may report whether it catalogued the Bazaar listing in an
 // EXTENSION-RESPONSES header (base64 JSON) on /verify and /settle. We log it so a
 // paid call can be checked from `wrangler tail`; it never changes a result, and any
@@ -3474,6 +3471,9 @@ function logBazaarExtensionResponse(res: Response, phase: 'verify' | 'settle'): 
 	}
 }
 
+// Verifies an x402 payment via the CDP mainnet facilitator (JWT-authenticated).
+// Calls /verify first to validate the signature, then /settle to finalize.
+// Does NOT perform direct on-chain RPC calls — the facilitator handles EVM verification.
 async function verifyX402ViaFacilitator(
 	paymentHeader: string,
 	paymentAddress: string,
@@ -7544,7 +7544,7 @@ API keys are presented in the \`X-Oracle-Key\` request header on every keyed end
 
 ## 1. POST /v5/keys/instant
 
-- Request: \`POST https://headlessoracle.com/v5/keys/instant\` with JSON body \`{"agent_id": "<your unique id>"}\`. \`agent_id\` is a required string of at most 256 characters. No email.
+- Request: \`POST https://headlessoracle.com/v5/keys/instant\` with JSON body \`{"agent_id": "<your unique id>"}\`. \`agent_id\` is a required, length-limited string. No email.
 - Response: a free-plan key beginning \`ho_free_\` in \`api_key\`, with \`plan: "free"\` and \`daily_limit\`. The full key is shown once. Calling again with the same \`agent_id\` returns the same key's \`key_prefix\` with the rest masked, not a new key.
 - Present it as: \`X-Oracle-Key: <api_key>\`.
 - Limits: ${FREE_TIER_DAILY_LIMIT} calls per day on the free plan. Key creation is rate-limited per IP.

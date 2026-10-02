@@ -212,7 +212,10 @@ gets `INVALID_SIGNATURE`. Both halves were run, not asserted, against a
 (`not_covered`), and `INVALID_SIGNATURE` on a rewritten `feed_state`, on the T3
 tamper claiming the feed was consulted on XLON, and on a pre-T3 hardcoded field list.
 Production receipts carrying the T3 block were verified live on 2026-09-07 by both
-SDKs. **Not closed**: `receipt-verify`'s `ho.receipt` adapter still does not exist
+SDKs. The npm `latest` is now `@headlessoracle/verify@1.1.0` (2026-06-14); its
+`dist/index.js` lines 1–75, which hold `verifyReceipt`, are byte-identical to
+1.0.2's (1.1.0 only appends `safeToExecute`), read from both registry tarballs on
+2026-10-02. The runs above were made with 1.0.2 and were not repeated. **Not closed**: `receipt-verify`'s `ho.receipt` adapter still does not exist
 (0.1.2 ships four formats, none of them HO's).
 
 ### GAP-020 — x402 v2 served correctly beside v1: CLOSED 2026-09-07
@@ -812,7 +815,7 @@ Full strategic context: `.claude/rules/05_strategic_vision.md`
 | MPAS Spec | github.com/LembaGang/mpas-spec |
 | Halt Simulator | github.com/LembaGang/halt-simulator |
 | Python SDK | PyPI: `headless-oracle` (0.1.1) |
-| JS Verify SDK | npm: `@headlessoracle/verify` (1.0.2) |
+| JS Verify SDK | npm: `@headlessoracle/verify` (1.1.0) |
 | Go SDK | github.com/LembaGang/headless-oracle-go |
 | MCP stdio package | npm: `headless-oracle-mcp` |
 | Setup tool | npm: `headless-oracle-setup` |

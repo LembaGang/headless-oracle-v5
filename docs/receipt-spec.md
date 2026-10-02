@@ -140,7 +140,7 @@ Ed25519 (RFC 8032). 32-byte private key, 32-byte public key, 64-byte signature.
 ### Canonical payload construction
 
 1. Take the receipt object
-2. Keep only the fields named for its receipt type in `/v5/keys` `canonical_payload_spec` (`receipt_fields`, `override_fields` or `health_fields`). Served responses also carry unsigned wrapper fields (for example `receipt` and `discovery_url`); they are not signed and must not be included
+2. Keep only the fields named for its receipt type in `/v5/keys` `canonical_payload_spec` (`receipt_fields`, `override_fields`, `health_fields` or, for `/v1/safe-to-trade` receipts, `safe_to_trade_fields`). Served responses also carry unsigned wrapper fields (for example `receipt` and `discovery_url`); they are not signed and must not be included
 3. Sort the keys with JavaScript's default sort, which orders by UTF-16 code unit. Every field name is ASCII, so this equals code point order
 4. Serialize with `JSON.stringify`: no whitespace, no indentation. Every value is a string; the signer rejects any other type
 5. Encode as UTF-8 bytes
@@ -195,6 +195,7 @@ The implementations examined on 2026-10-01 do not agree on whether a receipt is 
 | Implementation | Rule found | Valid at equality |
 |---|---|---|
 | `@headlessoracle/verify@1.0.2` (npm; `dist/index.js` line 13, `expiresAt <= now` returns `EXPIRED`) | valid only while `now < expires_at` | no |
+| `@headlessoracle/verify@1.1.0` (npm, current `latest`; `dist/index.js` line 13, `expiresAt <= now` returns `EXPIRED`) | valid only while `now < expires_at` | no |
 | `headless-oracle==0.1.1` (PyPI; `headless_oracle/verify.py` line 159, `current_dt > expires_at` returns `EXPIRED`) | valid while `now <= expires_at` | yes |
 | `@headlessoracle/sdk` (in this repository, unpublished; `packages/sdk-typescript/src/index.ts` line 265, `now > expiresAt`) | valid while `now <= expires_at` | yes |
 | `headless-oracle-sdk` (in this repository, unpublished; `packages/sdk-python/headless_oracle/client.py` line 130, `now > expires_at`) | valid while `now <= expires_at` | yes |
@@ -230,7 +231,9 @@ The published Python package canonicalises with `json.dumps(..., sort_keys=True,
     "description":     "Keys sorted alphabetically, JSON.stringify with no whitespace, UTF-8 encoded.",
     "receipt_fields":  ["coverage", "expires_at", "halt_detection", "issued_at", "issuer", "mic", "public_key_id", "receipt_id", "receipt_mode", "schema_version", "source", "status"],
     "override_fields": ["coverage", "expires_at", "halt_detection", "issued_at", "issuer", "mic", "public_key_id", "reason", "receipt_id", "receipt_mode", "schema_version", "source", "status"],
-    "health_fields":   ["expires_at", "issued_at", "issuer", "public_key_id", "receipt_id", "source", "status"]
+    "health_fields":   ["expires_at", "issued_at", "issuer", "public_key_id", "receipt_id", "source", "status"],
+    "safe_to_trade_fields": ["cross_venue", "expires_at", "instrument", "issued_at", "issuer", "max_age", "public_key_id", "reasons", "receipt_id", "receipt_mode", "safe", "schema_version", "venue", "venue_source", "venue_status"],
+    "coverage_note":   "coverage is a JSON-encoded string inside the signed bytes; JSON.parse it after signature verification. determination_tier: 0 = manual override (KV), 1 = schedule, 2 = fail-closed fallback. realtime_halt_feed_scope names the only MICs with intraday halt detection; for every other MIC realtime_halt_feed appears in not_consulted. The receipt does not query a halt feed synchronously — feed observations reach it only as REALTIME entries in the override tier, which is why the consulted token is realtime_halt_feed_via_override. halt_detection says what is configured for this MIC; coverage.feed_state says what was live at this determination (live | stale | failed | absent | not_covered), and feed_last_run gives the timestamp of that monitor run, so a receipt may honestly read halt_detection active with feed_state stale. The feed appears under consulted only when a fresh successful monitor run can be cited."
   }
 }
 ```
