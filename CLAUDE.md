@@ -82,6 +82,16 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-02: A2A claims removed (handoff `CC_HANDOFF_2026-10-02_hov5-a2a-claims_rev3`),
+  committed, NOT deployed; the founder deploys.** A1 `820cbf7`: `/.well-known/agent-card.json`
+  (A2A's registered well-known URI) answers 404; `/.well-known/agent.json` stays as plain JSON
+  metadata without the AgentCard-only fields; `/llms-full.txt`, `/AGENTS.md`, `/skill.md`,
+  `/openapi.json` and the agent directory no longer claim A2A; `/v5/changelog` keeps its
+  5.2 line and adds a 2026-10-02 entry withdrawing the label; guard
+  `A2A: no served surface claims A2A support` (36 surfaces plus MCP, three allowlisted
+  strings). A2 `a012ab9`: `scripts/verify-agent-readiness.mjs` check 10 and `--only`. Suite
+  **1395 to 1432**, read from `npm run test:sync-count` and the pre-commit hook. No route
+  change. Post-deploy check: `node scripts/verify-agent-readiness.mjs --only 10`.
 - **2026-10-01: agent readiness (handoff `CC_HANDOFF_2026-10-01_hov5-agent-readiness_rev2`),
   committed, NOT deployed; the founder deploys.** W1 `1de0c53` Bazaar extension in the
   v2 `PAYMENT-REQUIRED` header of `/v5/status/x402` only, payment-header inputs folded
