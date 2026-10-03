@@ -1,4 +1,4 @@
--- Migration 0002 — Chirindo witness checkpoints (witness spec v0.3)
+-- Migration 0001 (chirindo_witness) — witness checkpoints (witness spec v0.4)
 --
 -- Append-only. Application code issues INSERT OR IGNORE only, never UPDATE or
 -- DELETE. A checkpoint's identity is (kid, session_id, count, last_entry_hash);

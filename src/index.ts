@@ -160,6 +160,7 @@ export interface Env {
 	// re-verify what each source actually said at a given timestamp.
 	// See migrations/0001_halt_archive.sql for the schema.
 	HALT_ARCHIVE?:        D1Database;
+	WITNESS_DB?:          D1Database;  // chirindo_witness: witness checkpoints only
 	HALT_ARCHIVE_RAW?:    R2Bucket;
 	NASDAQ_HALTS_URL?:    string;
 	NYSE_HALTS_URL?:      string;
@@ -4801,16 +4802,21 @@ async function signHaltArchivePayload(
 	return { signature, canonical, key_id: env.PUBLIC_KEY_ID };
 }
 
-// ─── Chirindo Witness (wire spec v0.3, 2026-10-03) ──────────────────────────
+// ─── Chirindo Witness (wire spec v0.4, 2026-10-03) ──────────────────────────
 // An operator sends a signed chain checkpoint; we record it and sign a receipt
 // saying when we saw it. The receipt attests receipt of a validly signed
 // checkpoint, nothing about who holds the key or whether the records are true.
-// The table lives in HALT_ARCHIVE for now (a separate database is a founder
-// decision). Append-only: INSERT OR IGNORE, never UPDATE or DELETE.
+// The table lives in its own D1 database (WITNESS_DB, chirindo_witness), so an
+// anonymous flood that fills it cannot take the halt archive down with it.
+// Append-only: INSERT OR IGNORE, never UPDATE or DELETE.
 
 const WITNESS_MAX_BODY_BYTES      = 4096;
 const WITNESS_RATE_LIMIT_PER_MIN  = 60;
-const WITNESS_DAILY_CAP           = 50_000;
+// A launch limit while the account is on the Workers Free plan (D1 Free: 100,000
+// rows written per day across the account, 500 MB per database; one witness
+// insert writes about 4 rows and 1.6 KB). Raise it here after a plan upgrade;
+// every served mention of the cap derives from this constant.
+const WITNESS_DAILY_CAP           = 2_000;
 const WITNESS_PAGE_SIZE           = 500;
 const WITNESS_RECEIPT_TYPE        = 'witness.checkpoint/1';
 const WITNESS_NAME                = 'headlessoracle.com';
@@ -4821,6 +4827,27 @@ const WITNESS_B64U_64             = /^[A-Za-z0-9_-]{86}$/;
 const WITNESS_HASH                = /^sha256:[0-9a-f]{64}$/;
 const WITNESS_TS                  = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
 const WITNESS_AFTER               = /^\d+:sha256:[0-9a-f]{64}$/;
+
+// Rows stored since dayStart, read in about two index probes instead of a
+// count over the day. Exact because the table is append-only: rowids only grow
+// and received_at grows with them (concurrent inserts can interleave by a few
+// milliseconds, which is one reason the cap is best effort).
+const WITNESS_DAY_COUNT_SQL =
+	`SELECT COALESCE((SELECT max(rowid) FROM witness_checkpoints) - (SELECT rowid FROM witness_checkpoints WHERE received_at >= ? ORDER BY received_at LIMIT 1) + 1, 0) AS c`;
+
+// One page of a session. The row-value comparison lets the
+// (kid, session_id, count, last_entry_hash) index bound the scan, so a deep
+// `after` costs the rows it returns, not the rows before it.
+const WITNESS_PAGE_SQL =
+	`SELECT count, last_entry_hash, receipt_json FROM witness_checkpoints
+	 WHERE kid = ? AND session_id = ? AND (count, last_entry_hash) > (?, ?)
+	 ORDER BY count, last_entry_hash LIMIT ?`;
+
+// The two queries above, for tests that measure their rows_read. A function,
+// not exported constants: the Workers runtime rejects non-function exports.
+export function witnessSql(): { dayCount: string; page: string } {
+	return { dayCount: WITNESS_DAY_COUNT_SQL, page: WITNESS_PAGE_SQL };
+}
 
 // The receipt's signed fields, in the order /v1/witness/spec lists them.
 const WITNESS_RECEIPT_FIELDS = [
@@ -4836,12 +4863,12 @@ export function clearWitnessSchemaCache(): void {
 	_witnessSchemaEnsuredPromise = null;
 }
 
-// Mirrors migrations/0002_witness_checkpoints.sql. Keep the two in step.
+// Mirrors migrations-witness/0001_witness_checkpoints.sql. Keep the two in step.
 export async function ensureWitnessSchema(env: Env): Promise<void> {
-	if (!env.HALT_ARCHIVE) return;
+	if (!env.WITNESS_DB) return;
 	if (_witnessSchemaEnsuredPromise) return _witnessSchemaEnsuredPromise;
 	_witnessSchemaEnsuredPromise = (async () => {
-		await env.HALT_ARCHIVE!.prepare(
+		await env.WITNESS_DB!.prepare(
 			`CREATE TABLE IF NOT EXISTS witness_checkpoints (
 				kid               TEXT NOT NULL,
 				session_id        TEXT NOT NULL,
@@ -4856,13 +4883,13 @@ export async function ensureWitnessSchema(env: Env): Promise<void> {
 				created_at        TEXT NOT NULL
 			)`,
 		).run();
-		await env.HALT_ARCHIVE!.prepare(
+		await env.WITNESS_DB!.prepare(
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_witness_identity ON witness_checkpoints (kid, session_id, count, last_entry_hash)`,
 		).run();
-		await env.HALT_ARCHIVE!.prepare(
+		await env.WITNESS_DB!.prepare(
 			`CREATE INDEX IF NOT EXISTS idx_witness_session_count ON witness_checkpoints (kid, session_id, count)`,
 		).run();
-		await env.HALT_ARCHIVE!.prepare(
+		await env.WITNESS_DB!.prepare(
 			`CREATE INDEX IF NOT EXISTS idx_witness_received_at ON witness_checkpoints (received_at)`,
 		).run();
 	})().catch((err) => {
@@ -4992,7 +5019,7 @@ async function verifyWitnessSubmission(body: Record<string, unknown>): Promise<W
 // Machine-readable copy of spec sections 2–4 and 6, served at /v1/witness/spec.
 const WITNESS_SPEC_DOC = {
 	name:    'Headless Oracle checkpoint witness',
-	version: 'witness-spec/0.3',
+	version: 'witness-spec/0.4',
 	purpose: 'An operator sends signed chain checkpoints to the witness, which records each one and signs a receipt saying when it saw it. ' +
 		'The witness attests only "at time T, I received this checkpoint, validly signed by the key with this thumbprint". ' +
 		'It does not attest who owns the key, nor that the records are true.',
@@ -5025,13 +5052,14 @@ const WITNESS_SPEC_DOC = {
 		fork: 'fork is "true" when, at insert time, a row with the same (kid, session_id, count) and a different last_entry_hash already exists. Two concurrent first submissions with different hashes can both get "false", so verifiers detect forks from the receipts, not from the flag.',
 		append_only: 'Rows are never updated or deleted.',
 		rate_limit: 'Best effort (a KV counter that can over-admit under bursts): about 60 POSTs per minute per client address, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Fails open on a counter error. GET requests are not counted.',
-		daily_cap: 'Once 50,000 new witness rows have been stored in the current UTC day, a POST that would store a new row returns 503 witness_unavailable for the rest of that day. The cap counts and blocks new rows only: a repeat POST of an already-stored checkpoint still returns 200 with the stored receipt.',
+		daily_cap: `Best effort: concurrent requests can exceed it slightly. Once ${formatCallsGrouped(WITNESS_DAILY_CAP)} (a launch limit while the service runs on Cloudflare's free plan; raised later) new witness rows have been stored in the current UTC day, a POST that would store a new row returns 503 witness_unavailable for the rest of that day. The cap counts and blocks new rows only: a repeat POST of an already-stored checkpoint still returns 200 with the stored receipt.`,
 	},
 	query: {
 		method: 'GET',
 		path:   '/v1/witness/checkpoints?kid=<thumbprint>&session_id=<id>[&after=<count>:<last_entry_hash>]',
 		response: '200 { "kid", "session_id", "receipts": [...], "next_after"?: "<count>:<last_entry_hash>" }',
 		ordering: 'At most 500 receipts ordered by count, then last_entry_hash, strictly after the (count, last_entry_hash) pair in after (default: from the start).',
+		query_sql: 'WHERE kid=? AND session_id=? AND (count, last_entry_hash) > (?, ?) ORDER BY count, last_entry_hash LIMIT 501 (SQLite row-value comparison, so the index bounds the scan; the 501st row only signals that next_after is needed).',
 		pagination: 'next_after is the pair of the last receipt returned, present only when more exist; clients MUST follow it.',
 		unknown: 'An unknown (kid, session_id) pair returns 200 with an empty list.',
 		errors: 'A missing parameter, a kid not matching ^[A-Za-z0-9_-]{43}$, a session_id outside 1 to 128 chars, or a malformed after returns 400 bad_request. A well-formed after is the decimal count (a safe integer >= 0), a colon, then a full last_entry_hash: ^\\d+:sha256:[0-9a-f]{64}$. If the store is unavailable it returns 503 witness_unavailable.',
@@ -5076,9 +5104,33 @@ const WITNESS_SPEC_DOC = {
 		dropped_receipts: 'Receipts are individually signed but the list is not: a mirror, proxy or modified client can drop receipts, hiding a cut-off tail or rewrite after the last receipt it returns. Pinning the witness key does not detect a dropped receipt; query https://api.headlessoracle.com directly.',
 		key_rotation: 'After a key rotation /v5/keys lists only the new key; receipts signed under an earlier key verify only against a copy pinned before rotation.',
 		independence: 'The witness is operated by Headless Oracle, which also publishes the gate software. It is independent of the operator, not of Headless Oracle.',
+		storage_ceiling: 'The witness store is a database with a fixed size ceiling and rows are never deleted. If it fills, new checkpoints are refused with 503 until capacity is added; checkpoints already stored stay readable.',
 		privacy: 'Anyone who knows a (kid, session_id) pair can read that session\'s checkpoint counts and times. No arguments, results or records are ever sent to the witness.',
 	},
 };
+
+// Reads at most WITNESS_MAX_BODY_BYTES. Returns null, and cancels the stream,
+// as soon as one byte more has arrived, so an oversize body is never buffered.
+export async function readWitnessBody(request: Request): Promise<Uint8Array | null> {
+	if (!request.body) return new Uint8Array(0);
+	const reader = request.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > WITNESS_MAX_BODY_BYTES) {
+			await reader.cancel().catch(() => {});
+			return null;
+		}
+		chunks.push(value);
+	}
+	const out = new Uint8Array(total);
+	let at = 0;
+	for (const c of chunks) { out.set(c, at); at += c.byteLength; }
+	return out;
+}
 
 type WitnessJson = (body: unknown, status?: number, extraHeaders?: Record<string, string>) => Response;
 
@@ -5110,15 +5162,12 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 			afterHash = after.slice(sep + 1);
 			if (!Number.isSafeInteger(afterCount)) return json({ error: 'bad_request' }, 400);
 		}
-		if (!env.HALT_ARCHIVE) return unavailable();
+		if (!env.WITNESS_DB) return unavailable();
 		try {
 			await ensureWitnessSchema(env);
 			// One extra row tells us whether a next page exists.
-			const { results } = await env.HALT_ARCHIVE.prepare(
-				`SELECT count, last_entry_hash, receipt_json FROM witness_checkpoints
-				 WHERE kid = ? AND session_id = ? AND (count > ? OR (count = ? AND last_entry_hash > ?))
-				 ORDER BY count, last_entry_hash LIMIT ?`,
-			).bind(kid, sessionId, afterCount, afterCount, afterHash, WITNESS_PAGE_SIZE + 1)
+			const { results } = await env.WITNESS_DB.prepare(WITNESS_PAGE_SQL)
+				.bind(kid, sessionId, afterCount, afterHash, WITNESS_PAGE_SIZE + 1)
 				.all<{ count: number; last_entry_hash: string; receipt_json: string }>();
 			const page = results.slice(0, WITNESS_PAGE_SIZE);
 			const out: Record<string, unknown> = {
@@ -5174,12 +5223,15 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	const rl = rateHeaders(WITNESS_RATE_LIMIT_PER_MIN - used - 1);
 	const reply = (body: unknown, status: number) => json(body, status, rl);
 
-	// Check 1. The size is measured on the bytes, whatever Content-Length says.
+	// Check 1. A declared length over the limit is refused unread; otherwise the
+	// size is measured on the bytes as they arrive, whatever Content-Length says.
 	const contentType = (request.headers.get('Content-Type') ?? '').toLowerCase();
 	if (!contentType.startsWith('application/json')) return reply({ error: 'bad_request' }, 400);
-	let raw: ArrayBuffer;
-	try { raw = await request.arrayBuffer(); } catch { return reply({ error: 'bad_request' }, 400); }
-	if (raw.byteLength > WITNESS_MAX_BODY_BYTES) return reply({ error: 'bad_request' }, 400);
+	const declared = request.headers.get('Content-Length');
+	if (declared !== null && Number(declared) > WITNESS_MAX_BODY_BYTES) return reply({ error: 'bad_request' }, 400);
+	let raw: Uint8Array | null;
+	try { raw = await readWitnessBody(request); } catch { return reply({ error: 'bad_request' }, 400); }
+	if (raw === null) return reply({ error: 'bad_request' }, 400);
 	let body: unknown;
 	try {
 		body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw));
@@ -5197,8 +5249,8 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	const sessionId = cp.session_id as string;
 	const lastEntryHash = cp.last_entry_hash as string;
 
-	if (!env.HALT_ARCHIVE) return unavailable();
-	const db = env.HALT_ARCHIVE;
+	if (!env.WITNESS_DB) return unavailable();
+	const db = env.WITNESS_DB;
 	const storedReceipt = async (): Promise<unknown | null> => {
 		const row = await db.prepare(
 			`SELECT receipt_json FROM witness_checkpoints WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash = ?`,
@@ -5214,9 +5266,7 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		if (existing) return reply(existing, 200);
 
 		const dayStart = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
-		const today = await db.prepare(
-			`SELECT count(*) AS c FROM witness_checkpoints WHERE received_at >= ?`,
-		).bind(dayStart).first<{ c: number }>();
+		const today = await db.prepare(WITNESS_DAY_COUNT_SQL).bind(dayStart).first<{ c: number }>();
 		if ((today?.c ?? 0) >= WITNESS_DAILY_CAP) {
 			console.error(`WITNESS_DAILY_CAP_REACHED rows_today=${today?.c ?? 0}`);
 			return unavailable();
@@ -9004,7 +9054,7 @@ const OPENAPI_SPEC = {
 					'The receipt attests only that at received_at the witness was shown a checkpoint validly signed by the key with that thumbprint; it does not attest who controls the key or that the records are true. ' +
 					'Checks run in order and fail closed with 400 on the first failure: bad_request, bad_checkpoint_shape, bad_checkpoint_field, bad_jwk, kid_mismatch, bad_signature. ' +
 					'checkpoint.sig is base64url without padding (86 chars), never hex. A checkpoint\'s identity is (kid, session_id, count, last_entry_hash): a new identity returns 201, a stored one returns 200 with the stored receipt. ' +
-					'About 60 POSTs per minute per client address; 50,000 new rows per UTC day. Full contract and honest limits: GET /v1/witness/spec.',
+					`About 60 POSTs per minute per client address; ${formatCallsGrouped(WITNESS_DAILY_CAP)} new rows per UTC day, best effort. Full contract and honest limits: GET /v1/witness/spec.`,
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {

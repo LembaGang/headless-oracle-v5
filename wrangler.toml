@@ -61,7 +61,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "1470"
+TEST_COUNT = "1478"
 # Nasdaq Trader RSS is the CONSOLIDATED US halt feed: it carries NASDAQ-,
 # NYSE-, NYSE American-, NYSE Arca-listed halts, distinguished by the
 # <ndaq:Market> element on each <item>. Free, no auth, no API key.
@@ -125,6 +125,17 @@ binding       = "HALT_ARCHIVE"
 database_name = "halt_archive"
 database_id   = "dac1ff26-8774-43e5-a55f-7fac2c708743"
 migrations_dir = "migrations"
+
+# ─── D1 Database: Chirindo Witness ───────────────────────────────────────────
+# Append-only store for /v1/witness/* checkpoints, kept apart from halt_archive
+# so anonymous submissions that fill it cannot affect the halt archive.
+# Schema: migrations-witness/0001_witness_checkpoints.sql
+#   npx wrangler d1 migrations apply chirindo_witness --remote
+[[d1_databases]]
+binding        = "WITNESS_DB"
+database_name  = "chirindo_witness"
+database_id    = "790932e1-c00f-4fb8-ba77-8a15cc5f5bc3"
+migrations_dir = "migrations-witness"
 
 # ─── R2 Bucket: Halt Archive Raw Payloads ────────────────────────────────────
 # Raw bytes of external halt feeds, anchored by sha256 in the corresponding
