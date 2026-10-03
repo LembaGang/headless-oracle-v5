@@ -4801,6 +4801,468 @@ async function signHaltArchivePayload(
 	return { signature, canonical, key_id: env.PUBLIC_KEY_ID };
 }
 
+// ─── Chirindo Witness (wire spec v0.3, 2026-10-03) ──────────────────────────
+// An operator sends a signed chain checkpoint; we record it and sign a receipt
+// saying when we saw it. The receipt attests receipt of a validly signed
+// checkpoint, nothing about who holds the key or whether the records are true.
+// The table lives in HALT_ARCHIVE for now (a separate database is a founder
+// decision). Append-only: INSERT OR IGNORE, never UPDATE or DELETE.
+
+const WITNESS_MAX_BODY_BYTES      = 4096;
+const WITNESS_RATE_LIMIT_PER_MIN  = 60;
+const WITNESS_DAILY_CAP           = 50_000;
+const WITNESS_PAGE_SIZE           = 500;
+const WITNESS_RECEIPT_TYPE        = 'witness.checkpoint/1';
+const WITNESS_NAME                = 'headlessoracle.com';
+const WITNESS_CHECKPOINT_MEMBERS  = ['count', 'kid', 'last_entry_hash', 'session_id', 'sig', 'ts', 'type', 'v'];
+const WITNESS_JWK_MEMBERS         = ['crv', 'kty', 'x'];
+const WITNESS_B64U_32             = /^[A-Za-z0-9_-]{43}$/;
+const WITNESS_B64U_64             = /^[A-Za-z0-9_-]{86}$/;
+const WITNESS_HASH                = /^sha256:[0-9a-f]{64}$/;
+const WITNESS_TS                  = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
+const WITNESS_AFTER               = /^\d+:sha256:[0-9a-f]{64}$/;
+
+// The receipt's signed fields, in the order /v1/witness/spec lists them.
+const WITNESS_RECEIPT_FIELDS = [
+	'type', 'witness', 'received_at', 'kid', 'session_id', 'count', 'last_entry_hash',
+	'checkpoint_ts', 'checkpoint_sha256', 'fork', 'public_key_id',
+];
+
+let _witnessSchemaEnsuredPromise: Promise<void> | null = null;
+
+// Tests call this in beforeEach: the pool does not apply migrations, and a
+// per-test D1 instance does not keep a table the memo thinks exists.
+export function clearWitnessSchemaCache(): void {
+	_witnessSchemaEnsuredPromise = null;
+}
+
+// Mirrors migrations/0002_witness_checkpoints.sql. Keep the two in step.
+export async function ensureWitnessSchema(env: Env): Promise<void> {
+	if (!env.HALT_ARCHIVE) return;
+	if (_witnessSchemaEnsuredPromise) return _witnessSchemaEnsuredPromise;
+	_witnessSchemaEnsuredPromise = (async () => {
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE TABLE IF NOT EXISTS witness_checkpoints (
+				kid               TEXT NOT NULL,
+				session_id        TEXT NOT NULL,
+				count             INTEGER NOT NULL,
+				last_entry_hash   TEXT NOT NULL,
+				checkpoint_jcs    TEXT NOT NULL,
+				checkpoint_sha256 TEXT NOT NULL,
+				public_key_x      TEXT NOT NULL,
+				received_at       TEXT NOT NULL,
+				fork              TEXT NOT NULL,
+				receipt_json      TEXT NOT NULL,
+				created_at        TEXT NOT NULL
+			)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_witness_identity ON witness_checkpoints (kid, session_id, count, last_entry_hash)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_witness_session_count ON witness_checkpoints (kid, session_id, count)`,
+		).run();
+		await env.HALT_ARCHIVE!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_witness_received_at ON witness_checkpoints (received_at)`,
+		).run();
+	})().catch((err) => {
+		_witnessSchemaEnsuredPromise = null;
+		throw err;
+	});
+	return _witnessSchemaEnsuredPromise;
+}
+
+// base64url without padding → bytes, or null on any character outside the
+// alphabet or an impossible length.
+function base64UrlToBytes(s: string): Uint8Array | null {
+	if (!/^[A-Za-z0-9_-]*$/.test(s) || s.length % 4 === 1) return null;
+	const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);
+	let bin: string;
+	try { bin = atob(b64); } catch { return null; }
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
+// RFC 8785 bytes for the checkpoint: a flat object of strings and one safe
+// integer, so sorted keys + JSON.stringify with no whitespace is exactly JCS.
+export function witnessJcs(obj: Record<string, unknown>): string {
+	const sorted: Record<string, unknown> = {};
+	for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
+	return JSON.stringify(sorted);
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+	return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function hasExactlyMembers(o: Record<string, unknown>, members: string[]): boolean {
+	const keys = Object.keys(o).sort();
+	return keys.length === members.length && keys.every((k, i) => k === members[i]);
+}
+
+// Rate-limit key from CF-Connecting-IP only. X-Original-IP is client-settable
+// and must not choose the bucket. IPv4 as is; IPv6 by its /64, because one
+// client is routinely handed a whole /64.
+export function witnessClientKey(raw: string | null): string {
+	const ip = (raw ?? '').trim().toLowerCase();
+	if (!ip) return 'none';
+	if (!ip.includes(':')) return ip;
+	let s = ip;
+	const zone = s.indexOf('%');
+	if (zone >= 0) s = s.slice(0, zone);
+	const v4tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+	if (v4tail) {
+		const o = v4tail.slice(2, 6).map(Number);
+		if (o.some((n) => n > 255)) return ip;
+		s = v4tail[1] + ((o[0] << 8) | o[1]).toString(16) + ':' + ((o[2] << 8) | o[3]).toString(16);
+	}
+	const halves = s.split('::');
+	if (halves.length > 2) return ip;
+	const head = halves[0] ? halves[0].split(':') : [];
+	const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+	let groups: string[];
+	if (halves.length === 2) {
+		const fill = 8 - head.length - tail.length;
+		if (fill < 1) return ip;
+		groups = [...head, ...Array<string>(fill).fill('0'), ...tail];
+	} else {
+		groups = head;
+	}
+	if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return ip;
+	const n = groups.map((g) => parseInt(g, 16));
+	// An IPv4-mapped address is that IPv4 client, not a /64 of them.
+	if (n[0] === 0 && n[1] === 0 && n[2] === 0 && n[3] === 0 && n[4] === 0 && n[5] === 0xffff) {
+		return `${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`;
+	}
+	return n.slice(0, 4).map((x) => x.toString(16)).join(':') + '::/64';
+}
+
+type WitnessCheckResult =
+	| { ok: true; checkpoint: Record<string, unknown>; x: string; count: number }
+	| { ok: false; error: string };
+
+// Spec §2 checks 2–6, in order; the first failure is the answer.
+async function verifyWitnessSubmission(body: Record<string, unknown>): Promise<WitnessCheckResult> {
+	const cp = body.checkpoint;
+	if (!isPlainObject(cp) || !hasExactlyMembers(cp, WITNESS_CHECKPOINT_MEMBERS)) {
+		return { ok: false, error: 'bad_checkpoint_shape' };
+	}
+	const { v, type, session_id, count, last_entry_hash, ts, kid, sig } = cp;
+	if (
+		v !== 'evidence.action/1' || type !== 'checkpoint' ||
+		typeof count !== 'number' || !Number.isSafeInteger(count) || count < 1 ||
+		typeof last_entry_hash !== 'string' || !WITNESS_HASH.test(last_entry_hash) ||
+		typeof ts !== 'string' || !WITNESS_TS.test(ts) || !Number.isFinite(Date.parse(ts)) ||
+		typeof session_id !== 'string' || session_id.length < 1 || session_id.length > 128 ||
+		typeof kid !== 'string' || !WITNESS_B64U_32.test(kid) ||
+		typeof sig !== 'string' || !WITNESS_B64U_64.test(sig)
+	) {
+		return { ok: false, error: 'bad_checkpoint_field' };
+	}
+
+	const jwk = body.public_key_jwk;
+	if (!isPlainObject(jwk) || !hasExactlyMembers(jwk, WITNESS_JWK_MEMBERS) || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519') {
+		return { ok: false, error: 'bad_jwk' };
+	}
+	const x = jwk.x;
+	if (typeof x !== 'string' || !WITNESS_B64U_32.test(x)) return { ok: false, error: 'bad_jwk' };
+	const pub = base64UrlToBytes(x);
+	if (!pub || pub.length !== 32 || bytesToBase64Url(pub) !== x) return { ok: false, error: 'bad_jwk' };
+
+	if (await ed25519JwkThumbprint(x) !== kid) return { ok: false, error: 'kid_mismatch' };
+
+	// sig is base64url (never hex). Strict RFC 8032: zip215 off rejects
+	// small-order keys and non-canonical encodings that Node's verifier accepts.
+	const sigBytes = base64UrlToBytes(sig);
+	if (!sigBytes || sigBytes.length !== 64) return { ok: false, error: 'bad_signature' };
+	const { sig: _omit, ...unsigned } = cp;
+	const msg = new TextEncoder().encode(witnessJcs(unsigned));
+	let valid = false;
+	try {
+		valid = await ed.verifyAsync(sigBytes, msg, pub, { zip215: false });
+	} catch {
+		valid = false;
+	}
+	if (!valid) return { ok: false, error: 'bad_signature' };
+
+	return { ok: true, checkpoint: cp, x, count };
+}
+
+// Machine-readable copy of spec sections 2–4 and 6, served at /v1/witness/spec.
+const WITNESS_SPEC_DOC = {
+	name:    'Headless Oracle checkpoint witness',
+	version: 'witness-spec/0.3',
+	purpose: 'An operator sends signed chain checkpoints to the witness, which records each one and signs a receipt saying when it saw it. ' +
+		'The witness attests only "at time T, I received this checkpoint, validly signed by the key with this thumbprint". ' +
+		'It does not attest who owns the key, nor that the records are true.',
+	base_url: 'https://api.headlessoracle.com',
+	base_url_note: 'https://headlessoracle.com serves the same paths once its route for /v1/witness/* is deployed.',
+	submit: {
+		method: 'POST',
+		path:   '/v1/witness/checkpoints',
+		content_type: 'application/json',
+		max_body_bytes: WITNESS_MAX_BODY_BYTES,
+		body: '{ "checkpoint": <SignedCheckpoint>, "public_key_jwk": { "kty":"OKP", "crv":"Ed25519", "x":"<base64url raw 32-byte key>" } }',
+		checkpoint: '{ v, type:"checkpoint", session_id, count, last_entry_hash, ts, kid, sig }: Ed25519 over the RFC 8785 (JCS) bytes of the checkpoint without sig; sig is base64url without padding (64 bytes, 86 chars), never hex; kid is the bare RFC 7638 thumbprint of the Ed25519 public key. The legacy "ed25519/..." kid scheme is not accepted.',
+		checks: [
+			{ order: 1, error: 'bad_request', rule: 'Content-Type starts with application/json, and the body (read as bytes) is at most 4096 bytes and is a JSON object with exactly the members checkpoint and public_key_jwk.' },
+			{ order: 2, error: 'bad_checkpoint_shape', rule: 'checkpoint is an object with exactly the members v, type, session_id, count, last_entry_hash, ts, kid, sig.' },
+			{ order: 3, error: 'bad_checkpoint_field', rule: 'v === "evidence.action/1" and type === "checkpoint"; count is a JSON number with Number.isSafeInteger(count) && count >= 1; last_entry_hash matches ^sha256:[0-9a-f]{64}$; ts matches ^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$ and Date.parse(ts) is finite; session_id is a string of 1 to 128 chars; kid matches ^[A-Za-z0-9_-]{43}$; sig matches ^[A-Za-z0-9_-]{86}$.' },
+			{ order: 4, error: 'bad_jwk', rule: 'public_key_jwk is an object with exactly the members kty, crv and x (any other member is rejected), kty is "OKP", crv is "Ed25519", and x matches ^[A-Za-z0-9_-]{43}$, decodes to 32 bytes and re-encodes to the same string.' },
+			{ order: 5, error: 'kid_mismatch', rule: 'base64url-nopad(SHA-256(UTF-8 of {"crv":"Ed25519","kty":"OKP","x":"<x>"})) equals checkpoint.kid.' },
+			{ order: 6, error: 'bad_signature', rule: 'Strict RFC 8032 Ed25519 verification of the 64 bytes obtained by base64url-decoding checkpoint.sig (not hex), over the UTF-8 JCS bytes of the checkpoint without sig. For this flat object JCS equals JSON.stringify with keys sorted and no whitespace.' },
+		],
+		check_failure: 'Checks run in order and fail closed with 400 on the first failure. The body\'s error member is the code; other members, such as a docs link, may be present.',
+		identity: 'A checkpoint\'s identity is (kid, session_id, count, last_entry_hash); ts and sig are not part of it.',
+		responses: {
+			'201': 'A new checkpoint was stored; the body is its new receipt.',
+			'200': 'The identity was already stored; the body is the stored receipt. Its checkpoint_ts and checkpoint_sha256 may differ from the request when the same head was checkpointed twice.',
+			'400': 'A check failed; error names it.',
+			'429': '{ "error": "RATE_LIMITED" } with Retry-After.',
+			'503': '{ "error": "witness_unavailable" }: the store is unavailable or the daily cap is reached. No receipt is ever returned for a checkpoint that was not stored.',
+		},
+		fork: 'fork is "true" when, at insert time, a row with the same (kid, session_id, count) and a different last_entry_hash already exists. Two concurrent first submissions with different hashes can both get "false", so verifiers detect forks from the receipts, not from the flag.',
+		append_only: 'Rows are never updated or deleted.',
+		rate_limit: 'Best effort (a KV counter that can over-admit under bursts): about 60 POSTs per minute per client address, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Fails open on a counter error. GET requests are not counted.',
+		daily_cap: 'Once 50,000 new witness rows have been stored in the current UTC day, a POST that would store a new row returns 503 witness_unavailable for the rest of that day. The cap counts and blocks new rows only: a repeat POST of an already-stored checkpoint still returns 200 with the stored receipt.',
+	},
+	query: {
+		method: 'GET',
+		path:   '/v1/witness/checkpoints?kid=<thumbprint>&session_id=<id>[&after=<count>:<last_entry_hash>]',
+		response: '200 { "kid", "session_id", "receipts": [...], "next_after"?: "<count>:<last_entry_hash>" }',
+		ordering: 'At most 500 receipts ordered by count, then last_entry_hash, strictly after the (count, last_entry_hash) pair in after (default: from the start).',
+		pagination: 'next_after is the pair of the last receipt returned, present only when more exist; clients MUST follow it.',
+		unknown: 'An unknown (kid, session_id) pair returns 200 with an empty list.',
+		errors: 'A missing parameter, a kid not matching ^[A-Za-z0-9_-]{43}$, a session_id outside 1 to 128 chars, or a malformed after returns 400 bad_request. A well-formed after is the decimal count (a safe integer >= 0), a colon, then a full last_entry_hash: ^\\d+:sha256:[0-9a-f]{64}$. If the store is unavailable it returns 503 witness_unavailable.',
+		access: 'Public, no auth, CORS *.',
+	},
+	receipt: {
+		type:   WITNESS_RECEIPT_TYPE,
+		fields: WITNESS_RECEIPT_FIELDS,
+		field_notes: {
+			type:              '"witness.checkpoint/1"; distinguishes this receipt from market-state receipts.',
+			witness:           '"headlessoracle.com"',
+			received_at:       'ISO-8601 UTC in Date.toISOString() form: when the witness stored the checkpoint.',
+			kid:               'The checkpoint\'s thumbprint.',
+			session_id:        'The checkpoint\'s session_id.',
+			count:             'The checkpoint\'s count as a decimal string.',
+			last_entry_hash:   'The checkpoint\'s last_entry_hash.',
+			checkpoint_ts:     'The checkpoint\'s ts.',
+			checkpoint_sha256: 'sha256:<lowercase hex SHA-256 over the UTF-8 JCS bytes of the full signed checkpoint, sig included>',
+			fork:              '"true" or "false", set on a best-effort basis at issue time. It is not the detection mechanism; comparing receipts is.',
+			public_key_id:     'The id of the Headless Oracle signing key, currently key_2026_v1.',
+			signature:         'Lowercase hex, 128 chars.',
+		},
+		all_values_are_strings: true,
+		signing: 'All fields except signature, keys sorted, JSON.stringify with no whitespace, UTF-8, Ed25519, hex. For a flat object whose values are all strings these bytes are identical to RFC 8785 JCS, so a verifier may use either.',
+		public_key: 'Take public_key (hex, 32 raw bytes) of the keys[] entry in GET https://api.headlessoracle.com/v5/keys whose key_id equals public_key_id, and pin it.',
+	},
+	honest_limits: {
+		what_a_receipt_is: 'A witness receipt is Headless Oracle\'s signed statement that at received_at it was shown a checkpoint signed by the key with that thumbprint; it is only as reliable as Headless Oracle and its signing key. It does not prove who controls the key, that the records are true, or that they were written at the times they carry.',
+		what_it_adds: 'A cut-off tail, or a rewrite by the key holder (edit, delete or reorder, then re-sign and re-link), of any history up to the last witnessed checkpoint, made after that checkpoint was witnessed, is detected when the chain is compared with the witness\'s receipts. Edits, reordering, and deletions other than cutting off the tail, made by anyone without the signing key, are already detected by the chain and its signatures, with no witness. Cutting off the tail is not detected by the chain alone, whoever does it.',
+		does_not_detect: [
+			'Records after the last witnessed checkpoint, which can be cut off or rewritten undetectably.',
+			'A history rewritten before it was first witnessed (compare received_at with the records\' ts: that gap is the exposure window).',
+			'A session the operator never presents, because the verifier looks up only the session_id of the chain it was given, and a rewrite under a new session_id or a new key starts with no receipts.',
+			'Unwitnessed periods: a failed checkpoint never blocks a tool call, a killed process writes no final checkpoint, and because the witness accepts checkpoints from anyone without an account, anyone can use up the rate limit or the daily cap and leave other operators\' checkpoints unwitnessed until it resets.',
+			'A wrong witness: nothing here lets a verifier detect Headless Oracle omitting receipts from a query, signing a false received_at, losing stored rows, or the theft of its signing key; receipts are not kept in a public append-only log with consistency proofs.',
+		],
+		honest_cases_that_verify_tampered: [
+			'A chain file exported before its session ended verifies TAMPERED once later checkpoints are witnessed, because it looks truncated; verify the complete session file.',
+			'Two chains written under the same key and session_id (for example a reused --session-id with a new chain file) are a fork to the witness and verify TAMPERED.',
+		],
+		sidecar: 'Verifying against a sidecar file trusts the operator who supplied it. Only querying the witness is independent of the operator.',
+		dropped_receipts: 'Receipts are individually signed but the list is not: a mirror, proxy or modified client can drop receipts, hiding a cut-off tail or rewrite after the last receipt it returns. Pinning the witness key does not detect a dropped receipt; query https://api.headlessoracle.com directly.',
+		key_rotation: 'After a key rotation /v5/keys lists only the new key; receipts signed under an earlier key verify only against a copy pinned before rotation.',
+		independence: 'The witness is operated by Headless Oracle, which also publishes the gate software. It is independent of the operator, not of Headless Oracle.',
+		privacy: 'Anyone who knows a (kid, session_id) pair can read that session\'s checkpoint counts and times. No arguments, results or records are ever sent to the witness.',
+	},
+};
+
+type WitnessJson = (body: unknown, status?: number, extraHeaders?: Record<string, string>) => Response;
+
+// POST/GET /v1/witness/checkpoints and GET /v1/witness/spec. Returns null for
+// any other path so the caller's 404 handling applies.
+async function handleWitness(request: Request, env: Env, url: URL, now: Date, json: WitnessJson): Promise<Response | null> {
+	const unavailable = () => json({ error: 'witness_unavailable' }, 503);
+
+	if (url.pathname === '/v1/witness/spec') {
+		if (request.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, { Allow: 'GET' });
+		return json(WITNESS_SPEC_DOC);
+	}
+	if (url.pathname !== '/v1/witness/checkpoints') return null;
+
+	if (request.method === 'GET') {
+		const p = url.searchParams;
+		const kid = p.get('kid');
+		const sessionId = p.get('session_id');
+		const after = p.get('after');
+		if (kid === null || sessionId === null || !WITNESS_B64U_32.test(kid) || sessionId.length < 1 || sessionId.length > 128) {
+			return json({ error: 'bad_request' }, 400);
+		}
+		let afterCount = 0;
+		let afterHash = '';
+		if (after !== null) {
+			if (!WITNESS_AFTER.test(after)) return json({ error: 'bad_request' }, 400);
+			const sep = after.indexOf(':');
+			afterCount = Number(after.slice(0, sep));
+			afterHash = after.slice(sep + 1);
+			if (!Number.isSafeInteger(afterCount)) return json({ error: 'bad_request' }, 400);
+		}
+		if (!env.HALT_ARCHIVE) return unavailable();
+		try {
+			await ensureWitnessSchema(env);
+			// One extra row tells us whether a next page exists.
+			const { results } = await env.HALT_ARCHIVE.prepare(
+				`SELECT count, last_entry_hash, receipt_json FROM witness_checkpoints
+				 WHERE kid = ? AND session_id = ? AND (count > ? OR (count = ? AND last_entry_hash > ?))
+				 ORDER BY count, last_entry_hash LIMIT ?`,
+			).bind(kid, sessionId, afterCount, afterCount, afterHash, WITNESS_PAGE_SIZE + 1)
+				.all<{ count: number; last_entry_hash: string; receipt_json: string }>();
+			const page = results.slice(0, WITNESS_PAGE_SIZE);
+			const out: Record<string, unknown> = {
+				kid,
+				session_id: sessionId,
+				receipts: page.map((r) => JSON.parse(r.receipt_json)),
+			};
+			if (results.length > WITNESS_PAGE_SIZE) {
+				const last = page[page.length - 1];
+				out.next_after = `${last.count}:${last.last_entry_hash}`;
+			}
+			return json(out);
+		} catch (err: unknown) {
+			console.error(`WITNESS_READ_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
+			return unavailable();
+		}
+	}
+
+	if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405, { Allow: 'GET, POST' });
+
+	// Rate limit before reading the body, so a flood of bad bodies is counted too.
+	const minute = Math.floor(now.getTime() / 60_000);
+	const resetMs = (minute + 1) * 60_000;
+	const rateKey = `witness_rate:${await sha256Hex(witnessClientKey(request.headers.get('CF-Connecting-IP')))}:${minute}`;
+	let used = 0;
+	let kvUp = true;
+	try {
+		used = parseInt((await env.ORACLE_TELEMETRY.get(rateKey)) ?? '0', 10) || 0;
+	} catch (err: unknown) {
+		kvUp = false;
+		console.error(`WITNESS_RATE_KV_READ_FAILED fail_open=true err=${err instanceof Error ? err.message : 'unknown'}`);
+	}
+	const rateHeaders = (remaining: number): Record<string, string> => ({
+		'X-RateLimit-Limit':     String(WITNESS_RATE_LIMIT_PER_MIN),
+		'X-RateLimit-Remaining': String(Math.max(0, remaining)),
+		'X-RateLimit-Reset':     new Date(resetMs).toISOString(),
+	});
+	if (kvUp && used >= WITNESS_RATE_LIMIT_PER_MIN) {
+		const retryAfter = Math.max(1, Math.ceil((resetMs - now.getTime()) / 1000));
+		return json(
+			{ error: 'RATE_LIMITED', message: `Witness POSTs are capped at ${WITNESS_RATE_LIMIT_PER_MIN} per minute per client address. Retry in ${retryAfter}s.`, retry_after_seconds: retryAfter },
+			429,
+			{ 'Retry-After': String(retryAfter), ...rateHeaders(0) },
+		);
+	}
+	if (kvUp) {
+		try {
+			await env.ORACLE_TELEMETRY.put(rateKey, String(used + 1), { expirationTtl: 120 });
+		} catch (err: unknown) {
+			console.error(`WITNESS_RATE_KV_WRITE_FAILED fail_open=true err=${err instanceof Error ? err.message : 'unknown'}`);
+		}
+	}
+	const rl = rateHeaders(WITNESS_RATE_LIMIT_PER_MIN - used - 1);
+	const reply = (body: unknown, status: number) => json(body, status, rl);
+
+	// Check 1. The size is measured on the bytes, whatever Content-Length says.
+	const contentType = (request.headers.get('Content-Type') ?? '').toLowerCase();
+	if (!contentType.startsWith('application/json')) return reply({ error: 'bad_request' }, 400);
+	let raw: ArrayBuffer;
+	try { raw = await request.arrayBuffer(); } catch { return reply({ error: 'bad_request' }, 400); }
+	if (raw.byteLength > WITNESS_MAX_BODY_BYTES) return reply({ error: 'bad_request' }, 400);
+	let body: unknown;
+	try {
+		body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw));
+	} catch {
+		return reply({ error: 'bad_request' }, 400);
+	}
+	if (!isPlainObject(body) || !hasExactlyMembers(body, ['checkpoint', 'public_key_jwk'])) {
+		return reply({ error: 'bad_request' }, 400);
+	}
+
+	const checked = await verifyWitnessSubmission(body);
+	if (!checked.ok) return reply({ error: checked.error }, 400);
+	const cp = checked.checkpoint;
+	const kid = cp.kid as string;
+	const sessionId = cp.session_id as string;
+	const lastEntryHash = cp.last_entry_hash as string;
+
+	if (!env.HALT_ARCHIVE) return unavailable();
+	const db = env.HALT_ARCHIVE;
+	const storedReceipt = async (): Promise<unknown | null> => {
+		const row = await db.prepare(
+			`SELECT receipt_json FROM witness_checkpoints WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash = ?`,
+		).bind(kid, sessionId, checked.count, lastEntryHash).first<{ receipt_json: string }>();
+		return row ? JSON.parse(row.receipt_json) : null;
+	};
+
+	try {
+		await ensureWitnessSchema(env);
+
+		// A repeat is answered before the cap: the cap blocks new rows only.
+		const existing = await storedReceipt();
+		if (existing) return reply(existing, 200);
+
+		const dayStart = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+		const today = await db.prepare(
+			`SELECT count(*) AS c FROM witness_checkpoints WHERE received_at >= ?`,
+		).bind(dayStart).first<{ c: number }>();
+		if ((today?.c ?? 0) >= WITNESS_DAILY_CAP) {
+			console.error(`WITNESS_DAILY_CAP_REACHED rows_today=${today?.c ?? 0}`);
+			return unavailable();
+		}
+
+		const sibling = await db.prepare(
+			`SELECT 1 AS one FROM witness_checkpoints WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash != ? LIMIT 1`,
+		).bind(kid, sessionId, checked.count, lastEntryHash).first<{ one: number }>();
+
+		const checkpointJcs = witnessJcs(cp);
+		const receipt: Record<string, string> = {
+			type:              WITNESS_RECEIPT_TYPE,
+			witness:           WITNESS_NAME,
+			received_at:       now.toISOString(),
+			kid,
+			session_id:        sessionId,
+			count:             String(checked.count),
+			last_entry_hash:   lastEntryHash,
+			checkpoint_ts:     cp.ts as string,
+			checkpoint_sha256: `sha256:${await sha256Hex(checkpointJcs)}`,
+			fork:              sibling ? 'true' : 'false',
+			public_key_id:     env.PUBLIC_KEY_ID,
+		};
+		receipt.signature = await signPayload(receipt, env.ED25519_PRIVATE_KEY);
+		const receiptJson = JSON.stringify(receipt);
+
+		const ins = await db.prepare(
+			`INSERT OR IGNORE INTO witness_checkpoints
+			 (kid, session_id, count, last_entry_hash, checkpoint_jcs, checkpoint_sha256, public_key_x, received_at, fork, receipt_json, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).bind(
+			kid, sessionId, checked.count, lastEntryHash, checkpointJcs, receipt.checkpoint_sha256,
+			checked.x, receipt.received_at, receipt.fork, receiptJson, new Date().toISOString(),
+		).run();
+		if ((ins.meta?.changes ?? 0) === 1) return reply(receipt, 201);
+
+		// Lost a race with an identical submission: answer with the row that won.
+		const winner = await storedReceipt();
+		if (winner) return reply(winner, 200);
+		return unavailable();
+	} catch (err: unknown) {
+		console.error(`WITNESS_WRITE_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
+		return unavailable();
+	}
+}
+
 // Insert a signed halt event. Production code uses INSERT only — never UPDATE
 // or DELETE — preserving the append-only contract. The `ignoreOnConflict` flag
 // flips the insert to `INSERT OR IGNORE` for rows with deterministic primary
@@ -8390,6 +8852,25 @@ const OPENAPI_SPEC = {
 					supported: { type: 'array', items: { type: 'string' }, description: 'Present on UNKNOWN_MIC errors.' },
 				},
 			},
+			WitnessReceipt: {
+				type: 'object',
+				description: 'Signed by Headless Oracle. Every value is a string. Signing rule: all fields except signature, keys sorted, JSON.stringify with no whitespace, UTF-8, Ed25519, hex. Verify against the /v5/keys entry whose key_id equals public_key_id.',
+				required: ['type', 'witness', 'received_at', 'kid', 'session_id', 'count', 'last_entry_hash', 'checkpoint_ts', 'checkpoint_sha256', 'fork', 'public_key_id', 'signature'],
+				properties: {
+					type:              { type: 'string', enum: ['witness.checkpoint/1'] },
+					witness:           { type: 'string', enum: ['headlessoracle.com'] },
+					received_at:       { type: 'string', format: 'date-time' },
+					kid:               { type: 'string' },
+					session_id:        { type: 'string' },
+					count:             { type: 'string', description: 'Decimal string.' },
+					last_entry_hash:   { type: 'string' },
+					checkpoint_ts:     { type: 'string' },
+					checkpoint_sha256: { type: 'string', description: 'sha256:<hex> over the JCS bytes of the full signed checkpoint, sig included.' },
+					fork:              { type: 'string', enum: ['true', 'false'], description: 'Best effort at issue time; detect forks by comparing receipts.' },
+					public_key_id:     { type: 'string' },
+					signature:         { type: 'string', description: 'Lowercase hex, 128 chars.' },
+				},
+			},
 		},
 	},
 	paths: {
@@ -8512,6 +8993,94 @@ const OPENAPI_SPEC = {
 						content: { 'application/json': { schema: { type: 'object', required: ['receipt_id', 'issued_at', 'expires_at', 'status', 'source', 'public_key_id', 'signature', 'exchange_count', 'supported_mics'], properties: { receipt_id: { type: 'string', format: 'uuid' }, issued_at: { type: 'string', format: 'date-time' }, expires_at: { type: 'string', format: 'date-time' }, status: { type: 'string', enum: ['OK'] }, source: { type: 'string', enum: ['SYSTEM'] }, public_key_id: { type: 'string' }, signature: { type: 'string' }, exchange_count: { type: 'integer', example: 28, description: 'Number of exchanges currently configured (unsigned).' }, supported_mics: { type: 'array', items: { type: 'string' }, example: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN'], description: 'List of supported MIC codes (unsigned).' } } } } },
 					},
 					'500': { description: 'Signing system offline — CRITICAL_FAILURE', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v1/witness/checkpoints': {
+			post: {
+				tags:        ['Audit'],
+				summary:     'Submit a signed chain checkpoint to the witness',
+				description: 'Records an Ed25519-signed chain checkpoint and returns a receipt signed by Headless Oracle stating when it was received. ' +
+					'The receipt attests only that at received_at the witness was shown a checkpoint validly signed by the key with that thumbprint; it does not attest who controls the key or that the records are true. ' +
+					'Checks run in order and fail closed with 400 on the first failure: bad_request, bad_checkpoint_shape, bad_checkpoint_field, bad_jwk, kid_mismatch, bad_signature. ' +
+					'checkpoint.sig is base64url without padding (86 chars), never hex. A checkpoint\'s identity is (kid, session_id, count, last_entry_hash): a new identity returns 201, a stored one returns 200 with the stored receipt. ' +
+					'About 60 POSTs per minute per client address; 50,000 new rows per UTC day. Full contract and honest limits: GET /v1/witness/spec.',
+				requestBody: {
+					required: true,
+					content: { 'application/json': { schema: {
+						type: 'object',
+						required: ['checkpoint', 'public_key_jwk'],
+						additionalProperties: false,
+						properties: {
+							checkpoint: {
+								type: 'object',
+								required: ['v', 'type', 'session_id', 'count', 'last_entry_hash', 'ts', 'kid', 'sig'],
+								additionalProperties: false,
+								properties: {
+									v:               { type: 'string', enum: ['evidence.action/1'] },
+									type:            { type: 'string', enum: ['checkpoint'] },
+									session_id:      { type: 'string', minLength: 1, maxLength: 128 },
+									count:           { type: 'integer', minimum: 1 },
+									last_entry_hash: { type: 'string', pattern: '^sha256:[0-9a-f]{64}$' },
+									ts:              { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$' },
+									kid:             { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$', description: 'RFC 7638 thumbprint of public_key_jwk.' },
+									sig:             { type: 'string', pattern: '^[A-Za-z0-9_-]{86}$', description: 'Ed25519 over the JCS bytes of the checkpoint without sig, base64url without padding.' },
+								},
+							},
+							public_key_jwk: {
+								type: 'object',
+								required: ['kty', 'crv', 'x'],
+								additionalProperties: false,
+								properties: {
+									kty: { type: 'string', enum: ['OKP'] },
+									crv: { type: 'string', enum: ['Ed25519'] },
+									x:   { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' },
+								},
+							},
+						},
+					} } },
+				},
+				responses: {
+					'201': { description: 'Checkpoint stored; the new witness receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/WitnessReceipt' } } } },
+					'200': { description: 'Identity already stored; the stored witness receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/WitnessReceipt' } } } },
+					'400': { description: 'A check failed; error is bad_request, bad_checkpoint_shape, bad_checkpoint_field, bad_jwk, kid_mismatch or bad_signature', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'429': { description: 'RATE_LIMITED; see Retry-After', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'503': { description: 'witness_unavailable: the store is unavailable or the daily cap is reached; no receipt is returned', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+			get: {
+				tags:        ['Audit'],
+				summary:     'List witness receipts for a (kid, session_id)',
+				description: 'Returns at most 500 receipts ordered by count, then last_entry_hash, strictly after the pair in after. ' +
+					'next_after is present only when more exist; clients MUST follow it. An unknown pair returns 200 with an empty list. Public, no auth.',
+				parameters: [
+					{ name: 'kid',        in: 'query', required: true,  schema: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' } },
+					{ name: 'session_id', in: 'query', required: true,  schema: { type: 'string', minLength: 1, maxLength: 128 } },
+					{ name: 'after',      in: 'query', required: false, schema: { type: 'string', pattern: '^\\d+:sha256:[0-9a-f]{64}$' }, description: '<count>:<last_entry_hash> of the last receipt already read.' },
+				],
+				responses: {
+					'200': { description: 'Receipts page', content: { 'application/json': { schema: {
+						type: 'object',
+						required: ['kid', 'session_id', 'receipts'],
+						properties: {
+							kid:        { type: 'string' },
+							session_id: { type: 'string' },
+							receipts:   { type: 'array', items: { '$ref': '#/components/schemas/WitnessReceipt' } },
+							next_after: { type: 'string', description: 'Present only when more receipts exist.' },
+						},
+					} } } },
+					'400': { description: 'bad_request: a missing or malformed parameter', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'503': { description: 'witness_unavailable', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v1/witness/spec': {
+			get: {
+				tags:        ['Audit'],
+				summary:     'Witness wire contract (machine-readable)',
+				description: 'The submission checks and their order, the query and pagination rules, the witness receipt fields and signing rule, and the honest limits of what a witness receipt does and does not detect.',
+				responses: {
+					'200': { description: 'Witness specification', content: { 'application/json': { schema: { type: 'object' } } } },
 				},
 			},
 		},
@@ -11443,6 +12012,14 @@ export default {
 				headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8', 'X-Oracle-Version': 'v5', ...defaultRlHeaders, ...llmsLink, ...extraHeaders },
 			});
 		};
+
+		// ── /v1/witness/* — checkpoint witness (spec v0.3) ──
+		// Dispatched before the main try/catch: handleWitness fails closed to
+		// 503 witness_unavailable on its own and never returns an unstored receipt.
+		if (url.pathname.startsWith('/v1/witness/')) {
+			const witnessResponse = await handleWitness(request, env, url, now, json);
+			if (witnessResponse) return witnessResponse;
+		}
 
 		// ── POST /oauth/token — OAuth 2.0 Client Credentials token endpoint ──
 		// Isolated from all existing routes. Dispatched before the main try/catch.

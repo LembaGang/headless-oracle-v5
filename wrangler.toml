@@ -50,6 +50,7 @@ routes = [
   # public-discovery door and stays correct if the parent wildcard is ever
   # tightened. We've been bitten twice on this class of bug — explicit > clever.
   { pattern = "headlessoracle.com/v1/safe-to-trade/sample*", zone_name = "headlessoracle.com" },
+  { pattern = "headlessoracle.com/v1/witness/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/ampersend*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/docs/integrations/*", zone_name = "headlessoracle.com" },
 ]
@@ -60,7 +61,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "1432"
+TEST_COUNT = "1470"
 # Nasdaq Trader RSS is the CONSOLIDATED US halt feed: it carries NASDAQ-,
 # NYSE-, NYSE American-, NYSE Arca-listed halts, distinguished by the
 # <ndaq:Market> element on each <item>. Free, no auth, no API key.

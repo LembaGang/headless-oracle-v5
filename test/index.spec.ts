@@ -16482,6 +16482,7 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		['/v5/why-not-free',                     '/v5/why-not-free'],
 		['/.well-known/ai-catalog.json',         '/.well-known/ai-catalog.json'],
 		['/auth.md',                             '/auth.md'],
+		['/v1/witness/spec',                     '/v1/witness/spec'],
 		['/v5/referee/intake',                   '/v5/referee/intake',
 			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 400],
 	];
@@ -17177,6 +17178,7 @@ describe('served text surfaces make no regulatory-alignment claim', () => {
 		{ path: '/v5/why-not-free', json: false },
 		{ path: '/.well-known/ai-catalog.json', json: true },
 		{ path: '/auth.md', json: false },
+		{ path: '/v1/witness/spec', json: true },
 	];
 	for (const { path, json } of SURFACES) {
 		it(`${path} carries no undisclaimed regulatory claim`, async () => {
