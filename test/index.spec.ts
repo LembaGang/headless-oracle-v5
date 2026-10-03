@@ -2463,8 +2463,9 @@ describe('GET /v5/pricing', () => {
 		{ plan: 'regrade',           name: 'Re-grade',                                minor_units:  75000, cycle: null },
 		{ plan: 'dispute',           name: 'Dispute package',                         minor_units:  50000, cycle: null },
 		{ plan: 'dispute_note',      name: 'Dispute package with verification note',  minor_units: 150000, cycle: null },
-		{ plan: 'custody_90d',       name: 'Evidence custody 90 days',                minor_units:   4900, cycle: { interval: 'month', frequency: 1 } },
-		{ plan: 'custody_1y',        name: 'Evidence custody one year',               minor_units:  19900, cycle: { interval: 'month', frequency: 1 } },
+		// H1a (2026-10-03): the two custody prices are now sold as Witness plans.
+		{ plan: 'custody_90d',       name: 'Evidence Starter (Witness account)',      minor_units:   4900, cycle: { interval: 'month', frequency: 1 } },
+		{ plan: 'custody_1y',        name: 'Evidence (Witness account)',              minor_units:  19900, cycle: { interval: 'month', frequency: 1 } },
 	] as const;
 
 	// Byte-for-byte from LEAD_PLAN_2026-09-07_M5-prices-live.md section 5. 434
@@ -5441,6 +5442,7 @@ describe('POST /webhooks/paddle', () => {
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
 		let insertAttempted = false;
+		let emailCalled     = false;
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
@@ -5458,6 +5460,10 @@ describe('POST /webhooks/paddle', () => {
 			if (urlStr.includes('api.paddle.com/customers')) {
 				return new Response(JSON.stringify({ data: { email: 'race-txn@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 			}
+			if (urlStr.includes('resend.com')) {
+				emailCalled = true;
+				return new Response(JSON.stringify({ id: 'should_not_send' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
 			return originalFetch(input, init);
 		};
 		try {
@@ -5473,6 +5479,10 @@ describe('POST /webhooks/paddle', () => {
 			// The falsifier the test was missing: prove the 23505 branch was the
 			// thing that produced the 200, not an early return upstream of it.
 			expect(insertAttempted).toBe(true);
+			// H1a: the peer that won owns the key. This delivery writes no KV
+			// record and sends no mail, to the customer or the founder.
+			expect(emailCalled).toBe(false);
+			expect(await env.ORACLE_API_KEYS.get('paddle_sub:sub_race_txn_001')).toBeNull();
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -5604,8 +5614,10 @@ describe('POST /webhooks/paddle', () => {
 				});
 			}
 			if (urlStr.includes('resend.com')) {
-				const emailBody = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { html?: string };
-				capturedEmailHtml = emailBody.html ?? '';
+				const emailBody = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { to?: string[]; html?: string };
+				// H1a: every paid mint also sends the founder a line; capture the
+				// customer's mail, not whichever went last.
+				if (emailBody.to?.[0] !== 'mike@headlessoracle.com') capturedEmailHtml = emailBody.html ?? '';
 				return new Response(JSON.stringify({ id: 'email_mock_001' }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
@@ -5730,10 +5742,13 @@ describe('POST /webhooks/paddle', () => {
 		}
 	});
 
-	it('B-149: transaction.completed for a SUBSCRIPTION referee price (custody_90d) records it and provisions nothing', async () => {
-		// The other half: the two custody prices DO carry a subscription_id, so
-		// they reach the branch by the other route. Both routes must land in the
-		// same place, or one of the six behaves differently from the other five.
+	it('H1a (was B-149): transaction.completed for custody_90d no longer takes the record-only referee path — it provisions an evidence key', async () => {
+		// CHANGED 2026-10-03 (founder ruling, H1a). This test asserted that the
+		// custody_90d subscription recorded a referee_purchase row, mailed the
+		// founder "Referee purchase: custody_90d", and provisioned nothing. The
+		// two custody prices are now sold as Witness plans, so the assertion is
+		// inverted: no referee row, no referee mail, and a key row is inserted.
+		// The full evidence-plan contract is asserted in the H1a describe block.
 		const rawBody = JSON.stringify({
 			event_type: 'transaction.completed',
 			data: {
@@ -5745,19 +5760,17 @@ describe('POST /webhooks/paddle', () => {
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
 
-		let supabaseInsertCalled = false;
-		let mailSubject = '';
+		let insertedPlan: unknown = null;
+		const subjects: string[] = [];
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 			const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : (input as Request).url);
 			if (urlStr.includes('supabase.co') && init?.method === 'POST') {
-				supabaseInsertCalled = true;
+				insertedPlan = (JSON.parse(String(init.body)) as Record<string, unknown>).plan;
 				return new Response(JSON.stringify([{}]), { status: 201, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (urlStr.includes('supabase.co')) {
-				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'not found' } }), {
-					status: 406, headers: { 'Content-Type': 'application/json' },
-				});
+				return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers: { 'Content-Type': 'application/json' } });
 			}
 			if (urlStr.includes('api.paddle.com/customers')) {
 				return new Response(JSON.stringify({ data: { email: 'custody-buyer@example.com' } }), {
@@ -5765,7 +5778,7 @@ describe('POST /webhooks/paddle', () => {
 				});
 			}
 			if (urlStr.includes('resend.com')) {
-				mailSubject = (JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { subject?: string }).subject ?? '';
+				subjects.push((JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { subject?: string }).subject ?? '');
 				return new Response(JSON.stringify({ id: 'email_custody_001' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 			}
 			return originalFetch(input, init);
@@ -5778,13 +5791,9 @@ describe('POST /webhooks/paddle', () => {
 				body:    rawBody,
 			});
 			expect(res.status).toBe(200);
-			const raw = await env.ORACLE_TELEMETRY.get('referee_purchase:txn_referee_custody_001');
-			expect(raw).not.toBeNull();
-			const row = JSON.parse(raw as string) as Record<string, unknown>;
-			expect(row.service).toBe('custody_90d');
-			expect(row.amount_minor).toBe(4900);
-			expect(mailSubject).toBe('Referee purchase: custody_90d');
-			expect(supabaseInsertCalled).toBe(false);
+			expect(await env.ORACLE_TELEMETRY.get('referee_purchase:txn_referee_custody_001')).toBeNull();
+			expect(subjects).not.toContain('Referee purchase: custody_90d');
+			expect(insertedPlan).toBe('evidence_starter');
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -5824,7 +5833,9 @@ describe('POST /webhooks/paddle', () => {
 				});
 			}
 			if (urlStr.includes('resend.com')) {
-				capturedEmailHtml = (JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { html?: string }).html ?? '';
+				const mail = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { to?: string[]; html?: string };
+				// H1a: skip the founder line, which now follows every paid mint.
+				if (mail.to?.[0] !== 'mike@headlessoracle.com') capturedEmailHtml = mail.html ?? '';
 				return new Response(JSON.stringify({ id: 'email_builder_002' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 			}
 			return originalFetch(input, init);
@@ -7725,105 +7736,74 @@ describe('Session Q: Weekly digest cron', () => {
 describe('POST /webhooks/paddle subscription.activated', () => {
 	const WEBHOOK_SECRET = 'pdl_ntfset_test_placeholder_for_local_tests';
 
-	it('subscription.activated with new subscription → generates ho_live_ key', async () => {
-		const rawBody = JSON.stringify({
-			event_type: 'subscription.activated',
-			data: {
-				id:          'sub_activated_new_001',
-				customer_id: 'ctm_activated_001',
-				status:      'active',
-				items:       [{ price: { id: 'pri_test_builder_placeholder' } }],
-			},
-		});
-		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
-
-		let capturedEmailHtml = '';
-		let capturedSupabaseInsertBody: Record<string, unknown> = {};
+	it('H1a: subscription.activated alone mints nothing, for any of the five subscription plans', async () => {
+		// CHANGED 2026-10-03 (H1a). Was: "subscription.activated with new
+		// subscription → generates ho_live_ key". activated and
+		// transaction.completed can arrive within milliseconds (GAPS.md GAP-004)
+		// and both minted, so a buyer could hold two keys. transaction.completed
+		// is now the only mint path; activated for an unknown subscription logs
+		// and acknowledges. Asserted for every plan, not just Builder.
+		const PRICES = [
+			'pri_test_builder_placeholder', 'pri_test_pro_placeholder', 'pri_test_protocol_placeholder',
+			'pri_01m22wf966bjsar9sgtbzsva2b', 'pri_01m22wfjtbnhjyws9ctabxhvp4',
+		];
+		let insertCalled = false;
+		let emailCalled  = false;
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-			if (url.includes('api.paddle.com/customers')) {
-				return new Response(JSON.stringify({ data: { email: 'activated-user@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-			}
-			if (url.includes('api.resend.com')) {
-				capturedEmailHtml = JSON.parse((init?.body as string) ?? '{}').html ?? '';
-				return new Response(JSON.stringify({ id: 'email_ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-			}
-			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'GET') {
-				// select to check existing — return no match. 406, NOT 200: with a
-				// 200 supabase-js parses the whole body AS the row, so `existingActiv`
-				// came back truthy and the handler took the upgrade branch and
-				// returned without provisioning anything. The test could not see it
-				// because it asserted neither capture. (B-144, 2026-09-09.)
-				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116' } }), { status: 406, headers: { 'Content-Type': 'application/json' } });
-			}
-			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'POST') {
-				capturedSupabaseInsertBody = JSON.parse((init?.body as string) ?? '{}');
-				return new Response(JSON.stringify({ data: [capturedSupabaseInsertBody], error: null }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+			if (url.includes('api.resend.com')) { emailCalled = true; return new Response('{}', { status: 200 }); }
+			if (url.includes('supabase') && init?.method === 'POST') insertCalled = true;
+			if (url.includes('supabase')) {
+				return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers: { 'Content-Type': 'application/json' } });
 			}
 			return originalFetch(input as RequestInfo, init);
 		};
-
 		try {
-			const response = await fetchWorker('/webhooks/paddle', {
-				method:  'POST',
-				headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
-				body:    rawBody,
-			});
-			expect(response.status).toBe(200);
-			const body = await response.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('received', true);
-			// B-144: this test captured capturedEmailHtml and
-			// capturedSupabaseInsertBody and asserted NEITHER, so it would have
-			// stayed green if the handler had provisioned nothing at all. It also
-			// used a price id ('test_builder_price_id') that matches no
-			// .dev.vars value, so it was exercising the fail-open default rather
-			// than the mapped path its title claims. Both are fixed: the id is
-			// now the real builder placeholder, and the provisioning is asserted.
-			expect(capturedEmailHtml).toContain('ho_live_');
-			expect(capturedSupabaseInsertBody.plan).toBe('builder');
+			for (const [i, priceId] of PRICES.entries()) {
+				const subId = `sub_activated_alone_${i}`;
+				const rawBody = JSON.stringify({
+					event_type: 'subscription.activated',
+					data: { id: subId, customer_id: `ctm_activated_alone_${i}`, status: 'active', items: [{ price: { id: priceId } }] },
+				});
+				const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
+				const response = await fetchWorker('/webhooks/paddle', {
+					method:  'POST',
+					headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+					body:    rawBody,
+				});
+				expect(response.status, priceId).toBe(200);
+				expect(await response.json(), priceId).toMatchObject({ received: true });
+				expect(await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`), priceId).toBeNull();
+			}
+			expect(insertCalled).toBe(false);
+			expect(emailCalled).toBe(false);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
 	});
 
-	it('subscription.activated INSERT race (23505) → 200 received:true, not 500', async () => {
-		// Simulates the race: SELECT sees no row, concurrent INSERT already won,
-		// our INSERT fails with unique_violation code 23505.
-		// Handler must treat this as idempotent success, not an error.
+	it('H1a: subscription.activated with a different plan for a known subscription updates the plan (Supabase down)', async () => {
+		// CHANGED 2026-10-03 (H1a). Was: "subscription.activated INSERT race
+		// (23505)". activated no longer inserts, so the race it tested cannot
+		// occur on this path (the transaction.completed 23505 test keeps it).
+		// The upgrade path it sat beside is what remains, now resolved through
+		// KV `paddle_sub:` so it works while Supabase is unavailable.
+		const subId   = 'sub_activated_upgrade_001';
+		const keyHash = 'cd'.repeat(32);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'builder', status: 'active', paddle_subscription_id: subId }));
+		await env.ORACLE_API_KEYS.put(`paddle_sub:${subId}`, JSON.stringify({ key_hash: keyHash, plan: 'builder', created_at: '2026-10-03T00:00:00Z' }));
 		const rawBody = JSON.stringify({
 			event_type: 'subscription.activated',
-			data: {
-				id:          'sub_race_test_23505',
-				customer_id: 'ctm_race_001',
-				status:      'active',
-				items:       [{ price: { id: 'pri_test_pro_placeholder' } }],
-			},
+			data: { id: subId, customer_id: 'ctm_upgrade_001', status: 'active', items: [{ price: { id: 'pri_test_pro_placeholder' } }] },
 		});
 		const sig = await makePaddleSignature(rawBody, WEBHOOK_SECRET);
-
-		let insertAttempted = false;
+		let insertCalled = false;
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'GET') {
-				// SELECT sees no existing row — SELECT phase of TOCTOU. 406, not 200:
-				// see the sibling test above. With 200 the handler never reached the
-				// INSERT, so the 23505 branch this test is named for was never run.
-				return new Response(JSON.stringify({ data: null, error: { code: 'PGRST116', message: 'No rows' } }), { status: 406, headers: { 'Content-Type': 'application/json' } });
-			}
-			if (url.includes('supabase') && url.includes('api_keys') && init?.method === 'POST') {
-				// INSERT fails with unique_violation — concurrent webhook won the
-				// race. The body IS the error object, as PostgREST sends it:
-				// supabase-js on a non-2xx assigns the parsed body to `error`, so
-				// the previous {data,error} wrapper left dbError.code undefined and
-				// the 23505 branch unreachable. (B-144, 2026-09-09.)
-				insertAttempted = true;
-				return new Response(JSON.stringify({ code: '23505', message: 'duplicate key value violates unique constraint', details: null, hint: null }), { status: 409, headers: { 'Content-Type': 'application/json' } });
-			}
-			if (url.includes('api.paddle.com/customers')) {
-				return new Response(JSON.stringify({ data: { email: 'race@test.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-			}
+			if (url.includes('supabase') && init?.method === 'POST') insertCalled = true;
+			if (url.includes('supabase')) throw new TypeError('fetch failed: supabase unreachable');
 			return originalFetch(input as RequestInfo, init);
 		};
 		try {
@@ -7833,13 +7813,10 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 				body:    rawBody,
 			});
 			expect(response.status).toBe(200);
-			const body = await response.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('received', true);
-			// Must NOT return DB_ERROR — 23505 is not an application error
-			expect(body).not.toHaveProperty('error');
-			// The falsifier the test was missing: prove the 23505 branch produced
-			// the 200, not an early return upstream of the INSERT.
-			expect(insertAttempted).toBe(true);
+			expect(await response.json()).toMatchObject({ received: true });
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(keyHash))!)).toMatchObject({ plan: 'pro', status: 'active', paddle_subscription_id: subId });
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`))!)).toMatchObject({ key_hash: keyHash, plan: 'pro' });
+			expect(insertCalled).toBe(false);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -7949,6 +7926,473 @@ describe('POST /webhooks/paddle subscription.activated', () => {
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
+	});
+});
+
+// ─── H1a: every paid paddle plan delivers its key, Supabase or not ───────────
+// 2026-10-03. The webhook inserted into Supabase first and returned 500 before
+// the KV write and the email when that insert failed, and the Supabase project
+// was paused that day: a buyer could be charged and handed nothing. KV is now
+// the record a key authenticates from, Supabase is best effort, and the two
+// custody prices provision Witness (evidence) keys.
+describe('H1a: paddle purchases deliver', () => {
+	const SECRET  = 'pdl_ntfset_test_placeholder_for_local_tests';
+	const FOUNDER = 'mike@headlessoracle.com';
+	const BUILDER_PRICE      = 'pri_test_builder_placeholder';
+	const CUSTODY_90D_PRICE  = 'pri_01m22wf966bjsar9sgtbzsva2b';
+	const CUSTODY_1Y_PRICE   = 'pri_01m22wfjtbnhjyws9ctabxhvp4';
+
+	type Mail = { to: string; subject: string; html: string; text: string };
+	type StubOpts = {
+		select?: 'none' | 'rows' | 'error' | { key_hash: string; plan: string };
+		insert?: 'ok' | 'throw' | '23505';
+		update?: 'ok' | 'throw';
+		resendCustomerOk?: boolean;
+		email?: string;
+	};
+
+	function stubFetch(opts: StubOpts = {}) {
+		const st = { mails: [] as Mail[], inserts: [] as Record<string, unknown>[], selects: 0, updates: 0, supabaseUrls: [] as string[] };
+		const prev = globalThis.fetch;
+		const jsonHeaders = { 'Content-Type': 'application/json' };
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url    = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			const method = (init?.method ?? 'GET').toUpperCase();
+			if (url.includes('supabase.co')) {
+				st.supabaseUrls.push(url);
+				if (method === 'GET' || method === 'HEAD') {
+					st.selects++;
+					const sel = opts.select ?? 'none';
+					if (sel === 'error') {
+						return new Response(JSON.stringify({ code: 'PGRST002', message: 'Could not query the database for the schema cache. Retrying.' }), { status: 503, headers: jsonHeaders });
+					}
+					if (sel === 'rows') return new Response('[]', { status: 200, headers: jsonHeaders });
+					if (sel === 'none') {
+						return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers: jsonHeaders });
+					}
+					return new Response(JSON.stringify(sel), { status: 200, headers: jsonHeaders });
+				}
+				if (method === 'POST') {
+					st.inserts.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+					if (opts.insert === 'throw') throw new TypeError('fetch failed: supabase unreachable');
+					if (opts.insert === '23505') {
+						return new Response(JSON.stringify({ code: '23505', message: 'duplicate key value violates unique constraint', details: null, hint: null }), { status: 409, headers: jsonHeaders });
+					}
+					return new Response(null, { status: 201 });
+				}
+				st.updates++;
+				if (opts.update === 'throw') throw new TypeError('fetch failed: supabase unreachable');
+				return new Response(null, { status: 204 });
+			}
+			if (url.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: opts.email ?? 'buyer@example.com' } }), { status: 200, headers: jsonHeaders });
+			}
+			if (url.includes('api.resend.com')) {
+				const m = JSON.parse(String(init?.body ?? '{}')) as { to?: string[]; subject?: string; html?: string; text?: string };
+				const mail = { to: m.to?.[0] ?? '', subject: m.subject ?? '', html: m.html ?? '', text: m.text ?? '' };
+				st.mails.push(mail);
+				if (mail.to !== FOUNDER && opts.resendCustomerOk === false) {
+					return new Response(JSON.stringify({ name: 'application_error', message: 'Resend down' }), { status: 500, headers: jsonHeaders });
+				}
+				return new Response(JSON.stringify({ id: 'email_h1a' }), { status: 200, headers: jsonHeaders });
+			}
+			if (url.includes('api.npmjs.org')) {
+				return new Response(JSON.stringify({ downloads: 0 }), { status: 200, headers: jsonHeaders });
+			}
+			return prev(input as RequestInfo, init);
+		}) as typeof globalThis.fetch;
+		return { st, restore: () => { globalThis.fetch = prev; } };
+	}
+
+	async function postPaddle(body: unknown, envOverride?: Record<string, unknown>): Promise<Response> {
+		const rawBody = JSON.stringify(body);
+		const sig     = await makePaddleSignature(rawBody, SECRET);
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/webhooks/paddle', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig },
+			body:    rawBody,
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, (envOverride ? { ...env, ...envOverride } : env) as typeof env, ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+
+	function completed(subId: string, priceId: string, extra: Record<string, unknown> = {}) {
+		return {
+			event_type: 'transaction.completed',
+			data: { id: `txn_${subId}`, customer_id: `ctm_${subId}`, subscription_id: subId, items: [{ price_id: priceId, quantity: 1 }], ...extra },
+		};
+	}
+
+	async function keyRecordNames(): Promise<string[]> {
+		const listed = await env.ORACLE_API_KEYS.list();
+		return listed.keys.map((k) => k.name).filter((n) => /^[0-9a-f]{64}$/.test(n));
+	}
+
+	function logged(spy: { mock: { calls: unknown[][] } }, name: string): boolean {
+		return spy.mock.calls.some((c) => String(c[0]).includes(name));
+	}
+
+	function customerMails(st: { mails: Mail[] }): Mail[] {
+		return st.mails.filter((m) => m.to !== FOUNDER);
+	}
+
+	function failingPutsKv(): KVNamespace {
+		const real = env.ORACLE_API_KEYS;
+		return {
+			get:             real.get.bind(real),
+			getWithMetadata: real.getWithMetadata.bind(real),
+			list:            real.list.bind(real),
+			delete:          real.delete.bind(real),
+			put:             async () => { throw new Error('KV put failed'); },
+		} as unknown as KVNamespace;
+	}
+
+	it('Supabase insert throws: a builder purchase still mints, writes KV and paddle_sub, emails the key, returns 200, logs PADDLE_SUPABASE_WRITE_FAILED', async () => {
+		const { st, restore } = stubFetch({ insert: 'throw' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(completed('sub_h1a_sbdown_001', BUILDER_PRICE));
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(st.inserts.length).toBe(1);
+			const sub = JSON.parse((await env.ORACLE_API_KEYS.get('paddle_sub:sub_h1a_sbdown_001'))!) as { key_hash: string; plan: string };
+			expect(sub.plan).toBe('builder');
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(sub.key_hash))!)).toMatchObject({ plan: 'builder', status: 'active', paddle_subscription_id: 'sub_h1a_sbdown_001' });
+			const mails = customerMails(st);
+			expect(mails.length).toBe(1);
+			expect(mails[0].html).toMatch(/ho_live_[0-9a-f]{64}/);
+			// The emailed key is the one KV holds.
+			expect(await sha256Hex(mails[0].html.match(/ho_live_[0-9a-f]{64}/)![0])).toBe(sub.key_hash);
+			expect(logged(errSpy, 'PADDLE_SUPABASE_WRITE_FAILED')).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it.each([
+		{ priceId: CUSTODY_90D_PRICE, plan: 'evidence_starter', amount: '49.00',  quota: '1,000', name: 'Evidence Starter (Witness account)' },
+		{ priceId: CUSTODY_1Y_PRICE,  plan: 'evidence',         amount: '199.00', quota: '3,000', name: 'Evidence (Witness account)' },
+	])('$plan completed: key minted with its stored plan, paddle_sub written, Witness email, founder line, revenue $amount, no referee_purchase row', async ({ priceId, plan, amount, quota, name }) => {
+		const subId = `sub_h1a_${plan}_001`;
+		const { st, restore } = stubFetch({ email: 'witness-buyer@example.com' });
+		try {
+			const res = await postPaddle(completed(subId, priceId, { origin: 'web' }));
+			expect(res.status).toBe(200);
+			expect(st.inserts[0]).toMatchObject({ plan, status: 'active', stripe_subscription_id: subId });
+			const sub = JSON.parse((await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`))!) as { key_hash: string; plan: string };
+			expect(sub.plan).toBe(plan);
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(sub.key_hash))!)).toMatchObject({ plan, status: 'active' });
+
+			const mails = customerMails(st);
+			expect(mails.length).toBe(1);
+			expect(mails[0].to).toBe('witness-buyer@example.com');
+			expect(mails[0].html).toContain(name);
+			expect(mails[0].html).toContain(`up to ${quota} new checkpoints per UTC day`);
+			expect(mails[0].html).toContain('Authorization: Bearer &lt;key&gt;');
+			expect(mails[0].html).toContain('POST https://api.headlessoracle.com/v1/witness/checkpoints');
+			expect(mails[0].html).toContain('curl -X POST https://api.headlessoracle.com/v1/witness/checkpoints');
+			expect(mails[0].html).toContain('https://api.headlessoracle.com/v1/witness/spec');
+			expect(mails[0].html).not.toContain('/v5/status');
+			expect(mails[0].html).not.toContain('X-Oracle-Key');
+
+			const founder = st.mails.filter((m) => m.to === FOUNDER);
+			expect(founder.length).toBe(1);
+			expect(founder[0].text).toContain(`plan=${plan}`);
+			expect(founder[0].text).toContain(`transaction=txn_${subId}`);
+			expect(founder[0].text).toContain('customer_domain=example.com');
+			expect(founder[0].text).toContain('customer_email_sent=yes');
+			expect(founder[0].text).not.toContain('witness-buyer@');
+
+			const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_event:' });
+			const rows = (await Promise.all(listed.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name))))
+				.map((r) => JSON.parse(r ?? '{}') as Record<string, unknown>);
+			expect(rows.find((r) => r.txn_id === `txn_${subId}`)).toMatchObject({ tier: `evidence:${plan}`, amount, currency: 'USD' });
+			expect(await env.ORACLE_TELEMETRY.get(`referee_purchase:txn_${subId}`)).toBeNull();
+		} finally {
+			restore();
+		}
+	});
+
+	it('renewal: paddle_sub present, Supabase down — mints nothing', async () => {
+		const subId = 'sub_h1a_renewal_001';
+		await env.ORACLE_API_KEYS.put(`paddle_sub:${subId}`, JSON.stringify({ key_hash: 'ab'.repeat(32), plan: 'builder', created_at: '2026-10-01T00:00:00Z' }));
+		const { st, restore } = stubFetch({ select: 'error', insert: 'throw' });
+		const before = await keyRecordNames();
+		try {
+			const res = await postPaddle(completed(subId, BUILDER_PRICE, { origin: 'subscription_recurring' }));
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(st.inserts.length).toBe(0);
+			expect(st.mails.length).toBe(0);
+			expect(await keyRecordNames()).toEqual(before);
+		} finally {
+			restore();
+		}
+	});
+
+	it('KV miss + Supabase error + origin subscription_recurring: mints nothing, logs PADDLE_DEDUPE_UNAVAILABLE, acknowledges', async () => {
+		const subId = 'sub_h1a_recurring_001';
+		const { st, restore } = stubFetch({ select: 'error' });
+		const errSpy = vi.spyOn(console, 'error');
+		const before = await keyRecordNames();
+		try {
+			const res = await postPaddle(completed(subId, BUILDER_PRICE, { origin: 'subscription_recurring' }));
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(logged(errSpy, 'PADDLE_DEDUPE_UNAVAILABLE')).toBe(true);
+			expect(st.inserts.length).toBe(0);
+			expect(st.mails.length).toBe(0);
+			expect(await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`)).toBeNull();
+			expect(await keyRecordNames()).toEqual(before);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it.each(['web', 'api'])('KV miss + Supabase error + origin %s: a checkout-created transaction mints', async (origin) => {
+		const subId = `sub_h1a_origin_${origin}_001`;
+		const { st, restore } = stubFetch({ select: 'error', insert: 'throw' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(completed(subId, BUILDER_PRICE, { origin }));
+			expect(res.status).toBe(200);
+			expect(logged(errSpy, 'PADDLE_DEDUPE_UNAVAILABLE')).toBe(true);
+			expect(await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`)).not.toBeNull();
+			expect(customerMails(st).length).toBe(1);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('KV miss + Supabase error + origin absent: 503 so Paddle retries, nothing minted', async () => {
+		const subId = 'sub_h1a_origin_absent_001';
+		const { st, restore } = stubFetch({ select: 'error' });
+		const errSpy = vi.spyOn(console, 'error');
+		const before = await keyRecordNames();
+		try {
+			const res = await postPaddle(completed(subId, BUILDER_PRICE));
+			expect(res.status).toBe(503);
+			expect(await res.json()).toMatchObject({ error: 'SERVICE_UNAVAILABLE' });
+			expect(logged(errSpy, 'PADDLE_DEDUPE_UNAVAILABLE')).toBe(true);
+			expect(st.inserts.length).toBe(0);
+			expect(st.mails.length).toBe(0);
+			expect(await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`)).toBeNull();
+			expect(await keyRecordNames()).toEqual(before);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('KV write fails after a successful Supabase insert: the key is still emailed and PADDLE_KV_WRITE_FAILED is logged', async () => {
+		const { st, restore } = stubFetch({ insert: 'ok' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(completed('sub_h1a_kvfail_001', BUILDER_PRICE), { ORACLE_API_KEYS: failingPutsKv() });
+			expect(res.status).toBe(200);
+			expect(st.inserts.length).toBe(1);
+			const mails = customerMails(st);
+			expect(mails.length).toBe(1);
+			// The emailed key is the one Supabase holds, so checkApiKey's
+			// Supabase step authenticates it.
+			expect(await sha256Hex(mails[0].html.match(/ho_live_[0-9a-f]{64}/)![0])).toBe(st.inserts[0].key_hash);
+			expect(logged(errSpy, 'PADDLE_KV_WRITE_FAILED')).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('KV write fails AND the Supabase insert failed: 503, nothing emailed', async () => {
+		const { st, restore } = stubFetch({ insert: 'throw' });
+		try {
+			const res = await postPaddle(completed('sub_h1a_bothfail_001', BUILDER_PRICE), { ORACLE_API_KEYS: failingPutsKv() });
+			expect(res.status).toBe(503);
+			expect(await res.json()).toMatchObject({ error: 'SERVICE_UNAVAILABLE' });
+			expect(st.mails.length).toBe(0);
+		} finally {
+			restore();
+		}
+	});
+
+	it('ORACLE_API_KEYS unbound: 503, nothing minted', async () => {
+		const { st, restore } = stubFetch();
+		try {
+			const res = await postPaddle(completed('sub_h1a_nokv_001', BUILDER_PRICE, { origin: 'web' }), { ORACLE_API_KEYS: undefined });
+			expect(res.status).toBe(503);
+			expect(await res.json()).toMatchObject({ error: 'SERVICE_UNAVAILABLE' });
+			expect(st.inserts.length).toBe(0);
+			expect(st.mails.length).toBe(0);
+		} finally {
+			restore();
+		}
+	});
+
+	it('founder line: sent for a builder mint with customer_email_sent=yes', async () => {
+		const { st, restore } = stubFetch({ email: 'b@builder.example' });
+		try {
+			expect((await postPaddle(completed('sub_h1a_founder_yes', BUILDER_PRICE))).status).toBe(200);
+			const founder = st.mails.filter((m) => m.to === FOUNDER);
+			expect(founder.length).toBe(1);
+			expect(founder[0].text).toContain('plan=builder');
+			expect(founder[0].text).toContain('customer_domain=builder.example');
+			expect(founder[0].text).toContain('customer_email_sent=yes');
+		} finally {
+			restore();
+		}
+	});
+
+	it('founder line: customer_email_sent=no when Resend fails the customer mail', async () => {
+		const { st, restore } = stubFetch({ resendCustomerOk: false });
+		try {
+			expect((await postPaddle(completed('sub_h1a_founder_no', BUILDER_PRICE))).status).toBe(200);
+			const founder = st.mails.filter((m) => m.to === FOUNDER);
+			expect(founder.length).toBe(1);
+			expect(founder[0].text).toContain('customer_email_sent=no');
+		} finally {
+			restore();
+		}
+	});
+
+	it.each([
+		{ select: 'rows'  as const, result: 'ok' },
+		{ select: 'error' as const, result: 'failed' },
+	])('daily 09:00 cron runs the Supabase keepalive (Supabase $select → $result) and completes', async ({ select, result }) => {
+		const { st, restore } = stubFetch({ select });
+		const logSpy = vi.spyOn(console, 'log');
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const ctrl = createScheduledController({ scheduledTime: Date.now(), cron: '0 9 * * *' });
+			const ctx  = createExecutionContext();
+			await worker.scheduled(ctrl, env, ctx);
+			await waitOnExecutionContext(ctx);
+			const keepalive = st.supabaseUrls.filter((u) => u.includes('/api_keys') && u.includes('limit=1'));
+			expect(keepalive.length).toBe(1);
+			const lines = [...logSpy.mock.calls, ...errSpy.mock.calls].map((c) => String(c[0])).filter((l) => l.includes('SUPABASE_KEEPALIVE'));
+			expect(lines.length).toBe(1);
+			expect(lines[0]).toContain(`"result":"${result}"`);
+		} finally {
+			logSpy.mockRestore();
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it.each([
+		{ priceId: BUILDER_PRICE,     label: 'builder' },
+		{ priceId: CUSTODY_90D_PRICE, label: 'evidence_starter' },
+	])('activated then completed for $label: exactly one customer email and one key', async ({ priceId, label }) => {
+		const subId = `sub_h1a_actcomp_${label}`;
+		const { st, restore } = stubFetch();
+		try {
+			const act = await postPaddle({
+				event_type: 'subscription.activated',
+				data: { id: subId, customer_id: `ctm_${subId}`, status: 'active', items: [{ price: { id: priceId } }] },
+			});
+			expect(act.status).toBe(200);
+			expect(st.mails.length).toBe(0);
+			const comp = await postPaddle(completed(subId, priceId, { origin: 'web' }));
+			expect(comp.status).toBe(200);
+			expect(customerMails(st).length).toBe(1);
+			expect(st.inserts.length).toBe(1);
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`))!)).toMatchObject({ plan: label });
+		} finally {
+			restore();
+		}
+	});
+
+	it('subscription.canceled with Supabase down sets the KV status, so checkApiKey returns 402', async () => {
+		const subId   = 'sub_h1a_cancel_001';
+		const apiKey  = 'ho_live_' + 'e'.repeat(64);
+		const keyHash = await sha256Hex(apiKey);
+		// Not authenticated before the cancel: the memory key cache lasts 60s.
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'builder', status: 'active', paddle_subscription_id: subId }));
+		await env.ORACLE_API_KEYS.put(`paddle_sub:${subId}`, JSON.stringify({ key_hash: keyHash, plan: 'builder', created_at: '2026-10-01T00:00:00Z' }));
+		const { restore } = stubFetch({ select: 'error', update: 'throw' });
+		try {
+			const res = await postPaddle({ event_type: 'subscription.canceled', data: { id: subId } });
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(keyHash))!)).toMatchObject({ status: 'inactive' });
+			clearApiKeyCache();
+			const status = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': apiKey } });
+			expect(status.status).toBe(402);
+			expect(await status.json()).toMatchObject({ error: 'PAYMENT_REQUIRED' });
+		} finally {
+			restore();
+		}
+	});
+
+	it('subscription event for a subscription neither store knows: logs PADDLE_SUB_UNKNOWN and acknowledges', async () => {
+		const { restore } = stubFetch({ select: 'none' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle({ event_type: 'subscription.past_due', data: { id: 'sub_h1a_unknown_001' } });
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(logged(errSpy, 'PADDLE_SUB_UNKNOWN')).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('an evidence key is a free key on oracle routes: /v5/status gets the free 500/day limit; /v1/halts answers 402', async () => {
+		const apiKey  = 'ho_live_' + 'f'.repeat(64);
+		const keyHash = await sha256Hex(apiKey);
+		const today   = new Date().toISOString().slice(0, 10);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'evidence', status: 'active' }));
+		const ok = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': apiKey } });
+		expect(ok.status).toBe(200);
+		expect(ok.headers.get('X-Oracle-Plan')).toBe('free');
+		expect(ok.headers.get('X-RateLimit-Limit')).toBe('500');
+
+		await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${today}`, '500', { expirationTtl: 3600 });
+		clearApiKeyCache();
+		const limited = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': apiKey } });
+		expect(limited.status).toBe(402);
+
+		clearApiKeyCache();
+		const halts = await fetchWorker('/v1/halts', { headers: { 'X-Oracle-Key': apiKey } });
+		expect(halts.status).toBe(402);
+		// The stored plan is unchanged: the mapping is at read time only.
+		expect(JSON.parse((await env.ORACLE_API_KEYS.get(keyHash))!)).toMatchObject({ plan: 'evidence' });
+	});
+
+	it('Paddle-Signature compare: accepts a valid signature, rejects one changed hex digit and a different length', async () => {
+		const rawBody = JSON.stringify({ event_type: 'account.updated', data: {} });
+		const sig     = await makePaddleSignature(rawBody, SECRET);
+		const h1      = sig.split('h1=')[1];
+		const post = (header: string) => fetchWorker('/webhooks/paddle', {
+			method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': header }, body: rawBody,
+		});
+		expect((await post(sig)).status).toBe(200);
+		const flipped = h1.slice(0, -1) + (h1.endsWith('0') ? '1' : '0');
+		const changed = await post(sig.replace(h1, flipped));
+		expect(changed.status).toBe(401);
+		expect(await changed.json()).toMatchObject({ error: 'INVALID_SIGNATURE' });
+		const shorter = await post(sig.replace(h1, h1.slice(0, -1)));
+		expect(shorter.status).toBe(401);
+		const longer  = await post(sig.replace(h1, h1 + '0'));
+		expect(longer.status).toBe(401);
+	});
+
+	it('CORS preflight allows the Authorization header (Witness keys are sent as Bearer)', async () => {
+		const res = await fetchWorker('/v5/status', { method: 'OPTIONS' });
+		expect(res.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
+		expect(res.headers.get('Access-Control-Allow-Headers')).toContain('X-Oracle-Key');
+	});
+
+	it('OpenAPI /v5/checkout no longer says it sells only the Pro plan', async () => {
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, { post?: { description?: string } }> };
+		const desc = spec.paths['/v5/checkout'].post?.description ?? '';
+		expect(desc).not.toContain('for the Pro plan');
+		for (const plan of ['builder', 'pro', 'protocol', 'credits', 'custody_90d', 'custody_1y']) expect(desc).toContain(plan);
 	});
 });
 
@@ -9205,13 +9649,17 @@ describe('x402 — end-to-end payment flow', () => {
 	});
 
 	it('steps 3-5: Paddle webhook mints key in KV → minted key authenticates /v5/status', async () => {
+		// CHANGED 2026-10-03 (H1a): this used subscription.activated, which no
+		// longer mints (GAP-004: it raced transaction.completed to two keys).
+		// transaction.completed is the one mint path, so the flow starts there.
 		const rawBody = JSON.stringify({
-			event_type: 'subscription.activated',
+			event_type: 'transaction.completed',
 			data: {
-				id:          'sub_e2e_flow_001',
-				customer_id: 'ctm_e2e_001',
-				status:      'active',
-				items:       [{ price: { id: 'pri_test_builder_placeholder' } }],
+				id:              'txn_e2e_flow_001',
+				customer_id:     'ctm_e2e_001',
+				subscription_id: 'sub_e2e_flow_001',
+				origin:          'web',
+				items:           [{ price_id: 'pri_test_builder_placeholder', quantity: 1 }],
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, E2E_WEBHOOK_SECRET);
@@ -9228,7 +9676,9 @@ describe('x402 — end-to-end payment flow', () => {
 			}
 			// Resend email → capture HTML body (contains the minted ho_live_ key)
 			if (url.includes('api.resend.com')) {
-				capturedEmailHtml = JSON.parse((init?.body as string) ?? '{}').html ?? '';
+				const mail = JSON.parse((init?.body as string) ?? '{}') as { to?: string[]; html?: string };
+				// H1a: skip the founder line, which now follows every paid mint.
+				if (mail.to?.[0] !== 'mike@headlessoracle.com') capturedEmailHtml = mail.html ?? '';
 				return new Response(JSON.stringify({ id: 'email_e2e_001' }), {
 					status: 200, headers: { 'Content-Type': 'application/json' },
 				});
@@ -16972,36 +17422,38 @@ describe('referee prices are derived from one constant', () => {
 		}
 	});
 
-	it('B-145: a referee price id maps to its own line, NOT to the unmapped branch', async () => {
-		// Without the REFEREE_PRICES wiring, a custody subscription is an
-		// unrecognised price id and lands in the fail-closed unmapped branch —
-		// correct, but it would alert an operator about one of our own products
-		// and would mint no record of the sale under its own name. It must also
-		// mint no ho_live_ key: evidence custody is not API access, and before
-		// B-144 this exact price minted a Pro key.
+	it('B-145 / H1a: a custody price id maps to its own line (evidence), NOT to the unmapped branch', async () => {
+		// CHANGED 2026-10-03 (H1a). This sent subscription.activated for
+		// custody_90d and asserted a revenue row under `referee:custody_90d` and
+		// no key. Two things moved: custody_90d is now the evidence_starter plan
+		// and provisions a key, and subscription.activated no longer records or
+		// mints for a subscription plan (transaction.completed is the one path).
+		// What this test exists for is unchanged: our own price must not land in
+		// the unmapped branch, and the amount on its row must be the derived one.
 		const service = 'custody_90d';
-		const tierKey = `paddle_revenue_count:referee:${service}`;
-		const before   = parseInt((await env.ORACLE_TELEMETRY.get(tierKey)) ?? '0', 10) || 0;
+		const tierKey = 'paddle_revenue_count:evidence:evidence_starter';
+		const before         = parseInt((await env.ORACLE_TELEMETRY.get(tierKey)) ?? '0', 10) || 0;
 		const unmappedBefore = parseInt((await env.ORACLE_TELEMETRY.get('paddle_revenue_count:unmapped')) ?? '0', 10) || 0;
+		const refereeBefore  = parseInt((await env.ORACLE_TELEMETRY.get(`paddle_revenue_count:referee:${service}`)) ?? '0', 10) || 0;
 
 		const rawBody = JSON.stringify({
-			event_type: 'subscription.activated',
+			event_type: 'transaction.completed',
 			data: {
-				id:          'sub_referee_custody_001',
-				customer_id: 'ctm_referee_custody',
-				status:      'active',
-				items:       [{ price: { id: R.prices[service].price_id } }],
+				id:              'txn_b145_custody_001',
+				customer_id:     'ctm_referee_custody',
+				subscription_id: 'sub_b145_custody_001',
+				origin:          'web',
+				items:           [{ price_id: R.prices[service].price_id, quantity: 1 }],
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, 'pdl_ntfset_test_placeholder_for_local_tests');
 
-		let insertCalled = false;
-		let emailCalled  = false;
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-			if (url.includes('api.resend.com')) { emailCalled = true; return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }); }
-			if (url.includes('supabase') && init?.method === 'POST') insertCalled = true;
+			if (url.includes('api.resend.com')) return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+			if (url.includes('api.paddle.com/customers')) return new Response(JSON.stringify({ data: { email: 'b145@example.com' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			if (url.includes('supabase') && init?.method === 'POST') return new Response('', { status: 201 });
 			if (url.includes('supabase')) {
 				return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers: { 'Content-Type': 'application/json' } });
 			}
@@ -17015,18 +17467,17 @@ describe('referee prices are derived from one constant', () => {
 			});
 			expect(res.status).toBe(200);
 			expect(await res.json()).toMatchObject({ received: true });
-			expect(insertCalled).toBe(false);
-			expect(emailCalled).toBe(false);
 			// Recorded under its own name...
 			expect(parseInt((await env.ORACLE_TELEMETRY.get(tierKey)) ?? '0', 10) || 0).toBe(before + 1);
-			// ...and NOT as an unmapped price.
+			// ...and NOT as an unmapped price, nor as the old referee line.
 			expect(parseInt((await env.ORACLE_TELEMETRY.get('paddle_revenue_count:unmapped')) ?? '0', 10) || 0).toBe(unmappedBefore);
+			expect(parseInt((await env.ORACLE_TELEMETRY.get(`paddle_revenue_count:referee:${service}`)) ?? '0', 10) || 0).toBe(refereeBefore);
 			// And the amount on that row is the derived one, not a literal.
 			const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_event:' });
 			const rows = await Promise.all(listed.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name)));
 			const row = rows
 				.map((r) => JSON.parse(r ?? '{}') as Record<string, unknown>)
-				.find((r) => r.txn_id === 'sub_referee_custody_001');
+				.find((r) => r.txn_id === 'txn_b145_custody_001');
 			expect(row?.amount).toBe(R.amount(service));
 			expect(row?.currency).toBe('USD');
 		} finally {

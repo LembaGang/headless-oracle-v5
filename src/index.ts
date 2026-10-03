@@ -1914,7 +1914,7 @@ export async function signPayload(payload: Record<string, string>, privKeyHex: s
 // keyHash is included when the key was authenticated via KV or Supabase (steps 3–4).
 // It is absent for MASTER_API_KEY and BETA_API_KEYS (which have no Supabase row).
 // Callers use it to update last_used_at without re-hashing.
-type AuthResult = { allowed: true; plan: string; keyHash?: string } | { allowed: false; status: 402 | 403; error: string; message: string; body?: Record<string, unknown> };
+type AuthResult = { allowed: true; plan: string; keyHash?: string; stored_plan?: string } | { allowed: false; status: 402 | 403; error: string; message: string; body?: Record<string, unknown> };
 
 // ─── Supabase on a request's own path gets a deadline (GAP-017) ─────────────
 //
@@ -1949,6 +1949,18 @@ function supabaseHotPath(env: Env, timeoutMs: number = SUPABASE_HOT_PATH_TIMEOUT
 	});
 }
 
+// An evidence key is a Witness credential, not oracle capacity: every oracle
+// route sees it as 'free'. The plan as stored is carried beside it, unchanged,
+// as stored_plan, for the Witness routes (H1b) that need to tell them apart.
+function allowedStoredPlan(storedPlan: string, keyHash: string): AuthResult {
+	return {
+		allowed:     true,
+		plan:        EVIDENCE_PLANS.has(storedPlan) ? 'free' : storedPlan,
+		keyHash,
+		stored_plan: storedPlan,
+	};
+}
+
 async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 	// Step 1: master key — fastest possible path
 	if (key === env.MASTER_API_KEY) return { allowed: true, plan: 'internal' };
@@ -1980,7 +1992,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 			}
 			const plan   = parsed.plan ?? 'free';
 			const status = parsed.status;
-			if (status === 'active') return { allowed: true, plan, keyHash };
+			if (status === 'active') return allowedStoredPlan(plan, keyHash);
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
 	}
@@ -2030,7 +2042,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 			const status = parsed.status;
 			// Populate in-memory cache for subscription keys
 			setCachedApiKey(keyHash, cached);
-			if (status === 'active') return { allowed: true, plan, keyHash };
+			if (status === 'active') return allowedStoredPlan(plan, keyHash);
 			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
@@ -2068,7 +2080,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 			}
 			// Warm the in-memory cache too
 			setCachedApiKey(keyHash, kvValue);
-			if (data.status === 'active') return { allowed: true, plan: data.plan, keyHash };
+			if (data.status === 'active') return allowedStoredPlan(data.plan, keyHash);
 			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 		}
 	}
@@ -2255,7 +2267,18 @@ async function verifyPaddleSignature(
 	const key = await getCachedHmacKey(secret);
 	const sig      = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signedContent));
 	const expected = toHex(new Uint8Array(sig));
-	return expected === h1;
+	return timingSafeEqualHex(expected, h1);
+}
+
+// `===` on strings returns at the first differing character, so the time it
+// takes leaks how much of a forged h1 was right. Compare every character.
+function timingSafeEqualHex(a: string, b: string): boolean {
+	const x = a.toLowerCase();
+	const y = b.toLowerCase();
+	if (x.length !== y.length) return false;
+	let diff = 0;
+	for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+	return diff === 0;
 }
 
 // ─── Supported Exchange Directory ─────────────────────────────────────────────
@@ -2487,9 +2510,29 @@ const REFEREE_SERVICE_NAMES: Record<RefereeService, string> = {
 	regrade:           'Re-grade',
 	dispute:           'Dispute package',
 	dispute_note:      'Dispute package with verification note',
-	custody_90d:       'Evidence custody 90 days',
-	custody_1y:        'Evidence custody one year',
+	custody_90d:       'Evidence Starter (Witness account)',
+	custody_1y:        'Evidence (Witness account)',
 };
+
+// ═══ Evidence plans — the two custody prices sell Witness accounts ════════════
+// Founder ruling 2026-10-03: custody_90d and custody_1y become paid Witness
+// plans. The Paddle prices, their keys in REFEREE_PRICES and the introductory
+// window are unchanged; what changes is that a purchase now provisions a key
+// rather than only recording a row for the founder to act on by hand.
+//
+// An evidence key is a Witness credential. On every oracle route it is treated
+// exactly like a free key (checkApiKey maps it), because the price buys
+// witnessing, not oracle capacity.
+type EvidencePlan = 'evidence_starter' | 'evidence';
+const EVIDENCE_PLANS: ReadonlySet<string> = new Set<EvidencePlan>(['evidence_starter', 'evidence']);
+const EVIDENCE_PLAN_BY_SERVICE = { custody_90d: 'evidence_starter', custody_1y: 'evidence' } as const satisfies Partial<Record<RefereeService, EvidencePlan>>;
+type EvidenceService = keyof typeof EVIDENCE_PLAN_BY_SERVICE;
+
+// New Witness checkpoints per UTC day, per plan. Read by H1b. Sized for the
+// Workers Free plan this account runs on: D1 Free allows 100,000 rows written
+// per day across the account, and one witness insert with its index and usage
+// upsert writes roughly 6-7 rows (an estimate; H1b measures rows_written).
+const EVIDENCE_PLAN_QUOTA: Record<EvidencePlan, number> = { evidence_starter: 1000, evidence: 3000 };
 
 // Verbatim from LEAD_PLAN_2026-09-07_M5-prices-live.md section 5. 434
 // characters, sha256
@@ -2769,12 +2812,16 @@ const PADDLE_OVERLAY_HOST  = 'headlessoracle.com';
 // A referee price is RECOGNISED but is not an API tier, so it earns its own
 // result rather than falling to null. The distinction matters both ways: an
 // operator alerted about an "unmapped" price should be looking at a price we
-// genuinely do not know, not at one of our own products; and a custody
-// subscription must not mint a ho_live_ API key, because conformance custody
-// is not API access. Before B-144 a custody_90d subscription minted a Pro key.
+// genuinely do not know, not at one of our own products; and a referee
+// service must not mint an oracle API key. Before B-144 a custody_90d
+// subscription minted a Pro key.
+// The two custody prices resolve to 'evidence_plan' (founder ruling
+// 2026-10-03): they provision a Witness key, so they are no longer the
+// record-only referee case.
 type PaddlePriceResolution =
-	| { kind: 'api_plan'; plan: 'builder' | 'pro' | 'protocol' }
-	| { kind: 'referee';  service: RefereeService }
+	| { kind: 'api_plan';      plan: 'builder' | 'pro' | 'protocol' }
+	| { kind: 'evidence_plan'; plan: EvidencePlan; service: EvidenceService }
+	| { kind: 'referee';       service: RefereeService }
 	| null;
 
 function resolvePaddlePlan(priceId: string | null, env: Env): PaddlePriceResolution {
@@ -2782,10 +2829,182 @@ function resolvePaddlePlan(priceId: string | null, env: Env): PaddlePriceResolut
 	if (env.PADDLE_PRICE_ID_BUILDER  && priceId === env.PADDLE_PRICE_ID_BUILDER)  return { kind: 'api_plan', plan: 'builder' };
 	if (env.PADDLE_PRICE_ID_PRO      && priceId === env.PADDLE_PRICE_ID_PRO)      return { kind: 'api_plan', plan: 'pro' };
 	if (env.PADDLE_PRICE_ID_PROTOCOL && priceId === env.PADDLE_PRICE_ID_PROTOCOL) return { kind: 'api_plan', plan: 'protocol' };
+	// Before the referee loop, which would otherwise claim these two ids.
+	for (const service of Object.keys(EVIDENCE_PLAN_BY_SERVICE) as EvidenceService[]) {
+		if (priceId === REFEREE_PRICES[service].price_id) return { kind: 'evidence_plan', plan: EVIDENCE_PLAN_BY_SERVICE[service], service };
+	}
 	for (const service of Object.keys(REFEREE_PRICES) as RefereeService[]) {
 		if (priceId === REFEREE_PRICES[service].price_id) return { kind: 'referee', service };
 	}
 	return null;
+}
+
+// ─── Paddle subscriptions: which key a subscription owns ─────────────────────
+// KV first, Supabase second. The webhook used to depend on Supabase alone, and
+// a paused Supabase project (it happened on 2026-10-03) meant a buyer was
+// charged and handed nothing. `paddle_sub:<subscription_id>` lives in
+// ORACLE_API_KEYS beside the key records; a 64-hex key hash cannot collide
+// with the prefix, as `oauth:` already relies on.
+//
+// Three outcomes, kept apart because the callers act differently on each:
+// 'found' (a key exists), 'missing' (both stores answered: no key), and
+// 'failed' (KV missed and Supabase could not answer, so we do not know).
+type PaddleSubLookup =
+	| { state: 'found'; keyHash: string | null; plan: string | null; source: 'kv' | 'supabase' }
+	| { state: 'missing' }
+	| { state: 'failed'; detail: string };
+
+const PADDLE_SUPABASE_TIMEOUT_MS = 2000;
+
+async function lookupPaddleSubscription(env: Env, subscriptionId: string): Promise<PaddleSubLookup> {
+	if (env.ORACLE_API_KEYS) {
+		try {
+			const raw = await env.ORACLE_API_KEYS.get(`paddle_sub:${subscriptionId}`);
+			if (raw) {
+				const rec = JSON.parse(raw) as { key_hash?: string; plan?: string };
+				return { state: 'found', keyHash: rec.key_hash ?? null, plan: rec.plan ?? null, source: 'kv' };
+			}
+		} catch (err) {
+			console.error(JSON.stringify({ event: 'PADDLE_SUB_KV_READ_FAILED', subscription_id: subscriptionId, detail: String(err).slice(0, 200) }));
+		}
+	}
+	if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+		return { state: 'failed', detail: 'supabase not configured' };
+	}
+	try {
+		const { data, error, status } = await supabaseHotPath(env, PADDLE_SUPABASE_TIMEOUT_MS)
+			.from('api_keys').select('key_hash, plan').eq('stripe_subscription_id', subscriptionId).single();
+		if (data) {
+			const row = data as { key_hash?: string; plan?: string };
+			return { state: 'found', keyHash: row.key_hash ?? null, plan: row.plan ?? null, source: 'supabase' };
+		}
+		// "No row" is PGRST116, which PostgREST sends as HTTP 406 for .single().
+		// The status is checked too: a 406 is the singular-object refusal
+		// whatever body shape carried it.
+		const code = (error as { code?: string } | null)?.code;
+		if (!error || code === 'PGRST116' || status === 406) return { state: 'missing' };
+		return { state: 'failed', detail: `${code ?? 'unknown'}: ${String(error.message ?? '').slice(0, 200)}` };
+	} catch (err) {
+		return { state: 'failed', detail: String(err).slice(0, 200) };
+	}
+}
+
+// Points the subscription's key at a new status or plan: `patch` goes to the
+// KV key record, `dbPatch` to Supabase (the two stores name a cancellation
+// differently, 'inactive' and 'cancelled', as they always have). Best effort:
+// each store is written independently, a failure is logged and never fails the
+// webhook, because Paddle retrying cannot fix a write that already half-landed.
+async function updatePaddleSubscriptionKey(
+	env: Env,
+	subscriptionId: string,
+	found: Extract<PaddleSubLookup, { state: 'found' }>,
+	patch: { status?: string; plan?: string },
+	dbPatch: { status?: string; plan?: string },
+): Promise<void> {
+	if (found.keyHash && env.ORACLE_API_KEYS) {
+		try {
+			const current = await env.ORACLE_API_KEYS.get(found.keyHash);
+			if (current) {
+				const parsed = JSON.parse(current) as Record<string, unknown>;
+				await env.ORACLE_API_KEYS.put(found.keyHash, JSON.stringify({ ...parsed, ...patch }));
+			}
+			if (patch.plan) {
+				await env.ORACLE_API_KEYS.put(`paddle_sub:${subscriptionId}`, JSON.stringify({
+					key_hash:   found.keyHash,
+					plan:       patch.plan,
+					created_at: new Date().toISOString(),
+				}));
+			}
+		} catch (err) {
+			console.error(JSON.stringify({ event: 'PADDLE_KV_WRITE_FAILED', subscription_id: subscriptionId, detail: String(err).slice(0, 200) }));
+		}
+	}
+	if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+		try {
+			const { error } = await supabaseHotPath(env, PADDLE_SUPABASE_TIMEOUT_MS)
+				.from('api_keys').update(dbPatch).eq('stripe_subscription_id', subscriptionId);
+			if (error) console.error(JSON.stringify({ event: 'PADDLE_SUPABASE_WRITE_FAILED', subscription_id: subscriptionId, detail: String(error.message ?? '').slice(0, 200) }));
+		} catch (err) {
+			console.error(JSON.stringify({ event: 'PADDLE_SUPABASE_WRITE_FAILED', subscription_id: subscriptionId, detail: String(err).slice(0, 200) }));
+		}
+	}
+}
+
+async function supabaseKeepalive(env: Env): Promise<void> {
+	if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+		console.log(JSON.stringify({ event: 'SUPABASE_KEEPALIVE', result: 'failed', detail: 'supabase not configured' }));
+		return;
+	}
+	try {
+		const { error } = await supabaseHotPath(env, PADDLE_SUPABASE_TIMEOUT_MS).from('api_keys').select('id').limit(1);
+		if (error) {
+			console.error(JSON.stringify({ event: 'SUPABASE_KEEPALIVE', result: 'failed', detail: `${(error as { code?: string }).code ?? 'unknown'}: ${String(error.message ?? '').slice(0, 200)}` }));
+			return;
+		}
+		console.log(JSON.stringify({ event: 'SUPABASE_KEEPALIVE', result: 'ok' }));
+	} catch (err) {
+		console.error(JSON.stringify({ event: 'SUPABASE_KEEPALIVE', result: 'failed', detail: String(err).slice(0, 200) }));
+	}
+}
+
+// The mail that carries a new key. Shown once; the customer cannot recover it.
+function paddleKeyEmail(plan: string, keyValue: string, env: Env): { subject: string; html: string } {
+	if (EVIDENCE_PLANS.has(plan)) {
+		const evPlan = plan as EvidencePlan;
+		const name   = evPlan === 'evidence_starter' ? REFEREE_SERVICE_NAMES.custody_90d : REFEREE_SERVICE_NAMES.custody_1y;
+		const quota  = EVIDENCE_PLAN_QUOTA[evPlan].toLocaleString('en-US');
+		return {
+			subject: `Your Headless Oracle ${name} key`,
+			html: `<p>Thank you for subscribing to ${name}.</p>
+<p>Your plan allows up to ${quota} new checkpoints per UTC day.</p>
+<p>Your key (save this — it will not be shown again):</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
+<p>Send it as <code>Authorization: Bearer &lt;key&gt;</code> on <code>POST https://api.headlessoracle.com/v1/witness/checkpoints</code>:</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">curl -X POST https://api.headlessoracle.com/v1/witness/checkpoints \\
+  -H "Authorization: Bearer ${keyValue}" \\
+  -H "Content-Type: application/json" \\
+  -d '{ ...checkpoint body, see the spec... }'</pre>
+<p>The full contract: <a href="https://api.headlessoracle.com/v1/witness/spec">https://api.headlessoracle.com/v1/witness/spec</a></p>`,
+		};
+	}
+	return {
+		subject: 'Your Headless Oracle API key',
+		html: `<p>Thank you for subscribing to Headless Oracle.</p>
+<p>Your API key (save this — it will not be shown again):</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
+<p>Use it as the <code>X-Oracle-Key</code> header in every request:</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">curl https://headlessoracle.com/v5/status?mic=XNYS \\
+  -H "X-Oracle-Key: ${keyValue}"</pre>
+${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc107;padding:12px;border-radius:4px"><strong>Action required:</strong> Your previous beta key will stop working on <strong>${env.BETA_KEY_SUNSET_DATE}</strong>. Switch to the key above before that date.</p>` : ''}
+<p>Check your account status anytime: <a href="https://headlessoracle.com/v5/account">GET /v5/account</a></p>
+<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
+	};
+}
+
+// One line to the founder for every paid mint. A failed Resend send is
+// otherwise silent, and a Paddle retry would then dedupe and never resend, so
+// this is how a key that never reached its buyer gets noticed. Only the
+// customer's email DOMAIN goes in it.
+async function sendFounderMintLine(
+	env: Env,
+	args: { plan: string; transactionId: string; customerEmail: string | null; customerEmailSent: boolean },
+): Promise<void> {
+	if (!env.RESEND_API_KEY) return;
+	const domain = args.customerEmail?.includes('@') ? args.customerEmail.split('@').pop() : 'none';
+	try {
+		await fetch('https://api.resend.com/emails', {
+			method:  'POST',
+			headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				from:    'Headless Oracle <hello@headlessoracle.com>',
+				to:      [FOUNDER_NOTIFICATION_EMAIL],
+				subject: `Paid mint: ${args.plan}`,
+				text:    `plan=${args.plan} transaction=${args.transactionId} customer_domain=${domain} customer_email_sent=${args.customerEmailSent ? 'yes' : 'no'}`,
+			}),
+		});
+	} catch (err) {
+		console.error(JSON.stringify({ event: 'PADDLE_FOUNDER_LINE_FAILED', txn_id: args.transactionId, detail: String(err).slice(0, 200) }));
+	}
 }
 
 // 0.001 USDC = 1000 units at 6 decimals. Minimum payment per request.
@@ -9320,7 +9539,7 @@ const OPENAPI_SPEC = {
 			post: {
 				tags:        ['Payment'],
 				summary:     'Create Paddle Checkout Transaction',
-				description: 'Creates a Paddle transaction for the Pro plan and returns the hosted payment URL. No authentication required. Redirect the user to the returned url.',
+				description: `Creates a Paddle transaction for any plan in valid_plans (${CHECKOUT_PLANS.join(', ')}) and returns the hosted payment URL. No authentication required. Redirect the user to the returned url.`,
 				responses: {
 					'200': {
 						description: 'Checkout transaction created',
@@ -12003,7 +12222,7 @@ export default {
 			...SECURITY_HEADERS,
 			'Access-Control-Allow-Origin':  '*',
 			'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-			'Access-Control-Allow-Headers': 'Content-Type, X-Oracle-Key, X-Payment, Payment-Signature',
+			'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Oracle-Key, X-Payment, Payment-Signature',
 			// X-Payment-Response is the v1 settlement header name. Without it exposed,
 			// a browser-context v1 client sees a settled payment as unsettled.
 			'Access-Control-Expose-Headers': 'Payment-Required, Payment-Required-Json, Payment-Response, X-Payment-Response, X-Payment-Required, X-Oracle-Plan, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Trial-Remaining, X-Attestation-Mode',
@@ -14115,9 +14334,10 @@ export default {
 					// no mail. A $2,500 payment landed and the only trace of it was
 					// the Paddle dashboard.
 					//
-					// It provisions no ho_live_ key, deliberately: conformance
-					// custody is not API access, and before B-144 a custody
-					// subscription minted a Pro key. Amounts are DERIVED from
+					// It provisions no ho_live_ key, deliberately: a referee
+					// service is not API access. The two custody prices no longer
+					// come here: since H1a they resolve to 'evidence_plan' and are
+					// provisioned below as Witness keys. Amounts are DERIVED from
 					// REFEREE_PRICES, never restated.
 					const refereeResolved = resolvePaddlePlan(txnPriceId, env);
 					if (refereeResolved?.kind === 'referee') {
@@ -14156,17 +14376,43 @@ export default {
 
 					// Guard: skip non-subscription transactions (e.g. other one-time payments)
 					if (!txn['subscription_id']) return json({ received: true });
+					const subscriptionId = txn['subscription_id'] as string;
+					const txnId          = (txn['id'] as string) ?? 'unknown';
 
-					if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-						console.error('WEBHOOK_ERROR: Supabase not configured — key not stored');
-						return json({ received: true });
+					// H1a (2026-10-03): a paid key is made to work by its KV record,
+					// as the x402 mint already does; Supabase is the durable copy and
+					// best effort. With no KV there is nowhere to put a key that
+					// would authenticate, so mint nothing and let Paddle retry.
+					if (!env.ORACLE_API_KEYS) {
+						console.error(JSON.stringify({ event: 'PADDLE_KV_UNBOUND', txn_id: txnId }));
+						return json({ error: 'SERVICE_UNAVAILABLE', message: 'Key store unavailable; Paddle will retry this delivery' }, 503);
 					}
 
-					// Idempotency guard: skip renewals (subscription_id already has a row)
-					const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-					const { data: existing } = await supabase
-						.from('api_keys').select('id').eq('stripe_subscription_id', txn['subscription_id'] as string).single();
-					if (existing) return json({ received: true });
+					// Idempotency: a renewal or a retried delivery for a subscription
+					// that already owns a key mints nothing. KV `paddle_sub:` first,
+					// then Supabase. When neither can say (KV miss, Supabase down),
+					// Paddle's `origin` decides: a checkout-created transaction ('web'
+					// or 'api' — this worker creates its transactions through the API)
+					// is a first purchase and mints; a renewal ('subscription_recurring')
+					// never mints; anything else waits for Supabase via a Paddle retry.
+					const dedupe = await lookupPaddleSubscription(env, subscriptionId);
+					if (dedupe.state === 'found') return json({ received: true });
+					if (dedupe.state === 'failed') {
+						const origin = typeof txn['origin'] === 'string' ? txn['origin'] as string : null;
+						const mintAnyway = origin === 'web' || origin === 'api';
+						console.error(JSON.stringify({
+							event:           'PADDLE_DEDUPE_UNAVAILABLE',
+							txn_id:          txnId,
+							subscription_id: subscriptionId,
+							origin:          origin === null ? 'absent' : safeIdent(origin),
+							action:          mintAnyway ? 'mint' : origin === 'subscription_recurring' ? 'skip' : 'retry',
+							detail:          dedupe.detail,
+						}));
+						if (!mintAnyway) {
+							if (origin === 'subscription_recurring') return json({ received: true });
+							return json({ error: 'SERVICE_UNAVAILABLE', message: 'Subscription lookup unavailable; Paddle will retry this delivery' }, 503);
+						}
+					}
 
 					// Determine plan from transaction items price_id. Fail-CLOSED: an
 					// unrecognised id provisions NOTHING — no key, no Supabase row, no
@@ -14189,7 +14435,7 @@ export default {
 							plan:        'unmapped',
 							amount:      'unknown',
 							currency:    'USD',
-							txn_id:      (txn['id'] as string) ?? 'unknown',
+							txn_id:      txnId,
 							customer_id: (txn['customer_id'] as string) ?? null,
 						});
 						return json({ received: true });
@@ -14203,7 +14449,7 @@ export default {
 						console.error(`PADDLE_REFEREE_REACHED_PROVISIONING: ${resolved.service} — handled above; provisioning nothing`);
 						return json({ received: true });
 					}
-					const plan = resolved.plan;
+					const plan: string = resolved.plan;
 
 					// Fetch email from Paddle customer API (not included in transaction payload)
 					let email: string | null = null;
@@ -14224,182 +14470,162 @@ export default {
 					const keyValue    = 'ho_live_' + toHex(rawKeyBytes);
 					const keyHash     = await sha256Hex(keyValue);
 					const keyPrefix   = keyValue.substring(0, 14); // 'ho_live_' + 6 chars
+					const createdAt   = new Date().toISOString();
 
-					// Store in Supabase (stripe_customer_id / stripe_subscription_id store Paddle IDs)
-					const { error: dbError } = await supabase.from('api_keys').insert({
-						id:                    crypto.randomUUID(),
-						key_hash:              keyHash,
-						key_prefix:            keyPrefix,
-						plan,
-						status:                'active',
-						stripe_customer_id:    txn['customer_id'] as string | null,
-						stripe_subscription_id: txn['subscription_id'] as string | null,
-						email,
-						created_at:            new Date().toISOString(),
-					});
-					if (dbError) {
-						// code 23505 = unique_violation — a concurrent webhook already inserted this
-						// subscription_id. Race condition won by peer; treat as idempotent success.
-						if ((dbError as unknown as Record<string, string>).code === '23505') {
-							console.log(`WEBHOOK_RACE_WON_BY_PEER: subscription ${txn['subscription_id'] as string} — treating as idempotent success`);
-							return json({ received: true });
+					// Supabase first, because its unique constraint is what tells two
+					// concurrent deliveries apart. Bounded, and best effort: any failure
+					// other than 23505 is logged and the mint carries on, because a
+					// charged buyer with no key is worse than a key Supabase has not
+					// heard of yet (checkApiKey reads KV before Supabase).
+					// stripe_customer_id / stripe_subscription_id store Paddle IDs.
+					let supabaseStored = false;
+					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
+						try {
+							const { error: dbError } = await supabaseHotPath(env, PADDLE_SUPABASE_TIMEOUT_MS).from('api_keys').insert({
+								id:                    crypto.randomUUID(),
+								key_hash:              keyHash,
+								key_prefix:            keyPrefix,
+								plan,
+								status:                'active',
+								stripe_customer_id:    txn['customer_id'] as string | null,
+								stripe_subscription_id: subscriptionId,
+								email,
+								created_at:            createdAt,
+							});
+							if (!dbError) {
+								supabaseStored = true;
+							} else if ((dbError as unknown as Record<string, string>).code === '23505') {
+								// unique_violation — a concurrent delivery already inserted
+								// this subscription and owns its key. Race won by peer: no
+								// KV record and no email from this one.
+								console.log(`WEBHOOK_RACE_WON_BY_PEER: subscription ${subscriptionId} — treating as idempotent success`);
+								return json({ received: true });
+							} else {
+								console.error(JSON.stringify({ event: 'PADDLE_SUPABASE_WRITE_FAILED', txn_id: txnId, code: (dbError as { code?: string }).code ?? 'unknown', detail: String(dbError.message ?? '').slice(0, 200) }));
+							}
+						} catch (err) {
+							console.error(JSON.stringify({ event: 'PADDLE_SUPABASE_WRITE_FAILED', txn_id: txnId, code: 'exception', detail: String(err).slice(0, 200) }));
 						}
-						console.error(`WEBHOOK_DB_ERROR: ${dbError.message}`);
-						return json({ error: 'DB_ERROR', message: 'Failed to store API key — contact support@headlessoracle.com' }, 500);
+					} else {
+						console.error(JSON.stringify({ event: 'PADDLE_SUPABASE_WRITE_FAILED', txn_id: txnId, code: 'not_configured', detail: 'supabase not configured' }));
 					}
 
-					// Store in KV — persistent, no TTL; deactivated on subscription.canceled
-					if (env.ORACLE_API_KEYS) {
-						await env.ORACLE_API_KEYS.put(
-							keyHash,
-							JSON.stringify({
-								plan,
-								status:                 'active',
-								paddle_customer_id:     txn['customer_id'] as string | null,
-								paddle_subscription_id: txn['subscription_id'] as string | null,
-								email,
-								created_at:             new Date().toISOString(),
-							}),
-						);
+					// KV: the key record (shape unchanged) and the subscription's
+					// pointer to it, both without TTL; deactivated on cancel. If KV
+					// fails after Supabase took the row, the key still authenticates
+					// through checkApiKey's Supabase step, so the email goes out. If
+					// both failed, the key would authenticate nowhere: send nothing
+					// and let Paddle retry.
+					try {
+						await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({
+							plan,
+							status:                 'active',
+							paddle_customer_id:     txn['customer_id'] as string | null,
+							paddle_subscription_id: subscriptionId,
+							email,
+							created_at:             createdAt,
+						}));
+						await env.ORACLE_API_KEYS.put(`paddle_sub:${subscriptionId}`, JSON.stringify({ key_hash: keyHash, plan, created_at: createdAt }));
+					} catch (err) {
+						console.error(JSON.stringify({ event: 'PADDLE_KV_WRITE_FAILED', txn_id: txnId, supabase_stored: supabaseStored, detail: String(err).slice(0, 200) }));
+						if (!supabaseStored) {
+							return json({ error: 'SERVICE_UNAVAILABLE', message: 'Key could not be stored; Paddle will retry this delivery' }, 503);
+						}
 					}
 
 					// Send key via Resend (shown once — customer cannot recover it)
+					let customerEmailSent = false;
 					if (env.RESEND_API_KEY && email) {
-						const emailRes = await fetch('https://api.resend.com/emails', {
-							method:  'POST',
-							headers: {
-								'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-								'Content-Type':  'application/json',
-							},
-							body: JSON.stringify({
-								from:    'Headless Oracle <keys@headlessoracle.com>',
-								to:      [email],
-								subject: 'Your Headless Oracle API key',
-								html: `<p>Thank you for subscribing to Headless Oracle.</p>
-<p>Your API key (save this — it will not be shown again):</p>
-<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${keyValue}</pre>
-<p>Use it as the <code>X-Oracle-Key</code> header in every request:</p>
-<pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">curl https://headlessoracle.com/v5/status?mic=XNYS \\
-  -H "X-Oracle-Key: ${keyValue}"</pre>
-${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc107;padding:12px;border-radius:4px"><strong>Action required:</strong> Your previous beta key will stop working on <strong>${env.BETA_KEY_SUNSET_DATE}</strong>. Switch to the key above before that date.</p>` : ''}
-<p>Check your account status anytime: <a href="https://headlessoracle.com/v5/account">GET /v5/account</a></p>
-<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
-							}),
-						});
-						if (!emailRes.ok) {
+						const mail = paddleKeyEmail(plan, keyValue, env);
+						try {
+							const emailRes = await fetch('https://api.resend.com/emails', {
+								method:  'POST',
+								headers: {
+									'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+									'Content-Type':  'application/json',
+								},
+								body: JSON.stringify({
+									from:    'Headless Oracle <keys@headlessoracle.com>',
+									to:      [email],
+									subject: mail.subject,
+									html:    mail.html,
+								}),
+							});
+							customerEmailSent = emailRes.ok;
 							// Key is already stored — log the error but do not fail the webhook
-							console.error(`RESEND_ERROR: failed to send key email to ${email}`);
+							if (!emailRes.ok) console.error(`RESEND_ERROR: failed to send key email for ${txnId}`);
+						} catch (err) {
+							console.error(`RESEND_ERROR: failed to send key email for ${txnId}: ${String(err).slice(0, 200)}`);
 						}
 					}
 
-					// Revenue pulse — see credits branch above for rationale.
-					await recordPaddleRevenueEvent(env, {
-						tier:        plan,
-						plan,
-						amount:      planPriceAmount(plan),
-						currency:    'USD',
-						txn_id:      (txn['id'] as string) ?? 'unknown',
-						customer_id: (txn['customer_id'] as string) ?? null,
-					});
+					// Revenue pulse — see credits branch above for rationale. An
+					// evidence plan's amount is derived from its custody price.
+					if (resolved.kind === 'evidence_plan') {
+						await recordPaddleRevenueEvent(env, {
+							tier:        `evidence:${resolved.plan}`,
+							plan:        resolved.plan,
+							amount:      refereePriceAmount(resolved.service),
+							currency:    REFEREE_PRICES[resolved.service].currency,
+							txn_id:      txnId,
+							customer_id: (txn['customer_id'] as string) ?? null,
+						});
+					} else {
+						await recordPaddleRevenueEvent(env, {
+							tier:        plan,
+							plan,
+							amount:      planPriceAmount(plan),
+							currency:    'USD',
+							txn_id:      txnId,
+							customer_id: (txn['customer_id'] as string) ?? null,
+						});
+					}
+
+					await sendFounderMintLine(env, { plan, transactionId: txnId, customerEmail: email, customerEmailSent });
 
 					return json({ received: true });
 				}
 
-				if (event.event_type === 'subscription.updated') {
-					const sub = event.data;
-					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-						const newStatus = sub['status'] === 'active' ? 'active' : 'suspended';
-						// Fetch key_hash before update — needed to sync KV immediately
-						const { data: updKeyRow } = await supabase
-							.from('api_keys').select('key_hash').eq('stripe_subscription_id', sub['id'] as string).single();
-						await supabase.from('api_keys')
-							.update({ status: newStatus })
-							.eq('stripe_subscription_id', sub['id'] as string);
-						// Sync KV so auth hot path reflects billing change immediately (not after 300s TTL)
-						if (updKeyRow?.key_hash && env.ORACLE_API_KEYS) {
-							const current = await env.ORACLE_API_KEYS.get(updKeyRow.key_hash as string);
-							if (current) {
-								const parsed = JSON.parse(current) as Record<string, unknown>;
-								await env.ORACLE_API_KEYS.put(
-									updKeyRow.key_hash as string,
-									JSON.stringify({ ...parsed, status: newStatus }),
-								);
-							}
-						}
+				// subscription.updated / past_due / canceled: KV `paddle_sub:` first,
+				// then Supabase. Each store is written best effort and a write
+				// failure never fails the webhook. A subscription neither store
+				// knows is logged and acknowledged; one we could not look up at all
+				// (KV miss, Supabase down) is a 503 so Paddle retries, because
+				// dropping a cancellation would leave a cancelled key working.
+				if (event.event_type === 'subscription.updated' || event.event_type === 'subscription.past_due' || event.event_type === 'subscription.canceled') {
+					const sub   = event.data;
+					const subId = sub['id'] as string;
+					const kvStatus = event.event_type === 'subscription.canceled' ? 'inactive'
+						: event.event_type === 'subscription.past_due' ? 'suspended'
+						: sub['status'] === 'active' ? 'active' : 'suspended';
+					const dbStatus = event.event_type === 'subscription.canceled' ? 'cancelled' : kvStatus;
+					const found = await lookupPaddleSubscription(env, subId);
+					if (found.state === 'failed') {
+						console.error(JSON.stringify({ event: 'PADDLE_SUB_LOOKUP_FAILED', event_type: event.event_type, subscription_id: subId, detail: found.detail }));
+						return json({ error: 'SERVICE_UNAVAILABLE', message: 'Subscription lookup unavailable; Paddle will retry this delivery' }, 503);
 					}
+					if (found.state === 'missing') {
+						console.error(JSON.stringify({ event: 'PADDLE_SUB_UNKNOWN', event_type: event.event_type, subscription_id: subId }));
+						return json({ received: true });
+					}
+					await updatePaddleSubscriptionKey(env, subId, found, { status: kvStatus }, { status: dbStatus });
 					return json({ received: true });
 				}
 
-				if (event.event_type === 'subscription.past_due') {
-					const sub = event.data;
-					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-						// Fetch key_hash before update — needed to sync KV immediately
-						const { data: pdKeyRow } = await supabase
-							.from('api_keys').select('key_hash').eq('stripe_subscription_id', sub['id'] as string).single();
-						await supabase.from('api_keys')
-							.update({ status: 'suspended' })
-							.eq('stripe_subscription_id', sub['id'] as string);
-						// Sync KV so suspended status takes effect in seconds, not 300s
-						if (pdKeyRow?.key_hash && env.ORACLE_API_KEYS) {
-							const current = await env.ORACLE_API_KEYS.get(pdKeyRow.key_hash as string);
-							if (current) {
-								const parsed = JSON.parse(current) as Record<string, unknown>;
-								await env.ORACLE_API_KEYS.put(
-									pdKeyRow.key_hash as string,
-									JSON.stringify({ ...parsed, status: 'suspended' }),
-								);
-							}
-						}
-					}
-					return json({ received: true });
-				}
-
-				if (event.event_type === 'subscription.canceled') {
-					const sub = event.data;
-					if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-						const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-						// Fetch key_hash before updating status — needed to deactivate KV
-						const { data: keyRow } = await supabase
-							.from('api_keys').select('key_hash').eq('stripe_subscription_id', sub['id'] as string).single();
-						await supabase.from('api_keys')
-							.update({ status: 'cancelled' })
-							.eq('stripe_subscription_id', sub['id'] as string);
-						// Deactivate in KV so auth hot path reflects immediately
-						if (keyRow?.key_hash && env.ORACLE_API_KEYS) {
-							const current = await env.ORACLE_API_KEYS.get(keyRow.key_hash as string);
-							if (current) {
-								const parsed = JSON.parse(current) as Record<string, unknown>;
-								await env.ORACLE_API_KEYS.put(
-									keyRow.key_hash as string,
-									JSON.stringify({ ...parsed, status: 'inactive' }),
-								);
-							}
-						}
-					}
-					return json({ received: true });
-				}
-
+				// subscription.activated never mints, for any plan. It and
+				// transaction.completed can arrive within milliseconds of each other
+				// (GAPS.md GAP-004), and two mint paths raced to two keys; the
+				// transaction is the only mint path now. Here we only move an
+				// existing subscription's key to a new plan (the upgrade path).
 				if (event.event_type === 'subscription.activated') {
 					const sub = event.data;
 					const subscriptionId = sub['id'] as string;
-					if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-						console.error('WEBHOOK_ERROR: Supabase not configured — key not stored');
-						return json({ received: true });
-					}
-					const supabaseActiv = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-
-					// Idempotency: if this subscription already has a key, update plan (upgrade flow)
-					const { data: existingActiv } = await supabaseActiv
-						.from('api_keys').select('id, key_hash, plan').eq('stripe_subscription_id', subscriptionId).single();
 
 					// Determine plan — items[0].price.id for subscription.activated
 					// (differs from transaction.completed). Fail-CLOSED, same rule and
 					// same reason as the transaction.completed branch above: an
-					// unrecognised id provisions nothing and updates nothing, including
-					// on the existing-subscription upgrade path — we cannot upgrade a
-					// key to a plan we cannot name.
+					// unrecognised id updates nothing — we cannot move a key to a plan
+					// we cannot name.
 					const activItems = sub['items'] as Array<{ price?: { id?: string } }> | undefined;
 					const activPriceId = activItems?.[0]?.price?.id ?? null;
 					const activResolved = resolvePaddlePlan(activPriceId, env);
@@ -14420,9 +14646,8 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 						return json({ received: true });
 					}
 					if (activResolved.kind === 'referee') {
-						// The two custody prices are monthly subscriptions, so this is the
-						// branch a real referee subscription lands in. It mints no API key:
-						// evidence custody is not API access. Amount derived, not restated.
+						// The remaining referee prices are one-time; a subscription for
+						// one is unexpected. Recorded under its own name, mints nothing.
 						console.log(JSON.stringify({ event: 'PADDLE_REFEREE_PAYMENT', service: activResolved.service, subscription_id: subscriptionId }));
 						await recordPaddleRevenueEvent(env, {
 							tier:        `referee:${activResolved.service}`,
@@ -14434,89 +14659,15 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 						});
 						return json({ received: true });
 					}
-					const activPlan = activResolved.plan;
-					// Fetch customer email from Paddle API (not included in subscription event payload)
-					let activEmail: string | null = null;
-					if (env.PADDLE_API_KEY && sub['customer_id']) {
-						const custActivRes = await fetch(`https://api.paddle.com/customers/${sub['customer_id'] as string}`, {
-							headers: { 'Authorization': `Bearer ${env.PADDLE_API_KEY}` },
-						});
-						if (custActivRes.ok) {
-							const custActivBody = await custActivRes.json() as { data?: { email?: string } };
-							activEmail = custActivBody.data?.email ?? null;
-						} else {
-							console.error(`PADDLE_CUSTOMER_FETCH_ERROR: ${sub['customer_id'] as string}`);
-						}
-					}
-
-					if (existingActiv) {
-						// Subscription already has a key — update plan if it changed (upgrade path)
-						if (existingActiv.plan !== activPlan) {
-							await supabaseActiv.from('api_keys').update({ plan: activPlan, status: 'active' }).eq('stripe_subscription_id', subscriptionId);
-							if (env.ORACLE_API_KEYS && existingActiv.key_hash) {
-								const kvExisting = await env.ORACLE_API_KEYS.get(existingActiv.key_hash as string);
-								if (kvExisting) {
-									const kvExistingParsed = JSON.parse(kvExisting) as Record<string, unknown>;
-									await env.ORACLE_API_KEYS.put(existingActiv.key_hash as string, JSON.stringify({ ...kvExistingParsed, plan: activPlan, status: 'active' }));
-								}
-							}
+					const activPlan: string = activResolved.plan;
+					const found = await lookupPaddleSubscription(env, subscriptionId);
+					if (found.state === 'found') {
+						if (found.plan !== activPlan) {
+							await updatePaddleSubscriptionKey(env, subscriptionId, found, { plan: activPlan, status: 'active' }, { plan: activPlan, status: 'active' });
 						}
 						return json({ received: true });
 					}
-
-					// New subscription — generate and store key
-					const activKeyBytes  = crypto.getRandomValues(new Uint8Array(32));
-					const activKeyValue  = 'ho_live_' + toHex(activKeyBytes);
-					const activKeyHash   = await sha256Hex(activKeyValue);
-					const activKeyPrefix = activKeyValue.substring(0, 14);
-
-					const { error: activDbError } = await supabaseActiv.from('api_keys').insert({
-						id:                     crypto.randomUUID(),
-						key_hash:               activKeyHash,
-						key_prefix:             activKeyPrefix,
-						plan:                   activPlan,
-						status:                 'active',
-						stripe_customer_id:     sub['customer_id'] as string | null,
-						stripe_subscription_id: subscriptionId,
-						email:                  activEmail,
-						created_at:             new Date().toISOString(),
-					});
-					if (activDbError) {
-						// code 23505 = unique_violation — concurrent transaction.completed already
-						// inserted this subscription_id. Race won by peer; idempotent success.
-						if ((activDbError as unknown as Record<string, string>).code === '23505') {
-							console.log(`WEBHOOK_RACE_WON_BY_PEER: subscription ${subscriptionId} — treating as idempotent success`);
-							return json({ received: true });
-						}
-						console.error(`WEBHOOK_DB_ERROR: ${activDbError.message}`);
-						return json({ error: 'DB_ERROR', message: 'Failed to store API key — contact support@headlessoracle.com' }, 500);
-					}
-
-					if (env.ORACLE_API_KEYS) {
-						await env.ORACLE_API_KEYS.put(activKeyHash, JSON.stringify({
-							plan:                   activPlan,
-							status:                 'active',
-							paddle_customer_id:     sub['customer_id'] as string | null,
-							paddle_subscription_id: subscriptionId,
-							email:                  activEmail,
-							created_at:             new Date().toISOString(),
-						}));
-					}
-
-					if (env.RESEND_API_KEY && activEmail) {
-						const activEmailRes = await fetch('https://api.resend.com/emails', {
-							method:  'POST',
-							headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-							body: JSON.stringify({
-								from:    'Headless Oracle <keys@headlessoracle.com>',
-								to:      [activEmail],
-								subject: 'Your Headless Oracle API key',
-								html: `<p>Thank you for subscribing to Headless Oracle.</p><p>Your API key (save this — it will not be shown again):</p><pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">${activKeyValue}</pre><p>Plan: ${activPlan} &bull; Use it as the <code>X-Oracle-Key</code> header in every request:</p><pre style="background:#f5f5f5;padding:12px;border-radius:4px;font-size:14px">curl https://headlessoracle.com/v5/status?mic=XNYS \\\n  -H "X-Oracle-Key: ${activKeyValue}"</pre>${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc107;padding:12px;border-radius:4px"><strong>Action required:</strong> Your previous beta key will stop working on <strong>${env.BETA_KEY_SUNSET_DATE}</strong>. Switch to the key above before that date.</p>` : ''}<p>Documentation: <a href="https://headlessoracle.com/docs">headlessoracle.com/docs</a></p>`,
-							}),
-						});
-						if (!activEmailRes.ok) console.error(`RESEND_ERROR: failed to send key email to ${activEmail}`);
-					}
-
+					console.log(JSON.stringify({ event: 'PADDLE_ACTIVATED_NO_MINT', subscription_id: subscriptionId, plan: activPlan, lookup: found.state }));
 					return json({ received: true });
 				}
 
@@ -18062,6 +18213,11 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			} catch (err: unknown) {
 				console.error(`HALT_ARCHIVE_DIGEST_ERROR: ${err instanceof Error ? err.message : String(err)}`);
 			}
+			// Supabase keepalive. The free tier pauses a project after about a week
+			// without activity, and on 2026-10-03 a paused project left the Paddle
+			// webhook unable to deliver a paid key. One bounded, read-only query a
+			// day. Best effort: it logs and never throws.
+			await supabaseKeepalive(env);
 			// Fetch @headlessoracle/verify download counts and log for monitoring.
 			try {
 				const [week, month] = await Promise.all([
