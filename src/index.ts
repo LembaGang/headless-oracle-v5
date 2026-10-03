@@ -161,6 +161,8 @@ export interface Env {
 	// See migrations/0001_halt_archive.sql for the schema.
 	HALT_ARCHIVE?:        D1Database;
 	WITNESS_DB?:          D1Database;  // chirindo_witness: witness checkpoints only
+	WITNESS_POST_RL?:     RateLimit;   // Workers Rate Limiting binding: witness POSTs
+	WITNESS_GET_RL?:      RateLimit;   // Workers Rate Limiting binding: witness checkpoint GETs
 	HALT_ARCHIVE_RAW?:    R2Bucket;
 	NASDAQ_HALTS_URL?:    string;
 	NYSE_HALTS_URL?:      string;
@@ -5051,7 +5053,7 @@ const WITNESS_SPEC_DOC = {
 		},
 		fork: 'fork is "true" when, at insert time, a row with the same (kid, session_id, count) and a different last_entry_hash already exists. Two concurrent first submissions with different hashes can both get "false", so verifiers detect forks from the receipts, not from the flag.',
 		append_only: 'Rows are never updated or deleted.',
-		rate_limit: 'Best effort (a KV counter that can over-admit under bursts): about 60 POSTs per minute per client address, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Fails open on a counter error. GET requests are not counted.',
+		rate_limit: 'Best effort (counted per Cloudflare location, so it can over-admit): about 60 requests per minute per client address, applied separately to POST and to GET of checkpoints, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Fails open on a limiter error.',
 		daily_cap: `Best effort: concurrent requests can exceed it slightly. Once ${formatCallsGrouped(WITNESS_DAILY_CAP)} (a launch limit while the service runs on Cloudflare's free plan; raised later) new witness rows have been stored in the current UTC day, a POST that would store a new row returns 503 witness_unavailable for the rest of that day. The cap counts and blocks new rows only: a repeat POST of an already-stored checkpoint still returns 200 with the stored receipt.`,
 	},
 	query: {
@@ -5062,7 +5064,7 @@ const WITNESS_SPEC_DOC = {
 		query_sql: 'WHERE kid=? AND session_id=? AND (count, last_entry_hash) > (?, ?) ORDER BY count, last_entry_hash LIMIT 501 (SQLite row-value comparison, so the index bounds the scan; the 501st row only signals that next_after is needed).',
 		pagination: 'next_after is the pair of the last receipt returned, present only when more exist; clients MUST follow it.',
 		unknown: 'An unknown (kid, session_id) pair returns 200 with an empty list.',
-		errors: 'A missing parameter, a kid not matching ^[A-Za-z0-9_-]{43}$, a session_id outside 1 to 128 chars, or a malformed after returns 400 bad_request. A well-formed after is the decimal count (a safe integer >= 0), a colon, then a full last_entry_hash: ^\\d+:sha256:[0-9a-f]{64}$. If the store is unavailable it returns 503 witness_unavailable.',
+		errors: 'A missing parameter, a kid not matching ^[A-Za-z0-9_-]{43}$, a session_id outside 1 to 128 chars, or a malformed after returns 400 bad_request. A well-formed after is the decimal count (a safe integer >= 0), a colon, then a full last_entry_hash: ^\\d+:sha256:[0-9a-f]{64}$. If the store is unavailable it returns 503 witness_unavailable. 429: RATE_LIMITED with Retry-After.',
 		access: 'Public, no auth, CORS *.',
 	},
 	receipt: {
@@ -5137,30 +5139,61 @@ type WitnessJson = (body: unknown, status?: number, extraHeaders?: Record<string
 // POST/GET /v1/witness/checkpoints and GET /v1/witness/spec. Returns null for
 // any other path so the caller's 404 handling applies.
 async function handleWitness(request: Request, env: Env, url: URL, now: Date, json: WitnessJson): Promise<Response | null> {
-	const unavailable = () => json({ error: 'witness_unavailable' }, 503);
+	// The binding exposes no remaining count or reset time, so witness responses
+	// carry only the limit; json()'s daily-quota defaults would misdescribe it.
+	const wj: WitnessJson = (b, s = 200, h = {}) => {
+		const r = json(b, s, { ...h, 'X-RateLimit-Limit': String(WITNESS_RATE_LIMIT_PER_MIN) });
+		r.headers.delete('X-RateLimit-Remaining');
+		r.headers.delete('X-RateLimit-Reset');
+		return r;
+	};
+	const unavailable = () => wj({ error: 'witness_unavailable' }, 503);
+
+	// Workers Rate Limiting binding: no KV write per request. Counts are kept per
+	// Cloudflare location, so it can over-admit. Fails open: an unbound or broken
+	// limiter must not take the witness down.
+	const rateLimited = async (limiter: RateLimit | undefined, name: string): Promise<Response | null> => {
+		const key = witnessClientKey(request.headers.get('CF-Connecting-IP'));
+		try {
+			if (!limiter) throw new Error(`${name} unbound`);
+			const { success } = await limiter.limit({ key });
+			if (success) return null;
+		} catch (err: unknown) {
+			console.error(`WITNESS_RATE_LIMITER_FAILED fail_open=true limiter=${name} err=${err instanceof Error ? err.message : 'unknown'}`);
+			return null;
+		}
+		return wj(
+			{ error: 'RATE_LIMITED', message: `Witness requests are capped at about ${WITNESS_RATE_LIMIT_PER_MIN} per minute per client address. Retry in 60s.`, retry_after_seconds: 60 },
+			429,
+			{ 'Retry-After': '60' },
+		);
+	};
 
 	if (url.pathname === '/v1/witness/spec') {
-		if (request.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, { Allow: 'GET' });
-		return json(WITNESS_SPEC_DOC);
+		if (request.method !== 'GET') return wj({ error: 'method_not_allowed' }, 405, { Allow: 'GET' });
+		return wj(WITNESS_SPEC_DOC);
 	}
 	if (url.pathname !== '/v1/witness/checkpoints') return null;
 
 	if (request.method === 'GET') {
+		// Before the parameter checks, so a flood of 400s is counted too.
+		const limited = await rateLimited(env.WITNESS_GET_RL, 'WITNESS_GET_RL');
+		if (limited) return limited;
 		const p = url.searchParams;
 		const kid = p.get('kid');
 		const sessionId = p.get('session_id');
 		const after = p.get('after');
 		if (kid === null || sessionId === null || !WITNESS_B64U_32.test(kid) || sessionId.length < 1 || sessionId.length > 128) {
-			return json({ error: 'bad_request' }, 400);
+			return wj({ error: 'bad_request' }, 400);
 		}
 		let afterCount = 0;
 		let afterHash = '';
 		if (after !== null) {
-			if (!WITNESS_AFTER.test(after)) return json({ error: 'bad_request' }, 400);
+			if (!WITNESS_AFTER.test(after)) return wj({ error: 'bad_request' }, 400);
 			const sep = after.indexOf(':');
 			afterCount = Number(after.slice(0, sep));
 			afterHash = after.slice(sep + 1);
-			if (!Number.isSafeInteger(afterCount)) return json({ error: 'bad_request' }, 400);
+			if (!Number.isSafeInteger(afterCount)) return wj({ error: 'bad_request' }, 400);
 		}
 		if (!env.WITNESS_DB) return unavailable();
 		try {
@@ -5179,49 +5212,19 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 				const last = page[page.length - 1];
 				out.next_after = `${last.count}:${last.last_entry_hash}`;
 			}
-			return json(out);
+			return wj(out);
 		} catch (err: unknown) {
 			console.error(`WITNESS_READ_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
 			return unavailable();
 		}
 	}
 
-	if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405, { Allow: 'GET, POST' });
+	if (request.method !== 'POST') return wj({ error: 'method_not_allowed' }, 405, { Allow: 'GET, POST' });
 
 	// Rate limit before reading the body, so a flood of bad bodies is counted too.
-	const minute = Math.floor(now.getTime() / 60_000);
-	const resetMs = (minute + 1) * 60_000;
-	const rateKey = `witness_rate:${await sha256Hex(witnessClientKey(request.headers.get('CF-Connecting-IP')))}:${minute}`;
-	let used = 0;
-	let kvUp = true;
-	try {
-		used = parseInt((await env.ORACLE_TELEMETRY.get(rateKey)) ?? '0', 10) || 0;
-	} catch (err: unknown) {
-		kvUp = false;
-		console.error(`WITNESS_RATE_KV_READ_FAILED fail_open=true err=${err instanceof Error ? err.message : 'unknown'}`);
-	}
-	const rateHeaders = (remaining: number): Record<string, string> => ({
-		'X-RateLimit-Limit':     String(WITNESS_RATE_LIMIT_PER_MIN),
-		'X-RateLimit-Remaining': String(Math.max(0, remaining)),
-		'X-RateLimit-Reset':     new Date(resetMs).toISOString(),
-	});
-	if (kvUp && used >= WITNESS_RATE_LIMIT_PER_MIN) {
-		const retryAfter = Math.max(1, Math.ceil((resetMs - now.getTime()) / 1000));
-		return json(
-			{ error: 'RATE_LIMITED', message: `Witness POSTs are capped at ${WITNESS_RATE_LIMIT_PER_MIN} per minute per client address. Retry in ${retryAfter}s.`, retry_after_seconds: retryAfter },
-			429,
-			{ 'Retry-After': String(retryAfter), ...rateHeaders(0) },
-		);
-	}
-	if (kvUp) {
-		try {
-			await env.ORACLE_TELEMETRY.put(rateKey, String(used + 1), { expirationTtl: 120 });
-		} catch (err: unknown) {
-			console.error(`WITNESS_RATE_KV_WRITE_FAILED fail_open=true err=${err instanceof Error ? err.message : 'unknown'}`);
-		}
-	}
-	const rl = rateHeaders(WITNESS_RATE_LIMIT_PER_MIN - used - 1);
-	const reply = (body: unknown, status: number) => json(body, status, rl);
+	const limited = await rateLimited(env.WITNESS_POST_RL, 'WITNESS_POST_RL');
+	if (limited) return limited;
+	const reply = (body: unknown, status: number) => wj(body, status);
 
 	// Check 1. A declared length over the limit is refused unread; otherwise the
 	// size is measured on the bytes as they arrive, whatever Content-Length says.
@@ -5265,7 +5268,11 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		const existing = await storedReceipt();
 		if (existing) return reply(existing, 200);
 
-		const dayStart = `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+		// Times are taken after the body is read, never from the request start: a
+		// client holding its body open must not store an old received_at under the
+		// newest rowid, which would reset the max(rowid) day count.
+		const t = new Date();
+		const dayStart = `${t.toISOString().slice(0, 10)}T00:00:00.000Z`;
 		const today = await db.prepare(WITNESS_DAY_COUNT_SQL).bind(dayStart).first<{ c: number }>();
 		if ((today?.c ?? 0) >= WITNESS_DAILY_CAP) {
 			console.error(`WITNESS_DAILY_CAP_REACHED rows_today=${today?.c ?? 0}`);
@@ -5275,12 +5282,13 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		const sibling = await db.prepare(
 			`SELECT 1 AS one FROM witness_checkpoints WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash != ? LIMIT 1`,
 		).bind(kid, sessionId, checked.count, lastEntryHash).first<{ one: number }>();
+		const receivedAt = new Date().toISOString();
 
 		const checkpointJcs = witnessJcs(cp);
 		const receipt: Record<string, string> = {
 			type:              WITNESS_RECEIPT_TYPE,
 			witness:           WITNESS_NAME,
-			received_at:       now.toISOString(),
+			received_at:       receivedAt,
 			kid,
 			session_id:        sessionId,
 			count:             String(checked.count),
@@ -9054,7 +9062,7 @@ const OPENAPI_SPEC = {
 					'The receipt attests only that at received_at the witness was shown a checkpoint validly signed by the key with that thumbprint; it does not attest who controls the key or that the records are true. ' +
 					'Checks run in order and fail closed with 400 on the first failure: bad_request, bad_checkpoint_shape, bad_checkpoint_field, bad_jwk, kid_mismatch, bad_signature. ' +
 					'checkpoint.sig is base64url without padding (86 chars), never hex. A checkpoint\'s identity is (kid, session_id, count, last_entry_hash): a new identity returns 201, a stored one returns 200 with the stored receipt. ' +
-					`About 60 POSTs per minute per client address; ${formatCallsGrouped(WITNESS_DAILY_CAP)} new rows per UTC day, best effort. Full contract and honest limits: GET /v1/witness/spec.`,
+					`About 60 requests per minute per client address, counted per Cloudflare location; ${formatCallsGrouped(WITNESS_DAILY_CAP)} new rows per UTC day, best effort. Full contract and honest limits: GET /v1/witness/spec.`,
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {
@@ -9120,6 +9128,7 @@ const OPENAPI_SPEC = {
 						},
 					} } } },
 					'400': { description: 'bad_request: a missing or malformed parameter', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'429': { description: 'RATE_LIMITED; see Retry-After', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'503': { description: 'witness_unavailable', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
@@ -12063,7 +12072,7 @@ export default {
 			});
 		};
 
-		// ── /v1/witness/* — checkpoint witness (spec v0.3) ──
+		// ── /v1/witness/* — checkpoint witness (spec v0.4) ──
 		// Dispatched before the main try/catch: handleWitness fails closed to
 		// 503 witness_unavailable on its own and never returns an unstored receipt.
 		if (url.pathname.startsWith('/v1/witness/')) {

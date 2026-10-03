@@ -75,7 +75,14 @@ function jwkFor(id: Identity) {
 	return { kty: 'OKP', crv: 'Ed25519', x: id.x };
 }
 
-async function call(path: string, init: RequestInit = {}, e: Record<string, unknown> = env as unknown as Record<string, unknown>): Promise<Response> {
+// The rate-limit bindings are stubbed: miniflare keeps the real binding's counts
+// in memory across tests, so a test that used it would depend on test order.
+// Tests that script a limit pass their own env.
+type Limiter = { limit: (o: { key: string }) => Promise<{ success: boolean }> };
+const allow: Limiter = { limit: async () => ({ success: true }) };
+const testEnv: Record<string, unknown> = { ...(env as unknown as Record<string, unknown>), WITNESS_POST_RL: allow, WITNESS_GET_RL: allow };
+
+async function call(path: string, init: RequestInit = {}, e: Record<string, unknown> = testEnv): Promise<Response> {
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(new Request(`http://example.com${path}`, init), e as unknown as typeof env, ctx);
 	await waitOnExecutionContext(ctx);
@@ -119,8 +126,6 @@ beforeEach(async () => {
 	// deletes; only the test harness does, to start each case clean.
 	await call(`${PATH}?kid=${'A'.repeat(43)}&session_id=x`);
 	await env.WITNESS_DB!.prepare('DELETE FROM witness_checkpoints').run();
-	const rl = await env.ORACLE_TELEMETRY.list({ prefix: 'witness_rate:' });
-	await Promise.all(rl.keys.map((k) => env.ORACLE_TELEMETRY.delete(k.name)));
 });
 afterEach(() => {
 	vi.useRealTimers();
@@ -444,7 +449,7 @@ describe('witness: GET /v1/witness/checkpoints', () => {
 describe('witness: fail closed when the store is unavailable', () => {
 	it('POST and GET with WITNESS_DB unbound return 503 witness_unavailable', async () => {
 		const id = await makeIdentity();
-		const unbound = { ...(env as unknown as Record<string, unknown>), WITNESS_DB: undefined };
+		const unbound = { ...testEnv, WITNESS_DB: undefined };
 		const p = await post(bodyFor(await makeCheckpoint(id), jwkFor(id)), {}, unbound);
 		expect(p.status).toBe(503);
 		expect(await p.json()).toEqual({ error: 'witness_unavailable' });
@@ -455,7 +460,7 @@ describe('witness: fail closed when the store is unavailable', () => {
 
 	it('the witness does not use HALT_ARCHIVE: unbinding it changes nothing', async () => {
 		const id = await makeIdentity();
-		const noHalt = { ...(env as unknown as Record<string, unknown>), HALT_ARCHIVE: undefined };
+		const noHalt = { ...testEnv, HALT_ARCHIVE: undefined };
 		const p = await post(bodyFor(await makeCheckpoint(id), jwkFor(id)), {}, noHalt);
 		expect(p.status).toBe(201);
 		const g = await call(`${PATH}?kid=${id.kid}&session_id=test-session`, {}, noHalt);
@@ -495,6 +500,44 @@ describe('witness: fail closed when the store is unavailable', () => {
 		const repeat = await postCheckpoint(id, firstCp);
 		expect(repeat.status).toBe(200);
 		expect(repeat.body).toEqual(first.body);
+	});
+
+	// W3 HIGH: received_at and the cap's day were taken at request start. A client
+	// that held its body open stored an old received_at under the newest rowid,
+	// and the max(rowid) day count then saw about one row, resetting the cap.
+	it('a POST whose body is held open stores a received_at taken after the body arrived, and the cap still holds', async () => {
+		const id = await makeIdentity();
+		const bytes = new TextEncoder().encode(bodyFor(await makeCheckpoint(id, { count: 1 }), jwkFor(id)));
+		let ctl!: ReadableStreamDefaultController<Uint8Array>;
+		const stream = new ReadableStream<Uint8Array>({ start(c) { ctl = c; } });
+		ctl.enqueue(bytes.slice(0, 10));
+		const held = call(PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stream });
+
+		// While the body is held, 1,999 rows are stored for the day.
+		await new Promise((r) => setTimeout(r, 25));
+		const seededAt = new Date().toISOString();
+		await seedRows(
+			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1999)
+			 INSERT INTO witness_checkpoints (${SEED_COLUMNS})
+			 SELECT 'seed', 'seed', i, 'h', '{}', 'sha256:x', 'x', ?, 'false', '{}', ? FROM n`,
+			seededAt, seededAt,
+		);
+		await new Promise((r) => setTimeout(r, 5));
+		ctl.enqueue(bytes.slice(10));
+		ctl.close();
+
+		const res = await held;
+		expect(res.status).toBe(201);
+		const receipt = await res.json() as Record<string, string>;
+		expect(receipt.received_at >= seededAt, `received_at ${receipt.received_at} is earlier than the seeded rows (${seededAt})`).toBe(true);
+		const row = await env.WITNESS_DB!.prepare('SELECT received_at FROM witness_checkpoints WHERE kid = ?').bind(id.kid).first<{ received_at: string }>();
+		expect(row?.received_at).toBe(receipt.received_at);
+		expect(await receiptVerifies(receipt)).toBe(true);
+
+		// 2,000 rows today: the next new checkpoint is refused.
+		const next = await post(bodyFor(await makeCheckpoint(id, { count: 2 }), jwkFor(id)));
+		expect(next.status).toBe(503);
+		expect(await next.json()).toEqual({ error: 'witness_unavailable' });
 	});
 });
 
@@ -602,43 +645,111 @@ describe('witness: oversize bodies are refused without being buffered', () => {
 });
 
 // ─── Rate limit ──────────────────────────────────────────────────────────────
+// Workers Rate Limiting bindings, stubbed: each stub counts per key and records
+// every key it was asked about, so the 61st call is scripted, not timed.
 describe('witness: rate limit keyed on CF-Connecting-IP', () => {
-	// Pinned clock: all requests land in one minute bucket (the GAP-019 lesson).
-	beforeEach(() => { vi.setSystemTime(new Date('2026-10-03T12:00:10Z')); });
+	function counting(limit = 60) {
+		const keys: string[] = [];
+		const counts = new Map<string, number>();
+		const limiter: Limiter = {
+			limit: async ({ key }) => {
+				keys.push(key);
+				const n = (counts.get(key) ?? 0) + 1;
+				counts.set(key, n);
+				return { success: n <= limit };
+			},
+		};
+		return { limiter, keys };
+	}
+	const getPath = (kid = 'A'.repeat(43)) => `${PATH}?kid=${kid}&session_id=s`;
 
-	async function exhaust(ip: string, extra: Record<string, string> = {}) {
+	it('the 61st POST from one address is 429 RATE_LIMITED with Retry-After: 60; another address is unaffected', async () => {
+		const { limiter } = counting();
+		const e = { ...testEnv, WITNESS_POST_RL: limiter };
 		for (let i = 0; i < 60; i++) {
-			const res = await post('{}', { 'CF-Connecting-IP': ip, ...extra });
+			const res = await post('{}', { 'CF-Connecting-IP': '198.51.100.7' }, e);
 			expect(res.status, `request #${i + 1}`).toBe(400);
 		}
-	}
-
-	it('the 61st POST from one address is 429 RATE_LIMITED with Retry-After; GETs are not counted', async () => {
-		for (let i = 0; i < 5; i++) await call(`${PATH}?kid=${'A'.repeat(43)}&session_id=s`, { headers: { 'CF-Connecting-IP': '198.51.100.7' } });
-		await exhaust('198.51.100.7');
-		const over = await post('{}', { 'CF-Connecting-IP': '198.51.100.7' });
+		const over = await post('{}', { 'CF-Connecting-IP': '198.51.100.7' }, e);
 		expect(over.status).toBe(429);
-		expect((await over.json() as Record<string, string>).error).toBe('RATE_LIMITED');
-		expect(Number(over.headers.get('Retry-After'))).toBe(50);
+		const body = await over.json() as Record<string, unknown>;
+		expect(body.error).toBe('RATE_LIMITED');
+		expect(body.retry_after_seconds).toBe(60);
+		expect(body.message).toContain('per minute per client address');
+		expect(over.headers.get('Retry-After')).toBe('60');
+		expect(over.headers.get('X-RateLimit-Limit')).toBe('60');
+		expect(over.headers.get('X-RateLimit-Remaining')).toBeNull();
+		expect(over.headers.get('X-RateLimit-Reset')).toBeNull();
 		// Control: another address is unaffected.
-		expect((await post('{}', { 'CF-Connecting-IP': '198.51.100.8' })).status).toBe(400);
+		expect((await post('{}', { 'CF-Connecting-IP': '198.51.100.8' }, e)).status).toBe(400);
 	});
 
-	it('changing X-Original-IP does not reset the counter', async () => {
-		await exhaust('198.51.100.9', { 'X-Original-IP': '10.0.0.1' });
-		const over = await post('{}', { 'CF-Connecting-IP': '198.51.100.9', 'X-Original-IP': '10.0.0.2' });
+	it('the 61st GET of checkpoints is 429, counting 400s too; POST and GET are separate limiters', async () => {
+		const get = counting();
+		const postRl = counting();
+		const e = { ...testEnv, WITNESS_GET_RL: get.limiter, WITNESS_POST_RL: postRl.limiter };
+		const h = { headers: { 'CF-Connecting-IP': '198.51.100.20' } };
+		for (let i = 0; i < 30; i++) expect((await call(getPath(), h, e)).status).toBe(200);
+		for (let i = 0; i < 30; i++) expect((await call(`${PATH}?kid=bad`, h, e)).status).toBe(400);
+		const over = await call(getPath(), h, e);
 		expect(over.status).toBe(429);
+		expect((await over.json() as Record<string, unknown>).error).toBe('RATE_LIMITED');
+		expect(over.headers.get('Retry-After')).toBe('60');
+		// Even a malformed GET is refused once over the limit: the limiter runs first.
+		expect((await call(`${PATH}?kid=bad`, h, e)).status).toBe(429);
+		// The POST limiter was never asked, and a POST still goes through.
+		expect(postRl.keys).toEqual([]);
+		expect((await post('{}', { 'CF-Connecting-IP': '198.51.100.20' }, e)).status).toBe(400);
+		// /v1/witness/spec is unmetered.
+		expect((await call('/v1/witness/spec', h, e)).status).toBe(200);
+		expect(get.keys.length).toBe(62);
 	});
 
-	it('two IPv6 addresses in one /64 share a counter; another /64 does not', async () => {
-		await exhaust('2001:db8:1:2::1');
-		expect((await post('{}', { 'CF-Connecting-IP': '2001:0db8:0001:0002:ffff:0:0:9' })).status).toBe(429);
-		expect((await post('{}', { 'CF-Connecting-IP': '2001:db8:1:3::1' })).status).toBe(400);
+	it('witness responses carry X-RateLimit-Limit: 60 and no Remaining or Reset', async () => {
+		for (const res of [await call(getPath()), await post('{}'), await call('/v1/witness/spec')]) {
+			expect(res.headers.get('X-RateLimit-Limit')).toBe('60');
+			expect(res.headers.get('X-RateLimit-Remaining')).toBeNull();
+			expect(res.headers.get('X-RateLimit-Reset')).toBeNull();
+		}
 	});
 
-	it('requests without CF-Connecting-IP share the key "none"', async () => {
-		for (let i = 0; i < 60; i++) expect((await post('{}')).status).toBe(400);
-		expect((await post('{}', { 'X-Original-IP': '10.9.9.9' })).status).toBe(429);
+	it('the key comes from CF-Connecting-IP only: X-Original-IP does not change it', async () => {
+		const { limiter, keys } = counting();
+		const e = { ...testEnv, WITNESS_POST_RL: limiter };
+		await post('{}', { 'CF-Connecting-IP': '198.51.100.9', 'X-Original-IP': '10.0.0.1' }, e);
+		await post('{}', { 'CF-Connecting-IP': '198.51.100.9', 'X-Original-IP': '10.0.0.2' }, e);
+		expect(keys).toEqual(['198.51.100.9', '198.51.100.9']);
+	});
+
+	it('an IPv6 address is keyed by its /64; requests without CF-Connecting-IP share "none"', async () => {
+		const post6 = counting();
+		const get6 = counting();
+		const e = { ...testEnv, WITNESS_POST_RL: post6.limiter, WITNESS_GET_RL: get6.limiter };
+		await post('{}', { 'CF-Connecting-IP': '2001:db8:1:2::1' }, e);
+		await post('{}', { 'CF-Connecting-IP': '2001:0db8:0001:0002:ffff:0:0:9' }, e);
+		await post('{}', { 'CF-Connecting-IP': '2001:db8:1:3::1' }, e);
+		await post('{}', { 'X-Original-IP': '10.9.9.9' }, e);
+		await call(getPath(), { headers: { 'CF-Connecting-IP': '2001:db8:1:2::abcd' } }, e);
+		expect(post6.keys).toEqual(['2001:db8:1:2::/64', '2001:db8:1:2::/64', '2001:db8:1:3::/64', 'none']);
+		expect(get6.keys).toEqual(['2001:db8:1:2::/64']);
+	});
+
+	it('fails open: with the bindings absent, or a limiter that throws, requests succeed and the failure is logged', async () => {
+		const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const id = await makeIdentity();
+			const absent = { ...testEnv, WITNESS_POST_RL: undefined, WITNESS_GET_RL: undefined };
+			expect((await post(bodyFor(await makeCheckpoint(id), jwkFor(id)), {}, absent)).status).toBe(201);
+			expect((await call(`${PATH}?kid=${id.kid}&session_id=test-session`, {}, absent)).status).toBe(200);
+			const broken: Limiter = { limit: async () => { throw new Error('boom'); } };
+			const throwing = { ...testEnv, WITNESS_POST_RL: broken, WITNESS_GET_RL: broken };
+			expect((await post(bodyFor(await makeCheckpoint(id, { count: 2 }), jwkFor(id)), {}, throwing)).status).toBe(201);
+			expect((await call(`${PATH}?kid=${id.kid}&session_id=test-session`, {}, throwing)).status).toBe(200);
+			const lines = errors.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('WITNESS_RATE_LIMITER_FAILED fail_open=true'));
+			expect(lines.length).toBe(4);
+		} finally {
+			errors.mockRestore();
+		}
 	});
 
 	it('witnessClientKey: IPv4 as is, IPv6 by /64, IPv4-mapped as IPv4', () => {
