@@ -7944,7 +7944,7 @@ describe('H1a: paddle purchases deliver', () => {
 
 	type Mail = { to: string; subject: string; html: string; text: string };
 	type StubOpts = {
-		select?: 'none' | 'rows' | 'error' | { key_hash: string; plan: string };
+		select?: 'none' | 'rows' | 'error' | Record<string, string> | Array<Record<string, string>>;
 		insert?: 'ok' | 'throw' | '23505';
 		update?: 'ok' | 'throw';
 		resendCustomerOk?: boolean;
@@ -8393,6 +8393,247 @@ describe('H1a: paddle purchases deliver', () => {
 		const desc = spec.paths['/v5/checkout'].post?.description ?? '';
 		expect(desc).not.toContain('for the Pro plan');
 		for (const plan of ['builder', 'pro', 'protocol', 'credits', 'custody_90d', 'custody_1y']) expect(desc).toContain(plan);
+	});
+
+	// ─── H1b Part A (2026-10-03): the H1a ratification follow-ups ────────────
+
+	async function seedSubscribedKey(subId: string, fill: string, plan = 'builder', extraSub: Record<string, unknown> = {}) {
+		const keyHash = await sha256Hex('ho_live_' + fill.repeat(64));
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan, status: 'active', paddle_subscription_id: subId }));
+		await env.ORACLE_API_KEYS.put(`paddle_sub:${subId}`, JSON.stringify({ key_hash: keyHash, plan, created_at: '2026-10-01T00:00:00Z', ...extraSub }));
+		return keyHash;
+	}
+	async function kvJson(key: string): Promise<Record<string, unknown> | null> {
+		const raw = await env.ORACLE_API_KEYS.get(key);
+		return raw ? JSON.parse(raw) as Record<string, unknown> : null;
+	}
+
+	it('H1b A1: a KV key-record write that throws on subscription.canceled is a 503; the retry with KV healthy sets the status', async () => {
+		const subId   = 'sub_h1b_a1_001';
+		const keyHash = await seedSubscribedKey(subId, '1');
+		const { restore } = stubFetch({ select: 'error', update: 'ok' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			// Without occurred_at, so the 503 can only come from the key-record write.
+			const bare = await postPaddle({ event_type: 'subscription.canceled', data: { id: subId } }, { ORACLE_API_KEYS: failingPutsKv() });
+			expect(bare.status).toBe(503);
+			const cancel = { event_type: 'subscription.canceled', occurred_at: '2026-10-03T10:00:00.000Z', data: { id: subId } };
+			const failed = await postPaddle(cancel, { ORACLE_API_KEYS: failingPutsKv() });
+			expect(failed.status).toBe(503);
+			expect(await failed.json()).toMatchObject({ error: 'SERVICE_UNAVAILABLE' });
+			expect(logged(errSpy, 'PADDLE_KV_WRITE_FAILED')).toBe(true);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'active' });
+			// A3: last_event_at is not written when the event did not apply.
+			expect((await kvJson(`paddle_sub:${subId}`))!.last_event_at).toBeUndefined();
+
+			const retried = await postPaddle(cancel);
+			expect(retried.status).toBe(200);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'inactive' });
+			expect(await kvJson(`paddle_sub:${subId}`)).toMatchObject({ last_event_at: '2026-10-03T10:00:00.000Z' });
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H1b A2: Supabase answers 200 with zero rows: the subscription is missing (logged, acknowledged)', async () => {
+		const { restore } = stubFetch({ select: 'rows' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle({ event_type: 'subscription.canceled', data: { id: 'sub_h1b_a2_zero' } });
+			expect(res.status).toBe(200);
+			expect(logged(errSpy, 'PADDLE_SUB_UNKNOWN')).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H1b A2: Supabase answers 406 PGRST116: the subscription is missing, not a failure', async () => {
+		const { restore } = stubFetch({ select: 'none' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle({ event_type: 'subscription.canceled', data: { id: 'sub_h1b_a2_406' } });
+			expect(res.status).toBe(200);
+			expect(logged(errSpy, 'PADDLE_SUB_UNKNOWN')).toBe(true);
+			expect(logged(errSpy, 'PADDLE_SUB_LOOKUP_FAILED')).toBe(false);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H1b A2: Supabase errors (not PGRST116): lookup failed, 503 so Paddle retries', async () => {
+		const { restore } = stubFetch({ select: 'error' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle({ event_type: 'subscription.canceled', data: { id: 'sub_h1b_a2_err' } });
+			expect(res.status).toBe(503);
+			expect(logged(errSpy, 'PADDLE_SUB_LOOKUP_FAILED')).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H1b A2: one Supabase row (no paddle_sub in KV): the key is cancelled, and the query asks for at most 2 rows', async () => {
+		const subId   = 'sub_h1b_a2_one';
+		const keyHash = await sha256Hex('ho_live_' + '2'.repeat(64));
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ plan: 'pro', status: 'active' }));
+		const { st, restore } = stubFetch({ select: [{ key_hash: keyHash, plan: 'pro' }] });
+		try {
+			const res = await postPaddle({ event_type: 'subscription.canceled', data: { id: subId } });
+			expect(res.status).toBe(200);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'inactive' });
+			const lookup = st.supabaseUrls.find((u) => u.includes('stripe_subscription_id=eq.' + subId) && u.includes('select='));
+			expect(lookup).toContain('limit=2');
+		} finally {
+			restore();
+		}
+	});
+
+	it('H1b A2: two Supabase rows for one subscription: both keys are cancelled and PADDLE_SUB_MULTIPLE_ROWS is logged', async () => {
+		const subId = 'sub_h1b_a2_two';
+		const h1 = await sha256Hex('ho_live_' + '3'.repeat(64));
+		const h2 = await sha256Hex('ho_live_' + '4'.repeat(64));
+		for (const h of [h1, h2]) await env.ORACLE_API_KEYS.put(h, JSON.stringify({ plan: 'builder', status: 'active' }));
+		const { restore } = stubFetch({ select: [{ key_hash: h1, plan: 'builder' }, { key_hash: h2, plan: 'builder' }] });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle({ event_type: 'subscription.canceled', occurred_at: '2026-10-03T11:00:00Z', data: { id: subId } });
+			expect(res.status).toBe(200);
+			expect(await kvJson(h1)).toMatchObject({ status: 'inactive' });
+			expect(await kvJson(h2)).toMatchObject({ status: 'inactive' });
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('PADDLE_SUB_MULTIPLE_ROWS') && String(c[0]).includes(subId))).toBe(true);
+			// The paddle_sub record created from the lookup keeps both keys, so a
+			// later event found through KV still reaches the second one.
+			expect(await kvJson(`paddle_sub:${subId}`)).toMatchObject({ key_hash: h1, key_hashes: [h1, h2], last_event_at: '2026-10-03T11:00:00Z' });
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H1b A3: canceled, then a retried OLDER updated(active): the key stays cancelled', async () => {
+		const subId   = 'sub_h1b_a3_order';
+		const keyHash = await seedSubscribedKey(subId, '5');
+		const { restore } = stubFetch({ select: 'error' });
+		const logSpy = vi.spyOn(console, 'log');
+		try {
+			const cancel = await postPaddle({ event_type: 'subscription.canceled', occurred_at: '2026-10-03T12:00:00.000Z', data: { id: subId } });
+			expect(cancel.status).toBe(200);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'inactive' });
+			const stale = await postPaddle({ event_type: 'subscription.updated', occurred_at: '2026-10-03T11:59:59.000Z', data: { id: subId, status: 'active' } });
+			expect(stale.status).toBe(200);
+			expect(await stale.json()).toMatchObject({ received: true });
+			expect(logged(logSpy, 'PADDLE_EVENT_OUT_OF_ORDER')).toBe(true);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'inactive' });
+			expect(await kvJson(`paddle_sub:${subId}`)).toMatchObject({ last_event_at: '2026-10-03T12:00:00.000Z' });
+			// Control: an event at the SAME time is processed.
+			const same = await postPaddle({ event_type: 'subscription.updated', occurred_at: '2026-10-03T12:00:00.000Z', data: { id: subId, status: 'active' } });
+			expect(same.status).toBe(200);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'active' });
+		} finally {
+			logSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H1b A3: an event with no occurred_at is processed and leaves last_event_at unchanged', async () => {
+		const subId   = 'sub_h1b_a3_none';
+		const keyHash = await seedSubscribedKey(subId, '6', 'builder', { last_event_at: '2026-10-03T09:00:00.000Z' });
+		const { restore } = stubFetch({ select: 'error' });
+		try {
+			const res = await postPaddle({ event_type: 'subscription.past_due', data: { id: subId } });
+			expect(res.status).toBe(200);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'suspended' });
+			expect(await kvJson(`paddle_sub:${subId}`)).toMatchObject({ last_event_at: '2026-10-03T09:00:00.000Z' });
+			// An unparsable occurred_at is the same as none.
+			const bad = await postPaddle({ event_type: 'subscription.canceled', occurred_at: 'not-a-time', data: { id: subId } });
+			expect(bad.status).toBe(200);
+			expect(await kvJson(keyHash)).toMatchObject({ status: 'inactive' });
+			expect(await kvJson(`paddle_sub:${subId}`)).toMatchObject({ last_event_at: '2026-10-03T09:00:00.000Z' });
+		} finally {
+			restore();
+		}
+	});
+
+	it('H1b A3: the plan patch from subscription.activated merges into paddle_sub, so last_event_at survives', async () => {
+		const subId   = 'sub_h1b_a3_merge';
+		const keyHash = await seedSubscribedKey(subId, '7', 'builder', { last_event_at: '2026-10-03T08:00:00.000Z' });
+		const { restore } = stubFetch({ select: 'error', update: 'ok' });
+		try {
+			const res = await postPaddle({
+				event_type: 'subscription.activated',
+				data: { id: subId, customer_id: 'ctm_h1b', status: 'active', items: [{ price: { id: 'pri_test_pro_placeholder' } }] },
+			});
+			expect(res.status).toBe(200);
+			expect(await kvJson(keyHash)).toMatchObject({ plan: 'pro' });
+			expect(await kvJson(`paddle_sub:${subId}`)).toMatchObject({
+				key_hash: keyHash, plan: 'pro', created_at: '2026-10-01T00:00:00Z', last_event_at: '2026-10-03T08:00:00.000Z',
+			});
+		} finally {
+			restore();
+		}
+	});
+
+	it.each([
+		{ plan: 'evidence', warmsKv: false },
+		{ plan: 'builder',  warmsKv: false },
+		{ plan: 'free',     warmsKv: true },
+	])('H1b A4: a Supabase hit for a $plan key warms KV: $warmsKv', async ({ plan, warmsKv }) => {
+		const apiKey  = 'ho_live_' + (plan === 'free' ? '8' : plan === 'builder' ? '9' : 'a').repeat(64);
+		const keyHash = await sha256Hex(apiKey);
+		const { restore } = stubFetch({ select: { plan, status: 'active' } });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': apiKey } });
+			expect(res.status).toBe(200);
+			const listed = await env.ORACLE_API_KEYS.list({ prefix: keyHash });
+			if (warmsKv) {
+				expect(await kvJson(keyHash)).toEqual({ plan, status: 'active' });
+				// The warm carries the TTL-300 expiry, as before.
+				expect(listed.keys[0].expiration).toBeGreaterThan(Date.now() / 1000);
+			} else {
+				expect(listed.keys.length).toBe(0);
+			}
+		} finally {
+			restore();
+			await env.ORACLE_API_KEYS.delete(keyHash);
+		}
+	});
+
+	it('H1b A5: CREDITS_KEY_MINTED logs the email domain, never the address', async () => {
+		const { restore } = stubFetch({ email: 'credit-buyer@credits.example' });
+		const logSpy = vi.spyOn(console, 'log');
+		try {
+			const res = await postPaddle({
+				event_type: 'transaction.completed',
+				data: { id: 'txn_h1b_credits', customer_id: 'ctm_h1b_credits', items: [{ price_id: 'pri_test_credits_placeholder' }] },
+			});
+			expect(res.status).toBe(200);
+			const line = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('CREDITS_KEY_MINTED'));
+			expect(line).toBeDefined();
+			expect(JSON.parse(line!)).toMatchObject({ email_domain: 'credits.example' });
+			expect(line).not.toContain('credit-buyer');
+		} finally {
+			logSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it.each([
+		{ insert: 'ok'    as const, stored: 'yes' },
+		{ insert: 'throw' as const, stored: 'no' },
+	])('H1b A5: the founder line carries supabase_stored=$stored', async ({ insert, stored }) => {
+		const { st, restore } = stubFetch({ insert });
+		try {
+			expect((await postPaddle(completed(`sub_h1b_founder_${stored}`, BUILDER_PRICE))).status).toBe(200);
+			const founder = st.mails.filter((m) => m.to === FOUNDER);
+			expect(founder.length).toBe(1);
+			expect(founder[0].text).toContain(`supabase_stored=${stored}`);
+		} finally {
+			restore();
+		}
 	});
 });
 

@@ -1961,94 +1961,45 @@ function allowedStoredPlan(storedPlan: string, keyHash: string): AuthResult {
 	};
 }
 
-async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
-	// Step 1: master key — fastest possible path
-	if (key === env.MASTER_API_KEY) return { allowed: true, plan: 'internal' };
+// The stored key record, read memory cache → KV → Supabase. Three outcomes,
+// kept apart because the Witness routes act differently on each: 'missing'
+// (every store that could answer said no such key) and 'unavailable' (KV
+// missed and Supabase could not answer, so we do not know). A KV read that
+// throws propagates, as it always has from checkApiKey.
+type StoredKeyRecord = { plan?: string; tier?: string; status: string; expires_at?: string; balance?: number };
+type KeyRecordRead =
+	| { state: 'found'; record: StoredKeyRecord; source: 'memory' | 'kv' | 'supabase' }
+	| { state: 'missing' }
+	| { state: 'unavailable' };
 
-	// Step 2: beta keys — no lookup
-	if (env.BETA_API_KEYS) {
-		const betaKeys = env.BETA_API_KEYS.split(',').map((k) => k.trim());
-		if (betaKeys.includes(key)) return { allowed: true, plan: 'internal' };
-	}
-
-	// Steps 3–5: paid key — hash once, use for KV and Supabase
-	const keyHash = await sha256Hex(key);
-
-	// Step 2.5: in-memory cache — sub-microsecond, eliminates KV round-trip on warm isolates.
+async function readKeyRecord(keyHash: string, env: Env): Promise<KeyRecordRead> {
+	// In-memory cache — sub-microsecond, eliminates KV round-trip on warm isolates.
 	// Credits-tier keys are never memory-cached (balance changes per request).
 	const memCached = getCachedApiKey(keyHash);
 	if (memCached) {
-		const parsed = JSON.parse(memCached) as { plan?: string; tier?: string; status: string; expires_at?: string; balance?: number };
+		const parsed = JSON.parse(memCached) as StoredKeyRecord;
 		// Credits must always go to KV (balance is mutable per-request)
-		if (parsed.tier !== 'credits') {
-			if (parsed.tier === 'sandbox' || parsed.plan === 'sandbox') {
-				if (parsed.status !== 'active') {
-					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
-				}
-				if (parsed.expires_at && new Date(parsed.expires_at) <= new Date()) {
-					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
-				}
-				return { allowed: true, plan: 'sandbox', keyHash };
-			}
-			const plan   = parsed.plan ?? 'free';
-			const status = parsed.status;
-			if (status === 'active') return allowedStoredPlan(plan, keyHash);
-			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
-		}
+		if (parsed.tier !== 'credits') return { state: 'found', record: parsed, source: 'memory' };
 	}
 
-	// Step 3: KV cache
+	// KV cache
 	if (env.ORACLE_API_KEYS) {
 		const cached = await env.ORACLE_API_KEYS.get(keyHash);
 		if (cached) {
-			const parsed = JSON.parse(cached) as { plan?: string; tier?: string; status: string; expires_at?: string; balance?: number };
-			// Sandbox keys expire by TTL but also check expires_at for belt-and-suspenders
+			const parsed = JSON.parse(cached) as StoredKeyRecord;
 			if (parsed.tier === 'sandbox' || parsed.plan === 'sandbox') {
-				if (parsed.status !== 'active') {
-					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
-				}
-				if (parsed.expires_at && new Date(parsed.expires_at) <= new Date()) {
-					return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
-				}
-				// Populate in-memory cache for sandbox (non-credits)
+				// Only a usable sandbox is memory-cached, as before.
+				const expired = !!parsed.expires_at && new Date(parsed.expires_at) <= new Date();
+				if (parsed.status === 'active' && !expired) setCachedApiKey(keyHash, cached);
+			} else if (parsed.tier !== 'credits') {
+				// Credits are NOT memory-cached — the balance changes on every request.
 				setCachedApiKey(keyHash, cached);
-				return { allowed: true, plan: 'sandbox', keyHash };
 			}
-			// Credits pack — balance-based access, no subscription expiry
-			// NOT memory-cached — balance changes on every request
-			if (parsed.tier === 'credits') {
-				if (parsed.status !== 'active' || !parsed.balance || parsed.balance <= 0) {
-					return {
-						allowed: false, status: 402, error: 'CREDITS_EXHAUSTED',
-						message: 'Your 1,000 call credit pack is exhausted.',
-						body: {
-							error:       'CREDITS_EXHAUSTED',
-							message:     'Your 1,000 call credit pack is exhausted.',
-							upgrade_url: 'https://headlessoracle.com/upgrade',
-							insight:     `At your usage rate, Builder plan (${BUILDER_MONTHLY}) costs less per call than buying more credit packs.`,
-							plans: {
-								credits: '$5 for 1,000 more calls — headlessoracle.com/upgrade',
-								builder: `${BUILDER_MONTHLY} — ${BUILDER_CALLS_PER_DAY} calls — 60% cheaper per call`,
-							},
-						},
-					};
-				}
-				// Atomic-style decrement: get-then-put (KV has no native atomic operations)
-				const newBalance = parsed.balance - 1;
-				await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ ...parsed, balance: newBalance }));
-				return { allowed: true, plan: 'credits', keyHash };
-			}
-			const plan   = parsed.plan ?? 'free';
-			const status = parsed.status;
-			// Populate in-memory cache for subscription keys
-			setCachedApiKey(keyHash, cached);
-			if (status === 'active') return allowedStoredPlan(plan, keyHash);
-			// suspended or cancelled → 402 so agents know to fix payment, not rotate key
-			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
+			return { state: 'found', record: parsed, source: 'kv' };
 		}
 	}
 
-	// Step 4: KV miss → Supabase lookup (bounded — see supabaseHotPath)
+	// KV miss → Supabase lookup (bounded — see supabaseHotPath)
 	if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
 		const supabase = supabaseHotPath(env);
 		const { data, error } = await supabase
@@ -2073,20 +2024,87 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 		}
 
 		if (data) {
-			const kvValue = JSON.stringify({ plan: data.plan, status: data.status });
-			// Warm the KV cache for subsequent requests
-			if (env.ORACLE_API_KEYS) {
+			const record: StoredKeyRecord = { plan: data.plan, status: data.status };
+			const kvValue = JSON.stringify(record);
+			// Warm KV only for the plans whose record lives in Supabase. Since H1a
+			// a paid or evidence key's KV record is its full record with no TTL;
+			// a TTL-300 warm racing KV propagation (~60 s) would replace it with
+			// { plan, status } and then expire, leaving the key absent from KV.
+			if (env.ORACLE_API_KEYS && (data.plan === 'free' || data.plan === 'sandbox')) {
 				await env.ORACLE_API_KEYS.put(keyHash, kvValue, { expirationTtl: 300 });
 			}
 			// Warm the in-memory cache too
 			setCachedApiKey(keyHash, kvValue);
-			if (data.status === 'active') return allowedStoredPlan(data.plan, keyHash);
-			return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
+			return { state: 'found', record, source: 'supabase' };
+		}
+		if (error && error.code !== 'PGRST116') return { state: 'unavailable' };
+	}
+
+	return { state: 'missing' };
+}
+
+async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
+	// Step 1: master key — fastest possible path
+	if (key === env.MASTER_API_KEY) return { allowed: true, plan: 'internal' };
+
+	// Step 2: beta keys — no lookup
+	if (env.BETA_API_KEYS) {
+		const betaKeys = env.BETA_API_KEYS.split(',').map((k) => k.trim());
+		if (betaKeys.includes(key)) return { allowed: true, plan: 'internal' };
+	}
+
+	// Steps 3–5: paid key — hash once, read through memory, KV and Supabase.
+	// 'unavailable' is answered as not found, as it always was (GAP-017).
+	const keyHash = await sha256Hex(key);
+	const read = await readKeyRecord(keyHash, env);
+	if (read.state !== 'found') {
+		return { allowed: false, status: 403, error: 'INVALID_API_KEY', message: 'Invalid API key' };
+	}
+	const parsed = read.record;
+
+	// A Supabase row carries only plan and status, and was never put through
+	// the sandbox or credits rules.
+	if (read.source !== 'supabase') {
+		// Sandbox keys expire by TTL but also check expires_at for belt-and-suspenders
+		if (parsed.tier === 'sandbox' || parsed.plan === 'sandbox') {
+			if (parsed.status !== 'active') {
+				return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
+			}
+			if (parsed.expires_at && new Date(parsed.expires_at) <= new Date()) {
+				return { allowed: false, status: 402, error: 'SANDBOX_KEY_EXPIRED', message: 'Your free sandbox has expired. Upgrade to continue.' };
+			}
+			return { allowed: true, plan: 'sandbox', keyHash };
+		}
+		// Credits pack — balance-based access, no subscription expiry. Always
+		// read from KV: readKeyRecord never memory-caches it.
+		if (parsed.tier === 'credits') {
+			if (parsed.status !== 'active' || !parsed.balance || parsed.balance <= 0) {
+				return {
+					allowed: false, status: 402, error: 'CREDITS_EXHAUSTED',
+					message: 'Your 1,000 call credit pack is exhausted.',
+					body: {
+						error:       'CREDITS_EXHAUSTED',
+						message:     'Your 1,000 call credit pack is exhausted.',
+						upgrade_url: 'https://headlessoracle.com/upgrade',
+						insight:     `At your usage rate, Builder plan (${BUILDER_MONTHLY}) costs less per call than buying more credit packs.`,
+						plans: {
+							credits: '$5 for 1,000 more calls — headlessoracle.com/upgrade',
+							builder: `${BUILDER_MONTHLY} — ${BUILDER_CALLS_PER_DAY} calls — 60% cheaper per call`,
+						},
+					},
+				};
+			}
+			// Atomic-style decrement: get-then-put (KV has no native atomic operations)
+			const newBalance = parsed.balance - 1;
+			await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ ...parsed, balance: newBalance }));
+			return { allowed: true, plan: 'credits', keyHash };
 		}
 	}
 
-	// Step 5: not found anywhere
-	return { allowed: false, status: 403, error: 'INVALID_API_KEY', message: 'Invalid API key' };
+	const plan = parsed.plan ?? 'free';
+	if (parsed.status === 'active') return allowedStoredPlan(plan, keyHash);
+	// suspended or cancelled → 402 so agents know to fix payment, not rotate key
+	return { allowed: false, status: 402, error: 'PAYMENT_REQUIRED', message: 'Subscription suspended or cancelled — renew at headlessoracle.com' };
 }
 
 // ─── Key Usage Tracking ───────────────────────────────────────────────────────
@@ -2849,8 +2867,12 @@ function resolvePaddlePlan(priceId: string | null, env: Env): PaddlePriceResolut
 // Three outcomes, kept apart because the callers act differently on each:
 // 'found' (a key exists), 'missing' (both stores answered: no key), and
 // 'failed' (KV missed and Supabase could not answer, so we do not know).
+// stripe_subscription_id has only a non-unique index, so 'found' carries every
+// key hash the subscription owns (at most two are read), and the caller
+// patches all of them. lastEventAt is the occurred_at of the last event
+// applied, kept only in KV.
 type PaddleSubLookup =
-	| { state: 'found'; keyHash: string | null; plan: string | null; source: 'kv' | 'supabase' }
+	| { state: 'found'; keyHashes: string[]; plan: string | null; source: 'kv' | 'supabase'; lastEventAt: string | null }
 	| { state: 'missing' }
 	| { state: 'failed'; detail: string };
 
@@ -2861,8 +2883,11 @@ async function lookupPaddleSubscription(env: Env, subscriptionId: string): Promi
 		try {
 			const raw = await env.ORACLE_API_KEYS.get(`paddle_sub:${subscriptionId}`);
 			if (raw) {
-				const rec = JSON.parse(raw) as { key_hash?: string; plan?: string };
-				return { state: 'found', keyHash: rec.key_hash ?? null, plan: rec.plan ?? null, source: 'kv' };
+				const rec = JSON.parse(raw) as { key_hash?: string; key_hashes?: unknown; plan?: string; last_event_at?: string };
+				const keyHashes = Array.isArray(rec.key_hashes) && rec.key_hashes.every((h) => typeof h === 'string')
+					? rec.key_hashes as string[]
+					: rec.key_hash ? [rec.key_hash] : [];
+				return { state: 'found', keyHashes, plan: rec.plan ?? null, source: 'kv', lastEventAt: rec.last_event_at ?? null };
 			}
 		} catch (err) {
 			console.error(JSON.stringify({ event: 'PADDLE_SUB_KV_READ_FAILED', subscription_id: subscriptionId, detail: String(err).slice(0, 200) }));
@@ -2873,49 +2898,81 @@ async function lookupPaddleSubscription(env: Env, subscriptionId: string): Promi
 	}
 	try {
 		const { data, error, status } = await supabaseHotPath(env, PADDLE_SUPABASE_TIMEOUT_MS)
-			.from('api_keys').select('key_hash, plan').eq('stripe_subscription_id', subscriptionId).single();
-		if (data) {
-			const row = data as { key_hash?: string; plan?: string };
-			return { state: 'found', keyHash: row.key_hash ?? null, plan: row.plan ?? null, source: 'supabase' };
-		}
-		// "No row" is PGRST116, which PostgREST sends as HTTP 406 for .single().
-		// The status is checked too: a 406 is the singular-object refusal
-		// whatever body shape carried it.
+			.from('api_keys').select('key_hash, plan').eq('stripe_subscription_id', subscriptionId).limit(2);
+		// "No row" arrives as PGRST116 or as HTTP 406 from a stub or proxy that
+		// still answers the singular-object form; both are missing.
 		const code = (error as { code?: string } | null)?.code;
-		if (!error || code === 'PGRST116' || status === 406) return { state: 'missing' };
-		return { state: 'failed', detail: `${code ?? 'unknown'}: ${String(error.message ?? '').slice(0, 200)}` };
+		if (error) {
+			if (code === 'PGRST116' || status === 406) return { state: 'missing' };
+			return { state: 'failed', detail: `${code ?? 'unknown'}: ${String(error.message ?? '').slice(0, 200)}` };
+		}
+		if (status === 406) return { state: 'missing' };
+		// An array gives its rows; a single object (as a singular response
+		// carries it) is one row.
+		const rows = (Array.isArray(data) ? data : data ? [data] : []) as Array<{ key_hash?: string; plan?: string }>;
+		if (rows.length === 0) return { state: 'missing' };
+		if (rows.length > 2) return { state: 'failed', detail: `unexpected row count ${rows.length}` };
+		if (rows.length === 2) {
+			console.error(JSON.stringify({ event: 'PADDLE_SUB_MULTIPLE_ROWS', subscription_id: subscriptionId }));
+		}
+		const keyHashes = rows.map((r) => r.key_hash).filter((h): h is string => typeof h === 'string' && h.length > 0);
+		return { state: 'found', keyHashes, plan: rows[0].plan ?? null, source: 'supabase', lastEventAt: null };
 	} catch (err) {
 		return { state: 'failed', detail: String(err).slice(0, 200) };
 	}
 }
 
-// Points the subscription's key at a new status or plan: `patch` goes to the
+// Every write to `paddle_sub:` merges into what is there, so a field one
+// writer does not know about (last_event_at, key_hashes) survives another's
+// write. When there is no record yet (the subscription was found in Supabase)
+// it is created from the lookup. Throws on a KV failure: the callers decide.
+async function mergePaddleSub(
+	env: Env,
+	subscriptionId: string,
+	found: Extract<PaddleSubLookup, { state: 'found' }>,
+	fields: Record<string, unknown>,
+): Promise<void> {
+	if (!env.ORACLE_API_KEYS || found.keyHashes.length === 0) return;
+	const key = `paddle_sub:${subscriptionId}`;
+	const raw = await env.ORACLE_API_KEYS.get(key);
+	let base: Record<string, unknown> | null = null;
+	if (raw) {
+		try { base = JSON.parse(raw) as Record<string, unknown>; } catch { base = null; }
+	}
+	if (!base) {
+		base = { key_hash: found.keyHashes[0], plan: found.plan, created_at: new Date().toISOString() };
+		if (found.keyHashes.length > 1) base.key_hashes = found.keyHashes;
+	}
+	await env.ORACLE_API_KEYS.put(key, JSON.stringify({ ...base, ...fields }));
+}
+
+// Points the subscription's keys at a new status or plan: `patch` goes to each
 // KV key record, `dbPatch` to Supabase (the two stores name a cancellation
-// differently, 'inactive' and 'cancelled', as they always have). Best effort:
-// each store is written independently, a failure is logged and never fails the
-// webhook, because Paddle retrying cannot fix a write that already half-landed.
+// differently, 'inactive' and 'cancelled', as they always have). The KV key
+// records are what a key authenticates from, so their outcome is returned:
+// kvOk false means at least one KV write failed, and a status event answers
+// 503 so Paddle retries (every patch here is idempotent). The Supabase write
+// stays best effort and is only logged.
 async function updatePaddleSubscriptionKey(
 	env: Env,
 	subscriptionId: string,
 	found: Extract<PaddleSubLookup, { state: 'found' }>,
 	patch: { status?: string; plan?: string },
 	dbPatch: { status?: string; plan?: string },
-): Promise<void> {
-	if (found.keyHash && env.ORACLE_API_KEYS) {
+): Promise<{ kvOk: boolean }> {
+	let kvOk = true;
+	if (found.keyHashes.length > 0 && env.ORACLE_API_KEYS) {
 		try {
-			const current = await env.ORACLE_API_KEYS.get(found.keyHash);
-			if (current) {
-				const parsed = JSON.parse(current) as Record<string, unknown>;
-				await env.ORACLE_API_KEYS.put(found.keyHash, JSON.stringify({ ...parsed, ...patch }));
+			for (const keyHash of found.keyHashes) {
+				const current = await env.ORACLE_API_KEYS.get(keyHash);
+				if (current) {
+					const parsed = JSON.parse(current) as Record<string, unknown>;
+					await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ ...parsed, ...patch }));
+				}
 			}
-			if (patch.plan) {
-				await env.ORACLE_API_KEYS.put(`paddle_sub:${subscriptionId}`, JSON.stringify({
-					key_hash:   found.keyHash,
-					plan:       patch.plan,
-					created_at: new Date().toISOString(),
-				}));
-			}
+			if (patch.plan) await mergePaddleSub(env, subscriptionId, found, { plan: patch.plan });
 		} catch (err) {
+			kvOk = false;
 			console.error(JSON.stringify({ event: 'PADDLE_KV_WRITE_FAILED', subscription_id: subscriptionId, detail: String(err).slice(0, 200) }));
 		}
 	}
@@ -2928,6 +2985,23 @@ async function updatePaddleSubscriptionKey(
 			console.error(JSON.stringify({ event: 'PADDLE_SUPABASE_WRITE_FAILED', subscription_id: subscriptionId, detail: String(err).slice(0, 200) }));
 		}
 	}
+	return { kvOk };
+}
+
+// Paddle's top-level occurred_at, or null when absent or unparsable.
+function paddleOccurredAt(event: { occurred_at?: unknown }): string | null {
+	const v = event.occurred_at;
+	return typeof v === 'string' && Number.isFinite(Date.parse(v)) ? v : null;
+}
+
+// An event older than the last one applied to this subscription is stale:
+// Paddle retries deliveries, so a retried subscription.updated(active) can
+// land after the canceled that followed it. Equal times are processed. With
+// either time missing or unparsable, nothing can be said and it is processed.
+function paddleEventIsStale(occurredAt: string | null, found: Extract<PaddleSubLookup, { state: 'found' }>): boolean {
+	if (!occurredAt || !found.lastEventAt) return false;
+	const stored = Date.parse(found.lastEventAt);
+	return Number.isFinite(stored) && Date.parse(occurredAt) < stored;
 }
 
 async function supabaseKeepalive(env: Env): Promise<void> {
@@ -2987,7 +3061,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 // customer's email DOMAIN goes in it.
 async function sendFounderMintLine(
 	env: Env,
-	args: { plan: string; transactionId: string; customerEmail: string | null; customerEmailSent: boolean },
+	args: { plan: string; transactionId: string; customerEmail: string | null; customerEmailSent: boolean; supabaseStored: boolean },
 ): Promise<void> {
 	if (!env.RESEND_API_KEY) return;
 	const domain = args.customerEmail?.includes('@') ? args.customerEmail.split('@').pop() : 'none';
@@ -2999,7 +3073,7 @@ async function sendFounderMintLine(
 				from:    'Headless Oracle <hello@headlessoracle.com>',
 				to:      [FOUNDER_NOTIFICATION_EMAIL],
 				subject: `Paid mint: ${args.plan}`,
-				text:    `plan=${args.plan} transaction=${args.transactionId} customer_domain=${domain} customer_email_sent=${args.customerEmailSent ? 'yes' : 'no'}`,
+				text:    `plan=${args.plan} transaction=${args.transactionId} customer_domain=${domain} customer_email_sent=${args.customerEmailSent ? 'yes' : 'no'} supabase_stored=${args.supabaseStored ? 'yes' : 'no'}`,
 			}),
 		});
 	} catch (err) {
@@ -14250,7 +14324,7 @@ export default {
 					return json({ error: 'INVALID_SIGNATURE', message: 'Paddle-Signature verification failed' }, 401);
 				}
 
-				const event = JSON.parse(rawBody) as { event_type: string; data: Record<string, unknown> };
+				const event = JSON.parse(rawBody) as { event_type: string; occurred_at?: unknown; data: Record<string, unknown> };
 
 				if (event.event_type === 'transaction.completed') {
 					const txn = event.data;
@@ -14309,7 +14383,9 @@ export default {
 								}),
 							}).catch(() => {});
 						}
-						console.log(JSON.stringify({ event: 'CREDITS_KEY_MINTED', email: creditsEmail ?? 'none', txn_id: txn['id'] ?? 'unknown' }));
+						// The domain only, never the address: logs are not a customer record.
+						const creditsEmailDomain = creditsEmail?.includes('@') ? creditsEmail.split('@').pop() : 'none';
+						console.log(JSON.stringify({ event: 'CREDITS_KEY_MINTED', email_domain: creditsEmailDomain, txn_id: txn['id'] ?? 'unknown' }));
 						// Revenue pulse — record this event so /v5/revenue-pulse and the
 						// scheduled health-check (.github/workflows/health-check.yml) can
 						// detect and surface new payments. Best-effort, errors swallowed.
@@ -14525,7 +14601,12 @@ export default {
 							email,
 							created_at:             createdAt,
 						}));
-						await env.ORACLE_API_KEYS.put(`paddle_sub:${subscriptionId}`, JSON.stringify({ key_hash: keyHash, plan, created_at: createdAt }));
+						// Merged, as every paddle_sub: write is, so no field another
+						// writer put there is dropped.
+						const priorSubRaw = await env.ORACLE_API_KEYS.get(`paddle_sub:${subscriptionId}`);
+						let priorSub: Record<string, unknown> = {};
+						if (priorSubRaw) { try { priorSub = JSON.parse(priorSubRaw) as Record<string, unknown>; } catch { priorSub = {}; } }
+						await env.ORACLE_API_KEYS.put(`paddle_sub:${subscriptionId}`, JSON.stringify({ ...priorSub, key_hash: keyHash, plan, created_at: createdAt }));
 					} catch (err) {
 						console.error(JSON.stringify({ event: 'PADDLE_KV_WRITE_FAILED', txn_id: txnId, supabase_stored: supabaseStored, detail: String(err).slice(0, 200) }));
 						if (!supabaseStored) {
@@ -14581,14 +14662,15 @@ export default {
 						});
 					}
 
-					await sendFounderMintLine(env, { plan, transactionId: txnId, customerEmail: email, customerEmailSent });
+					await sendFounderMintLine(env, { plan, transactionId: txnId, customerEmail: email, customerEmailSent, supabaseStored });
 
 					return json({ received: true });
 				}
 
 				// subscription.updated / past_due / canceled: KV `paddle_sub:` first,
-				// then Supabase. Each store is written best effort and a write
-				// failure never fails the webhook. A subscription neither store
+				// then Supabase. A KV key-record write that fails is a 503 (H1b A1);
+				// Supabase stays best effort. An event older than the last one
+				// applied is acknowledged and ignored (A3). A subscription neither store
 				// knows is logged and acknowledged; one we could not look up at all
 				// (KV miss, Supabase down) is a 503 so Paddle retries, because
 				// dropping a cancellation would leave a cancelled key working.
@@ -14608,7 +14690,28 @@ export default {
 						console.error(JSON.stringify({ event: 'PADDLE_SUB_UNKNOWN', event_type: event.event_type, subscription_id: subId }));
 						return json({ received: true });
 					}
-					await updatePaddleSubscriptionKey(env, subId, found, { status: kvStatus }, { status: dbStatus });
+					const occurredAt = paddleOccurredAt(event);
+					if (paddleEventIsStale(occurredAt, found)) {
+						console.log(JSON.stringify({ event: 'PADDLE_EVENT_OUT_OF_ORDER', event_type: event.event_type, subscription_id: subId, occurred_at: occurredAt, last_event_at: found.lastEventAt }));
+						return json({ received: true });
+					}
+					const { kvOk } = await updatePaddleSubscriptionKey(env, subId, found, { status: kvStatus }, { status: dbStatus });
+					// A status that did not reach the KV key record would leave a
+					// cancelled key working: Paddle retries, and the patch is idempotent.
+					if (!kvOk) {
+						return json({ error: 'SERVICE_UNAVAILABLE', message: 'Key status could not be stored; Paddle will retry this delivery' }, 503);
+					}
+					// last_event_at only after every key-record write landed. If it
+					// cannot be stored, a later stale event could reapply an older
+					// status, so this too is a retry.
+					if (occurredAt) {
+						try {
+							await mergePaddleSub(env, subId, found, { last_event_at: occurredAt });
+						} catch (err) {
+							console.error(JSON.stringify({ event: 'PADDLE_KV_WRITE_FAILED', subscription_id: subId, detail: String(err).slice(0, 200) }));
+							return json({ error: 'SERVICE_UNAVAILABLE', message: 'Event order could not be stored; Paddle will retry this delivery' }, 503);
+						}
+					}
 					return json({ received: true });
 				}
 
@@ -14662,8 +14765,22 @@ export default {
 					const activPlan: string = activResolved.plan;
 					const found = await lookupPaddleSubscription(env, subscriptionId);
 					if (found.state === 'found') {
+						const occurredAt = paddleOccurredAt(event);
+						if (paddleEventIsStale(occurredAt, found)) {
+							console.log(JSON.stringify({ event: 'PADDLE_EVENT_OUT_OF_ORDER', event_type: event.event_type, subscription_id: subscriptionId, occurred_at: occurredAt, last_event_at: found.lastEventAt }));
+							return json({ received: true });
+						}
 						if (found.plan !== activPlan) {
-							await updatePaddleSubscriptionKey(env, subscriptionId, found, { plan: activPlan, status: 'active' }, { plan: activPlan, status: 'active' });
+							// Best effort here, as before: a plan move that fails is logged.
+							const { kvOk } = await updatePaddleSubscriptionKey(env, subscriptionId, found, { plan: activPlan, status: 'active' }, { plan: activPlan, status: 'active' });
+							if (!kvOk) return json({ received: true });
+						}
+						if (occurredAt) {
+							try {
+								await mergePaddleSub(env, subscriptionId, found, { last_event_at: occurredAt });
+							} catch (err) {
+								console.error(JSON.stringify({ event: 'PADDLE_KV_WRITE_FAILED', subscription_id: subscriptionId, detail: String(err).slice(0, 200) }));
+							}
 						}
 						return json({ received: true });
 					}
