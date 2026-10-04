@@ -18834,7 +18834,12 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 		expect(llms).toContain('Headless Oracle co-authors the IETF draft family defining environmental constraints for Verifiable Intent.');
 	});
 
-	const BANNED = ["Mastercard's", 'compliant', 'certified', 'no trust required', 'unlimited'];
+	// H3b (2026-10-04) adds 'proof' (a signature shows origin, not truth) and the
+	// offline-check claim (an offline check against a sidecar trusts the operator).
+	// No URL or filename containing "proof" appears in these files, so there are
+	// no exceptions; the MCP initialize _meta carries /v5/payment-proof, but only
+	// the instructions text is scanned below.
+	const BANNED = ["Mastercard's", 'compliant', 'certified', 'no trust required', 'unlimited', 'proof', 'check offline', 'checks offline'];
 	const AGENT_FILES = [
 		'/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md', '/skill.md',
 		'/.well-known/agent.json', '/.well-known/mcp/server-card.json', '/.well-known/mcp.json',
@@ -18950,5 +18955,89 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 			const text = await (await fetchWorker(`/.well-known/agent-skills/${s.name}/SKILL.md`)).text();
 			expect(text, s.name).toMatch(/^license: MIT$/m);
 		}
+	});
+});
+
+// ─── H3b (2026-10-04): the Chirindo summary says only what the witness detects ─
+describe('H3b: corrected Chirindo summary and npm caveat', () => {
+	// Written out independently of the source constant, on purpose: a test that
+	// read CHIRINDO_SUMMARY would pass whatever the constant said.
+	const SUMMARY = 'Chirindo signs each agent action into a hash-chained log. Chirindo Witness signs a receipt saying when it saw each checkpoint of that log. ' +
+		'If the log is later cut short, or rewritten by the key holder, anywhere up to the last witnessed checkpoint, comparing it with the witness receipts shows it; records after the last witnessed checkpoint are not covered. ' +
+		'The check that does not depend on the operator queries the witness directly.';
+	const NPM_CAVEAT = 'Witness support (chirindo checkpoint, --witness) is on GitHub main and not yet in the npm release (0.4.0).';
+	const SIDECAR    = 'Verifying against a sidecar file trusts the operator who supplied it. Only querying the witness is independent of the operator.';
+
+	async function initializeInstructions(): Promise<string> {
+		const body = await (await postMcp({
+			jsonrpc: '2.0', id: 1, method: 'initialize',
+			params:  { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'h3b-test', version: '1.0.0' } },
+		})).json() as { result: { instructions: string } };
+		return body.result.instructions;
+	}
+
+	const SUMMARY_SURFACES = [
+		'/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md',
+		'/.well-known/agent.json', '/.well-known/mcp/server-card.json', '/.well-known/mcp-servers.json',
+	];
+
+	it.each(SUMMARY_SURFACES)('%s carries the corrected summary', async (path) => {
+		const text = await (await fetchWorker(path)).text();
+		expect(text).toContain(SUMMARY);
+	});
+
+	it('the MCP initialize instructions carry the corrected summary (8th surface)', async () => {
+		expect(await initializeInstructions()).toContain(SUMMARY);
+	});
+
+	it.each(['/.well-known/mcp/server-card.json', '/.well-known/mcp-servers.json'])('%s carries the sidecar caveat', async (path) => {
+		const text = await (await fetchWorker(path)).text();
+		expect(text).toContain(SIDECAR);
+	});
+
+	it('the MCP initialize instructions carry the sidecar caveat', async () => {
+		expect(await initializeInstructions()).toContain(SIDECAR);
+	});
+
+	const AGENT_FILES = [
+		'/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md', '/skill.md',
+		'/.well-known/agent.json', '/.well-known/mcp/server-card.json', '/.well-known/mcp.json',
+		'/.well-known/mcp-servers.json', '/.well-known/ai-plugin.json',
+	];
+
+	it('every surface that lists the npm gate carries the npm-release caveat', async () => {
+		const listing: string[] = [];
+		for (const path of AGENT_FILES) {
+			const text = await (await fetchWorker(path)).text();
+			if (text.includes('@headlessoracle/chirindo')) {
+				listing.push(path);
+				expect(text, path).toContain(NPM_CAVEAT);
+			}
+		}
+		const ins = await initializeInstructions();
+		if (ins.includes('@headlessoracle/chirindo')) expect(ins).toContain(NPM_CAVEAT);
+		// Not vacuous: the four Chirindo-first documents list the gate.
+		expect(listing).toEqual(expect.arrayContaining(['/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md']));
+	});
+
+	it('llms.txt gives the POST body shape, labels submit POST-only, and names the operator-independent query', async () => {
+		const llms = await (await fetchWorker('/llms.txt')).text();
+		expect(llms).toContain('[Submit a checkpoint (POST only)]');
+		expect(llms).toContain('{"checkpoint":{"v","type","session_id","count","last_entry_hash","ts","kid","sig"},"public_key_jwk":{...}}');
+		expect(llms).toContain('GET https://api.headlessoracle.com/v1/witness/checkpoints?kid=<thumbprint>&session_id=<id>');
+		expect(llms).toContain('the check that does not depend on the operator');
+	});
+
+	it('the buy text names the email channel and the absent-claim_token case', async () => {
+		for (const path of ['/llms.txt', '/.well-known/agent.json']) {
+			const text = await (await fetchWorker(path)).text();
+			expect(text, path).toContain('The key is also sent by email.');
+			expect(text, path).toContain('If claim_token is absent from the checkout response, the key arrives by email.');
+		}
+	});
+
+	it('mcp-servers.json standards names the IETF draft, not the retired names', async () => {
+		const body = await fetchJSON('/.well-known/mcp-servers.json') as { servers: Array<{ standards: string[] }> };
+		expect(body.servers[0].standards).toEqual(['draft-borthwick-msebenzi-environment-state']);
 	});
 });

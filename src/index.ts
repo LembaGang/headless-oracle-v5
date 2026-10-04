@@ -6962,10 +6962,18 @@ function longDate(iso: string): string {
 	return `${d} ${months[m - 1]} ${y}`;
 }
 
+// H3b (2026-10-04): the H3a wording overclaimed. A cut-off tail after the last
+// witnessed checkpoint is NOT detected (spec does_not_detect[0]), and the
+// offline check against a sidecar trusts the operator. The Lead's exact text.
 const CHIRINDO_SUMMARY =
-	'Chirindo signs each agent action into a hash-chained log. Chirindo Witness countersigns the log\'s checkpoints with the time it saw them. ' +
-	'If anyone, including the operator, later cuts off the end of the log or rewrites history up to a witnessed checkpoint, comparing the log with the witness receipts shows it. ' +
-	'Anyone can check offline with open-source tools.';
+	'Chirindo signs each agent action into a hash-chained log. Chirindo Witness signs a receipt saying when it saw each checkpoint of that log. ' +
+	'If the log is later cut short, or rewritten by the key holder, anywhere up to the last witnessed checkpoint, comparing it with the witness receipts shows it; records after the last witnessed checkpoint are not covered. ' +
+	'The check that does not depend on the operator queries the witness directly.';
+
+// npm @headlessoracle/chirindo 0.4.0 ships init, export-jwks, proxy and verify
+// only (read from the 0.4.0 tarball, 2026-10-04); the witness commands are on
+// GitHub main. Said wherever the npm gate is listed.
+const CHIRINDO_NPM_CAVEAT = 'Witness support (chirindo checkpoint, --witness) is on GitHub main and not yet in the npm release (0.4.0).';
 
 const CHIRINDO_LIMITS = `${WITNESS_SPEC_DOC.purpose} ${WITNESS_SPEC_DOC.honest_limits.sidecar}`;
 
@@ -6975,10 +6983,10 @@ const CHIRINDO_PLANS_MD = `- Free: anonymous checkpoints from a shared pool of $
 - Evidence Starter: ${wholeUsd(REFEREE_PRICES.custody_90d.minor_units)}/month, your own Witness key, up to ${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence_starter)} new checkpoints per UTC day. Plan id custody_90d. Introductory until ${CHIRINDO_INTRO_UNTIL}.
 - Evidence: ${wholeUsd(REFEREE_PRICES.custody_1y.minor_units)}/month, your own Witness key, up to ${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence)} new checkpoints per UTC day. Plan id custody_1y. Introductory until ${CHIRINDO_INTRO_UNTIL}.
 - Evidence pilot for a team in its audit window: $${EVIDENCE_PILOT_USD.toLocaleString('en-US')} fixed, scope agreed by conversation. Write to ${CONTACT_EMAIL}.
-- Buy: POST https://headlessoracle.com/v5/checkout with {"plan":"custody_90d"} or {"plan":"custody_1y"}. The response carries a hosted payment url (a person pays by card) and a claim_token. After payment, POST https://headlessoracle.com/v5/claim with {"claim_token":"<token>"} returns the key, for 24 hours. Send the key as Authorization: Bearer <key> on POST ${WITNESS_SUBMIT_URL}.
+- Buy: POST https://headlessoracle.com/v5/checkout with {"plan":"custody_90d"} or {"plan":"custody_1y"}. The response carries a hosted payment url (a person pays by card) and a claim_token. After payment, POST https://headlessoracle.com/v5/claim with {"claim_token":"<token>"} returns the key, for 24 hours. The key is also sent by email. If claim_token is absent from the checkout response, the key arrives by email. Send the key as Authorization: Bearer <key> on POST ${WITNESS_SUBMIT_URL}.
 - Machine-readable prices: https://headlessoracle.com/v5/pricing`;
 
-const CHIRINDO_TOOLS_MD = `- [Chirindo gate (npm @headlessoracle/chirindo)](https://www.npmjs.com/package/@headlessoracle/chirindo): a fail-closed cryptographic gate at the MCP tool-call boundary that signs a receipt for each decision. Source: https://github.com/LembaGang/chirindo (Apache-2.0).
+const CHIRINDO_TOOLS_MD = `- [Chirindo gate (npm @headlessoracle/chirindo)](https://www.npmjs.com/package/@headlessoracle/chirindo): a fail-closed cryptographic gate at the MCP tool-call boundary that signs a receipt for each decision. Source: https://github.com/LembaGang/chirindo (Apache-2.0). ${CHIRINDO_NPM_CAVEAT}
 - [receipt-verify (npm @headlessoracle/receipt-verify)](https://www.npmjs.com/package/@headlessoracle/receipt-verify): a cross-format agent-receipt verifier. Source: https://github.com/LembaGang/receipt-verify (Apache-2.0).
 - [Test kit](${CHIRINDO_KIT_URL}): five tampering cases and an untouched control, run against a local stub witness, not Headless Oracle's.`;
 
@@ -6987,7 +6995,8 @@ const CHIRINDO_TOOLS_MD = `- [Chirindo gate (npm @headlessoracle/chirindo)](http
 const CHIRINDO_SECTIONS_MD = `## Chirindo Witness
 
 - [Witness spec (machine-readable)](${WITNESS_SPEC_URL}): wire contract, the checks in order, error codes, and honest limits.
-- [Submit a checkpoint](${WITNESS_SUBMIT_URL}): POST an Ed25519-signed checkpoint with its public key as a JWK. No account is needed for the free pool.
+- [Submit a checkpoint (POST only)](${WITNESS_SUBMIT_URL}): body {"checkpoint":{"v","type","session_id","count","last_entry_hash","ts","kid","sig"},"public_key_jwk":{...}}, an Ed25519-signed checkpoint with its public key as a JWK; exact rules in the spec. No account is needed for the free pool.
+- Query the receipts, no setup: GET ${WITNESS_SUBMIT_URL}?kid=<thumbprint>&session_id=<id>. This is the check that does not depend on the operator.
 - Host: use ${WITNESS_SPEC_DOC.base_url} for /v1/witness/*. The same paths on https://headlessoracle.com are not served yet.
 
 ## Pricing
@@ -7154,7 +7163,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/health | GET | No | Signed liveness probe | SMA-format health receipt |
 | /v5/usage | GET | Yes | Per-key daily usage stats | { requests_today, limit, percent_used } |
 | /v5/traction | GET | No | Live metrics snapshot | { exchanges_covered, mcp_requests_today, ... } |
-| /v5/metrics/public | GET | No | Social-proof metrics — exchanges, uptime_days, tests_passing, signing_algorithm, x402 stats, mcpscoreboard_preflight | stable facts, no auth |
+| /v5/metrics/public | GET | No | Public metrics — exchanges, uptime_days, tests_passing, signing_algorithm, x402 stats, mcpscoreboard_preflight | stable facts, no auth |
 | /v5/implementations | GET | No | Standards implementations registry (SMA/MPAS/APTS) | { standards: { sma, mpas, apts }, total_implementations } |
 | /v5/showcase | GET | No | Reference projects using Headless Oracle | { entries: [{name, url, category}], submit_url } |
 | /v5/receipts | GET | Builder+ | Receipt audit log | { receipts: [{mic, status, issued_at}] } |
@@ -7242,7 +7251,7 @@ XBIN (Binance, UTC, 24/7 no weekends, mic_type: convention)
 settlement_window: T+1/DTCC (XNYS/XNAS), T+2/Euroclear (XLON), T+2/JSCC (XJPX), null for all others
 
 ## Fail-Closed Guarantee
-UNKNOWN status means the oracle cannot determine market state. Agents MUST treat UNKNOWN as CLOSED and halt. HALTED means a circuit breaker or operator override is active — also treat as CLOSED. The absence of a valid signed receipt is itself proof of unsafety.
+UNKNOWN status means the oracle cannot determine market state. Agents MUST treat UNKNOWN as CLOSED and halt. HALTED means a circuit breaker or operator override is active — also treat as CLOSED. Without a valid signed receipt, treat the market as unsafe and halt.
 
 ## Pricing
 - Free: 500 req/day (GET /v5/keys/request)
@@ -7274,7 +7283,7 @@ Auth: optional Bearer token (Oracle API key via POST /oauth/token)
 ## Pre-Trade Verification Pattern
 - [Pattern Specification v2.0](https://headlessoracle.com/docs/specifications/pre-trade-stack) — Composable deployment pattern: execution-environment verification → spend authorization → signal verification → payment → trade execution. Step 1 normatively specified by \`environment.market_state\` + \`environment.wallet_state\` in the Verifiable Intent environment.* family.
 - [Machine-Readable Pattern](https://headlessoracle.com/v5/pre-trade-stack) — JSON: 5 steps, normative specification references, fail-closed composition semantics.
-- [CPVR-1 Specification](https://headlessoracle.com/docs/specifications/cpvr-1) — Composable Pre-Trade Verification Receipt: proposed JSON envelope wrapping all step proofs into a single verifiable artifact.
+- [CPVR-1 Specification](https://headlessoracle.com/docs/specifications/cpvr-1) — Composable Pre-Trade Verification Receipt: proposed JSON envelope wrapping all step records into a single verifiable artifact.
 
 ## Discovery
 - [/.well-known/mcp-servers.json](https://headlessoracle.com/.well-known/mcp-servers.json) — Self-describing registry feed for MCP directories (auto-updateable, proposed convention)
@@ -7388,7 +7397,7 @@ if receipt["status"] != "OPEN":
 1. Agent calls GET /v5/status?mic=XNYS without auth → receives 402 with payment details
 2. 402 body contains: payTo address, amount (1000 = $0.001 USDC), network (base), chainId (8453)
 3. Agent signs USDC transfer on Base mainnet
-4. Agent retries GET /v5/status?mic=XNYS with X-Payment header containing tx proof
+4. Agent retries GET /v5/status?mic=XNYS with X-Payment header containing the payment transaction
 5. Oracle verifies on-chain: receipt status, Transfer event, amount, recipient, block age (<300s)
 6. Returns signed receipt on success
 
@@ -7454,7 +7463,7 @@ Headless Oracle returns cryptographically signed receipts that tell you whether 
 | Scheduling calendar events | Detecting early close days |
 | Building a world clock | Lunch break windows (XJPX, XHKG, XSHG, XSHE) |
 | Converting between timezones | DST correctness across 28 separate exchange calendars |
-| Checking if an office is open | Cryptographic proof that you checked before executing |
+| Checking if an office is open | A signed record that you checked before executing |
 | | Fail-closed UNKNOWN when state cannot be determined |
 
 **Rule of thumb**: If your code makes financial execution decisions based on time, a timezone library is necessary but not sufficient. You need attestable market state, not computable clock time. Across all 28 exchanges, approximately 5,000+ schedule edge cases per year require explicit handling beyond UTC offset arithmetic.
@@ -8809,7 +8818,7 @@ const AGENT_JSON = {
 		{
 			id:          'buy_evidence_plan',
 			name:        'Buy an Evidence plan (own Witness key)',
-			description: `Evidence Starter ${wholeUsd(REFEREE_PRICES.custody_90d.minor_units)}/month (${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence_starter)} new checkpoints per UTC day, plan custody_90d) or Evidence ${wholeUsd(REFEREE_PRICES.custody_1y.minor_units)}/month (${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence)} per day, plan custody_1y), introductory until ${CHIRINDO_INTRO_UNTIL}. Returns a hosted payment url (a person pays by card) and a claim_token; after payment POST /v5/claim with the claim_token returns the key for 24 hours.`,
+			description: `Evidence Starter ${wholeUsd(REFEREE_PRICES.custody_90d.minor_units)}/month (${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence_starter)} new checkpoints per UTC day, plan custody_90d) or Evidence ${wholeUsd(REFEREE_PRICES.custody_1y.minor_units)}/month (${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence)} per day, plan custody_1y), introductory until ${CHIRINDO_INTRO_UNTIL}. Returns a hosted payment url (a person pays by card) and a claim_token; after payment POST /v5/claim with the claim_token returns the key for 24 hours. The key is also sent by email. If claim_token is absent from the checkout response, the key arrives by email.`,
 			endpoint:    'https://headlessoracle.com/v5/checkout',
 			method:      'POST',
 			auth:        false,
@@ -8840,7 +8849,7 @@ const AGENT_JSON = {
 		{
 			id:          'verify_receipt',
 			name:        'Verify Receipt Signature',
-			description: 'Verifies Ed25519 cryptographic proof on a Signed Market Attestation receipt — confirms genuine pre-trade verification attestation, receipt authenticity, and signature validity. REST endpoint for test harnesses and SDK authors; agents SHOULD prefer offline verification with the published public key.',
+			description: 'Verifies the Ed25519 signature on a market-state receipt — confirms genuine pre-trade verification attestation, receipt authenticity, and signature validity. REST endpoint for test harnesses and SDK authors; agents SHOULD prefer offline verification with the published public key.',
 			endpoint:    '/v5/verify',
 			method:      'POST',
 			auth:        false,
@@ -9005,7 +9014,7 @@ const AGENT_JSON = {
 			{ path: '/v5/metrics',                  method: 'GET', auth: false, description: 'MCP client telemetry — today\'s request and unique client counts' },
 			{ path: '/v5/dst-risk',                 method: 'GET', auth: false, description: 'DST transition risk — affected European exchanges, error windows, verified XLON schedule' },
 			{ path: '/v5/traction',                 method: 'GET', auth: false, description: 'Live traction metrics — exchanges, uptime, MCP usage, stack positioning' },
-			{ path: '/v5/metrics/public',           method: 'GET', auth: false, description: 'Social-proof metrics — exchanges, uptime_days, tests_passing, signing_algorithm, x402 stats, MCPScoreboard preflight score' },
+			{ path: '/v5/metrics/public',           method: 'GET', auth: false, description: 'Public metrics — exchanges, uptime_days, tests_passing, signing_algorithm, x402 stats, MCPScoreboard preflight score' },
 			{ path: '/v5/usage',                    method: 'GET', auth: true,  description: 'Per-key usage stats — requests today/month, limits, credits, upgrade info' },
 			{ path: '/v5/changelog',                method: 'GET', auth: false, description: 'Versioned changelog — entries[], each with date, version, changes[]' },
 			{ path: '/badge/:mic',                  method: 'GET', auth: false, description: 'SVG status badge for README embedding (shields.io style)' },
@@ -10154,7 +10163,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/metrics/public': {
 			get: {
-				summary:     'Social-proof metrics',
+				summary:     'Public metrics',
 				description: 'Public, no auth. Stable facts about the service suitable for embedding in READMEs, dashboards, or evaluations. x402 payment stats are best-effort from ORACLE_TELEMETRY KV.',
 				responses: {
 					'200': {
@@ -11806,7 +11815,7 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 			serverInfo:      { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
 			capabilities:    { tools: {}, resources: {}, prompts: {} },
 			instructions:
-				`Headless Oracle sells Chirindo, evidence for AI agents. ${CHIRINDO_SUMMARY} ` +
+				`Headless Oracle sells Chirindo, evidence for AI agents. ${CHIRINDO_SUMMARY} ${WITNESS_SPEC_DOC.honest_limits.sidecar} ` +
 				`Chirindo Witness is a REST API, not one of these MCP tools: POST ${WITNESS_SUBMIT_URL}; contract and every limit at ${WITNESS_SPEC_URL}; free pool and Evidence plans at https://headlessoracle.com/v5/pricing. ` +
 				'The MCP tools below are Headless Oracle\'s market-state attestations. ' +
 				'Headless Oracle provides cryptographically signed market-state attestations (SMA receipts) for 28 global exchanges — equities, derivatives, and 24/7 crypto. ' +
@@ -14207,6 +14216,7 @@ export default {
 						name:                 'headless-oracle',
 						display_name:         'Headless Oracle',
 						description:          `Chirindo by Headless Oracle: evidence for AI agents. ${CHIRINDO_SUMMARY} ` +
+							`${WITNESS_SPEC_DOC.honest_limits.sidecar} ` +
 							`Chirindo Witness is a REST API (${WITNESS_SPEC_URL}); the MCP tools below are market-state. ` +
 							'Ed25519-signed market-state attestations for 28 global exchanges. ' +
 							'Pre-trade verification gate for autonomous financial agents. ' +
@@ -14247,7 +14257,7 @@ export default {
 							key_endpoint: 'https://headlessoracle.com/v5/keys',
 						},
 						fail_closed:   true,
-						standards:     ['SMA-1.0', 'APTS-1.0', 'MPAS-1.0'],
+						standards:     ['draft-borthwick-msebenzi-environment-state'],
 						install: {
 							npx: 'npx headless-oracle-mcp',
 							npm: 'npm install -g headless-oracle-mcp',
@@ -14273,6 +14283,7 @@ export default {
 					name:           'Headless Oracle',
 					version:        'v5.0',
 					description:    `Chirindo by Headless Oracle: evidence for AI agents. ${CHIRINDO_SUMMARY} ` +
+						`${WITNESS_SPEC_DOC.honest_limits.sidecar} ` +
 						`Chirindo Witness is a REST API (${WITNESS_SPEC_URL}); the MCP tools below are market-state. ${STANDARDS_SENTENCE} ` +
 						'Provides Ed25519-signed market-state attestations for 28 global exchanges with 60-second TTL. ' +
 						'Autonomous agents gate trade execution on cryptographically verified venue state; fail-closed UNKNOWN. ' +
