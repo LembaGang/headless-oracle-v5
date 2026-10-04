@@ -7156,7 +7156,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/demo | GET | No | Signed receipt, demo mode | SMA receipt (receipt_mode=demo) |
 | /v5/status | GET | Yes | Signed receipt, live mode | SMA receipt (receipt_mode=live) |
 | /v5/batch | GET | Yes | Signed receipts for multiple MICs | { summary, receipts[] } |
-| /v5/sandbox | POST | No | Sandbox key via email OR credit key via x402 payment ($0.001) | { api_key, tier, ...} |
+| /v5/sandbox | POST | No | Sandbox key for an email address, returned in the response, OR credit key via x402 payment ($0.001) | { api_key, tier, ...} |
 | /v5/schedule | GET | No | Next open/close times (not signed) | { next_open, next_close, lunch_break, settlement_window } |
 | /v5/exchanges | GET | No | All 28 supported exchanges | { exchanges: [{mic, name, timezone, mic_type}] } |
 | /v5/keys | GET | No | Public signing key + canonical spec | { keys: [{key_id, public_key, algorithm}] } |
@@ -7662,8 +7662,8 @@ if (!result.valid) throw new Error(result.reason); // EXPIRED | INVALID_SIGNATUR
 
 ## Getting an API Key
 
-- **Free tier**: \`POST /v5/keys/request\` with \`{ "email": "you@example.com" }\` — key delivered by email, no payment required. Keys are prefixed \`ho_free_\`.
-- **Paid plans**: \`POST /v5/checkout\` — Paddle checkout, key delivered by email after payment. Plans: Builder (${BUILDER_MONTHLY_SHORT}), Pro (${PRO_MONTHLY_SHORT}), Protocol ($${PLAN_PRICES.protocol}/mo).
+- **Free tier**: \`POST /v5/keys/request\` with \`{ "email": "you@example.com" }\` — the key is not in the response; it is sent by email (currently unreliable; POST /v5/keys/instant returns a key in the response). No payment required. Keys are prefixed \`ho_free_\`.
+- **Paid plans**: \`POST /v5/checkout\` — Paddle checkout, key shown on the pricing page after payment (POST /v5/claim, for 24 hours); if no key appears, write to ${CONTACT_EMAIL} with the transaction ID from your Paddle receipt. Plans: Builder (${BUILDER_MONTHLY_SHORT}), Pro (${PRO_MONTHLY_SHORT}), Protocol ($${PLAN_PRICES.protocol}/mo).
 - Agent frameworks that receive a 401 with \`X-Oracle-Key-Request: https://headlessoracle.com/v5/keys/request\` can use that URL to self-provision a free key without human intervention.
 
 ---
@@ -10031,7 +10031,7 @@ const OPENAPI_SPEC = {
 							url:            { type: 'string', format: 'uri' },
 							overlay_url:    { type: 'string', format: 'uri', nullable: true },
 							transaction_id: { type: 'string' },
-							claim_token:    { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'Present only for plans that mint a key (builder, pro, protocol, credits, custody_90d, custody_1y). Keep it client-side and POST it to /v5/claim after payment to receive the key. Absent when the claim could not be set up; the key still arrives by email.' },
+							claim_token:    { type: 'string', pattern: '^[0-9a-f]{64}$', description: `Present only for plans that mint a key (builder, pro, protocol, credits, custody_90d, custody_1y). Keep it client-side and POST it to /v5/claim after payment to receive the key. Absent when the claim could not be set up; then write to ${CONTACT_EMAIL} with the transaction ID from your Paddle receipt.` },
 						} } } },
 					},
 					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
@@ -10208,14 +10208,14 @@ const OPENAPI_SPEC = {
 		},
 		'/v5/keys/request': {
 			post: {
-				summary:     'Provision a free-tier API key via email',
-				description: 'Generates a ho_free_ prefixed API key and emails it to the provided address. Rate-limited to 3 requests per IP per 24 hours. No authentication required.',
+				summary:     'Provision a free-tier API key for an email address',
+				description: 'Generates a ho_free_ prefixed API key. The key is not in the response; it is sent by email (currently unreliable; POST /v5/keys/instant returns a key in the response). Rate-limited to 3 requests per IP per 24 hours. No authentication required.',
 				requestBody: {
 					required: true,
 					content:  { 'application/json': { schema: { type: 'object', required: ['email'], properties: { email: { type: 'string', format: 'email' } } } } },
 				},
 				responses: {
-					'200': { description: 'Key sent to email', content: { 'application/json': { schema: { type: 'object', properties: { plan: { type: 'string', example: 'free' }, message: { type: 'string' } } } } } },
+					'200': { description: 'Key created. message is set when the mail provider accepted the email; warning is set when it did not, and the key was not delivered.', content: { 'application/json': { schema: { type: 'object', properties: { plan: { type: 'string', example: 'free' }, message: { type: 'string' }, warning: { type: 'string' } } } } } },
 					'400': { description: 'Invalid or missing email', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'429': { description: 'Rate limited — max 3 free keys per day per IP', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
@@ -10852,7 +10852,7 @@ const OPENAPI_SPEC = {
 						properties: {
 							tx_hash: { type: 'string', description: 'Base mainnet USDC transaction hash (0x-prefixed).' },
 							tier:    { type: 'string', enum: ['builder', 'pro'], description: 'Desired key tier.' },
-							email:   { type: 'string', format: 'email', description: 'Optional: receive the key by email.' },
+							email:   { type: 'string', format: 'email', description: 'Optional. The key is returned in the response as api_key.' },
 						},
 					} } },
 				},
@@ -14456,7 +14456,7 @@ export default {
 							tx_hash: { type: 'string', description: 'Base mainnet transaction hash of the USDC payment' },
 							network: { type: 'string', description: 'Base mainnet network identifier. Accepts: "base", "base-mainnet", or "eip155:8453"' },
 							tier:    { type: 'string', enum: ['builder', 'pro'], description: `builder=${BUILDER_PRICE_USDC}, pro=${PRO_PRICE_USDC}` },
-							email:   { type: 'string', description: 'Optional — key will also be sent by email if provided' },
+							email:   { type: 'string', description: 'Optional. The key is returned in the response as api_key.' },
 						},
 						required: ['tx_hash', 'tier'],
 					},

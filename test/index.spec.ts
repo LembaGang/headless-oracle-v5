@@ -19038,15 +19038,38 @@ describe('H3b: corrected Chirindo summary and npm caveat', () => {
 		}
 	});
 
+	// The one email sentence still allowed: /v5/keys/request has no other
+	// delivery path, so the text says email is unreliable and names the path
+	// that returns a key in the response.
+	const EMAIL_UNRELIABLE = 'sent by email (currently unreliable; post /v5/keys/instant returns a key in the response)';
+
 	it('H3c: no served agent file promises the key by email', async () => {
 		for (const path of AGENT_FILES) {
-			const text = (await (await fetchWorker(path)).text()).toLowerCase();
+			const text = (await (await fetchWorker(path)).text()).toLowerCase().split(EMAIL_UNRELIABLE).join('');
 			expect(text.includes('sent by email'), `${path}: "sent by email"`).toBe(false);
 			expect(text.includes('arrives by email'), `${path}: "arrives by email"`).toBe(false);
 		}
 		const ins = (await initializeInstructions()).toLowerCase();
 		expect(ins.includes('sent by email')).toBe(false);
 		expect(ins.includes('arrives by email')).toBe(false);
+	});
+
+	// H3d 2026-10-04: buyer email is failing (Resend team mismatch), so the three
+	// surfaces that described key delivery promise no email at all, save the one
+	// exact "currently unreliable" sentence.
+	it('H3d: SKILL.md, llms-full.txt and openapi.json make no email delivery promise', async () => {
+		const BANNED = ['delivered by email', 'via email', 'arrives by email', 'will also email', 'will also be sent by email', 'sent by email'];
+		for (const path of ['/SKILL.md', '/llms-full.txt', '/openapi.json']) {
+			const res = await fetchWorker(path);
+			expect(res.status, path).toBe(200);
+			const text = (await res.text()).toLowerCase().split(EMAIL_UNRELIABLE).join('');
+			for (const phrase of BANNED) expect(text.includes(phrase), `${path}: "${phrase}"`).toBe(false);
+		}
+		const skill = await (await fetchWorker('/SKILL.md')).text();
+		expect(skill).toContain('key shown on the pricing page after payment (POST /v5/claim, for 24 hours); if no key appears, write to mike@headlessoracle.com with the transaction ID from your Paddle receipt');
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, any> };
+		const claimToken = spec.paths['/v5/checkout'].post.responses['200'].content['application/json'].schema.properties.claim_token.description as string;
+		expect(claimToken).toContain('write to mike@headlessoracle.com with the transaction ID from your Paddle receipt');
 	});
 
 	it('mcp-servers.json standards names the IETF draft, not the retired names', async () => {
