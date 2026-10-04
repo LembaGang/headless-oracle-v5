@@ -1,4 +1,19 @@
 # Active Priorities — Headless Oracle V5
+## 2026-10-04 (evening) — H3a–H3d deployed; TEST_COUNT 1634
+
+| commit | what |
+|---|---|
+| `36788a2` | H3a — agent surfaces lead with Chirindo/Witness (1589 → 1617) |
+| `a4f3abd` | H3b — Chirindo summary corrected (1617 → 1632) |
+| `660a241` | H3c — buy text promises no email (1632 → 1633); deployed `306e1bfe…` |
+| `acaf3aa` | H3d — SKILL.md, llms-full.txt, openapi.json promise no email (1633 → 1634) |
+| (this one) | canon refresh |
+
+**Deployed** `259a8bdb-d718-408a-88b9-7ccc3b3562bb` (20:21Z), B-115 exit 1 after the
+upload. The push of `acaf3aa` and this commit follows; result in
+`cc-output/RUNS_2026-10-04_hov5-H3d.md`. Open rows (buyer email, apex witness route, 402
+`Link rel="payment"`, chirindo npm 0.4.0) in `CLAUDE.md`.
+
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
 ## 2026-10-04 (later) — H2/H2b key on screen deployed and pushed; TEST_COUNT 1589

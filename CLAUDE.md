@@ -81,11 +81,27 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-04 (later): the key on screen after payment.** Live version
-  **`63974cb5-0939-4901-80cc-4c70ceabbf88`** (2026-10-04T13:13:02Z, from `afc1c80`, read
-  from `npx wrangler deployments list`; B-115 exit 1 after the upload, routes unchanged).
-  It serves H2 `a0f3c75` and H2b `afc1c80`; `origin/main` at `afc1c80`. Suite
-  **1535 → 1589**; `/v5/metrics/public` serves `tests_passing: 1589`.
+- **2026-10-04 (evening): H3a–H3d.** Live **`259a8bdb-d718-408a-88b9-7ccc3b3562bb`**
+  (20:21:16Z, from `acaf3aa`, read from `npx wrangler deployments list`; B-115 exit 1
+  after the upload, routes unchanged), replacing `306e1bfe…` (17:22:53Z: H3a `36788a2`,
+  H3b `a4f3abd`, H3c `660a241`). Suite **1589 → 1634**; `tests_passing` 1634 live.
+  - H3a: llms.txt, llms-full.txt, AGENTS.md, SKILL.md, agent.json, both MCP cards and
+    initialize lead with Chirindo/Witness; `/v5/pricing` gains `witness_free`,
+    `evidence_starter`, `evidence`; the three openapi witness operations carry a
+    `servers` override to api.headlessoracle.com because the apex `/v1/witness/*` route
+    was never created (B-115); the trial/free-limit 402 recommends x402 first; robots.txt
+    has `Content-Signal` in every group. H3b corrected the Chirindo summary.
+  - H3c/H3d: SKILL.md, llms-full.txt, openapi.json and the buy text promise no email.
+    Paid keys: `/v5/claim`, else write to mike@ with the Paddle txn ID.
+    `/v5/keys/request` only emails and says "currently unreliable"; `/v5/keys/instant`,
+    `/v5/sandbox` and `/v5/x402/mint` return the key in the response. Still saying
+    "via email", outside H3d: `/auth.md`, `/v5/pricing` sandbox/free descriptions,
+    `buildUpgradePaths`.
+  - **Open**: buyer email failing (Resend team mismatch, below); apex witness route; the
+    402 `Link rel="payment"` still points at `/v5/keys/instant` (founder decision); npm
+    chirindo 0.4.0 lacks the witness commands.
+- **2026-10-04 (later): the key on screen after payment.** Deployed as `63974cb5…`
+  (13:13:02Z, from `afc1c80`): H2 `a0f3c75`, H2b `afc1c80`. Suite **1535 → 1589**.
   - Buyers of builder, pro, protocol, credits, custody_90d and custody_1y see their key
     on the pricing page after payment (web W2 `67865d3` + W2b `21036c9`, deployed after
     this worker). `/v5/checkout` returns `claim_token`; Paddle carries
@@ -160,13 +176,13 @@ here is carried forward from an earlier stamp unverified.
   from `npm run test:sync-count` and the pre-commit hook. Post-deploy check:
   `node scripts/verify-agent-readiness.mjs` (failed every check but liveness against
   production before the deploy, as it should).
-- **Tests**: 1589 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1634 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
-- **Worker**: see the 2026-10-04 (later) entry above for the live version. Previous live
-  versions: `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
-  (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and both of 10-04 each exited 1
+- **Worker**: see the 2026-10-04 (evening) entry above for the live version. Previous live
+  versions: `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
+  (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and all four of 10-04 each exited 1
   on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
