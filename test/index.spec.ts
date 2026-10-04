@@ -19028,12 +19028,25 @@ describe('H3b: corrected Chirindo summary and npm caveat', () => {
 		expect(llms).toContain('the check that does not depend on the operator');
 	});
 
-	it('the buy text names the email channel and the absent-claim_token case', async () => {
-		for (const path of ['/llms.txt', '/.well-known/agent.json']) {
+	// CHANGED 2026-10-04 (H3c): buyer email is failing (the worker's Resend key is
+	// in the wrong team), so the buy text promises no email delivery; it names
+	// the founder's address and the Paddle receipt instead.
+	it('the buy text tells a buyer with no key where to write', async () => {
+		for (const path of ['/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md', '/.well-known/agent.json']) {
 			const text = await (await fetchWorker(path)).text();
-			expect(text, path).toContain('The key is also sent by email.');
-			expect(text, path).toContain('If claim_token is absent from the checkout response, the key arrives by email.');
+			expect(text, path).toContain('If no key appears, write to mike@headlessoracle.com with the transaction ID from your Paddle receipt.');
 		}
+	});
+
+	it('H3c: no served agent file promises the key by email', async () => {
+		for (const path of AGENT_FILES) {
+			const text = (await (await fetchWorker(path)).text()).toLowerCase();
+			expect(text.includes('sent by email'), `${path}: "sent by email"`).toBe(false);
+			expect(text.includes('arrives by email'), `${path}: "arrives by email"`).toBe(false);
+		}
+		const ins = (await initializeInstructions()).toLowerCase();
+		expect(ins.includes('sent by email')).toBe(false);
+		expect(ins.includes('arrives by email')).toBe(false);
 	});
 
 	it('mcp-servers.json standards names the IETF draft, not the retired names', async () => {
