@@ -3,10 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as ed from '@noble/ed25519';
 import worker, {
 	clearWitnessSchemaCache, witnessJcs, witnessClientKey, readWitnessBody,
-	witnessSql,
+	witnessSql, ensureWitnessSchema, clearApiKeyCache,
 } from '../src';
 
-const { dayCount: WITNESS_DAY_COUNT_SQL, page: WITNESS_PAGE_SQL } = witnessSql();
+const { usageUpsert: WITNESS_USAGE_UPSERT_SQL, page: WITNESS_PAGE_SQL } = witnessSql();
 
 // Chirindo witness, wire spec v0.4 (CC_HANDOFF_2026-10-03_hov5-witness-endpoint_rev3,
 // amended by CC_HANDOFF_2026-10-03_hov5-witness-amendment_rev1).
@@ -80,7 +80,7 @@ function jwkFor(id: Identity) {
 // Tests that script a limit pass their own env.
 type Limiter = { limit: (o: { key: string }) => Promise<{ success: boolean }> };
 const allow: Limiter = { limit: async () => ({ success: true }) };
-const testEnv: Record<string, unknown> = { ...(env as unknown as Record<string, unknown>), WITNESS_POST_RL: allow, WITNESS_GET_RL: allow };
+const testEnv: Record<string, unknown> = { ...(env as unknown as Record<string, unknown>), WITNESS_POST_RL: allow, WITNESS_GET_RL: allow, WITNESS_ACCT_RL: allow };
 
 async function call(path: string, init: RequestInit = {}, e: Record<string, unknown> = testEnv): Promise<Response> {
 	const ctx = createExecutionContext();
@@ -118,14 +118,25 @@ async function seedRows(sql: string, ...binds: unknown[]): Promise<void> {
 	await env.WITNESS_DB!.prepare(sql).bind(...binds).run();
 }
 const SEED_COLUMNS = 'kid, session_id, count, last_entry_hash, checkpoint_jcs, checkpoint_sha256, public_key_x, received_at, fork, receipt_json, created_at';
+// Since v0.5 the cap reads witness_usage, so a test reaches the cap by setting
+// that day's counter rather than by storing rows.
+async function setUsage(pool: string, n: number, day = new Date().toISOString().slice(0, 10)): Promise<void> {
+	await seedRows('INSERT INTO witness_usage (day, pool, n) VALUES (?, ?, ?) ON CONFLICT (day, pool) DO UPDATE SET n = excluded.n', day, pool, n);
+}
+async function usage(pool: string, day = new Date().toISOString().slice(0, 10)): Promise<number | null> {
+	const row = await env.WITNESS_DB!.prepare('SELECT n FROM witness_usage WHERE day = ? AND pool = ?').bind(day, pool).first<{ n: number }>();
+	return row ? row.n : null;
+}
 
 beforeEach(async () => {
 	vi.useRealTimers();
 	clearWitnessSchemaCache();
-	// Make sure the table exists, then empty it. The application never
+	clearApiKeyCache();
+	// Make sure the tables exist, then empty them. The application never
 	// deletes; only the test harness does, to start each case clean.
 	await call(`${PATH}?kid=${'A'.repeat(43)}&session_id=x`);
 	await env.WITNESS_DB!.prepare('DELETE FROM witness_checkpoints').run();
+	await env.WITNESS_DB!.prepare('DELETE FROM witness_usage').run();
 });
 afterEach(() => {
 	vi.useRealTimers();
@@ -470,13 +481,8 @@ describe('witness: fail closed when the store is unavailable', () => {
 
 	it('one row below the cap a new checkpoint is still stored', async () => {
 		const id = await makeIdentity();
-		const now = new Date().toISOString();
-		await seedRows(
-			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1999)
-			 INSERT INTO witness_checkpoints (${SEED_COLUMNS})
-			 SELECT 'seed', 'seed', i, 'h', '{}', 'sha256:x', 'x', ?, 'false', '{}', ? FROM n`,
-			now, now,
-		);
+		// CHANGED (H1b B4): the cap reads witness_usage; 1,999 counted today.
+		await setUsage('anon', 1999);
 		expect((await post(bodyFor(await makeCheckpoint(id), jwkFor(id)))).status).toBe(201);
 		expect((await post(bodyFor(await makeCheckpoint(id, { count: 2 }), jwkFor(id)))).status).toBe(503);
 	});
@@ -486,14 +492,10 @@ describe('witness: fail closed when the store is unavailable', () => {
 		const firstCp = await makeCheckpoint(id, { count: 1 });
 		const first = await postCheckpoint(id, firstCp);
 		expect(first.status).toBe(201);
-		const now = new Date().toISOString();
-		// One stored today; seed 1,999 more so today's count reaches the 2,000 cap.
-		await seedRows(
-			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1999)
-			 INSERT INTO witness_checkpoints (${SEED_COLUMNS})
-			 SELECT 'seed', 'seed', i, 'h', '{}', 'sha256:x', 'x', ?, 'false', '{}', ? FROM n`,
-			now, now,
-		);
+		// One stored today (counted). CHANGED (H1b B4): the counter is set to
+		// the 2,000 cap instead of seeding 1,999 rows.
+		expect(await usage('anon')).toBe(1);
+		await setUsage('anon', 2000);
 		const blocked = await post(bodyFor(await makeCheckpoint(id, { count: 2 }), jwkFor(id)));
 		expect(blocked.status).toBe(503);
 		expect(await blocked.json()).toEqual({ error: 'witness_unavailable' });
@@ -505,6 +507,8 @@ describe('witness: fail closed when the store is unavailable', () => {
 	// W3 HIGH: received_at and the cap's day were taken at request start. A client
 	// that held its body open stored an old received_at under the newest rowid,
 	// and the max(rowid) day count then saw about one row, resetting the cap.
+	// CHANGED (H1b B4): the count is witness_usage, so 1,999 is set on the
+	// counter while the body is held, not seeded as rows.
 	it('a POST whose body is held open stores a received_at taken after the body arrived, and the cap still holds', async () => {
 		const id = await makeIdentity();
 		const bytes = new TextEncoder().encode(bodyFor(await makeCheckpoint(id, { count: 1 }), jwkFor(id)));
@@ -513,15 +517,10 @@ describe('witness: fail closed when the store is unavailable', () => {
 		ctl.enqueue(bytes.slice(0, 10));
 		const held = call(PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stream });
 
-		// While the body is held, 1,999 rows are stored for the day.
+		// While the body is held, 1,999 rows are counted for the day.
 		await new Promise((r) => setTimeout(r, 25));
 		const seededAt = new Date().toISOString();
-		await seedRows(
-			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1999)
-			 INSERT INTO witness_checkpoints (${SEED_COLUMNS})
-			 SELECT 'seed', 'seed', i, 'h', '{}', 'sha256:x', 'x', ?, 'false', '{}', ? FROM n`,
-			seededAt, seededAt,
-		);
+		await setUsage('anon', 1999);
 		await new Promise((r) => setTimeout(r, 5));
 		ctl.enqueue(bytes.slice(10));
 		ctl.close();
@@ -547,30 +546,36 @@ describe('witness: fail closed when the store is unavailable', () => {
 // uses (exported from src) and, as a control, the query it replaced, so the
 // measurement is shown able to see a full scan.
 describe('witness: D1 rows_read stays bounded at 50,000 rows', () => {
-	it('the daily-cap count reads at most 2 rows and counts only today', async () => {
-		const dayStart = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
-		// 100 rows from yesterday first (lower rowids), then 50,000 from today.
-		await seedRows(
-			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100)
-			 INSERT INTO witness_checkpoints (${SEED_COLUMNS})
-			 SELECT 'old', 'old', i, 'h', '{}', 'sha256:x', 'x', '2000-01-01T00:00:00.000Z', 'false', '{}', '' FROM n`,
-		);
+	// CHANGED (H1b B4): replaces the max(rowid) day-count test, whose query is
+	// gone. The counter is a primary-key upsert: its cost does not grow with n.
+	// n = 1 is the insert path (a new day or pool) and n >= 2 the update path, so
+	// the cost is compared between n = 2 and n = 10,000 and reported for all three.
+	it('the usage upsert reads at most 3 rows, the same at n = 2 and n = 10,000', async () => {
+		const day = new Date().toISOString().slice(0, 10);
+		// 50,000 stored rows change nothing: the upsert never reads the checkpoint table.
 		await seedRows(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50000)
 			 INSERT INTO witness_checkpoints (${SEED_COLUMNS})
 			 SELECT 'seed', 'seed', i, 'h', '{}', 'sha256:x', 'x', ?, 'false', '{}', '' FROM n`,
-			dayStart,
+			`${day}T00:00:00.000Z`,
 		);
-		const res = await env.WITNESS_DB!.prepare(WITNESS_DAY_COUNT_SQL).bind(dayStart).all<{ c: number }>();
-		expect(res.results[0].c).toBe(50_000);
-		expect(res.meta.rows_read).toBeLessThanOrEqual(2);
-		// Control: the replaced count(*) reads every row of the day.
-		const old = await env.WITNESS_DB!.prepare('SELECT count(*) AS c FROM witness_checkpoints WHERE received_at >= ?').bind(dayStart).all<{ c: number }>();
-		expect(old.results[0].c).toBe(50_000);
+		const first = await env.WITNESS_DB!.prepare(WITNESS_USAGE_UPSERT_SQL).bind(day, 'anon').all<{ n: number }>();
+		expect(first.results[0].n).toBe(1);
+		const second = await env.WITNESS_DB!.prepare(WITNESS_USAGE_UPSERT_SQL).bind(day, 'anon').all<{ n: number }>();
+		expect(second.results[0].n).toBe(2);
+		await setUsage('anon', 9999, day);
+		const big = await env.WITNESS_DB!.prepare(WITNESS_USAGE_UPSERT_SQL).bind(day, 'anon').all<{ n: number }>();
+		expect(big.results[0].n).toBe(10_000);
+		console.log(`WITNESS_USAGE_UPSERT_COST n=1 rows_read=${first.meta.rows_read} rows_written=${first.meta.rows_written}; n=2 rows_read=${second.meta.rows_read} rows_written=${second.meta.rows_written}; n=10000 rows_read=${big.meta.rows_read} rows_written=${big.meta.rows_written}`);
+		for (const m of [first.meta, second.meta, big.meta]) expect(m.rows_read).toBeLessThanOrEqual(3);
+		expect(big.meta.rows_read).toBe(second.meta.rows_read);
+		expect(big.meta.rows_written).toBe(second.meta.rows_written);
+		// Control: counting the day's rows reads every one of them.
+		const old = await env.WITNESS_DB!.prepare('SELECT count(*) AS c FROM witness_checkpoints WHERE received_at >= ?').bind(`${day}T00:00:00.000Z`).all<{ c: number }>();
 		expect(old.meta.rows_read).toBeGreaterThanOrEqual(50_000);
-		// An empty day counts 0.
-		const empty = await env.WITNESS_DB!.prepare(WITNESS_DAY_COUNT_SQL).bind('2999-01-01T00:00:00.000Z').all<{ c: number }>();
-		expect(empty.results[0].c).toBe(0);
+		// Another day is a separate counter.
+		const other = await env.WITNESS_DB!.prepare(WITNESS_USAGE_UPSERT_SQL).bind('2999-01-01', 'anon').all<{ n: number }>();
+		expect(other.results[0].n).toBe(1);
 	});
 
 	it('a deep after reads no more than the rows returned plus 2', async () => {
@@ -769,7 +774,7 @@ describe('witness: GET /v1/witness/spec', () => {
 		const text = await res.text();
 		const doc = JSON.parse(text);
 		expect(doc.submit.checks.map((c: { error: string }) => c.error)).toEqual([
-			'bad_request', 'bad_checkpoint_shape', 'bad_checkpoint_field', 'bad_jwk', 'kid_mismatch', 'bad_signature',
+			'bad_request', 'invalid_key', 'bad_checkpoint_shape', 'bad_checkpoint_field', 'bad_jwk', 'kid_mismatch', 'bad_signature',
 		]);
 		expect(doc.receipt.fields).toEqual([
 			'type', 'witness', 'received_at', 'kid', 'session_id', 'count', 'last_entry_hash',
@@ -777,12 +782,365 @@ describe('witness: GET /v1/witness/spec', () => {
 		]);
 		expect(doc.receipt.signing).toBe('All fields except signature, keys sorted, JSON.stringify with no whitespace, UTF-8, Ed25519, hex. For a flat object whose values are all strings these bytes are identical to RFC 8785 JCS, so a verifier may use either.');
 		expect(doc.honest_limits.does_not_detect.length).toBe(5);
-		expect(doc.version).toBe('witness-spec/0.4');
+		expect(doc.version).toBe('witness-spec/0.5');
 		expect(doc.submit.daily_cap).toMatch(/^Best effort: concurrent requests can exceed it slightly\. Once 2,000 \(a launch limit/);
 		expect(doc.query.query_sql).toContain('(count, last_entry_hash) > (?, ?)');
 		expect(doc.honest_limits.storage_ceiling).toBe('The witness store is a database with a fixed size ceiling and rows are never deleted. If it fills, new checkpoints are refused with 503 until capacity is added; checkpoints already stored stay readable.');
 		expect(text).not.toContain('signPayload');
 		expect(text).not.toContain('receipt-signing');
 		expect(text).not.toContain('.claude');
+	});
+});
+
+// ─── Witness accounts (H1b Part B, spec v0.5) ────────────────────────────────
+// An Evidence plan key sent as Authorization: Bearer counts against its own
+// daily quota. Key records are put straight into ORACLE_API_KEYS; Supabase is
+// stubbed per test, so "unknown" and "store down" are both scripted.
+describe('witness: accounts (Authorization: Bearer <Evidence plan key>)', () => {
+	type Supa = 'none' | 'error';
+	function stubSupabase(mode: Supa) {
+		const seen = { calls: 0 };
+		const prev = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			if (url.includes('supabase.co')) {
+				seen.calls++;
+				const headers = { 'Content-Type': 'application/json' };
+				if (mode === 'error') return new Response(JSON.stringify({ code: 'PGRST002', message: 'schema cache' }), { status: 503, headers });
+				return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers });
+			}
+			return prev(input as RequestInfo, init);
+		}) as typeof globalThis.fetch;
+		return { seen, restore: () => { globalThis.fetch = prev; } };
+	}
+
+	async function putKey(fill: string, record: Record<string, unknown>) {
+		const key = 'ho_live_' + fill.repeat(64);
+		const keyHash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify(record));
+		return { key, keyHash, accountId: keyHash.slice(0, 32), auth: { Authorization: `Bearer ${key}` } };
+	}
+	async function newBody(opts: { count?: number } = {}) {
+		const id = await makeIdentity();
+		const cp = await makeCheckpoint(id, { count: opts.count ?? 1 });
+		return { id, cp, body: bodyFor(cp, jwkFor(id)) };
+	}
+	async function rowCount(): Promise<number> {
+		return (await env.WITNESS_DB!.prepare('SELECT count(*) AS c FROM witness_checkpoints').first<{ c: number }>())!.c;
+	}
+
+	it('evidence_starter key: 201, the row carries account_id, the account pool is counted and the anonymous pool is not', async () => {
+		const k = await putKey('1', { plan: 'evidence_starter', status: 'active' });
+		const { body } = await newBody();
+		const res = await post(body, k.auth);
+		expect(res.status).toBe(201);
+		expect(res.headers.get('X-RateLimit-Limit')).toBe('600');
+		const receipt = await res.json() as Record<string, string>;
+		// account_id is never returned.
+		expect(JSON.stringify(receipt)).not.toContain(k.accountId);
+		const row = await env.WITNESS_DB!.prepare('SELECT account_id, received_at FROM witness_checkpoints').first<{ account_id: string; received_at: string }>();
+		expect(row!.account_id).toBe(k.accountId);
+		expect(row!.received_at).toBe(receipt.received_at);
+		expect(await usage(k.accountId)).toBe(1);
+		expect(await usage('anon')).toBeNull();
+		// Control: an anonymous POST stores NULL and counts in anon.
+		const anon = await newBody();
+		expect((await post(anon.body)).status).toBe(201);
+		const anonRow = await env.WITNESS_DB!.prepare('SELECT account_id FROM witness_checkpoints WHERE kid = ?').bind(anon.id.kid).first<{ account_id: string | null }>();
+		expect(anonRow!.account_id).toBeNull();
+		expect(await usage('anon')).toBe(1);
+	});
+
+	it('the anonymous cap reached: an anonymous POST is 503, an account POST is still stored', async () => {
+		const k = await putKey('2', { plan: 'evidence', status: 'active' });
+		await setUsage('anon', 2000);
+		const anon = await post((await newBody()).body);
+		expect(anon.status).toBe(503);
+		expect(await anon.json()).toMatchObject({ error: 'witness_unavailable' });
+		expect((await post((await newBody()).body, k.auth)).status).toBe(201);
+		expect(await usage('anon')).toBe(2001);
+	});
+
+	it('the account quota reached: 429 quota_exceeded with Retry-After to 00:00 UTC; nothing stored; the next refusal does not touch D1', async () => {
+		const k = await putKey('3', { plan: 'evidence_starter', status: 'active' });
+		await setUsage(k.accountId, 1000);
+		const before = await rowCount();
+		const res = await post((await newBody()).body, k.auth);
+		expect(res.status).toBe(429);
+		expect(await res.json()).toMatchObject({ error: 'quota_exceeded' });
+		const retryAfter = Number(res.headers.get('Retry-After'));
+		expect(retryAfter).toBeGreaterThanOrEqual(1);
+		expect(retryAfter).toBeLessThanOrEqual(86_400);
+		const now = new Date();
+		const toMidnight = (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1) - now.getTime()) / 1000;
+		expect(Math.abs(retryAfter - toMidnight)).toBeLessThanOrEqual(5);
+		expect(await rowCount()).toBe(before);
+		expect(await usage(k.accountId)).toBe(1001);
+		// The isolate remembers this pool is over: refused again, counter untouched.
+		const again = await post((await newBody()).body, k.auth);
+		expect(again.status).toBe(429);
+		expect(await usage(k.accountId)).toBe(1001);
+		// One below the quota for the other plan still stores (control).
+		const e = await putKey('4', { plan: 'evidence', status: 'active' });
+		await setUsage(e.accountId, 2999);
+		expect((await post((await newBody()).body, e.auth)).status).toBe(201);
+		expect((await post((await newBody()).body, e.auth)).status).toBe(429);
+	});
+
+	it('a repeat POST of a stored checkpoint is free: 200, not counted, even over quota', async () => {
+		const k = await putKey('5', { plan: 'evidence_starter', status: 'active' });
+		const { body } = await newBody();
+		expect((await post(body, k.auth)).status).toBe(201);
+		expect((await post(body, k.auth)).status).toBe(200);
+		expect(await usage(k.accountId)).toBe(1);
+		await setUsage(k.accountId, 5000);
+		expect((await post(body, k.auth)).status).toBe(200);
+		expect(await usage(k.accountId)).toBe(5000);
+	});
+
+	it('receipts from both pools carry the same field set and verify with the worker key', async () => {
+		const k = await putKey('6', { plan: 'evidence', status: 'active' });
+		const acct = await (await post((await newBody()).body, k.auth)).json() as Record<string, string>;
+		const anon = await (await post((await newBody()).body)).json() as Record<string, string>;
+		expect(Object.keys(acct).sort()).toEqual(Object.keys(anon).sort());
+		expect(await receiptVerifies(acct)).toBe(true);
+		expect(await receiptVerifies(anon)).toBe(true);
+	});
+
+	it('a malformed header is 401 invalid_key with no KV or Supabase read, and never falls back to the anonymous pool', async () => {
+		const reads = { kv: 0 };
+		const realKv = env.ORACLE_API_KEYS;
+		const countingKv = {
+			get:             (...a: unknown[]) => { reads.kv++; return (realKv.get as (...x: unknown[]) => unknown).apply(realKv, a); },
+			getWithMetadata: (...a: unknown[]) => { reads.kv++; return (realKv.getWithMetadata as (...x: unknown[]) => unknown).apply(realKv, a); },
+			put:             realKv.put.bind(realKv),
+			list:            realKv.list.bind(realKv),
+			delete:          realKv.delete.bind(realKv),
+		} as unknown as KVNamespace;
+		const e = { ...testEnv, ORACLE_API_KEYS: countingKv };
+		const { seen, restore } = stubSupabase('none');
+		try {
+			for (const header of [
+				`Bearer ho_live_${'A'.repeat(64)}`,       // upper-case hex
+				`Bearer ho_live_${'a'.repeat(63)}`,       // one short
+				`bearer ho_live_${'a'.repeat(64)}`,       // scheme case
+				`Basic ${'a'.repeat(20)}`,
+				'',
+			]) {
+				const res = await post((await newBody()).body, { Authorization: header }, e);
+				expect(res.status, header).toBe(401);
+				expect(await res.json()).toMatchObject({ error: 'invalid_key' });
+			}
+			expect(reads.kv).toBe(0);
+			expect(seen.calls).toBe(0);
+			expect(await rowCount()).toBe(0);
+		} finally {
+			restore();
+		}
+	});
+
+	it('a credits key (ho_crd_) is 401 by its pattern and its balance is not decremented', async () => {
+		const key = 'ho_crd_' + '7'.repeat(64);
+		const keyHash = await sha256Hex(key);
+		const kv = env.ORACLE_API_KEYS;
+		await kv.put(keyHash, JSON.stringify({ tier: 'credits', status: 'active', balance: 5 }));
+		const res = await post((await newBody()).body, { Authorization: `Bearer ${key}` });
+		expect(res.status).toBe(401);
+		expect(await res.json()).toMatchObject({ error: 'invalid_key' });
+		expect(JSON.parse((await kv.get(keyHash))!)).toMatchObject({ balance: 5 });
+	});
+
+	it('an unknown well-formed key (KV miss, Supabase no row) is 401 invalid_key', async () => {
+		const { seen, restore } = stubSupabase('none');
+		try {
+			const res = await post((await newBody()).body, { Authorization: `Bearer ho_live_${'8'.repeat(64)}` });
+			expect(res.status).toBe(401);
+			expect(await res.json()).toMatchObject({ error: 'invalid_key' });
+			expect(seen.calls).toBe(1);
+		} finally {
+			restore();
+		}
+	});
+
+	it('a well-formed key with KV miss and Supabase erroring is 503 witness_unavailable, not 401', async () => {
+		const { restore } = stubSupabase('error');
+		const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const res = await post((await newBody()).body, { Authorization: `Bearer ho_live_${'9'.repeat(64)}` });
+			expect(res.status).toBe(503);
+			expect(await res.json()).toMatchObject({ error: 'witness_unavailable' });
+			expect(await rowCount()).toBe(0);
+		} finally {
+			errors.mockRestore();
+			restore();
+		}
+	});
+
+	it('a cancelled Evidence key is 402 payment_required; a builder key is 403 witness_plan_required', async () => {
+		const cancelled = await putKey('a', { plan: 'evidence', status: 'inactive' });
+		const r402 = await post((await newBody()).body, cancelled.auth);
+		expect(r402.status).toBe(402);
+		expect(await r402.json()).toMatchObject({ error: 'payment_required' });
+		const builder = await putKey('b', { plan: 'builder', status: 'active' });
+		const r403 = await post((await newBody()).body, builder.auth);
+		expect(r403.status).toBe(403);
+		expect(await r403.json()).toMatchObject({
+			error: 'witness_plan_required',
+			message: 'Witness accounts come with the Evidence plans: https://headlessoracle.com/pricing',
+		});
+		expect(await rowCount()).toBe(0);
+	});
+
+	it('the key check runs after check 1 and before the signature check', async () => {
+		const builder = await putKey('c', { plan: 'builder', status: 'active' });
+		// A body that fails check 1 is 400 before the key is looked at.
+		expect((await post('{"checkpoint":', builder.auth)).status).toBe(400);
+		// A forged signature with a bad key is answered by the key check.
+		const id = await makeIdentity();
+		const forged = { ...(await makeCheckpoint(id, { count: 1 })), count: 2 };
+		expect((await post(bodyFor(forged, jwkFor(id)), builder.auth)).status).toBe(403);
+		// And with a good key, by the signature check.
+		const good = await putKey('d', { plan: 'evidence', status: 'active' });
+		const res = await post(bodyFor(forged, jwkFor(id)), good.auth);
+		expect(res.status).toBe(400);
+		expect(await res.json()).toMatchObject({ error: 'bad_signature' });
+	});
+
+	it('WITNESS_ACCT_RL: the ip-keyed limit refuses before the body is read; WITNESS_POST_RL is not asked', async () => {
+		const acct: string[] = [];
+		const postKeys: string[] = [];
+		const e = {
+			...testEnv,
+			WITNESS_ACCT_RL: { limit: async ({ key }: { key: string }) => { acct.push(key); return { success: false }; } },
+			WITNESS_POST_RL: { limit: async ({ key }: { key: string }) => { postKeys.push(key); return { success: true }; } },
+		};
+		// An endless body: refused unread, it is never cancelled and at most the
+		// one chunk a stream pulls on construction is queued.
+		const endless = () => {
+			const seen = { pulls: 0, cancelled: false };
+			const stream = new ReadableStream<Uint8Array>({
+				pull(c) { seen.pulls++; c.enqueue(new Uint8Array(1000).fill(0x20)); },
+				cancel() { seen.cancelled = true; },
+			});
+			return { stream, seen };
+		};
+		const headers = { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.30', Authorization: 'Bearer anything' };
+		const { stream, seen: seenBody } = endless();
+		const res = await call(PATH, { method: 'POST', headers, body: stream }, e);
+		expect(res.status).toBe(429);
+		expect(await res.json()).toMatchObject({ error: 'RATE_LIMITED' });
+		expect(res.headers.get('X-RateLimit-Limit')).toBe('600');
+		expect(res.headers.get('Retry-After')).toBe('60');
+		expect(acct).toEqual(['ip:198.51.100.30']);
+		expect(postKeys).toEqual([]);
+		expect(seenBody.cancelled).toBe(false);
+		expect(seenBody.pulls).toBeLessThanOrEqual(1);
+		// Control: with the limiter allowing, the same body is read until it is
+		// too large, then cancelled.
+		const control = endless();
+		const res2 = await call(PATH, { method: 'POST', headers, body: control.stream }, { ...e, WITNESS_ACCT_RL: allow });
+		expect(res2.status).toBe(400);
+		expect(control.seen.cancelled).toBe(true);
+	});
+
+	it('WITNESS_ACCT_RL: the account-keyed limit applies after auth, keyed acct:<account_id>', async () => {
+		const k = await putKey('e', { plan: 'evidence', status: 'active' });
+		const keys: string[] = [];
+		const e = { ...testEnv, WITNESS_ACCT_RL: { limit: async ({ key }: { key: string }) => { keys.push(key); return { success: key.startsWith('ip:') }; } } };
+		const res = await post((await newBody()).body, { ...k.auth, 'CF-Connecting-IP': '198.51.100.31' }, e);
+		expect(res.status).toBe(429);
+		expect(await res.json()).toMatchObject({ error: 'RATE_LIMITED' });
+		expect(keys).toEqual(['ip:198.51.100.31', `acct:${k.accountId}`]);
+		expect(await rowCount()).toBe(0);
+		// An unknown key never reaches the account limiter.
+		keys.length = 0;
+		const { restore } = stubSupabase('none');
+		try {
+			expect((await post((await newBody()).body, { Authorization: `Bearer ho_live_${'f'.repeat(64)}` }, e)).status).toBe(401);
+			expect(keys.filter((x) => x.startsWith('acct:'))).toEqual([]);
+		} finally {
+			restore();
+		}
+	});
+
+	it('WITNESS_ACCT_RL absent: fails open, the POST is stored, and the failure is logged', async () => {
+		const k = await putKey('0', { plan: 'evidence_starter', status: 'active' });
+		const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const res = await post((await newBody()).body, k.auth, { ...testEnv, WITNESS_ACCT_RL: undefined });
+			expect(res.status).toBe(201);
+			const lines = errors.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('WITNESS_RATE_LIMITER_FAILED fail_open=true limiter=WITNESS_ACCT_RL'));
+			expect(lines.length).toBe(2);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+});
+
+// ─── Schema migration to v0.5 (H1b B5) ───────────────────────────────────────
+describe('witness: ensureWitnessSchema migrates a v0.4 table', () => {
+	const V04_TABLE = `CREATE TABLE witness_checkpoints (
+		kid TEXT NOT NULL, session_id TEXT NOT NULL, count INTEGER NOT NULL, last_entry_hash TEXT NOT NULL,
+		checkpoint_jcs TEXT NOT NULL, checkpoint_sha256 TEXT NOT NULL, public_key_x TEXT NOT NULL,
+		received_at TEXT NOT NULL, fork TEXT NOT NULL, receipt_json TEXT NOT NULL, created_at TEXT NOT NULL)`;
+
+	async function columns(): Promise<string[]> {
+		const { results } = await env.WITNESS_DB!.prepare('PRAGMA table_info(witness_checkpoints)').all<{ name: string }>();
+		return results.map((r) => r.name);
+	}
+	async function tables(): Promise<string[]> {
+		const { results } = await env.WITNESS_DB!.prepare(`SELECT name FROM sqlite_master WHERE type IN ('table', 'index') ORDER BY name`).all<{ name: string }>();
+		return results.map((r) => r.name);
+	}
+
+	it('adds account_id, its index and witness_usage, keeps existing rows, and a second run is a no-op', async () => {
+		await env.WITNESS_DB!.prepare('DROP TABLE IF EXISTS witness_usage').run();
+		await env.WITNESS_DB!.prepare('DROP TABLE IF EXISTS witness_checkpoints').run();
+		await env.WITNESS_DB!.prepare(V04_TABLE).run();
+		await seedRows(`INSERT INTO witness_checkpoints (${SEED_COLUMNS}) VALUES ('k', 's', 1, 'h', '{}', 'sha256:x', 'x', '2026-10-03T00:00:00.000Z', 'false', '{}', '')`);
+		expect(await columns()).not.toContain('account_id');
+		clearWitnessSchemaCache();
+		await ensureWitnessSchema(env as never);
+		expect(await columns()).toContain('account_id');
+		const after = await tables();
+		expect(after).toEqual(expect.arrayContaining(['witness_usage', 'idx_witness_account', 'idx_witness_identity']));
+		const row = await env.WITNESS_DB!.prepare('SELECT kid, account_id FROM witness_checkpoints').first<{ kid: string; account_id: null }>();
+		expect(row).toEqual({ kid: 'k', account_id: null });
+		clearWitnessSchemaCache();
+		await ensureWitnessSchema(env as never);
+		expect(await tables()).toEqual(after);
+		expect((await columns()).filter((c) => c === 'account_id').length).toBe(1);
+	});
+
+	it('a "duplicate column name" error from a concurrent isolate is treated as success', async () => {
+		const real = env.WITNESS_DB!;
+		let alters = 0;
+		// PRAGMA reports no account_id (another isolate has not committed yet as
+		// far as this one saw); the ALTER then finds it present.
+		const racing = {
+			prepare(sql: string) {
+				if (sql.startsWith('PRAGMA table_info')) {
+					return { all: async () => ({ results: [{ name: 'kid' }] }) };
+				}
+				if (sql.startsWith('ALTER TABLE')) {
+					return { run: async () => { alters++; throw new Error('D1_ERROR: duplicate column name: account_id: SQLITE_ERROR'); } };
+				}
+				return real.prepare(sql);
+			},
+		};
+		clearWitnessSchemaCache();
+		await expect(ensureWitnessSchema({ ...(env as object), WITNESS_DB: racing } as never)).resolves.toBeUndefined();
+		expect(alters).toBe(1);
+		// Control: any other ALTER error still fails.
+		const broken = {
+			prepare(sql: string) {
+				if (sql.startsWith('PRAGMA table_info')) return { all: async () => ({ results: [{ name: 'kid' }] }) };
+				if (sql.startsWith('ALTER TABLE')) return { run: async () => { throw new Error('D1_ERROR: disk I/O error'); } };
+				return real.prepare(sql);
+			},
+		};
+		clearWitnessSchemaCache();
+		await expect(ensureWitnessSchema({ ...(env as object), WITNESS_DB: broken } as never)).rejects.toThrow('disk I/O error');
+		clearWitnessSchemaCache();
 	});
 });

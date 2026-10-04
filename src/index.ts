@@ -163,6 +163,7 @@ export interface Env {
 	WITNESS_DB?:          D1Database;  // chirindo_witness: witness checkpoints only
 	WITNESS_POST_RL?:     RateLimit;   // Workers Rate Limiting binding: witness POSTs
 	WITNESS_GET_RL?:      RateLimit;   // Workers Rate Limiting binding: witness checkpoint GETs
+	WITNESS_ACCT_RL?:     RateLimit;   // Workers Rate Limiting binding: witness POSTs carrying an Authorization header
 	HALT_ARCHIVE_RAW?:    R2Bucket;
 	NASDAQ_HALTS_URL?:    string;
 	NYSE_HALTS_URL?:      string;
@@ -5097,7 +5098,7 @@ async function signHaltArchivePayload(
 	return { signature, canonical, key_id: env.PUBLIC_KEY_ID };
 }
 
-// ─── Chirindo Witness (wire spec v0.4, 2026-10-03) ──────────────────────────
+// ─── Chirindo Witness (wire spec v0.5, 2026-10-03) ──────────────────────────
 // An operator sends a signed chain checkpoint; we record it and sign a receipt
 // saying when we saw it. The receipt attests receipt of a validly signed
 // checkpoint, nothing about who holds the key or whether the records are true.
@@ -5107,6 +5108,11 @@ async function signHaltArchivePayload(
 
 const WITNESS_MAX_BODY_BYTES      = 4096;
 const WITNESS_RATE_LIMIT_PER_MIN  = 60;
+// Requests carrying an Authorization header: about 600 per minute per address
+// (counted before the body is read) and again per account (after auth). Must
+// match the WITNESS_ACCT_RL block in wrangler.toml.
+const WITNESS_ACCT_RATE_LIMIT_PER_MIN = 600;
+const WITNESS_KEY_HEADER          = /^Bearer ho_live_[0-9a-f]{64}$/;
 // A launch limit while the account is on the Workers Free plan (D1 Free: 100,000
 // rows written per day across the account, 500 MB per database; one witness
 // insert writes about 4 rows and 1.6 KB). Raise it here after a plan upgrade;
@@ -5123,12 +5129,13 @@ const WITNESS_HASH                = /^sha256:[0-9a-f]{64}$/;
 const WITNESS_TS                  = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
 const WITNESS_AFTER               = /^\d+:sha256:[0-9a-f]{64}$/;
 
-// Rows stored since dayStart, read in about two index probes instead of a
-// count over the day. Exact because the table is append-only: rowids only grow
-// and received_at grows with them (concurrent inserts can interleave by a few
-// milliseconds, which is one reason the cap is best effort).
-const WITNESS_DAY_COUNT_SQL =
-	`SELECT COALESCE((SELECT max(rowid) FROM witness_checkpoints) - (SELECT rowid FROM witness_checkpoints WHERE received_at >= ? ORDER BY received_at LIMIT 1) + 1, 0) AS c`;
+// One counter row per (UTC day, pool), pool being 'anon' or an account_id.
+// Run only when a POST is about to store a new row; it returns the count
+// including this one. A primary-key upsert: it reads one row however large n
+// is. A counted request that then fails before its insert leaves the count one
+// high, which errs toward refusing.
+const WITNESS_USAGE_UPSERT_SQL =
+	`INSERT INTO witness_usage (day, pool, n) VALUES (?, ?, 1) ON CONFLICT (day, pool) DO UPDATE SET n = n + 1 RETURNING n`;
 
 // One page of a session. The row-value comparison lets the
 // (kid, session_id, count, last_entry_hash) index bound the scan, so a deep
@@ -5140,8 +5147,8 @@ const WITNESS_PAGE_SQL =
 
 // The two queries above, for tests that measure their rows_read. A function,
 // not exported constants: the Workers runtime rejects non-function exports.
-export function witnessSql(): { dayCount: string; page: string } {
-	return { dayCount: WITNESS_DAY_COUNT_SQL, page: WITNESS_PAGE_SQL };
+export function witnessSql(): { usageUpsert: string; page: string } {
+	return { usageUpsert: WITNESS_USAGE_UPSERT_SQL, page: WITNESS_PAGE_SQL };
 }
 
 // The receipt's signed fields, in the order /v1/witness/spec lists them.
@@ -5152,13 +5159,21 @@ const WITNESS_RECEIPT_FIELDS = [
 
 let _witnessSchemaEnsuredPromise: Promise<void> | null = null;
 
+// `day|pool` pairs already over their limit in this isolate, refused without
+// touching D1. Cleared when the UTC day changes.
+let _witnessOverLimit = new Set<string>();
+let _witnessOverLimitDay = '';
+
 // Tests call this in beforeEach: the pool does not apply migrations, and a
 // per-test D1 instance does not keep a table the memo thinks exists.
 export function clearWitnessSchemaCache(): void {
 	_witnessSchemaEnsuredPromise = null;
+	_witnessOverLimit = new Set<string>();
+	_witnessOverLimitDay = '';
 }
 
-// Mirrors migrations-witness/0001_witness_checkpoints.sql. Keep the two in step.
+// Mirrors migrations-witness/0001_witness_checkpoints.sql and
+// 0002_accounts_and_usage.sql. Keep them in step.
 export async function ensureWitnessSchema(env: Env): Promise<void> {
 	if (!env.WITNESS_DB) return;
 	if (_witnessSchemaEnsuredPromise) return _witnessSchemaEnsuredPromise;
@@ -5186,6 +5201,29 @@ export async function ensureWitnessSchema(env: Env): Promise<void> {
 		).run();
 		await env.WITNESS_DB!.prepare(
 			`CREATE INDEX IF NOT EXISTS idx_witness_received_at ON witness_checkpoints (received_at)`,
+		).run();
+		// 0002: account rows and the per-pool day counter. SQLite has no
+		// ADD COLUMN IF NOT EXISTS, so the column is looked for first, and an
+		// isolate that loses the race to another treats "duplicate column name"
+		// as done.
+		const { results: columns } = await env.WITNESS_DB!.prepare(`PRAGMA table_info(witness_checkpoints)`).all<{ name: string }>();
+		if (!columns.some((c) => c.name === 'account_id')) {
+			try {
+				await env.WITNESS_DB!.prepare(`ALTER TABLE witness_checkpoints ADD COLUMN account_id TEXT`).run();
+			} catch (err: unknown) {
+				if (!(err instanceof Error && err.message.includes('duplicate column name'))) throw err;
+			}
+		}
+		await env.WITNESS_DB!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_witness_account ON witness_checkpoints (account_id, received_at)`,
+		).run();
+		await env.WITNESS_DB!.prepare(
+			`CREATE TABLE IF NOT EXISTS witness_usage (
+				day  TEXT NOT NULL,
+				pool TEXT NOT NULL,
+				n    INTEGER NOT NULL,
+				PRIMARY KEY (day, pool)
+			)`,
 		).run();
 	})().catch((err) => {
 		_witnessSchemaEnsuredPromise = null;
@@ -5314,7 +5352,7 @@ async function verifyWitnessSubmission(body: Record<string, unknown>): Promise<W
 // Machine-readable copy of spec sections 2–4 and 6, served at /v1/witness/spec.
 const WITNESS_SPEC_DOC = {
 	name:    'Headless Oracle checkpoint witness',
-	version: 'witness-spec/0.4',
+	version: 'witness-spec/0.5',
 	purpose: 'An operator sends signed chain checkpoints to the witness, which records each one and signs a receipt saying when it saw it. ' +
 		'The witness attests only "at time T, I received this checkpoint, validly signed by the key with this thumbprint". ' +
 		'It does not attest who owns the key, nor that the records are true.',
@@ -5329,25 +5367,47 @@ const WITNESS_SPEC_DOC = {
 		checkpoint: '{ v, type:"checkpoint", session_id, count, last_entry_hash, ts, kid, sig }: Ed25519 over the RFC 8785 (JCS) bytes of the checkpoint without sig; sig is base64url without padding (64 bytes, 86 chars), never hex; kid is the bare RFC 7638 thumbprint of the Ed25519 public key. The legacy "ed25519/..." kid scheme is not accepted.',
 		checks: [
 			{ order: 1, error: 'bad_request', rule: 'Content-Type starts with application/json, and the body (read as bytes) is at most 4096 bytes and is a JSON object with exactly the members checkpoint and public_key_jwk.' },
+			{ order: 1.5, error: 'invalid_key', rule: 'Only when an Authorization header is sent (see accounts): it matches ^Bearer ho_live_[0-9a-f]{64}$ and names an active Evidence plan key. Failures: 401 invalid_key (malformed or unknown key), 402 payment_required (the key is not active), 403 witness_plan_required (the key is not an Evidence plan key), 503 witness_unavailable (the key store could not answer). Without the header this check is skipped.' },
 			{ order: 2, error: 'bad_checkpoint_shape', rule: 'checkpoint is an object with exactly the members v, type, session_id, count, last_entry_hash, ts, kid, sig.' },
 			{ order: 3, error: 'bad_checkpoint_field', rule: 'v === "evidence.action/1" and type === "checkpoint"; count is a JSON number with Number.isSafeInteger(count) && count >= 1; last_entry_hash matches ^sha256:[0-9a-f]{64}$; ts matches ^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$ and Date.parse(ts) is finite; session_id is a string of 1 to 128 chars; kid matches ^[A-Za-z0-9_-]{43}$; sig matches ^[A-Za-z0-9_-]{86}$.' },
 			{ order: 4, error: 'bad_jwk', rule: 'public_key_jwk is an object with exactly the members kty, crv and x (any other member is rejected), kty is "OKP", crv is "Ed25519", and x matches ^[A-Za-z0-9_-]{43}$, decodes to 32 bytes and re-encodes to the same string.' },
 			{ order: 5, error: 'kid_mismatch', rule: 'base64url-nopad(SHA-256(UTF-8 of {"crv":"Ed25519","kty":"OKP","x":"<x>"})) equals checkpoint.kid.' },
 			{ order: 6, error: 'bad_signature', rule: 'Strict RFC 8032 Ed25519 verification of the 64 bytes obtained by base64url-decoding checkpoint.sig (not hex), over the UTF-8 JCS bytes of the checkpoint without sig. For this flat object JCS equals JSON.stringify with keys sorted and no whitespace.' },
 		],
-		check_failure: 'Checks run in order and fail closed with 400 on the first failure. The body\'s error member is the code; other members, such as a docs link, may be present.',
+		check_failure: 'Checks run in order and fail closed on the first failure: 400 for every check except the key check (order 1.5), whose codes its rule lists. The body\'s error member is the code; other members, such as a docs link, may be present.',
 		identity: 'A checkpoint\'s identity is (kid, session_id, count, last_entry_hash); ts and sig are not part of it.',
 		responses: {
 			'201': 'A new checkpoint was stored; the body is its new receipt.',
 			'200': 'The identity was already stored; the body is the stored receipt. Its checkpoint_ts and checkpoint_sha256 may differ from the request when the same head was checkpointed twice.',
 			'400': 'A check failed; error names it.',
-			'429': '{ "error": "RATE_LIMITED" } with Retry-After.',
-			'503': '{ "error": "witness_unavailable" }: the store is unavailable or the daily cap is reached. No receipt is ever returned for a checkpoint that was not stored.',
+			'401': '{ "error": "invalid_key" }: an Authorization header was sent and is malformed or names no key.',
+			'402': '{ "error": "payment_required" }: the key is not active (for example, its subscription was cancelled).',
+			'403': '{ "error": "witness_plan_required" }: the key is not an Evidence plan key.',
+			'429': '{ "error": "RATE_LIMITED" } with Retry-After, or, for an account, { "error": "quota_exceeded" } with Retry-After set to the seconds until 00:00 UTC.',
+			'503': '{ "error": "witness_unavailable" }: the store or key store is unavailable, or the anonymous daily cap is reached. No receipt is ever returned for a checkpoint that was not stored.',
 		},
 		fork: 'fork is "true" when, at insert time, a row with the same (kid, session_id, count) and a different last_entry_hash already exists. Two concurrent first submissions with different hashes can both get "false", so verifiers detect forks from the receipts, not from the flag.',
 		append_only: 'Rows are never updated or deleted.',
-		rate_limit: 'Best effort (counted per Cloudflare location, so it can over-admit): about 60 requests per minute per client address, applied separately to POST and to GET of checkpoints, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Fails open on a limiter error.',
-		daily_cap: `Best effort: concurrent requests can exceed it slightly. Once ${formatCallsGrouped(WITNESS_DAILY_CAP)} (a launch limit while the service runs on Cloudflare's free plan; raised later) new witness rows have been stored in the current UTC day, a POST that would store a new row returns 503 witness_unavailable for the rest of that day. The cap counts and blocks new rows only: a repeat POST of an already-stored checkpoint still returns 200 with the stored receipt.`,
+		rate_limit: `Best effort (counted per Cloudflare location, so it can over-admit): about 60 requests per minute per client address, applied separately to POST and to GET of checkpoints, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Requests with an Authorization header are limited instead at about ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} per minute per address (counted before the body is read) and about ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} per minute per account (after the key is checked), and carry X-RateLimit-Limit: ${WITNESS_ACCT_RATE_LIMIT_PER_MIN}. Fails open on a limiter error.`,
+		daily_cap: `Best effort: concurrent requests can exceed it slightly. Once ${formatCallsGrouped(WITNESS_DAILY_CAP)} (a launch limit; raised later) new anonymous witness rows have been stored in the current UTC day, an anonymous POST that would store a new row returns 503 witness_unavailable for the rest of that day. A POST with an Evidence plan key counts against that key's own quota instead (see accounts). The cap counts and blocks new rows only: a repeat POST of an already-stored checkpoint still returns 200 with the stored receipt.`,
+		accounts: {
+			header: 'Optional Authorization: Bearer <key>, the key issued with the Evidence plans (https://headlessoracle.com/pricing). Without it the POST is anonymous and shares the anonymous daily cap.',
+			quotas: {
+				evidence_starter: `Up to ${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence_starter)} new checkpoints per UTC day.`,
+				evidence:         `Up to ${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence)} new checkpoints per UTC day.`,
+			},
+			quota_rule: 'Only a POST that stores a new row counts; a repeat POST of an already-stored checkpoint is free. Best effort: concurrent requests can exceed a quota slightly. Over the quota a POST that would store a new row returns 429 quota_exceeded, with Retry-After set to the seconds until 00:00 UTC.',
+			anonymous_cap: 'Account rows do not count against the anonymous daily cap, and that cap being reached does not block an account.',
+			errors: {
+				'401': 'invalid_key: the header is not Bearer ho_live_ followed by 64 lowercase hex characters, or names no key. Never answered from the anonymous pool instead.',
+				'402': 'payment_required: the key is not active.',
+				'403': 'witness_plan_required: the key exists but is not an Evidence plan key.',
+				'429': 'quota_exceeded: this key\'s daily quota is used; or RATE_LIMITED.',
+				'503': 'witness_unavailable: the key store could not answer, or the store is unavailable.',
+			},
+			receipts: 'Receipts are identical for both pools: the same fields, signed the same way. Nothing in a receipt says which pool stored it.',
+			rate_limit: `About ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} requests per minute per client address and per account.`,
+		},
 	},
 	query: {
 		method: 'GET',
@@ -5434,19 +5494,22 @@ type WitnessJson = (body: unknown, status?: number, extraHeaders?: Record<string
 async function handleWitness(request: Request, env: Env, url: URL, now: Date, json: WitnessJson): Promise<Response | null> {
 	// The binding exposes no remaining count or reset time, so witness responses
 	// carry only the limit; json()'s daily-quota defaults would misdescribe it.
+	// A POST with an Authorization header is under the account limiter, so its
+	// responses name that limit instead.
+	let rlLimit = WITNESS_RATE_LIMIT_PER_MIN;
 	const wj: WitnessJson = (b, s = 200, h = {}) => {
-		const r = json(b, s, { ...h, 'X-RateLimit-Limit': String(WITNESS_RATE_LIMIT_PER_MIN) });
+		const r = json(b, s, { ...h, 'X-RateLimit-Limit': String(rlLimit) });
 		r.headers.delete('X-RateLimit-Remaining');
 		r.headers.delete('X-RateLimit-Reset');
 		return r;
 	};
 	const unavailable = () => wj({ error: 'witness_unavailable' }, 503);
+	const clientKey = witnessClientKey(request.headers.get('CF-Connecting-IP'));
 
 	// Workers Rate Limiting binding: no KV write per request. Counts are kept per
 	// Cloudflare location, so it can over-admit. Fails open: an unbound or broken
 	// limiter must not take the witness down.
-	const rateLimited = async (limiter: RateLimit | undefined, name: string): Promise<Response | null> => {
-		const key = witnessClientKey(request.headers.get('CF-Connecting-IP'));
+	const rateLimited = async (limiter: RateLimit | undefined, name: string, key: string): Promise<Response | null> => {
 		try {
 			if (!limiter) throw new Error(`${name} unbound`);
 			const { success } = await limiter.limit({ key });
@@ -5455,8 +5518,9 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 			console.error(`WITNESS_RATE_LIMITER_FAILED fail_open=true limiter=${name} err=${err instanceof Error ? err.message : 'unknown'}`);
 			return null;
 		}
+		const scope = rlLimit === WITNESS_RATE_LIMIT_PER_MIN ? 'per client address' : 'per client address and per account';
 		return wj(
-			{ error: 'RATE_LIMITED', message: `Witness requests are capped at about ${WITNESS_RATE_LIMIT_PER_MIN} per minute per client address. Retry in 60s.`, retry_after_seconds: 60 },
+			{ error: 'RATE_LIMITED', message: `Witness requests are capped at about ${rlLimit} per minute ${scope}. Retry in 60s.`, retry_after_seconds: 60 },
 			429,
 			{ 'Retry-After': '60' },
 		);
@@ -5470,7 +5534,7 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 
 	if (request.method === 'GET') {
 		// Before the parameter checks, so a flood of 400s is counted too.
-		const limited = await rateLimited(env.WITNESS_GET_RL, 'WITNESS_GET_RL');
+		const limited = await rateLimited(env.WITNESS_GET_RL, 'WITNESS_GET_RL', clientKey);
 		if (limited) return limited;
 		const p = url.searchParams;
 		const kid = p.get('kid');
@@ -5515,9 +5579,15 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	if (request.method !== 'POST') return wj({ error: 'method_not_allowed' }, 405, { Allow: 'GET, POST' });
 
 	// Rate limit before reading the body, so a flood of bad bodies is counted too.
-	const limited = await rateLimited(env.WITNESS_POST_RL, 'WITNESS_POST_RL');
+	// A request that sends a key is counted by the account limiter, keyed by
+	// address here, which bounds key probing and the lookups it causes.
+	const authHeader = request.headers.get('Authorization');
+	if (authHeader !== null) rlLimit = WITNESS_ACCT_RATE_LIMIT_PER_MIN;
+	const limited = authHeader === null
+		? await rateLimited(env.WITNESS_POST_RL, 'WITNESS_POST_RL', clientKey)
+		: await rateLimited(env.WITNESS_ACCT_RL, 'WITNESS_ACCT_RL', `ip:${clientKey}`);
 	if (limited) return limited;
-	const reply = (body: unknown, status: number) => wj(body, status);
+	const reply = (body: unknown, status: number, headers: Record<string, string> = {}) => wj(body, status, headers);
 
 	// Check 1. A declared length over the limit is refused unread; otherwise the
 	// size is measured on the bytes as they arrive, whatever Content-Length says.
@@ -5536,6 +5606,33 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	}
 	if (!isPlainObject(body) || !hasExactlyMembers(body, ['checkpoint', 'public_key_jwk'])) {
 		return reply({ error: 'bad_request' }, 400);
+	}
+
+	// Check 1.5, the key. Only readKeyRecord: checkApiKey would decrement a
+	// credits balance and map an evidence plan to 'free'. A request that sent a
+	// header is never answered from the anonymous pool.
+	let account: { id: string; plan: EvidencePlan } | null = null;
+	if (authHeader !== null) {
+		if (!WITNESS_KEY_HEADER.test(authHeader)) return reply({ error: 'invalid_key' }, 401);
+		const keyHash = await sha256Hex(authHeader.slice('Bearer '.length));
+		let read: KeyRecordRead;
+		try {
+			read = await readKeyRecord(keyHash, env);
+		} catch (err: unknown) {
+			console.error(`WITNESS_KEY_LOOKUP_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
+			return unavailable();
+		}
+		if (read.state === 'missing') return reply({ error: 'invalid_key' }, 401);
+		if (read.state === 'unavailable') return unavailable();
+		if (read.record.status !== 'active') return reply({ error: 'payment_required' }, 402);
+		const plan = read.record.plan ?? '';
+		if (!EVIDENCE_PLANS.has(plan)) {
+			return reply({ error: 'witness_plan_required', message: 'Witness accounts come with the Evidence plans: https://headlessoracle.com/pricing' }, 403);
+		}
+		// Never returned, and never logged beside the key.
+		account = { id: keyHash.slice(0, 32), plan: plan as EvidencePlan };
+		const acctLimited = await rateLimited(env.WITNESS_ACCT_RL, 'WITNESS_ACCT_RL', `acct:${account.id}`);
+		if (acctLimited) return acctLimited;
 	}
 
 	const checked = await verifyWitnessSubmission(body);
@@ -5557,25 +5654,45 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	try {
 		await ensureWitnessSchema(env);
 
-		// A repeat is answered before the cap: the cap blocks new rows only.
+		// A repeat is answered before any counting: only new rows count.
 		const existing = await storedReceipt();
 		if (existing) return reply(existing, 200);
 
-		// Times are taken after the body is read, never from the request start: a
-		// client holding its body open must not store an old received_at under the
-		// newest rowid, which would reset the max(rowid) day count.
+		// One clock read, after the body is read and the repeat is answered: a
+		// client holding its body open cannot store an old received_at, and the
+		// day the row is counted under is the day its receipt carries.
 		const t = new Date();
-		const dayStart = `${t.toISOString().slice(0, 10)}T00:00:00.000Z`;
-		const today = await db.prepare(WITNESS_DAY_COUNT_SQL).bind(dayStart).first<{ c: number }>();
-		if ((today?.c ?? 0) >= WITNESS_DAILY_CAP) {
-			console.error(`WITNESS_DAILY_CAP_REACHED rows_today=${today?.c ?? 0}`);
-			return unavailable();
+		const receivedAt = t.toISOString();
+		const day = receivedAt.slice(0, 10);
+		const pool = account ? account.id : 'anon';
+		const limit = account ? EVIDENCE_PLAN_QUOTA[account.plan] : WITNESS_DAILY_CAP;
+		const refuse = (): Response => {
+			if (!account) {
+				console.error(`WITNESS_DAILY_CAP_REACHED day=${day}`);
+				return unavailable();
+			}
+			const nextMidnight = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate() + 1);
+			const retryAfter = Math.min(86_400, Math.max(1, Math.ceil((nextMidnight - t.getTime()) / 1000)));
+			return reply(
+				{ error: 'quota_exceeded', message: `This key's quota of ${formatCallsGrouped(limit)} new checkpoints per UTC day is used. It resets at 00:00 UTC.`, retry_after_seconds: retryAfter },
+				429,
+				{ 'Retry-After': String(retryAfter) },
+			);
+		};
+		if (_witnessOverLimitDay !== day) {
+			_witnessOverLimit = new Set<string>();
+			_witnessOverLimitDay = day;
+		}
+		if (_witnessOverLimit.has(`${day}|${pool}`)) return refuse();
+		const used = await db.prepare(WITNESS_USAGE_UPSERT_SQL).bind(day, pool).first<{ n: number }>();
+		if ((used?.n ?? 0) > limit) {
+			_witnessOverLimit.add(`${day}|${pool}`);
+			return refuse();
 		}
 
 		const sibling = await db.prepare(
 			`SELECT 1 AS one FROM witness_checkpoints WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash != ? LIMIT 1`,
 		).bind(kid, sessionId, checked.count, lastEntryHash).first<{ one: number }>();
-		const receivedAt = new Date().toISOString();
 
 		const checkpointJcs = witnessJcs(cp);
 		const receipt: Record<string, string> = {
@@ -5596,11 +5713,11 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 
 		const ins = await db.prepare(
 			`INSERT OR IGNORE INTO witness_checkpoints
-			 (kid, session_id, count, last_entry_hash, checkpoint_jcs, checkpoint_sha256, public_key_x, received_at, fork, receipt_json, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 (kid, session_id, count, last_entry_hash, checkpoint_jcs, checkpoint_sha256, public_key_x, received_at, fork, receipt_json, created_at, account_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).bind(
 			kid, sessionId, checked.count, lastEntryHash, checkpointJcs, receipt.checkpoint_sha256,
-			checked.x, receipt.received_at, receipt.fork, receiptJson, new Date().toISOString(),
+			checked.x, receipt.received_at, receipt.fork, receiptJson, new Date().toISOString(), account ? account.id : null,
 		).run();
 		if ((ins.meta?.changes ?? 0) === 1) return reply(receipt, 201);
 
@@ -9163,6 +9280,7 @@ const OPENAPI_SPEC = {
 		securitySchemes: {
 			ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-Oracle-Key' },
 			BearerAuth: { type: 'http', scheme: 'bearer', description: 'OAuth 2.0 Bearer token from POST /oauth/token' },
+			WitnessKey: { type: 'http', scheme: 'bearer', description: 'An Evidence plan key (ho_live_ followed by 64 hex), sent as Authorization: Bearer <key> on POST /v1/witness/checkpoints.' },
 		},
 		schemas: {
 			Status: {
@@ -9355,7 +9473,9 @@ const OPENAPI_SPEC = {
 					'The receipt attests only that at received_at the witness was shown a checkpoint validly signed by the key with that thumbprint; it does not attest who controls the key or that the records are true. ' +
 					'Checks run in order and fail closed with 400 on the first failure: bad_request, bad_checkpoint_shape, bad_checkpoint_field, bad_jwk, kid_mismatch, bad_signature. ' +
 					'checkpoint.sig is base64url without padding (86 chars), never hex. A checkpoint\'s identity is (kid, session_id, count, last_entry_hash): a new identity returns 201, a stored one returns 200 with the stored receipt. ' +
-					`About 60 requests per minute per client address, counted per Cloudflare location; ${formatCallsGrouped(WITNESS_DAILY_CAP)} new rows per UTC day, best effort. Full contract and honest limits: GET /v1/witness/spec.`,
+					`About 60 requests per minute per client address, counted per Cloudflare location; ${formatCallsGrouped(WITNESS_DAILY_CAP)} new anonymous rows per UTC day, best effort. ` +
+					`Optional Authorization: Bearer <Evidence plan key> counts against the key's own quota instead (up to ${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence_starter)} or ${formatCallsGrouped(EVIDENCE_PLAN_QUOTA.evidence)} new checkpoints per UTC day) and is limited at about ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} per minute per address and per account. Full contract and honest limits: GET /v1/witness/spec.`,
+				security: [{}, { WitnessKey: [] }],
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {
@@ -9395,8 +9515,11 @@ const OPENAPI_SPEC = {
 					'201': { description: 'Checkpoint stored; the new witness receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/WitnessReceipt' } } } },
 					'200': { description: 'Identity already stored; the stored witness receipt', content: { 'application/json': { schema: { '$ref': '#/components/schemas/WitnessReceipt' } } } },
 					'400': { description: 'A check failed; error is bad_request, bad_checkpoint_shape, bad_checkpoint_field, bad_jwk, kid_mismatch or bad_signature', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
-					'429': { description: 'RATE_LIMITED; see Retry-After', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
-					'503': { description: 'witness_unavailable: the store is unavailable or the daily cap is reached; no receipt is returned', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'401': { description: 'invalid_key: the Authorization header is malformed or names no key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'402': { description: 'payment_required: the key is not active', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'403': { description: 'witness_plan_required: the key is not an Evidence plan key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'429': { description: 'RATE_LIMITED, or quota_exceeded for an account over its daily quota; see Retry-After', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'503': { description: 'witness_unavailable: the store or key store is unavailable, or the anonymous daily cap is reached; no receipt is returned', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
 			get: {
