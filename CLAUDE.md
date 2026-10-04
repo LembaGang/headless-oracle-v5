@@ -75,15 +75,47 @@ Still requires explicit confirmation in the message:
 **ORACLE_OVERRIDES must never contain telemetry data.** Operators scan it for active circuit breakers.
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-09-24T10:04Z — B-224d/B-224f pushed and deployed (f20ba28c); TEST_COUNT 1369 -->
-<!-- Previous: 2026-09-24T08:25Z (0e437a6) — B-224/B-224b/B-224c pushed and deployed (e4cf7f87); TEST_COUNT 1356 -->
-<!-- Previous: 2026-09-10 — B-149 the till opens, B-146 history verification, B-122 README -->
+<!-- Last updated: 2026-10-04 — Witness W1-W3, H1a, H1b deployed (32f367e6) and pushed (3d4b723); TEST_COUNT 1535 -->
+<!-- Previous: 2026-09-24T10:04Z — B-224d/B-224f pushed and deployed (f20ba28c); TEST_COUNT 1369 -->
 
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-04: Witness and paid-plan delivery live.** Live version
+  **`32f367e6-457d-4c2f-8dc2-f85d371e9c54`** (2026-10-04T08:02:06Z, from `3d4b723`,
+  read from `npx wrangler deployments list`; deploy exited 1 on B-115 after the upload).
+  It serves W1 `c43e17a`, W2 `96bbaee`, W3 `afa5338` (first deployed 3 Oct as
+  `28f81845…`), H1a `ede783b`, H1b `826fa59` + `3d4b723`, and the 10-01/10-02 work
+  below. `origin/main` at `3d4b723` before this canon commit. Suite **1432 → 1535**;
+  `/v5/metrics/public` serves `tests_passing: 1535`. `src/index.ts` 18,856 lines.
+  - **Witness** on `api.headlessoracle.com/v1/witness/*`, spec `witness-spec/0.5`. The
+    apex route `headlessoracle.com/v1/witness/*` is NOT added (B-115). Storage is D1
+    `chirindo_witness`; `ensureWitnessSchema` applies `migrations-witness/0002` on first
+    use. Rate limits `WITNESS_POST_RL`/`WITNESS_GET_RL` 60/min, `WITNESS_ACCT_RL` 600/min,
+    per Cloudflare location, and **fail open** (the only fail-open path in the witness;
+    the spec says so; daily cap and store stay fail-closed). The limits are constants
+    in source mirrored in `wrangler.toml`: change both. `status_code:`/referrer KV
+    counters still write on every witness response.
+  - **Evidence plans.** `custody_90d` = `evidence_starter` (1,000 new checkpoints/UTC
+    day), `custody_1y` = `evidence` (3,000/day). A purchase delivers a Witness key
+    (`Authorization: Bearer ho_live_…` on POST checkpoints); `checkApiKey` maps them to
+    `free` for `/v5/*`. Every paid plan delivers its key; `subscription.activated` never
+    mints. Provisioning is KV-first (`paddle_sub:` in ORACLE_API_KEYS, no TTL) with
+    Supabase best effort. Fail-closed calls ratified: status event with a KV miss AND a
+    failed Supabase lookup → 503 (D2); lost `last_event_at` write → 503. New log events
+    `PADDLE_SUPABASE_WRITE_FAILED`, `PADDLE_KV_WRITE_FAILED`, `PADDLE_DEDUPE_UNAVAILABLE`,
+    `PADDLE_SUB_UNKNOWN`, `PADDLE_ACTIVATED_NO_MINT`, `PADDLE_EVENT_OUT_OF_ORDER`,
+    `SUPABASE_KEEPALIVE`; revenue tier `evidence:<plan>`.
+  - **Supabase** `sahqfuyneoeqczupmysu` was paused 3 Oct and restored; `supabaseKeepalive`
+    runs in the 09:00 cron. Production `api_keys` has a UNIQUE index on
+    `stripe_subscription_id` (applied 4 Oct, in no repo schema file).
+  - **Account on Workers FREE**: D1 500 MB, 100k rows written/day account-wide.
+  - **Open**: Paddle `origin` values unverified against a real payload; credits mint
+    has no dedupe or founder line (D3); `/llms.txt`, `/AGENTS.md`, web `/pricing` and
+    the Paddle product names not checked against Witness v0.5; no production POST to
+    the witness has succeeded yet.
 - **2026-10-02: A2A claims removed (handoff `CC_HANDOFF_2026-10-02_hov5-a2a-claims_rev3`),
-  committed, NOT deployed; the founder deploys.** A1 `820cbf7`: `/.well-known/agent-card.json`
+  deployed in `32f367e6`.** A1 `820cbf7`: `/.well-known/agent-card.json`
   (A2A's registered well-known URI) answers 404; `/.well-known/agent.json` stays as plain JSON
   metadata without the AgentCard-only fields; `/llms-full.txt`, `/AGENTS.md`, `/skill.md`,
   `/openapi.json` and the agent directory no longer claim A2A; `/v5/changelog` keeps its
@@ -93,7 +125,7 @@ here is carried forward from an earlier stamp unverified.
   **1395 to 1432**, read from `npm run test:sync-count` and the pre-commit hook. No route
   change. Post-deploy check: `node scripts/verify-agent-readiness.mjs --only 10`.
 - **2026-10-01: agent readiness (handoff `CC_HANDOFF_2026-10-01_hov5-agent-readiness_rev2`),
-  committed, NOT deployed; the founder deploys.** W1 `1de0c53` Bazaar extension in the
+  deployed in `32f367e6`.** W1 `1de0c53` Bazaar extension in the
   v2 `PAYMENT-REQUIRED` header of `/v5/status/x402` only, payment-header inputs folded
   to ASCII, `EXTENSION-RESPONSES` logged; W2 `4640b06` `/.well-known/ai-catalog.json`
   (MCP card, agent-skills index, API catalog; no A2A); W3 `f10a48d` `/auth.md` plus the
@@ -106,34 +138,14 @@ here is carried forward from an earlier stamp unverified.
   from `npm run test:sync-count` and the pre-commit hook. Post-deploy check:
   `node scripts/verify-agent-readiness.mjs` (failed every check but liveness against
   production before the deploy, as it should).
-- **Tests**: 1337 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
-  step by `scripts/vitest-count.sh` and enforced by CI) + 11 smoke + 24 SDK + 26
-  LangGraph + 17 ai-hedge-fund. 1264 → 1298 across the rail sprint's day two;
-  1298 → 1308 on 2026-09-09 (B-144 +6 and 1 replaced, B-145 +4, tripwire +1);
-  **1308 → 1337 on 2026-09-10** (B-149 checkout +8, webhook +3, pricing +3,
-  intake +14, placeholder guard +1); **1337 → 1348 later on 2026-09-10** (B-169
-  body validation +7, B-168 overlay host +4); **1348 → 1356 on 2026-09-24**
-  (B-224c's eight-surface guard, `0bff1f8`; counted by `npm run test:sync-count`
-  and again by the pre-commit hook, both `1356 passed (1356)`); **1356 → 1368**
-  (B-224d, `20404e4`: the guard rebuilt, 8 cases replaced by 20); **1368 → 1369**
-  (B-224f, `78fa1cd`: the `tools/list` case). Each count observed by
-  `npm run test:sync-count` and again by the pre-commit hook.
-- **Worker**: `src/index.ts` **17,817 lines** (`wc -l`, 2026-09-24, at `78fa1cd`).
-  API-only — zero HTML. **Live version: `f20ba28c-571b-4e92-b1f0-0489688ce60d`**,
-  deployed 2026-09-24T09:59:40Z from `78fa1cd` after CI and Tests both passed on
-  that commit, read from `npx wrangler deployments list` in the session that
-  deployed it. It serves B-169, B-168 and B-224 through B-224f. It replaced
-  `e4cf7f87-cdd0-4e53-b884-8dcdd7d5fa5d` (08:17:05Z the same day, from `0bff1f8`),
-  which replaced `9151bbeb-bb0b-4d8f-b12e-628e2cd50a91` (2026-09-10T12:46:33Z) —
-  **not** `5bf9588f…`, which an earlier stamp here carried from a handoff
-  unverified. Both deploys of 2026-09-24 exited 1 on the known B-115
-  route-listing failure after a successful upload; routes were unchanged each
-  time, so it was benign. Live-verified after `f20ba28c`: `/v5/metrics/public`
-  serves `tests_passing: 1369`, `/v5/health` and `/v5/demo?mic=XNYS` 200, and the
-  guard's own rule (legacy strings plus sentence-level check) flags nothing on
-  its twenty GET surfaces or on `POST /mcp tools/list`. **Push state, read from
-  git on 2026-09-24: `origin/main` is at `78fa1cd`; nothing unpushed before this
-  canon commit.**
+- **Tests**: 1535 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+  step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
+  ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
+  subjects; each count was read from `npm run test:sync-count` and the hook.
+- **Worker**: see the 2026-10-04 entry above for the live version. Previous live
+  versions: `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…` (2026-10-02),
+  `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and 10-04 each exited 1
+  on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
   scripts/start-smoke.sh`. Every commit of 2026-09-07 passed all four with no
@@ -332,6 +344,8 @@ own row.
 provisions a key as before; `{kind:'referee'}` is recognised, recorded under its
 own name, and mints **no API key** — evidence custody is not API access, and
 before B-144 a `custody_90d` subscription minted a Pro key; `null` is unmapped.
+**Superseded for the two custody prices by H1a (`ede783b`)**: they resolve to
+`{kind:'evidence_plan'}` and deliver a Witness key (see 2026-10-04 above).
 
 **Do not write a referee price id or amount as a literal anywhere else.** The
 check is `git grep -cE 'pri_01m22w[a-z0-9]+' -- src test`. **As of 2026-09-10 it

@@ -1,6 +1,36 @@
 # Active Priorities — Headless Oracle V5
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
+## 2026-10-04 — Witness, H1a and H1b deployed and pushed; TEST_COUNT 1535
+
+| commit | what |
+|---|---|
+| `c43e17a` `96bbaee` `afa5338` | Witness W1-W3: endpoint, amendment, received_at fix + Workers Rate Limiting (1432 → 1481) |
+| `ede783b` | H1a — every paid Paddle plan delivers its key; custody prices provision Witness keys (1481 → 1504) |
+| `826fa59` | H1b Part A — ratification follow-ups: 503 on KV failure, out-of-order events, `readKeyRecord` (1504 → 1519) |
+| `3d4b723` | H1b Part B — Witness accounts for Evidence keys, `witness_usage`, `WITNESS_ACCT_RL`, spec v0.5 (1519 → 1535) |
+| (this one) | canon refresh |
+
+**Deployed** `32f367e6-457d-4c2f-8dc2-f85d371e9c54` (2026-10-04T08:02Z), B-115 exit 1
+after the upload. **Pushed** `afa5338..3d4b723`. Live checks: witness spec 200 v0.5;
+POST checkpoints with a malformed and an unknown bearer both 401 `invalid_key`;
+`tests_passing` 1535; `/v5/status?mic=XNYS` 200 signed. Detail in `CLAUDE.md`.
+
+### Still open after 2026-10-04
+
+- **Apex route** `headlessoracle.com/v1/witness/*` — not added (B-115).
+- **Witness write path** — no successful production POST yet; limiter 429 and the
+  daily cap unexercised live. Nothing alerts on cap exhaustion or 503 rate.
+- **Paddle `origin` values** (`web`/`api`/`subscription_recurring`) unverified against
+  a real `transaction.completed`; no Evidence purchase exercised end to end.
+- **Credits mint** has no dedupe and no founder line (H1a D3).
+- **Served surfaces** `/llms.txt`, `/AGENTS.md`, web `/pricing`, Paddle product names
+  not reconciled with Witness v0.5 / the Evidence plan names.
+- **Not edited** (handoff scope): `02_architecture_map.md`, `04_telemetry_guide.md` and
+  `10_decisions.md` — their items are one line each in `CLAUDE.md` instead. The test
+  comment near `test/index.spec.ts:5645` still says custody mints nothing.
+- B-115, `verify_receipt`, GAP-017 rows below are unchanged.
+
 ## 2026-09-24 (later) — B-224d and B-224f pushed and deployed; TEST_COUNT 1369
 
 Two handoffs from the Lead, executed in this session:
