@@ -3306,7 +3306,8 @@ describe('GET /.well-known/security.txt', () => {
 
 	it('contains required RFC 9116 fields', async () => {
 		const body = await fetchWorker('/.well-known/security.txt').then((r) => r.text());
-		expect(body).toContain('Contact: mailto:security@headlessoracle.com');
+		// CHANGED 2026-10-04 (H3a, G13): one contact address across the machine files.
+		expect(body).toContain('Contact: mailto:mike@headlessoracle.com');
 		expect(body).toContain('Expires: 2027-04-08T00:00:00.000Z');
 		expect(body).toContain('Preferred-Languages: en');
 		expect(body).toContain('Canonical: https://headlessoracle.com/.well-known/security.txt');
@@ -3324,10 +3325,11 @@ describe('GET /llms.txt', () => {
 	});
 
 	it('contains spec-compliant structure with sections and MCP tools', async () => {
+		// CHANGED 2026-10-04 (H3a, G1): Chirindo/Witness first, market-state second.
 		const body = await fetchWorker('/llms.txt').then((r) => r.text());
-		expect(body).toContain('## MCP Tools');
+		expect(body).toContain('## Chirindo Witness');
+		expect(body).toContain('## Market-state attestations (also available)');
 		expect(body).toContain('get_market_status');
-		expect(body).toContain('## API Endpoints');
 		expect(body).toContain('/v5/status');
 	});
 });
@@ -3593,7 +3595,8 @@ describe('Agent directory (soft-404 trap fix)', () => {
 describe('robots.txt — Content Signals + explicit bot allows', () => {
 	it('declares Cloudflare Content Signals', async () => {
 		const body = await fetchWorker('/robots.txt').then((r) => r.text());
-		expect(body).toContain('Content-Signal: ai-train=no, ai-input=yes, search=yes');
+		// CHANGED 2026-10-04 (H3a, G14, Lead decision): ai-train=yes, in every group.
+		expect(body).toContain('Content-Signal: search=yes, ai-input=yes, ai-train=yes');
 	});
 
 	it('explicitly allows agent + AI crawlers', async () => {
@@ -11610,7 +11613,9 @@ describe('GET /v5/metrics/public', () => {
 	it('returns 200 with correct shape and static fields', async () => {
 		const body = await fetchJSON('/v5/metrics/public');
 		expect(body).toHaveProperty('exchanges', 28);
-		expect(body).toHaveProperty('mcp_tools', 5);
+		// CHANGED 2026-10-04 (H3a, G13): was a literal 5 while tools/list served 4.
+		const toolsList = await (await postMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).json() as { result: { tools: unknown[] } };
+		expect(body).toHaveProperty('mcp_tools', toolsList.result.tools.length);
 		expect(body).toHaveProperty('signing_algorithm', 'Ed25519');
 		expect(body).toHaveProperty('receipt_ttl_seconds', 60);
 		expect(body).toHaveProperty('mcp_protocol_version', '2024-11-05');
@@ -11944,10 +11949,13 @@ describe('Enhanced 402 responses with upgrade_paths', () => {
 		expect(res.status).toBe(402);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('upgrade_paths');
-		expect(body).toHaveProperty('recommended', 'instant_key');
+		// CHANGED 2026-10-04 (H3a, G9): the paid per-call path first, the free key second.
+		expect(body).toHaveProperty('recommended', 'x402_payment');
 		const paths = body.upgrade_paths as Array<Record<string, unknown>>;
 		expect(Array.isArray(paths)).toBe(true);
 		expect(paths.length).toBeGreaterThanOrEqual(4);
+		expect(paths[0].id).toBe('x402_payment');
+		expect(paths[1].id).toBe('instant_key');
 		const instantPath = paths.find((p) => p.id === 'instant_key');
 		expect(instantPath).toBeDefined();
 		expect(instantPath!.friction).toBe('zero');
@@ -11968,7 +11976,8 @@ describe('Enhanced 402 responses with upgrade_paths', () => {
 			expect(ts).toHaveProperty('limit', 3);
 			expect(typeof ts.resets_at).toBe('string');
 			expect(body).toHaveProperty('upgrade_paths');
-			expect(body).toHaveProperty('recommended', 'instant_key');
+			// CHANGED 2026-10-04 (H3a, G9): the paid per-call path is recommended.
+			expect(body).toHaveProperty('recommended', 'x402_payment');
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
 		}
@@ -12460,18 +12469,14 @@ describe('llms.txt and llms-full.txt (AI-discoverable documentation)', () => {
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('text/markdown');
 		const body = await res.text();
-		// Spec format: starts with # Title
-		expect(body).toMatch(/^# Headless Oracle/);
-		// Has blockquote summary
-		expect(body).toContain('> Ed25519-signed market-state attestations');
-		// Links to full doc
+		// CHANGED 2026-10-04 (H3a, G1): the title and summary name the product sold
+		// now; market-state follows as its own section.
+		expect(body).toMatch(/^# Chirindo by Headless Oracle/);
+		expect(body).toContain('> Evidence for AI agents.');
 		expect(body).toContain('/llms-full.txt');
-		// Has MCP Tools section
-		expect(body).toContain('## MCP Tools');
-		// Has API Endpoints section
-		expect(body).toContain('## API Endpoints');
-		// Has Integration section
-		expect(body).toContain('## Integration');
+		expect(body).toContain('## Chirindo Witness');
+		expect(body).toContain('## Pricing');
+		expect(body).toContain('## Market-state attestations (also available)');
 	});
 
 	it('GET /llms-full.txt returns comprehensive documentation', async () => {
@@ -12479,7 +12484,9 @@ describe('llms.txt and llms-full.txt (AI-discoverable documentation)', () => {
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('text/markdown');
 		const body = await res.text();
-		expect(body).toMatch(/^# Headless Oracle/);
+		// CHANGED 2026-10-04 (H3a, G1): Chirindo head first, then the market-state docs.
+		expect(body).toMatch(/^# Chirindo by Headless Oracle/);
+		expect(body).toContain('# Market-state attestations (also available)');
 		// Has exchange session hours table
 		expect(body).toContain('XNYS');
 		expect(body).toContain('XJPX');
@@ -18783,5 +18790,165 @@ describe('H2: claim tokens — the key on screen after payment', () => {
 	it('H2b: openapi documents 410 on POST /v5/claim', async () => {
 		const spec = await (await call('/openapi.json')).json() as { paths: Record<string, { post: { responses: Record<string, unknown> } }> };
 		expect(spec.paths['/v5/claim'].post.responses).toHaveProperty('410');
+	});
+});
+
+// ─── H3a (2026-10-04): the agent surfaces sell what Headless Oracle sells now ─
+// Every machine-readable surface named only the market-state oracle; none named
+// Chirindo or Witness. These pin the rewrite and the G2/G6/G9/G13/G14 fixes.
+describe('H3a: agent-facing surfaces lead with Chirindo', () => {
+	async function initializeInstructions(): Promise<string> {
+		const body = await (await postMcp({
+			jsonrpc: '2.0', id: 1, method: 'initialize',
+			params:  { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'h3a-test', version: '1.0.0' } },
+		})).json() as { result: { instructions: string } };
+		return body.result.instructions;
+	}
+
+	const CHIRINDO_SURFACES = [
+		'/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md',
+		'/.well-known/agent.json', '/.well-known/mcp/server-card.json', '/.well-known/mcp-servers.json',
+	];
+
+	it.each(CHIRINDO_SURFACES)('(a) %s names Chirindo and Witness', async (path) => {
+		const res = await fetchWorker(path);
+		expect(res.status).toBe(200);
+		const text = await res.text();
+		expect(text).toContain('Chirindo');
+		expect(text).toContain('Witness');
+	});
+
+	it('(a) the MCP initialize instructions name Chirindo and Witness, before the market-state tools', async () => {
+		const ins = await initializeInstructions();
+		expect(ins).toContain('Chirindo');
+		expect(ins).toContain('Witness');
+		expect(ins.indexOf('Chirindo')).toBeLessThan(ins.indexOf('get_market_status'));
+	});
+
+	it('(a) llms.txt puts Chirindo first and quotes the witness spec purpose verbatim', async () => {
+		const llms = await (await fetchWorker('/llms.txt')).text();
+		const spec = await (await fetchWorker('/v1/witness/spec')).json() as { purpose: string; honest_limits: { sidecar: string } };
+		expect(llms.indexOf('## Chirindo Witness')).toBeLessThan(llms.indexOf('## Market-state attestations'));
+		expect(llms).toContain(spec.purpose);
+		expect(llms).toContain(spec.honest_limits.sidecar);
+		expect(llms).toContain('Headless Oracle co-authors the IETF draft family defining environmental constraints for Verifiable Intent.');
+	});
+
+	const BANNED = ["Mastercard's", 'compliant', 'certified', 'no trust required', 'unlimited'];
+	const AGENT_FILES = [
+		'/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md', '/skill.md',
+		'/.well-known/agent.json', '/.well-known/mcp/server-card.json', '/.well-known/mcp.json',
+		'/.well-known/mcp-servers.json', '/.well-known/ai-plugin.json',
+	];
+
+	it.each(AGENT_FILES)('(b) %s carries none of the banned phrases', async (path) => {
+		const res = await fetchWorker(path);
+		expect(res.status).toBe(200);
+		const text = (await res.text()).toLowerCase();
+		for (const phrase of BANNED) {
+			expect(text.includes(phrase.toLowerCase()), `${path} contains "${phrase}"`).toBe(false);
+		}
+	});
+
+	it('(b) the MCP initialize instructions carry none of the banned phrases', async () => {
+		const ins = (await initializeInstructions()).toLowerCase();
+		for (const phrase of BANNED) expect(ins.includes(phrase.toLowerCase()), phrase).toBe(false);
+	});
+
+	it('(c) /v5/pricing lists the free Witness pool and both Evidence plans with their numbers', async () => {
+		const body = await fetchJSON('/v5/pricing') as { tiers: Array<Record<string, unknown>> };
+		const byId = new Map(body.tiers.map((t) => [t.id as string, t]));
+		expect(byId.get('witness_free')).toMatchObject({ plan: null, price_usd: 0, interval: null, checkpoints_per_day: 2000, introductory_until: null });
+		expect(String(byId.get('witness_free')!.provision)).toContain('https://api.headlessoracle.com/v1/witness/checkpoints');
+		expect(byId.get('evidence_starter')).toMatchObject({ plan: 'custody_90d', price_usd: 49, interval: 'month', checkpoints_per_day: 1000, introductory_until: '2026-12-31' });
+		expect(byId.get('evidence')).toMatchObject({ plan: 'custody_1y', price_usd: 199, interval: 'month', checkpoints_per_day: 3000, introductory_until: '2026-12-31' });
+		for (const id of ['evidence_starter', 'evidence']) expect(String(byId.get(id)!.provision)).toContain('POST /v5/checkout');
+	});
+
+	// The pins below were read from production /v5/pricing on 2026-10-04, served by
+	// afc1c80, before this change: the seven pre-existing tiers and everything
+	// outside `tiers` (referee, x402, urls). The web repo's check:prices reads this
+	// endpoint, so those bytes must not move.
+	it('(c) the seven pre-existing tiers and every non-tier field are byte-identical to production before H3a', async () => {
+		const body = await fetchJSON('/v5/pricing') as { tiers: Array<Record<string, unknown>> } & Record<string, unknown>;
+		expect(body.tiers.slice(0, 7).map((t) => t.id)).toEqual(['sandbox', 'free', 'x402', 'credits', 'builder', 'pro', 'protocol']);
+		expect(await sha256Hex(JSON.stringify(body.tiers.slice(0, 7)))).toBe('0cc0e4765f5e2f6224ac98b610f43b9187183a62ea3a4bacf5b5328129530768');
+		const rest: Record<string, unknown> = { ...body };
+		delete rest.tiers;
+		expect(await sha256Hex(JSON.stringify(rest))).toBe('03c9cd531c91d5a72419c58c98da2c9f39a61a11f82bef12b7396803377777ce');
+	});
+
+	it('(d) openapi /v5/checkout has a plan enum equal to the valid_plans the route enforces', async () => {
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, { post: { requestBody?: { content: Record<string, { schema: { properties: { plan: { enum: string[] } } } }> } } }> };
+		const planEnum = spec.paths['/v5/checkout'].post.requestBody!.content['application/json'].schema.properties.plan.enum;
+		// The route's own list, read from its 400 (no call to Paddle for an unknown plan).
+		const res = await fetchWorker('/v5/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: 'no_such_plan' }) });
+		expect(res.status).toBe(400);
+		const { valid_plans } = await res.json() as { valid_plans: string[] };
+		expect(planEnum).toEqual(valid_plans);
+		expect(planEnum).toContain('custody_90d');
+		expect(planEnum).toContain('custody_1y');
+	});
+
+	it('(e) the keyless /v5/status 402 recommends x402 and lists the free key second; status and x402 header unchanged', async () => {
+		const today  = new Date().toISOString().slice(0, 10);
+		const ipHash = await sha256Hex('');
+		await env.ORACLE_TELEMETRY.put(`trial_usage:${today}:${ipHash}`, '3', { expirationTtl: 25 * 3600 });
+		try {
+			const res = await fetchWorker('/v5/status?mic=XNYS');
+			expect(res.status).toBe(402);
+			expect(res.headers.get('Payment-Required')).toBeTruthy();
+			const body = await res.json() as { recommended: string; upgrade_paths: Array<{ id: string; result?: string }> };
+			expect(body.recommended).toBe('x402_payment');
+			expect(body.upgrade_paths[0].id).toBe('x402_payment');
+			expect(body.upgrade_paths[1].id).toBe('instant_key');
+			expect(body.upgrade_paths[1].result).toContain('500 calls/day');
+		} finally {
+			await env.ORACLE_TELEMETRY.delete(`trial_usage:${today}:${ipHash}`);
+		}
+	});
+
+	it('(f) robots.txt carries the same Content-Signal in every group and names the four crawlers', async () => {
+		const body = await (await fetchWorker('/robots.txt')).text();
+		const groups = body.split(/\n\s*\n/).filter((g) => /^User-agent:/m.test(g));
+		expect(groups.length).toBeGreaterThanOrEqual(12);
+		for (const g of groups) {
+			expect(g.match(/^Content-Signal: .*$/gm), g.split('\n')[0]).toEqual(['Content-Signal: search=yes, ai-input=yes, ai-train=yes']);
+		}
+		for (const bot of ['Claude-SearchBot', 'Claude-User', 'Perplexity-User', 'OAI-SearchBot']) {
+			const g = groups.find((x) => x.startsWith(`User-agent: ${bot}\n`));
+			expect(g, bot).toBeDefined();
+			expect(g).toContain('Allow: /');
+		}
+		expect(body).not.toContain('ai-train=no');
+	});
+
+	it('(G2) the three witness operations name the api host as their server; the spec base_url_note is unchanged', async () => {
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, Record<string, { servers?: Array<{ url: string }> }>> };
+		for (const [path, method] of [['/v1/witness/checkpoints', 'post'], ['/v1/witness/checkpoints', 'get'], ['/v1/witness/spec', 'get']] as const) {
+			expect(spec.paths[path][method].servers?.[0]?.url, `${method} ${path}`).toBe('https://api.headlessoracle.com');
+		}
+		const witnessSpec = await fetchJSON('/v1/witness/spec');
+		expect(witnessSpec.base_url_note).toBe('https://headlessoracle.com serves the same paths once its route for /v1/witness/* is deployed.');
+	});
+
+	it('(G13) ai-plugin URLs point at pages that exist; the contact is mike@', async () => {
+		const plugin = await fetchJSON('/.well-known/ai-plugin.json');
+		expect(plugin.logo_url).toBe('https://headlessoracle.com/og-image.png');
+		expect(plugin.legal_info_url).toBe('https://headlessoracle.com/terms');
+		expect(plugin.contact_email).toBe('mike@headlessoracle.com');
+		const spec = await fetchJSON('/openapi.json') as { info: { contact: { email: string } } };
+		expect(spec.info.contact.email).toBe('mike@headlessoracle.com');
+	});
+
+	it('(G13) SKILL.md and the agent-skills files state the repo licence (MIT)', async () => {
+		const skill = await (await fetchWorker('/SKILL.md')).text();
+		expect(skill).toMatch(/^license: MIT$/m);
+		const index = await fetchJSON('/.well-known/agent-skills/index.json') as { skills: Array<{ name: string }> };
+		expect(index.skills.length).toBeGreaterThan(0);
+		for (const s of index.skills) {
+			const text = await (await fetchWorker(`/.well-known/agent-skills/${s.name}/SKILL.md`)).text();
+			expect(text, s.name).toMatch(/^license: MIT$/m);
+		}
 	});
 });
