@@ -81,6 +81,52 @@ jobs:
               core.notice(`Opened revenue issue for ${evt.txn_id}`);
             }
 
+      # H2b: a buyer paid and never fetched the key on screen. Email delivery
+      # may also have failed, so this issue may be the only signal.
+      - name: Surface uncollected keys as issues
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const lines = fs.readFileSync('/tmp/health-output.log', 'utf8').split('\n');
+            for (const line of lines) {
+              if (!line.trim().startsWith('{')) continue;
+              let evt;
+              try { evt = JSON.parse(line); } catch { continue; }
+              if (evt.event !== 'KEY_NOT_COLLECTED') continue;
+
+              // Dedup by txn_id, as the revenue issues do. The phrase is part of
+              // the query because the revenue issue for the same transaction
+              // also carries the txn_id in its title, and a bare txn_id search
+              // would match it and never open this issue.
+              const title = `Key not collected: ${evt.txn_id} (${evt.plan})`;
+              const search = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:issue "Key not collected: ${evt.txn_id}" in:title`,
+              });
+              if (search.data.total_count > 0) {
+                core.info(`Skipping duplicate key-not-collected issue for ${evt.txn_id}`);
+                continue;
+              }
+              const body = [
+                `**Plan**: ${evt.plan}`,
+                `**Filled at**: ${evt.filled_at}`,
+                `**Transaction ID**: \`${evt.txn_id}\``,
+                ``,
+                `The buyer paid but has not fetched the key on screen. Email delivery may also have failed. Look up the customer in Paddle and send the key by hand.`,
+                ``,
+                `Detected by the scheduled health check. Source: \`scripts/health-check.mjs\` reading \`paddle.unclaimed_keys\` from \`/v5/revenue-pulse\`.`,
+              ].join('\n');
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['revenue', 'auto'],
+              });
+              core.notice(`Opened key-not-collected issue for ${evt.txn_id}`);
+            }
+
       - name: Open issue on health check failure
         if: steps.check.outputs.exit_code != '0'
         uses: actions/github-script@v7

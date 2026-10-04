@@ -2834,6 +2834,14 @@ const PADDLE_OVERLAY_HOST  = 'headlessoracle.com';
 const CLAIM_TOKEN_RE            = /^[0-9a-f]{64}$/;
 const CLAIM_PENDING_TTL_SECONDS = 7 * 24 * 3600;
 const CLAIM_READY_TTL_SECONDS   = 86400;
+// claim_filled:/claim_seen: in ORACLE_TELEMETRY, keyed by txn_id: the pair
+// that tells a delivered key from one nobody fetched (H2b).
+const CLAIM_AUDIT_TTL_SECONDS   = 7 * 24 * 3600;
+// A pending claim older than this answers 410: the ready row it waits for
+// lives 24 hours, so past this the buyer should stop polling and write in.
+const CLAIM_WINDOW_MS           = 24 * 3600 * 1000;
+// /v5/revenue-pulse lists a filled key as uncollected after this long.
+const CLAIM_UNCOLLECTED_AFTER_MS = 2 * 3600 * 1000;
 const CLAIM_SEAL_INFO           = 'ho-claim-seal-v1';
 
 // The checkout plans that mint a key at the webhook: the four API plans (credits
@@ -2907,6 +2915,18 @@ async function fillClaim(env: Env, txn: Record<string, unknown>, plan: string, k
 			JSON.stringify({ txn_id: txnId, plan, sealed, ready_at: new Date().toISOString() }),
 			{ expirationTtl: CLAIM_READY_TTL_SECONDS },
 		);
+		// H2b: the record /v5/revenue-pulse reads to find keys nobody
+		// collected. Its own catch: losing it must not turn a filled claim
+		// into a reported failure.
+		try {
+			await env.ORACLE_TELEMETRY.put(
+				`claim_filled:${txnId}`,
+				JSON.stringify({ plan, filled_at: new Date().toISOString() }),
+				{ expirationTtl: CLAIM_AUDIT_TTL_SECONDS },
+			);
+		} catch {
+			console.error(JSON.stringify({ event: 'CLAIM_FILLED_RECORD_FAILED', txn_id: safeIdent(txnId, 80) }));
+		}
 		return true;
 	} catch {
 		console.error(JSON.stringify({ event: 'CLAIM_FILL_FAILED', txn_id: safeIdent(txnId, 80) }));
@@ -9898,6 +9918,7 @@ const OPENAPI_SPEC = {
 					'400': { description: 'claim_token missing or not 64 lowercase hex', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'404': { description: '{"state":"unknown"}: no such claim, or it expired' },
 					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'410': { description: '{"state":"expired","message":"..."}: the claim is past its 24-hour window and was never ready. Stop polling; write in with the transaction ID.' },
 					'429': { description: 'Rate limited; retry after retry_after_seconds', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'503': { description: 'Claims unavailable; retry after retry_after_seconds', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
@@ -12629,7 +12650,9 @@ export default {
 				'X-RateLimit-Reset':     rlMidnight.toISOString(),
 			};
 			// Best-effort daily status code counter — enables /v5/metrics/public status_codes_today.
-			if (typeof ctx?.waitUntil === 'function') {
+			// Not on /v5/claim: a browser polls it every 2s, and each poll
+			// would cost a KV write.
+			if (typeof ctx?.waitUntil === 'function' && url.pathname !== '/v5/claim') {
 				incrementKvCounter(`status_code:${now.toISOString().slice(0, 10)}:${status}`, env, ctx, 25 * 3600);
 			}
 			// Link header for llms.txt discovery (llmstxt.org convention).
@@ -14640,12 +14663,12 @@ export default {
 					return json({ error: 'bad_request' }, 400, noStore);
 				}
 				const h = await sha256Hex(claimToken);
-				let claimRec: { txn_id?: unknown; plan?: unknown } | null = null;
+				let claimRec: { txn_id?: unknown; plan?: unknown; created_at?: unknown } | null = null;
 				let readyRec: { txn_id?: unknown; plan?: unknown; sealed?: { iv: string; ct: string } } | null = null;
 				try {
 					const claimRaw = await env.ORACLE_API_KEYS.get(`claim:${h}`);
 					if (claimRaw) {
-						claimRec = JSON.parse(claimRaw) as { txn_id?: unknown; plan?: unknown };
+						claimRec = JSON.parse(claimRaw) as { txn_id?: unknown; plan?: unknown; created_at?: unknown };
 						const readyRaw = await env.ORACLE_API_KEYS.get(`claim_ready:${h}`);
 						if (readyRaw) readyRec = JSON.parse(readyRaw) as { txn_id?: unknown; plan?: unknown; sealed?: { iv: string; ct: string } };
 					}
@@ -14659,6 +14682,16 @@ export default {
 				// Ready only when the mint was for the transaction this checkout
 				// created. Anything else is not this buyer's key.
 				if (!readyRec || readyRec.txn_id !== claimRec.txn_id || typeof readyRec.plan !== 'string' || !readyRec.sealed) {
+					// H2b: a claim past its window stops the poll. A created_at
+					// that cannot be read counts as past it: polling for 7 days
+					// on a record we cannot date helps nobody.
+					const createdMs = typeof claimRec.created_at === 'string' ? Date.parse(claimRec.created_at) : NaN;
+					if (!Number.isFinite(createdMs) || now.getTime() - createdMs > CLAIM_WINDOW_MS) {
+						return json({
+							state:   'expired',
+							message: 'This claim is past its 24-hour window. Write to mike@headlessoracle.com with your transaction ID.',
+						}, 410, noStore);
+					}
 					return json({ state: 'pending', retry_after_seconds: 2 }, 200, noStore);
 				}
 				let claimedKey: string;
@@ -14676,6 +14709,19 @@ export default {
 						creditsBalance = typeof bal === 'number' ? bal : null;
 					} catch { creditsBalance = null; }
 				}
+				// H2b: record the first collection, off the response path. The
+				// key is never in this record or its log line.
+				const seenTxnId = claimRec.txn_id;
+				ctx.waitUntil((async () => {
+					try {
+						const seenKey = `claim_seen:${seenTxnId}`;
+						if (await env.ORACLE_TELEMETRY.get(seenKey) === null) {
+							await env.ORACLE_TELEMETRY.put(seenKey, new Date().toISOString(), { expirationTtl: CLAIM_AUDIT_TTL_SECONDS });
+						}
+					} catch {
+						console.error(JSON.stringify({ event: 'CLAIM_SEEN_WRITE_FAILED', txn_id: safeIdent(seenTxnId, 80) }));
+					}
+				})());
 				return json({
 					state:        'ready',
 					key:          claimedKey,
@@ -14716,6 +14762,20 @@ export default {
 					const txnItems   = txn['items'] as Array<{ price_id?: string }> | undefined;
 					const txnPriceId = txnItems?.[0]?.price_id ?? null;
 					if (env.PADDLE_PRICE_ID_CREDITS && txnPriceId === env.PADDLE_PRICE_ID_CREDITS) {
+						// H2b: Paddle retries deliveries, and every retry used to mint
+						// another 1,000-call key. A transaction already minted answers
+						// as handled. A failed read mints, as before this check
+						// existed: a charged buyer with no key is the worse outcome.
+						const creditsTxnId = typeof txn['id'] === 'string' ? txn['id'] as string : null;
+						if (creditsTxnId && env.ORACLE_API_KEYS) {
+							try {
+								if (await env.ORACLE_API_KEYS.get(`paddle_txn:${creditsTxnId}`) !== null) {
+									return json({ received: true });
+								}
+							} catch {
+								console.error(JSON.stringify({ event: 'CREDITS_DEDUPE_READ_FAILED', txn_id: safeIdent(creditsTxnId, 80) }));
+							}
+						}
 						// Fetch customer email
 						let creditsEmail: string | null = null;
 						if (env.PADDLE_API_KEY && txn['customer_id']) {
@@ -14740,6 +14800,15 @@ export default {
 								email:      creditsEmail,
 								source:     'paddle_credits',
 							}));
+							if (creditsTxnId) {
+								// Logged, not thrown: a 500 here would make Paddle retry
+								// a mint that already happened.
+								try {
+									await env.ORACLE_API_KEYS.put(`paddle_txn:${creditsTxnId}`, JSON.stringify({ minted_at: new Date().toISOString() }), { expirationTtl: 30 * 24 * 3600 });
+								} catch {
+									console.error(JSON.stringify({ event: 'CREDITS_DEDUPE_WRITE_FAILED', txn_id: safeIdent(creditsTxnId, 80) }));
+								}
+							}
 							// H2: the paying browser can collect the key.
 							await fillClaim(env, txn, 'credits', creditsKey);
 						}
@@ -16605,6 +16674,27 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 					const blobs  = await Promise.all(listed.keys.slice(-50).reverse().map((k) => env.ORACLE_TELEMETRY.get(k.name)));
 					x402MintRecent = blobs.filter((b): b is string => !!b).map((b) => JSON.parse(b) as Record<string, unknown>);
 				} catch { /* fail-safe to empty list */ }
+				// H2b: keys sealed for a buyer and never fetched, older than 2h.
+				// The health check opens one GitHub issue per txn_id, because the
+				// buyer may hold nothing: email delivery may have failed too.
+				type UnclaimedKey = { txn_id: string; plan: string | null; filled_at: string };
+				let unclaimedKeys: UnclaimedKey[] = [];
+				try {
+					const listed  = await env.ORACLE_TELEMETRY.list({ prefix: 'claim_filled:', limit: 200 });
+					const cutoff  = now.getTime() - CLAIM_UNCOLLECTED_AFTER_MS;
+					const entries = await Promise.all(listed.keys.map(async (k): Promise<UnclaimedKey | null> => {
+						const txnId = k.name.slice('claim_filled:'.length);
+						const raw   = await env.ORACLE_TELEMETRY.get(k.name);
+						if (!raw) return null;
+						const rec = JSON.parse(raw) as { plan?: unknown; filled_at?: unknown };
+						const filledAt = typeof rec.filled_at === 'string' ? rec.filled_at : '';
+						const filledMs = Date.parse(filledAt);
+						if (!Number.isFinite(filledMs) || filledMs > cutoff) return null;
+						if (await env.ORACLE_TELEMETRY.get(`claim_seen:${txnId}`) !== null) return null;
+						return { txn_id: txnId, plan: typeof rec.plan === 'string' ? rec.plan : null, filled_at: filledAt };
+					}));
+					unclaimedKeys = entries.filter((e): e is UnclaimedKey => e !== null);
+				} catch { unclaimedKeys = []; /* fail-safe to empty list */ }
 				return json({
 					paddle: {
 						lifetime_count: parseInt(paddleCountStr ?? '0', 10) || 0,
@@ -16616,6 +16706,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						},
 						last_event_at: paddleLastAt ?? null,
 						recent_events: recent,
+						unclaimed_keys: unclaimedKeys,
 					},
 					x402: {
 						lifetime_count:   parseInt(x402CountStr ?? '0', 10) || 0,
@@ -18678,7 +18769,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				message: 'Oracle system error. Treat as UNKNOWN. Halt all execution.',
 				status:  'UNKNOWN',
 				source:  'SYSTEM',
-			}, 500);
+			}, 500, { 'Cache-Control': 'no-store' });
 		}
 	},
 

@@ -18138,10 +18138,10 @@ describe('H2: claim tokens — the key on screen after payment', () => {
 		return { res, body: await res.json() as Record<string, unknown> };
 	}
 
-	async function webhook(data: Record<string, unknown>): Promise<Response> {
+	async function webhook(data: Record<string, unknown>, o: Record<string, unknown> = {}): Promise<Response> {
 		const rawBody = JSON.stringify({ event_type: 'transaction.completed', data });
 		const sig     = await makePaddleSignature(rawBody, env.PADDLE_WEBHOOK_SECRET as string);
-		return call('/webhooks/paddle', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig }, body: rawBody });
+		return call('/webhooks/paddle', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig }, body: rawBody }, o);
 	}
 
 	function failingPutsKv(): KVNamespace {
@@ -18536,5 +18536,252 @@ describe('H2: claim tokens — the key on screen after payment', () => {
 		expect(Object.keys(spec.paths['/v5/checkout'].post.responses['200'].content!['application/json'].schema.properties)).toContain('claim_token');
 		expect(spec.paths['/v5/claim'].post.responses).toHaveProperty('200');
 		expect(spec.paths['/v5/claim'].post.responses).toHaveProperty('404');
+	});
+
+	// ─── H2b (2026-10-04): claim follow-ups ──────────────────────────────────
+	// claim_filled / claim_seen and the revenue-pulse list of uncollected keys,
+	// 410 for an expired claim, credits idempotency, no-store on the outer
+	// catch, and no status counter on /v5/claim.
+
+	type KvCall = (...a: unknown[]) => Promise<unknown>;
+	// A pass-through KV that records put keys and can fail puts or gets whose
+	// key starts with a given prefix.
+	function wrapKv(real: KVNamespace, opts: { failPut?: string; failGet?: string; puts?: string[] } = {}): KVNamespace {
+		return {
+			get: async (k: string, ...rest: unknown[]) => {
+				if (opts.failGet && k.startsWith(opts.failGet)) throw new Error('KV get failed');
+				return (real.get.bind(real) as unknown as KvCall)(k, ...rest);
+			},
+			getWithMetadata: real.getWithMetadata.bind(real),
+			list:            real.list.bind(real),
+			delete:          real.delete.bind(real),
+			put: async (k: string, ...rest: unknown[]) => {
+				opts.puts?.push(k);
+				if (opts.failPut && k.startsWith(opts.failPut)) throw new Error('KV put failed');
+				return (real.put.bind(real) as unknown as KvCall)(k, ...rest);
+			},
+		} as unknown as KVNamespace;
+	}
+
+	function randomToken(): string {
+		return Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+
+	async function pulse(key: string | null = env.MASTER_API_KEY as string): Promise<Response> {
+		return call('/v5/revenue-pulse', key ? { headers: { 'X-Oracle-Key': key } } : {});
+	}
+
+	it('H2b: a fill writes claim_filled:<txn_id> = {plan, filled_at} to ORACLE_TELEMETRY', async () => {
+		await paidSubscription('builder', 'fillrec');
+		const raw = await env.ORACLE_TELEMETRY.get('claim_filled:txn_h2_fillrec');
+		expect(raw).not.toBeNull();
+		const rec = JSON.parse(raw!) as { plan: string; filled_at: string };
+		expect(rec.plan).toBe('builder');
+		expect(Number.isFinite(Date.parse(rec.filled_at))).toBe(true);
+		expect(raw).not.toContain('ho_live_');
+	});
+
+	it('H2b: a failing claim_filled put leaves fillClaim true (claim_filled=yes), claim_ready written and the webhook 200', async () => {
+		const { cap, restore } = stub({ txnIds: ['txn_h2_fillfail'] });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const { body: co } = await checkout('builder');
+			const h   = await sha256Hex(co.claim_token as string);
+			const res = await webhook(
+				{ id: 'txn_h2_fillfail', customer_id: 'ctm_h2_fillfail', subscription_id: 'sub_h2_fillfail', origin: 'api', items: [{ price_id: PRICE.builder, quantity: 1 }], custom_data: { ho_claim: h } },
+				{ ORACLE_TELEMETRY: wrapKv(env.ORACLE_TELEMETRY, { failPut: 'claim_filled:' }) },
+			);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(await env.ORACLE_API_KEYS.get(`claim_ready:${h}`)).not.toBeNull();
+			expect(await env.ORACLE_TELEMETRY.get('claim_filled:txn_h2_fillfail')).toBeNull();
+			const founder = cap.mails.filter((m) => m.to === FOUNDER);
+			expect(founder.length).toBe(1);
+			expect(founder[0].text).toContain('claim_filled=yes');
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('CLAIM_FILLED_RECORD_FAILED'))).toBe(true);
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('CLAIM_FILL_FAILED'))).toBe(false);
+			expect((await claim(co.claim_token)).body.state).toBe('ready');
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H2b: the first ready writes claim_seen once; a second ready does not write again', async () => {
+		const { token, txnId } = await paidSubscription('builder', 'seen_once');
+		const puts: string[] = [];
+		const tele = wrapKv(env.ORACLE_TELEMETRY, { puts });
+		expect(await env.ORACLE_TELEMETRY.get(`claim_seen:${txnId}`)).toBeNull();
+		expect((await claim(token, { ORACLE_TELEMETRY: tele })).body.state).toBe('ready');
+		const first = await env.ORACLE_TELEMETRY.get(`claim_seen:${txnId}`);
+		expect(first).not.toBeNull();
+		expect(Number.isFinite(Date.parse(first!))).toBe(true);
+		expect(puts.filter((k) => k.startsWith('claim_seen:'))).toEqual([`claim_seen:${txnId}`]);
+		expect((await claim(token, { ORACLE_TELEMETRY: tele })).body.state).toBe('ready');
+		expect(puts.filter((k) => k.startsWith('claim_seen:')).length).toBe(1);
+		expect(await env.ORACLE_TELEMETRY.get(`claim_seen:${txnId}`)).toBe(first);
+	});
+
+	it('H2b: a failing claim_seen write leaves the ready body unchanged and logs CLAIM_SEEN_WRITE_FAILED', async () => {
+		const { token } = await paidSubscription('builder', 'seen_fail');
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const failed = await claim(token, { ORACLE_TELEMETRY: wrapKv(env.ORACLE_TELEMETRY, { failPut: 'claim_seen:' }) });
+			const normal = await claim(token);
+			expect(failed.res.status).toBe(200);
+			expect(failed.body).toEqual(normal.body);
+			expect(failed.body.state).toBe('ready');
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('CLAIM_SEEN_WRITE_FAILED'))).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+		}
+	});
+
+	it('H2b: revenue-pulse lists a filled, unseen txn older than 2h; omits a seen one and a younger one; 401 without the master key', async () => {
+		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+		await env.ORACLE_TELEMETRY.put('claim_filled:txn_h2_pulse_old',   JSON.stringify({ plan: 'evidence', filled_at: ago(3 * 3600_000) }));
+		await env.ORACLE_TELEMETRY.put('claim_filled:txn_h2_pulse_seen',  JSON.stringify({ plan: 'builder',  filled_at: ago(3 * 3600_000) }));
+		await env.ORACLE_TELEMETRY.put('claim_seen:txn_h2_pulse_seen', ago(2.5 * 3600_000));
+		await env.ORACLE_TELEMETRY.put('claim_filled:txn_h2_pulse_young', JSON.stringify({ plan: 'builder',  filled_at: ago(1 * 3600_000) }));
+
+		const res = await pulse();
+		expect(res.status).toBe(200);
+		const body = await res.json() as { paddle: { unclaimed_keys: Array<{ txn_id: string; plan: string; filled_at: string }> } };
+		const ids = body.paddle.unclaimed_keys.map((k) => k.txn_id);
+		expect(ids).toContain('txn_h2_pulse_old');
+		expect(ids).not.toContain('txn_h2_pulse_seen');
+		expect(ids).not.toContain('txn_h2_pulse_young');
+		expect(body.paddle.unclaimed_keys.find((k) => k.txn_id === 'txn_h2_pulse_old')).toEqual({ txn_id: 'txn_h2_pulse_old', plan: 'evidence', filled_at: expect.any(String) });
+
+		expect((await pulse(null)).status).toBe(401);
+		expect((await pulse('not-the-master-key')).status).toBe(401);
+	});
+
+	it('H2b: revenue-pulse unclaimed_keys fails safe to [] when the list throws', async () => {
+		const real = env.ORACLE_TELEMETRY;
+		const broken = { ...wrapKv(real), list: async (o: { prefix?: string }) => {
+			if (o?.prefix === 'claim_filled:') throw new Error('list failed');
+			return real.list(o);
+		} } as unknown as KVNamespace;
+		const res = await call('/v5/revenue-pulse', { headers: { 'X-Oracle-Key': env.MASTER_API_KEY as string } }, { ORACLE_TELEMETRY: broken });
+		expect(res.status).toBe(200);
+		expect(((await res.json()) as { paddle: { unclaimed_keys: unknown[] } }).paddle.unclaimed_keys).toEqual([]);
+	});
+
+	it('H2b: a pending claim created 25h ago answers 410 expired with no-store; 23h ago is still pending', async () => {
+		for (const [hours, expectStatus] of [[25, 410], [23, 200]] as const) {
+			const token = randomToken();
+			const h     = await sha256Hex(token);
+			await env.ORACLE_API_KEYS.put(`claim:${h}`, JSON.stringify({ txn_id: `txn_h2_age_${hours}`, plan: 'builder', created_at: new Date(Date.now() - hours * 3600_000).toISOString(), state: 'pending' }));
+			const { res, body } = await claim(token);
+			expect(res.status).toBe(expectStatus);
+			expect(res.headers.get('Cache-Control')).toBe('no-store');
+			if (expectStatus === 410) {
+				expect(body).toEqual({ state: 'expired', message: 'This claim is past its 24-hour window. Write to mike@headlessoracle.com with your transaction ID.' });
+			} else {
+				expect(body).toEqual({ state: 'pending', retry_after_seconds: 2 });
+			}
+		}
+	});
+
+	it('H2b: a 25h-old claim whose claim_ready still exists answers ready, not 410', async () => {
+		const { token, h } = await paidSubscription('builder', 'old_ready');
+		const rec = JSON.parse((await env.ORACLE_API_KEYS.get(`claim:${h}`))!) as Record<string, unknown>;
+		rec.created_at = new Date(Date.now() - 25 * 3600_000).toISOString();
+		await env.ORACLE_API_KEYS.put(`claim:${h}`, JSON.stringify(rec));
+		const { res, body } = await claim(token);
+		expect(res.status).toBe(200);
+		expect(body.state).toBe('ready');
+	});
+
+	async function creditsRecordsFor(email: string): Promise<number> {
+		const listed = await env.ORACLE_API_KEYS.list();
+		let n = 0;
+		for (const k of listed.keys) {
+			if (!/^[0-9a-f]{64}$/.test(k.name)) continue;
+			const v = JSON.parse((await env.ORACLE_API_KEYS.get(k.name)) ?? '{}') as { tier?: string; email?: string };
+			if (v.tier === 'credits' && v.email === email) n++;
+		}
+		return n;
+	}
+
+	it('H2b: credits — a second delivery of the same txn mints nothing; a different txn mints', async () => {
+		const email = 'h2b-idem@example.com';
+		const { restore } = stub({ txnIds: ['txn_h2_cred_idem'], email });
+		try {
+			const { body: co } = await checkout('credits');
+			const h    = await sha256Hex(co.claim_token as string);
+			const data = { id: 'txn_h2_cred_idem', customer_id: 'ctm_h2_cred_idem', items: [{ price_id: PRICE.credits }], custom_data: { ho_claim: h } };
+			expect((await webhook(data)).status).toBe(200);
+			expect(await creditsRecordsFor(email)).toBe(1);
+			const readyBefore = await env.ORACLE_API_KEYS.get(`claim_ready:${h}`);
+			expect(readyBefore).not.toBeNull();
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get('paddle_txn:txn_h2_cred_idem'))!)).toHaveProperty('minted_at');
+
+			const again = await webhook(data);
+			expect(again.status).toBe(200);
+			expect(await again.json()).toMatchObject({ received: true });
+			expect(await creditsRecordsFor(email)).toBe(1);
+			expect(await env.ORACLE_API_KEYS.get(`claim_ready:${h}`)).toBe(readyBefore);
+
+			// Control: a different transaction does mint.
+			expect((await webhook({ ...data, id: 'txn_h2_cred_idem_2', custom_data: undefined })).status).toBe(200);
+			expect(await creditsRecordsFor(email)).toBe(2);
+		} finally {
+			restore();
+		}
+	});
+
+	it('H2b: credits — a failed dedupe read mints (as before) and logs CREDITS_DEDUPE_READ_FAILED', async () => {
+		const email = 'h2b-readfail@example.com';
+		const { restore } = stub({ email });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			await env.ORACLE_API_KEYS.put('paddle_txn:txn_h2_cred_readfail', JSON.stringify({ minted_at: '2026-10-04T00:00:00Z' }));
+			const res = await webhook(
+				{ id: 'txn_h2_cred_readfail', customer_id: 'ctm_h2_cred_readfail', items: [{ price_id: PRICE.credits }] },
+				{ ORACLE_API_KEYS: wrapKv(env.ORACLE_API_KEYS, { failGet: 'paddle_txn:' }) },
+			);
+			expect(res.status).toBe(200);
+			expect(await creditsRecordsFor(email)).toBe(1);
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('CREDITS_DEDUPE_READ_FAILED'))).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('H2b: the outer catch answers 500 CRITICAL_FAILURE with Cache-Control: no-store', async () => {
+		// A correctly signed body that is not JSON: JSON.parse throws inside
+		// the webhook handler and only the outer catch can answer.
+		const rawBody = 'not json at all';
+		const sig     = await makePaddleSignature(rawBody, env.PADDLE_WEBHOOK_SECRET as string);
+		const errSpy  = vi.spyOn(console, 'error');
+		try {
+			const res = await call('/webhooks/paddle', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig }, body: rawBody });
+			expect(res.status).toBe(500);
+			expect(await res.json()).toMatchObject({ error: 'CRITICAL_FAILURE', status: 'UNKNOWN' });
+			expect(res.headers.get('Cache-Control')).toBe('no-store');
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('ORACLE_TOP_LEVEL_ERROR'))).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+		}
+	});
+
+	it('H2b: /v5/claim writes no status_code: counter; another route still does', async () => {
+		const puts: string[] = [];
+		const tele = wrapKv(env.ORACLE_TELEMETRY, { puts });
+		await claim('ab'.repeat(32), { ORACLE_TELEMETRY: tele });             // 404
+		await call('/v5/claim', {}, { ORACLE_TELEMETRY: tele });              // 405
+		await claim('XYZ', { ORACLE_TELEMETRY: tele });                       // 400
+		expect(puts.filter((k) => k.startsWith('status_code:'))).toEqual([]);
+		// Control: the same counter on another route.
+		expect((await call('/v5/pricing', {}, { ORACLE_TELEMETRY: tele })).status).toBe(200);
+		expect(puts.filter((k) => k.startsWith('status_code:')).length).toBe(1);
+	});
+
+	it('H2b: openapi documents 410 on POST /v5/claim', async () => {
+		const spec = await (await call('/openapi.json')).json() as { paths: Record<string, { post: { responses: Record<string, unknown> } }> };
+		expect(spec.paths['/v5/claim'].post.responses).toHaveProperty('410');
 	});
 });

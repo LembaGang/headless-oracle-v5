@@ -347,6 +347,17 @@ async function checkRevenue() {
 				event_ts: evt.ts,
 			});
 		}
+		// H2b: keys sealed for a buyer more than 2h ago and never fetched from
+		// /v5/claim. Not windowed like revenue events: each run repeats the
+		// list, and the workflow dedupes by txn_id. No key, token or email is
+		// in this line or in the pulse.
+		for (const k of body.paddle?.unclaimed_keys ?? []) {
+			log('KEY_NOT_COLLECTED', {
+				txn_id:    k.txn_id,
+				plan:      k.plan,
+				filled_at: k.filled_at,
+			});
+		}
 	} catch (err) { fail('revenue.fetch', err.message); }
 }
 
