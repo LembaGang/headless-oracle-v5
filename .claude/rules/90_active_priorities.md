@@ -1,6 +1,25 @@
 # Active Priorities — Headless Oracle V5
 <!-- Claude: update this file after significant work to preserve state across sessions -->
 
+## 2026-10-04 (later) — H2/H2b key on screen deployed and pushed; TEST_COUNT 1589
+
+| commit | what |
+|---|---|
+| `a0f3c75` | H2 — claim tokens, sealed key, `POST /v5/claim` (1535 → 1576) |
+| `afc1c80` | H2b — uncollected-key issue, 410 after 24h, credits dedupe, no-store (1576 → 1589) |
+| (this one) | canon refresh |
+
+**Deployed** `63974cb5-0939-4901-80cc-4c70ceabbf88` (2026-10-04T13:13Z), B-115 exit 1
+after the upload. **Pushed** `fd32175..afc1c80`. Live checks: `/v5/claim` 405/400/404
+with no-store; openapi carries `/v5/claim` and 410; `tests_passing` 1589; witness spec
+v0.5. `/v5/status?mic=XNYS` answered 402 `TRIAL_EXHAUSTED` from the deploy machine, so
+a live `/v5/demo` XNYS receipt was verified offline instead (founder accepted). Web
+W2/W2b deploy follows. Detail in `CLAUDE.md`.
+
+**Still open**: email to buyers fails until `RESEND_API_KEY` is replaced; no recovery
+script for an uncollected key; Paddle's `custom_data` echo unverified live; do not
+rotate `PADDLE_WEBHOOK_SECRET` with a `claim_ready` under 24h old. Detail in `CLAUDE.md`.
+
 ## 2026-10-04 — Witness, H1a and H1b deployed and pushed; TEST_COUNT 1535
 
 | commit | what |
@@ -23,7 +42,7 @@ POST checkpoints with a malformed and an unknown bearer both 401 `invalid_key`;
   daily cap unexercised live. Nothing alerts on cap exhaustion or 503 rate.
 - **Paddle `origin` values** (`web`/`api`/`subscription_recurring`) unverified against
   a real `transaction.completed`; no Evidence purchase exercised end to end.
-- **Credits mint** has no dedupe and no founder line (H1a D3).
+- **Credits mint** has no founder line (H1a D3); dedupe added by H2b.
 - **Served surfaces** `/llms.txt`, `/AGENTS.md`, web `/pricing`, Paddle product names
   not reconciled with Witness v0.5 / the Evidence plan names.
 - **Not edited** (handoff scope): `02_architecture_map.md`, `04_telemetry_guide.md` and

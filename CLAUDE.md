@@ -75,19 +75,41 @@ Still requires explicit confirmation in the message:
 **ORACLE_OVERRIDES must never contain telemetry data.** Operators scan it for active circuit breakers.
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-10-04 — Witness W1-W3, H1a, H1b deployed (32f367e6) and pushed (3d4b723); TEST_COUNT 1535 -->
-<!-- Previous: 2026-09-24T10:04Z — B-224d/B-224f pushed and deployed (f20ba28c); TEST_COUNT 1369 -->
+<!-- Last updated: 2026-10-04T13Z — H2/H2b key on screen deployed (63974cb5) and pushed (afc1c80); TEST_COUNT 1589 -->
+<!-- Previous: 2026-10-04 — Witness W1-W3, H1a, H1b deployed (32f367e6) and pushed (3d4b723); TEST_COUNT 1535 -->
 
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-04: Witness and paid-plan delivery live.** Live version
-  **`32f367e6-457d-4c2f-8dc2-f85d371e9c54`** (2026-10-04T08:02:06Z, from `3d4b723`,
-  read from `npx wrangler deployments list`; deploy exited 1 on B-115 after the upload).
-  It serves W1 `c43e17a`, W2 `96bbaee`, W3 `afa5338` (first deployed 3 Oct as
-  `28f81845…`), H1a `ede783b`, H1b `826fa59` + `3d4b723`, and the 10-01/10-02 work
-  below. `origin/main` at `3d4b723` before this canon commit. Suite **1432 → 1535**;
-  `/v5/metrics/public` serves `tests_passing: 1535`. `src/index.ts` 18,856 lines.
+- **2026-10-04 (later): the key on screen after payment.** Live version
+  **`63974cb5-0939-4901-80cc-4c70ceabbf88`** (2026-10-04T13:13:02Z, from `afc1c80`, read
+  from `npx wrangler deployments list`; B-115 exit 1 after the upload, routes unchanged).
+  It serves H2 `a0f3c75` and H2b `afc1c80`; `origin/main` at `afc1c80`. Suite
+  **1535 → 1589**; `/v5/metrics/public` serves `tests_passing: 1589`.
+  - Buyers of builder, pro, protocol, credits, custody_90d and custody_1y see their key
+    on the pricing page after payment (web W2 `67865d3` + W2b `21036c9`, deployed after
+    this worker). `/v5/checkout` returns `claim_token`; Paddle carries
+    `custom_data.ho_claim` = sha256(token); the mint seals the key (AES-GCM, HKDF of
+    `PADDLE_WEBHOOK_SECRET`) into `claim_ready:<h>` (24h); `POST /v5/claim` answers
+    pending, ready, or 410 after 24h. ORACLE_API_KEYS: `claim:` (7d), `claim_ready:`,
+    `paddle_txn:` (credits dedupe, 30d). ORACLE_TELEMETRY: `claim_filled:`/`claim_seen:` (7d).
+  - **Email to buyers is failing**: the worker's `RESEND_API_KEY` belongs to the Resend
+    team where headlessoracle.com is not verified. Until that key is replaced, the claim
+    page is the delivery, and the alarm is a GitHub issue `Key not collected: <txn_id>
+    (<plan>)` opened by the health check from `/v5/revenue-pulse` `paddle.unclaimed_keys`
+    (filled over 2h ago, never fetched).
+  - **Do not rotate `PADDLE_WEBHOOK_SECRET`** while any `claim_ready` is under 24h old:
+    the seal is derived from it and those keys become unreadable.
+  - Log events `CLAIM_SETUP_FAILED`, `CLAIM_FILL_FAILED`, `CLAIM_FILLED_RECORD_FAILED`,
+    `CLAIM_UNSEAL_FAILED`, `CLAIM_SEEN_WRITE_FAILED`, `CLAIM_READ_FAILED`,
+    `CLAIM_RATE_LIMITER_FAILED` (the `/v5/claim` limit on `WITNESS_GET_RL` fails open),
+    `CREDITS_DEDUPE_READ_FAILED`, `CREDITS_DEDUPE_WRITE_FAILED`.
+  - **Open**: Paddle echoing `custom_data` into `transaction.completed` is unverified
+    against a real payload; no script recovers an uncollected key for the founder;
+    `monitors.md`, `04_telemetry_guide.md` not updated for the claim pipeline.
+- **2026-10-04: Witness and paid-plan delivery live**, deployed as `32f367e6…`
+  (08:02:06Z, from `3d4b723`). W1 `c43e17a`, W2 `96bbaee`, W3 `afa5338` (first deployed
+  3 Oct as `28f81845…`), H1a `ede783b`, H1b `826fa59` + `3d4b723`. Suite **1432 → 1535**.
   - **Witness** on `api.headlessoracle.com/v1/witness/*`, spec `witness-spec/0.5`. The
     apex route `headlessoracle.com/v1/witness/*` is NOT added (B-115). Storage is D1
     `chirindo_witness`; `ensureWitnessSchema` applies `migrations-witness/0002` on first
@@ -111,7 +133,7 @@ here is carried forward from an earlier stamp unverified.
     `stripe_subscription_id` (applied 4 Oct, in no repo schema file).
   - **Account on Workers FREE**: D1 500 MB, 100k rows written/day account-wide.
   - **Open**: Paddle `origin` values unverified against a real payload; credits mint
-    has no dedupe or founder line (D3); `/llms.txt`, `/AGENTS.md`, web `/pricing` and
+    has no founder line (D3; dedupe added by H2b); `/llms.txt`, `/AGENTS.md`, web `/pricing` and
     the Paddle product names not checked against Witness v0.5; no production POST to
     the witness has succeeded yet.
 - **2026-10-02: A2A claims removed (handoff `CC_HANDOFF_2026-10-02_hov5-a2a-claims_rev3`),
@@ -138,13 +160,13 @@ here is carried forward from an earlier stamp unverified.
   from `npm run test:sync-count` and the pre-commit hook. Post-deploy check:
   `node scripts/verify-agent-readiness.mjs` (failed every check but liveness against
   production before the deploy, as it should).
-- **Tests**: 1535 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1589 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
-- **Worker**: see the 2026-10-04 entry above for the live version. Previous live
-  versions: `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…` (2026-10-02),
-  `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and 10-04 each exited 1
+- **Worker**: see the 2026-10-04 (later) entry above for the live version. Previous live
+  versions: `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
+  (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and both of 10-04 each exited 1
   on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
   --noEmit`, `npm test`, `npx wrangler deploy --dry-run`, and `bash
