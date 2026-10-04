@@ -2741,10 +2741,14 @@ function resolveCheckoutPrice(plan: string, env: Env): CheckoutPriceResolution {
 async function createPaddleCheckout(
 	priceId: string,
 	env: Env,
+	customData?: Record<string, string>,
 ): Promise<{ ok: true; transactionId: string; overlayUrl: string | null } | { ok: false; detail: string }> {
 	const send = async (withCheckoutUrl: boolean) => {
 		const requestBody: Record<string, unknown> = { items: [{ price_id: priceId, quantity: 1 }] };
 		if (withCheckoutUrl) { requestBody.checkout = { url: PADDLE_CHECKOUT_URL }; }
+		// On both attempts: the retry drops only the checkout URL. H2's claim
+		// hash travels here and comes back in the signed transaction.completed.
+		if (customData) { requestBody.custom_data = customData; }
 		const res = await fetch('https://api.paddle.com/transactions', {
 			method: 'POST',
 			headers: {
@@ -2813,6 +2817,127 @@ function paddleCheckoutUrl(transactionId: string): string {
 // in createPaddleCheckout for what happened when neither was stated.
 const PADDLE_CHECKOUT_URL  = 'https://headlessoracle.com/pricing';
 const PADDLE_OVERLAY_HOST  = 'headlessoracle.com';
+
+// ─── H2: the key on screen (claim tokens) ────────────────────────────────────
+// Key delivery was email only, and on 2026-10-04 the Resend team behind
+// RESEND_API_KEY could not send from headlessoracle.com, so every key mail to a
+// buyer was rejected. The browser that started the checkout now holds a claim
+// token; Paddle carries only its sha256 (custom_data.ho_claim) into the signed
+// webhook, the mint seals the key under a key derived from that hash and
+// PADDLE_WEBHOOK_SECRET, and POST /v5/claim hands it back. Email stays as a
+// second channel.
+//
+// KV holds `claim:<h>` (written at checkout, 7 days) and `claim_ready:<h>`
+// (written at mint, 24 hours). The token itself is stored nowhere. ready is
+// served only when both rows name the same transaction, so a ho_claim copied
+// into some other transaction's custom_data cannot fill this claim.
+const CLAIM_TOKEN_RE            = /^[0-9a-f]{64}$/;
+const CLAIM_PENDING_TTL_SECONDS = 7 * 24 * 3600;
+const CLAIM_READY_TTL_SECONDS   = 86400;
+const CLAIM_SEAL_INFO           = 'ho-claim-seal-v1';
+
+// The checkout plans that mint a key at the webhook: the four API plans (credits
+// among them), and the two custody prices, which resolve as 'referee' here but
+// as evidence plans at the webhook. The other referee services mint nothing,
+// so a claim token for them would only ever answer pending.
+function checkoutMintsKey(resolved: CheckoutPriceResolution): boolean {
+	if (resolved.kind === 'api_plan') return true;
+	return resolved.kind === 'referee' && Object.prototype.hasOwnProperty.call(EVIDENCE_PLAN_BY_SERVICE, resolved.service);
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+	let binary = '';
+	for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+	return btoa(binary);
+}
+
+function base64ToBytes(s: string): Uint8Array {
+	const binary = atob(s);
+	const out = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+	return out;
+}
+
+// AES-GCM-256 from HKDF-SHA256(ikm = PADDLE_WEBHOOK_SECRET as UTF-8, salt = the
+// 32 bytes of h, info = "ho-claim-seal-v1"). A KV reader without the secret
+// cannot open a sealed key.
+async function claimSealKey(secret: string, h: string): Promise<CryptoKey> {
+	const ikm = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), 'HKDF', false, ['deriveKey']);
+	return crypto.subtle.deriveKey(
+		{ name: 'HKDF', hash: 'SHA-256', salt: fromHex(h), info: new TextEncoder().encode(CLAIM_SEAL_INFO) },
+		ikm,
+		{ name: 'AES-GCM', length: 256 },
+		false,
+		['encrypt', 'decrypt'],
+	);
+}
+
+async function sealClaimKey(secret: string, h: string, txnId: string, keyValue: string): Promise<{ iv: string; ct: string }> {
+	const iv = crypto.getRandomValues(new Uint8Array(12));
+	const ct = await crypto.subtle.encrypt(
+		{ name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(`${h}:${txnId}`) },
+		await claimSealKey(secret, h),
+		new TextEncoder().encode(keyValue),
+	);
+	return { iv: bytesToBase64(iv), ct: bytesToBase64(new Uint8Array(ct)) };
+}
+
+async function unsealClaimKey(secret: string, h: string, txnId: string, sealed: { iv: string; ct: string }): Promise<string> {
+	const pt = await crypto.subtle.decrypt(
+		{ name: 'AES-GCM', iv: base64ToBytes(sealed.iv), additionalData: new TextEncoder().encode(`${h}:${txnId}`) },
+		await claimSealKey(secret, h),
+		base64ToBytes(sealed.ct),
+	);
+	return new TextDecoder().decode(pt);
+}
+
+// Called where transaction.completed has just stored a new key. Reads the
+// claim hash from the signed webhook body only (no KV read), and never throws:
+// a claim that cannot be filled leaves the buyer on the email channel, and must
+// not change what the webhook answers. Returns whether claim_ready was written.
+async function fillClaim(env: Env, txn: Record<string, unknown>, plan: string, keyValue: string): Promise<boolean> {
+	const txnId = typeof txn['id'] === 'string' ? txn['id'] as string : 'unknown';
+	try {
+		const h = (txn['custom_data'] as Record<string, unknown> | null)?.ho_claim;
+		if (typeof h !== 'string' || !CLAIM_TOKEN_RE.test(h)) return false;
+		if (!env.ORACLE_API_KEYS || !env.PADDLE_WEBHOOK_SECRET) throw new Error('claim store or secret unavailable');
+		const sealed = await sealClaimKey(env.PADDLE_WEBHOOK_SECRET, h, txnId, keyValue);
+		await env.ORACLE_API_KEYS.put(
+			`claim_ready:${h}`,
+			JSON.stringify({ txn_id: txnId, plan, sealed, ready_at: new Date().toISOString() }),
+			{ expirationTtl: CLAIM_READY_TTL_SECONDS },
+		);
+		return true;
+	} catch {
+		console.error(JSON.stringify({ event: 'CLAIM_FILL_FAILED', txn_id: safeIdent(txnId, 80) }));
+		return false;
+	}
+}
+
+// What a buyer does with the key, by the plan the webhook minted.
+function claimInstructions(plan: string, balance: number | null): Record<string, unknown> {
+	if (EVIDENCE_PLANS.has(plan)) {
+		return {
+			use:                    'Witness checkpoints',
+			header:                 'Authorization: Bearer <key>',
+			method:                 'POST',
+			url:                    'https://api.headlessoracle.com/v1/witness/checkpoints',
+			daily_checkpoint_quota: EVIDENCE_PLAN_QUOTA[plan as EvidencePlan],
+			spec_url:               'https://api.headlessoracle.com/v1/witness/spec',
+			note:                   'Save this key now. It is shown here for 24 hours after payment and is not stored in readable form.',
+		};
+	}
+	const base: Record<string, unknown> = {
+		use:         'Signed market-state receipts',
+		header:      'X-Oracle-Key: <key>',
+		method:      'GET',
+		url:         'https://headlessoracle.com/v5/status?mic=XNYS',
+		account_url: 'https://headlessoracle.com/v5/account',
+		note:        'Save this key now. It is shown here for 24 hours after payment and is not stored in readable form.',
+	};
+	if (plan === 'credits') base.balance = balance;
+	return base;
+}
 
 // ─── Paddle webhooks: which plan a price id sells ────────────────────────────
 // Fail-CLOSED. Both webhook branches used to open with `let plan = 'pro'` and
@@ -3062,7 +3187,7 @@ ${env.BETA_KEY_SUNSET_DATE ? `<p style="background:#fff3cd;border:1px solid #ffc
 // customer's email DOMAIN goes in it.
 async function sendFounderMintLine(
 	env: Env,
-	args: { plan: string; transactionId: string; customerEmail: string | null; customerEmailSent: boolean; supabaseStored: boolean },
+	args: { plan: string; transactionId: string; customerEmail: string | null; customerEmailSent: boolean; supabaseStored: boolean; claimFilled: boolean },
 ): Promise<void> {
 	if (!env.RESEND_API_KEY) return;
 	const domain = args.customerEmail?.includes('@') ? args.customerEmail.split('@').pop() : 'none';
@@ -3074,7 +3199,7 @@ async function sendFounderMintLine(
 				from:    'Headless Oracle <hello@headlessoracle.com>',
 				to:      [FOUNDER_NOTIFICATION_EMAIL],
 				subject: `Paid mint: ${args.plan}`,
-				text:    `plan=${args.plan} transaction=${args.transactionId} customer_domain=${domain} customer_email_sent=${args.customerEmailSent ? 'yes' : 'no'} supabase_stored=${args.supabaseStored ? 'yes' : 'no'}`,
+				text:    `plan=${args.plan} transaction=${args.transactionId} customer_domain=${domain} customer_email_sent=${args.customerEmailSent ? 'yes' : 'no'} supabase_stored=${args.supabaseStored ? 'yes' : 'no'} claim_filled=${args.claimFilled ? 'yes' : 'no'}`,
 			}),
 		});
 	} catch (err) {
@@ -9740,11 +9865,41 @@ const OPENAPI_SPEC = {
 				responses: {
 					'200': {
 						description: 'Checkout transaction created',
-						content: { 'application/json': { schema: { type: 'object', required: ['url'], properties: { url: { type: 'string', format: 'uri' } } } } },
+						content: { 'application/json': { schema: { type: 'object', required: ['url', 'transaction_id'], properties: {
+							url:            { type: 'string', format: 'uri' },
+							overlay_url:    { type: 'string', format: 'uri', nullable: true },
+							transaction_id: { type: 'string' },
+							claim_token:    { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'Present only for plans that mint a key (builder, pro, protocol, credits, custody_90d, custody_1y). Keep it client-side and POST it to /v5/claim after payment to receive the key. Absent when the claim could not be set up; the key still arrives by email.' },
+						} } } },
 					},
 					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'502': { description: 'Paddle API error', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'503': { description: 'Billing not configured', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+				},
+			},
+		},
+		'/v5/claim': {
+			post: {
+				tags:        ['Payment'],
+				summary:     'Collect the key a checkout paid for',
+				description: 'POST the claim_token returned by /v5/checkout, in a JSON body (a token in the URL is ignored). Answers pending until Paddle confirms payment and the key is minted, then ready with the key and how to use it. A ready claim is served for 24 hours after payment. Every response is Cache-Control: no-store.',
+				requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['claim_token'], properties: { claim_token: { type: 'string', pattern: '^[0-9a-f]{64}$' } } } } } },
+				responses: {
+					'200': {
+						description: 'pending (poll again after retry_after_seconds) or ready (the key, its plan and instructions)',
+						content: { 'application/json': { schema: { type: 'object', required: ['state'], properties: {
+							state:               { type: 'string', enum: ['pending', 'ready'] },
+							retry_after_seconds: { type: 'integer', example: 2 },
+							key:                 { type: 'string', description: 'Present when state is ready. Save it; it is not shown after the claim expires.' },
+							plan:                { type: 'string', enum: ['builder', 'pro', 'protocol', 'credits', 'evidence_starter', 'evidence'] },
+							instructions:        { type: 'object', additionalProperties: true },
+						} } } },
+					},
+					'400': { description: 'claim_token missing or not 64 lowercase hex', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'404': { description: '{"state":"unknown"}: no such claim, or it expired' },
+					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'429': { description: 'Rate limited; retry after retry_after_seconds', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'503': { description: 'Claims unavailable; retry after retry_after_seconds', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
 		},
@@ -14412,16 +14567,121 @@ export default {
 				if (resolvedPrice.kind === 'unconfigured') {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: `Billing plan '${safeIdent(plan, 32)}' is not configured` }, 503);
 				}
-				const checkout = await createPaddleCheckout(resolvedPrice.priceId, env);
+				// H2: a plan that mints a key gets a claim token, so the browser
+				// that pays can collect the key from POST /v5/claim. Only with the
+				// webhook secret set: the sealed key is derived from it, and
+				// without it no claim could ever be served.
+				let claimToken: string | null = null;
+				let claimHash:  string | null = null;
+				if (checkoutMintsKey(resolvedPrice) && env.PADDLE_WEBHOOK_SECRET) {
+					claimToken = toHex(crypto.getRandomValues(new Uint8Array(32)));
+					claimHash  = await sha256Hex(claimToken);
+				}
+				const checkout = await createPaddleCheckout(resolvedPrice.priceId, env, claimHash ? { ho_claim: claimHash } : undefined);
 				if (!checkout.ok) {
 					console.error(`PADDLE_CHECKOUT_ERROR: ${checkout.detail}`);
 					return json({ error: 'CHECKOUT_FAILED', message: 'Could not create checkout session' }, 502);
+				}
+				if (claimHash) {
+					try {
+						await env.ORACLE_API_KEYS.put(
+							`claim:${claimHash}`,
+							JSON.stringify({ txn_id: checkout.transactionId, plan, created_at: new Date().toISOString(), state: 'pending' }),
+							{ expirationTtl: CLAIM_PENDING_TTL_SECONDS },
+						);
+					} catch {
+						// The checkout still works; the buyer falls back to email.
+						console.error(JSON.stringify({ event: 'CLAIM_SETUP_FAILED', txn_id: safeIdent(checkout.transactionId, 80) }));
+						claimToken = null;
+					}
 				}
 				return json({
 					url:            paddleCheckoutUrl(checkout.transactionId),
 					overlay_url:    checkout.overlayUrl,
 					transaction_id: checkout.transactionId,
+					...(claimToken ? { claim_token: claimToken } : {}),
 				});
+			}
+
+			// ── POST /v5/claim — the key on screen after payment (H2) ────
+			// The token is read from the JSON body only: a token in the URL
+			// would land in access logs and browser history, so it is ignored.
+			// Every answer is no-store, because one of them carries a key.
+			if (url.pathname === '/v5/claim') {
+				const noStore = { 'Cache-Control': 'no-store' };
+				if (request.method !== 'POST') {
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST with {"claim_token":"<64 hex>"}' }, 405, { ...noStore, Allow: 'POST' });
+				}
+				// Before the body checks, so a flood of 400s is counted too. A
+				// separate counter on the witness GET binding; fails open, as the
+				// witness limiter does, because the token is 256 bits and the
+				// limit is a courtesy, not the protection.
+				try {
+					if (!env.WITNESS_GET_RL) throw new Error('WITNESS_GET_RL unbound');
+					const { success } = await env.WITNESS_GET_RL.limit({ key: 'claim:' + witnessClientKey(request.headers.get('CF-Connecting-IP')) });
+					if (!success) {
+						return json({ error: 'RATE_LIMITED', retry_after_seconds: 10 }, 429, { ...noStore, 'Retry-After': '10' });
+					}
+				} catch (err: unknown) {
+					console.error(`CLAIM_RATE_LIMITER_FAILED fail_open=true err=${err instanceof Error ? err.message : 'unknown'}`);
+				}
+				if (!env.PADDLE_WEBHOOK_SECRET) {
+					return json({ error: 'SERVICE_UNAVAILABLE', retry_after_seconds: 10 }, 503, { ...noStore, 'Retry-After': '10' });
+				}
+				const rawClaimBody = await request.text().catch(() => '');
+				let claimToken: unknown;
+				try {
+					const parsed = JSON.parse(rawClaimBody) as unknown;
+					claimToken = isPlainObject(parsed) ? parsed.claim_token : undefined;
+				} catch {
+					claimToken = undefined;
+				}
+				if (typeof claimToken !== 'string' || !CLAIM_TOKEN_RE.test(claimToken)) {
+					return json({ error: 'bad_request' }, 400, noStore);
+				}
+				const h = await sha256Hex(claimToken);
+				let claimRec: { txn_id?: unknown; plan?: unknown } | null = null;
+				let readyRec: { txn_id?: unknown; plan?: unknown; sealed?: { iv: string; ct: string } } | null = null;
+				try {
+					const claimRaw = await env.ORACLE_API_KEYS.get(`claim:${h}`);
+					if (claimRaw) {
+						claimRec = JSON.parse(claimRaw) as { txn_id?: unknown; plan?: unknown };
+						const readyRaw = await env.ORACLE_API_KEYS.get(`claim_ready:${h}`);
+						if (readyRaw) readyRec = JSON.parse(readyRaw) as { txn_id?: unknown; plan?: unknown; sealed?: { iv: string; ct: string } };
+					}
+				} catch {
+					console.error(JSON.stringify({ event: 'CLAIM_READ_FAILED' }));
+					return json({ error: 'SERVICE_UNAVAILABLE', retry_after_seconds: 10 }, 503, { ...noStore, 'Retry-After': '10' });
+				}
+				if (!claimRec || typeof claimRec.txn_id !== 'string') {
+					return json({ state: 'unknown' }, 404, noStore);
+				}
+				// Ready only when the mint was for the transaction this checkout
+				// created. Anything else is not this buyer's key.
+				if (!readyRec || readyRec.txn_id !== claimRec.txn_id || typeof readyRec.plan !== 'string' || !readyRec.sealed) {
+					return json({ state: 'pending', retry_after_seconds: 2 }, 200, noStore);
+				}
+				let claimedKey: string;
+				try {
+					claimedKey = await unsealClaimKey(env.PADDLE_WEBHOOK_SECRET, h, claimRec.txn_id, readyRec.sealed);
+				} catch {
+					console.error(JSON.stringify({ event: 'CLAIM_UNSEAL_FAILED', txn_id: safeIdent(claimRec.txn_id, 80) }));
+					return json({ state: 'unknown' }, 404, noStore);
+				}
+				let creditsBalance: number | null = null;
+				if (readyRec.plan === 'credits') {
+					try {
+						const rec = await env.ORACLE_API_KEYS.get(await sha256Hex(claimedKey));
+						const bal = rec ? (JSON.parse(rec) as { balance?: unknown }).balance : null;
+						creditsBalance = typeof bal === 'number' ? bal : null;
+					} catch { creditsBalance = null; }
+				}
+				return json({
+					state:        'ready',
+					key:          claimedKey,
+					plan:         readyRec.plan,
+					instructions: claimInstructions(readyRec.plan, creditsBalance),
+				}, 200, noStore);
 			}
 
 			// ── POST /webhooks/paddle — handle Paddle events ─────────────
@@ -14480,6 +14740,8 @@ export default {
 								email:      creditsEmail,
 								source:     'paddle_credits',
 							}));
+							// H2: the paying browser can collect the key.
+							await fillClaim(env, txn, 'credits', creditsKey);
 						}
 						// GAP-014: audit the credit key minting in receipt_audit
 						ctx.waitUntil(insertReceiptAudit(creditsHash, {
@@ -14737,6 +14999,10 @@ export default {
 						}
 					}
 
+					// H2: the paying browser can collect the key. Before the mail,
+					// because the mail may never arrive.
+					const claimFilled = await fillClaim(env, txn, plan, keyValue);
+
 					// Send key via Resend (shown once — customer cannot recover it)
 					let customerEmailSent = false;
 					if (env.RESEND_API_KEY && email) {
@@ -14785,7 +15051,7 @@ export default {
 						});
 					}
 
-					await sendFounderMintLine(env, { plan, transactionId: txnId, customerEmail: email, customerEmailSent, supabaseStored });
+					await sendFounderMintLine(env, { plan, transactionId: txnId, customerEmail: email, customerEmailSent, supabaseStored, claimFilled });
 
 					return json({ received: true });
 				}

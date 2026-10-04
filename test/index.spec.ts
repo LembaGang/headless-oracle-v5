@@ -4880,12 +4880,20 @@ describe('POST /v5/checkout', () => {
 				// send ONE body, now with our own checkout URL in it so Paddle
 				// stops building the overlay link from the shared account's
 				// default payment link.
+				//
+				// H2 (2026-10-04) adds `custom_data.ho_claim` for the plans that
+				// mint a key, and of these six only the two custody plans do. It
+				// is still one shape with one optional member; the four services
+				// that mint nothing must not carry it.
 				expect(paddleCalls).toBe(1);
 				expect(sentUrl).toBe('https://api.paddle.com/transactions');
+				const mintsKey = kase.plan === 'custody_90d' || kase.plan === 'custody_1y';
 				expect(sentBody).toEqual({
 					items:    [{ price_id: kase.price_id, quantity: 1 }],
 					checkout: { url: 'https://headlessoracle.com/pricing' },
+					...(mintsKey ? { custom_data: { ho_claim: await sha256Hex(body.claim_token as string) } } : {}),
 				});
+				expect(body.claim_token !== undefined).toBe(mintsKey);
 			} finally {
 				globalThis.fetch = originalFetch;
 			}
@@ -17176,6 +17184,9 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		['/v1/witness/spec',                     '/v1/witness/spec'],
 		['/v5/referee/intake',                   '/v5/referee/intake',
 			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 400],
+		// H2: the claim route's static prose is its 405; the ready body's
+		// instructions are asserted by value in the H2 describe block.
+		['/v5/claim',                            '/v5/claim', undefined, 405],
 	];
 
 	// No served byte may carry a template placeholder the runtime never filled.
@@ -18046,5 +18057,484 @@ describe('A2A: no served surface claims A2A support', () => {
 		expect(Object.keys(paths)).toContain('/.well-known/agent.json');
 		const props = paths['/.well-known/agent.json'].get.responses['200'].content['application/json'].schema.properties;
 		expect(Object.keys(props)).not.toContain('capabilities');
+	});
+});
+
+// ─── H2: the key on screen after payment (2026-10-04) ────────────────────────
+// Key delivery was email only, and the Resend team behind the worker's key
+// could not send from headlessoracle.com. The browser that starts a checkout
+// now gets a claim_token; Paddle carries its sha256 back in the signed
+// webhook; POST /v5/claim answers pending, then ready with the key.
+describe('H2: claim tokens — the key on screen after payment', () => {
+	const FOUNDER = 'mike@headlessoracle.com';
+	const PRICE = {
+		builder:     'pri_test_builder_placeholder',
+		credits:     'pri_test_credits_placeholder',
+		custody_90d: 'pri_01m22wf966bjsar9sgtbzsva2b',
+	};
+	const HEX64 = /^[0-9a-f]{64}$/;
+
+	type Limiter = { limit: (o: { key: string }) => Promise<{ success: boolean }> };
+	const allow: Limiter = { limit: async () => ({ success: true }) };
+
+	type Captured = { paddleTxnBodies: Record<string, unknown>[]; mails: Array<{ to: string; text: string; html: string }> };
+
+	// Paddle transactions answer with `txnIds` in order (the last repeats);
+	// `failFirst` makes the first transaction call fail, as an unapproved
+	// checkout domain would.
+	function stub(opts: { txnIds?: string[]; failFirst?: boolean; email?: string } = {}) {
+		const cap: Captured = { paddleTxnBodies: [], mails: [] };
+		const prev = globalThis.fetch;
+		const jh = { 'Content-Type': 'application/json' };
+		let n = 0;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url    = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			const method = (init?.method ?? 'GET').toUpperCase();
+			if (url.includes('api.paddle.com/transactions')) {
+				cap.paddleTxnBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+				const i = n++;
+				if (opts.failFirst && i === 0) {
+					return new Response(JSON.stringify({ error: { detail: 'checkout url not approved' } }), { status: 400, headers: jh });
+				}
+				const ids = opts.txnIds ?? ['txn_h2_default'];
+				const id  = ids[Math.min(opts.failFirst ? i - 1 : i, ids.length - 1)];
+				return new Response(JSON.stringify({ data: { id, checkout: { url: `https://headlessoracle.com/pricing?_ptxn=${id}` } } }), { status: 200, headers: jh });
+			}
+			if (url.includes('api.paddle.com/customers')) {
+				return new Response(JSON.stringify({ data: { email: opts.email ?? 'buyer@example.com' } }), { status: 200, headers: jh });
+			}
+			if (url.includes('api.resend.com')) {
+				const m = JSON.parse(String(init?.body ?? '{}')) as { to?: string[]; text?: string; html?: string };
+				cap.mails.push({ to: m.to?.[0] ?? '', text: m.text ?? '', html: m.html ?? '' });
+				return new Response(JSON.stringify({ id: 'email_h2' }), { status: 200, headers: jh });
+			}
+			if (url.includes('supabase.co')) {
+				if (method === 'GET' || method === 'HEAD') {
+					return new Response(JSON.stringify({ code: 'PGRST116', message: 'No rows' }), { status: 406, headers: jh });
+				}
+				if (method === 'POST') return new Response(null, { status: 201 });
+				return new Response(null, { status: 204 });
+			}
+			return prev(input as RequestInfo, init);
+		}) as typeof globalThis.fetch;
+		return { cap, restore: () => { globalThis.fetch = prev; } };
+	}
+
+	async function call(path: string, init: RequestInit = {}, o: Record<string, unknown> = {}): Promise<Response> {
+		const ctx = createExecutionContext();
+		const e   = { ...env, WITNESS_GET_RL: allow, ...o } as typeof env;
+		const res = await worker.fetch(new Request<unknown, IncomingRequestCfProperties>(`http://example.com${path}`, init), e, ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+
+	async function checkout(plan: string, o: Record<string, unknown> = {}): Promise<{ res: Response; body: Record<string, unknown> }> {
+		const res = await call('/v5/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) }, o);
+		return { res, body: await res.json() as Record<string, unknown> };
+	}
+
+	async function claim(token: unknown, o: Record<string, unknown> = {}): Promise<{ res: Response; body: Record<string, unknown> }> {
+		const res = await call('/v5/claim', { method: 'POST', headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.7' }, body: JSON.stringify({ claim_token: token }) }, o);
+		return { res, body: await res.json() as Record<string, unknown> };
+	}
+
+	async function webhook(data: Record<string, unknown>): Promise<Response> {
+		const rawBody = JSON.stringify({ event_type: 'transaction.completed', data });
+		const sig     = await makePaddleSignature(rawBody, env.PADDLE_WEBHOOK_SECRET as string);
+		return call('/webhooks/paddle', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig }, body: rawBody });
+	}
+
+	function failingPutsKv(): KVNamespace {
+		const real = env.ORACLE_API_KEYS;
+		return {
+			get:             real.get.bind(real),
+			getWithMetadata: real.getWithMetadata.bind(real),
+			list:            real.list.bind(real),
+			delete:          real.delete.bind(real),
+			put:             async () => { throw new Error('KV put failed'); },
+		} as unknown as KVNamespace;
+	}
+
+	// The handoff's exact encodings, written out independently of the worker:
+	// HKDF-SHA256(ikm = secret UTF-8, salt = fromHex(h), info = "ho-claim-seal-v1")
+	// to AES-GCM-256, AAD = `${h}:${txn_id}`, iv and ct standard base64.
+	async function openSealed(h: string, txnId: string, sealed: { iv: string; ct: string }): Promise<string> {
+		const salt = new Uint8Array(h.match(/../g)!.map((b) => parseInt(b, 16)));
+		const ikm  = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.PADDLE_WEBHOOK_SECRET as string), 'HKDF', false, ['deriveKey']);
+		const key  = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: new TextEncoder().encode('ho-claim-seal-v1') }, ikm, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+		const b64  = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+		const pt   = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(sealed.iv), additionalData: new TextEncoder().encode(`${h}:${txnId}`) }, key, b64(sealed.ct));
+		return new TextDecoder().decode(pt);
+	}
+
+	// Checkout, then transaction.completed for a subscription plan.
+	async function paidSubscription(plan: 'builder' | 'custody_90d', tag: string) {
+		const txnId = `txn_h2_${tag}`;
+		const s = stub({ txnIds: [txnId] });
+		try {
+			const { body } = await checkout(plan);
+			const token = body.claim_token as string;
+			const h     = await sha256Hex(token);
+			const res   = await webhook({ id: txnId, customer_id: `ctm_h2_${tag}`, subscription_id: `sub_h2_${tag}`, origin: 'api', items: [{ price_id: PRICE[plan], quantity: 1 }], custom_data: { ho_claim: h } });
+			expect(res.status).toBe(200);
+			return { token, h, txnId, cap: s.cap };
+		} finally {
+			s.restore();
+		}
+	}
+
+	it.each(['builder', 'pro', 'protocol', 'credits', 'custody_90d', 'custody_1y'])('%s: checkout returns a claim_token, sends ho_claim = sha256(token) to Paddle, writes claim:<h> pending', async (plan) => {
+		const txnId = `txn_h2_issue_${plan}`;
+		const { cap, restore } = stub({ txnIds: [txnId] });
+		try {
+			const { res, body } = await checkout(plan);
+			expect(res.status).toBe(200);
+			expect(body.transaction_id).toBe(txnId);
+			expect(body.claim_token).toMatch(HEX64);
+			const h = await sha256Hex(body.claim_token as string);
+			expect(cap.paddleTxnBodies.length).toBe(1);
+			expect(cap.paddleTxnBodies[0].custom_data).toEqual({ ho_claim: h });
+			const raw = await env.ORACLE_API_KEYS.get(`claim:${h}`);
+			expect(raw).not.toBeNull();
+			expect(JSON.parse(raw!)).toMatchObject({ txn_id: txnId, plan, state: 'pending' });
+			// The token itself is stored nowhere.
+			expect(raw).not.toContain(body.claim_token as string);
+		} finally {
+			restore();
+		}
+	});
+
+	it.each(['conformance_entry', 'regrade', 'dispute', 'dispute_note'])('%s (mints no key): no claim_token and no custom_data', async (plan) => {
+		const { cap, restore } = stub({ txnIds: [`txn_h2_ref_${plan}`] });
+		try {
+			const { res, body } = await checkout(plan);
+			expect(res.status).toBe(200);
+			expect(body).not.toHaveProperty('claim_token');
+			expect(cap.paddleTxnBodies[0]).not.toHaveProperty('custom_data');
+		} finally {
+			restore();
+		}
+	});
+
+	it('custom_data.ho_claim is sent on BOTH send() attempts when the first is refused', async () => {
+		const { cap, restore } = stub({ txnIds: ['txn_h2_retry'], failFirst: true });
+		try {
+			const { res, body } = await checkout('builder');
+			expect(res.status).toBe(200);
+			const h = await sha256Hex(body.claim_token as string);
+			expect(cap.paddleTxnBodies.length).toBe(2);
+			expect(cap.paddleTxnBodies[0]).toHaveProperty('checkout');
+			expect(cap.paddleTxnBodies[1]).not.toHaveProperty('checkout');
+			for (const b of cap.paddleTxnBodies) expect(b.custom_data).toEqual({ ho_claim: h });
+		} finally {
+			restore();
+		}
+	});
+
+	it('claim KV write fails: the checkout is still returned, without claim_token, and CLAIM_SETUP_FAILED is logged', async () => {
+		const { restore } = stub({ txnIds: ['txn_h2_kvfail'] });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const { res, body } = await checkout('builder', { ORACLE_API_KEYS: failingPutsKv() });
+			expect(res.status).toBe(200);
+			expect(body.transaction_id).toBe('txn_h2_kvfail');
+			expect(body.url).toBe('https://buy.paddle.com/checkout/txn_h2_kvfail');
+			expect(body).not.toHaveProperty('claim_token');
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('CLAIM_SETUP_FAILED'))).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('PADDLE_WEBHOOK_SECRET unset: checkout returns no claim_token and sends no custom_data', async () => {
+		const { cap, restore } = stub({ txnIds: ['txn_h2_nosecret'] });
+		try {
+			const { res, body } = await checkout('builder', { PADDLE_WEBHOOK_SECRET: undefined });
+			expect(res.status).toBe(200);
+			expect(body).not.toHaveProperty('claim_token');
+			expect(cap.paddleTxnBodies[0]).not.toHaveProperty('custom_data');
+		} finally {
+			restore();
+		}
+	});
+
+	it('before the webhook: 200 pending with retry_after_seconds 2', async () => {
+		const { restore } = stub({ txnIds: ['txn_h2_pending'] });
+		try {
+			const { body: co } = await checkout('pro');
+			const { res, body } = await claim(co.claim_token);
+			expect(res.status).toBe(200);
+			expect(body).toEqual({ state: 'pending', retry_after_seconds: 2 });
+		} finally {
+			restore();
+		}
+	});
+
+	it('builder: ready after transaction.completed; the key is the stored one, X-Oracle-Key instructions, founder line claim_filled=yes', async () => {
+		const { token, cap } = await paidSubscription('builder', 'builder_ready');
+		const { res, body } = await claim(token);
+		expect(res.status).toBe(200);
+		expect(body.state).toBe('ready');
+		expect(body.plan).toBe('builder');
+		expect(body.key).toMatch(/^ho_live_[0-9a-f]{64}$/);
+		expect(JSON.parse((await env.ORACLE_API_KEYS.get(await sha256Hex(body.key as string)))!)).toMatchObject({ plan: 'builder', status: 'active' });
+		expect(body.instructions).toMatchObject({ header: 'X-Oracle-Key: <key>', method: 'GET', url: 'https://headlessoracle.com/v5/status?mic=XNYS' });
+		// The email channel is unchanged and carries the same key.
+		const customer = cap.mails.filter((m) => m.to !== FOUNDER);
+		expect(customer.length).toBe(1);
+		expect(customer[0].html).toContain(body.key as string);
+		const founder = cap.mails.filter((m) => m.to === FOUNDER);
+		expect(founder.length).toBe(1);
+		expect(founder[0].text).toContain('claim_filled=yes');
+	});
+
+	it('mint without ho_claim: founder line says claim_filled=no', async () => {
+		const { cap, restore } = stub();
+		try {
+			const res = await webhook({ id: 'txn_h2_noclaim', customer_id: 'ctm_h2_noclaim', subscription_id: 'sub_h2_noclaim', origin: 'web', items: [{ price_id: PRICE.builder, quantity: 1 }] });
+			expect(res.status).toBe(200);
+			const founder = cap.mails.filter((m) => m.to === FOUNDER);
+			expect(founder.length).toBe(1);
+			expect(founder[0].text).toContain('claim_filled=no');
+		} finally {
+			restore();
+		}
+	});
+
+	it('custody_90d: ready as evidence_starter with the Witness bearer header, POST URL, quota 1000 and spec URL', async () => {
+		const { token } = await paidSubscription('custody_90d', 'evidence_ready');
+		const { res, body } = await claim(token);
+		expect(res.status).toBe(200);
+		expect(body.state).toBe('ready');
+		expect(body.plan).toBe('evidence_starter');
+		expect(body.key).toMatch(/^ho_live_[0-9a-f]{64}$/);
+		expect(body.instructions).toMatchObject({
+			header:                 'Authorization: Bearer <key>',
+			method:                 'POST',
+			url:                    'https://api.headlessoracle.com/v1/witness/checkpoints',
+			daily_checkpoint_quota: 1000,
+			spec_url:               'https://api.headlessoracle.com/v1/witness/spec',
+		});
+		expect(JSON.stringify(body.instructions)).not.toContain('X-Oracle-Key');
+	});
+
+	it('credits: ready with the ho_crd_ key and its balance', async () => {
+		const { restore } = stub({ txnIds: ['txn_h2_credits_ready'] });
+		try {
+			const { body: co } = await checkout('credits');
+			const h   = await sha256Hex(co.claim_token as string);
+			const res = await webhook({ id: 'txn_h2_credits_ready', customer_id: 'ctm_h2_credits', items: [{ price_id: PRICE.credits }], custom_data: { ho_claim: h } });
+			expect(res.status).toBe(200);
+			const { body } = await claim(co.claim_token);
+			expect(body.state).toBe('ready');
+			expect(body.plan).toBe('credits');
+			expect(body.key).toMatch(/^ho_crd_[0-9a-f]{64}$/);
+			expect(body.instructions).toMatchObject({ header: 'X-Oracle-Key: <key>', balance: 1000 });
+		} finally {
+			restore();
+		}
+	});
+
+	it('claim_ready naming a different txn_id stays pending', async () => {
+		const { restore } = stub({ txnIds: ['txn_h2_mine'] });
+		try {
+			const { body: co } = await checkout('builder');
+			const h = await sha256Hex(co.claim_token as string);
+			// The ho_claim copied into a different transaction.
+			const res = await webhook({ id: 'txn_h2_theirs', customer_id: 'ctm_h2_theirs', subscription_id: 'sub_h2_theirs', origin: 'web', items: [{ price_id: PRICE.builder, quantity: 1 }], custom_data: { ho_claim: h } });
+			expect(res.status).toBe(200);
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(`claim_ready:${h}`))!)).toMatchObject({ txn_id: 'txn_h2_theirs' });
+			const { res: cr, body } = await claim(co.claim_token);
+			expect(cr.status).toBe(200);
+			expect(body).toEqual({ state: 'pending', retry_after_seconds: 2 });
+		} finally {
+			restore();
+		}
+	});
+
+	it('the sealed value in KV does not contain the key, and opens with the handoff encodings', async () => {
+		const { token, h, txnId } = await paidSubscription('builder', 'sealed');
+		const { body } = await claim(token);
+		const key = body.key as string;
+		const raw = (await env.ORACLE_API_KEYS.get(`claim_ready:${h}`))!;
+		expect(raw).not.toContain(key);
+		expect(raw).not.toContain(key.slice('ho_live_'.length));
+		expect(raw).not.toContain(token);
+		const rec = JSON.parse(raw) as { txn_id: string; plan: string; sealed: { iv: string; ct: string }; ready_at: string };
+		expect(rec).toMatchObject({ txn_id: txnId, plan: 'builder' });
+		expect(rec.sealed.iv).toMatch(/^[A-Za-z0-9+/]{16}$/); // 12 bytes, standard base64
+		expect(await openSealed(h, txnId, rec.sealed)).toBe(key);
+		// The AAD binds the transaction: a different txn_id does not open it.
+		await expect(openSealed(h, 'txn_other', rec.sealed)).rejects.toThrow();
+	});
+
+	it('a sealed value that does not open: 404 unknown and CLAIM_UNSEAL_FAILED', async () => {
+		const { token, h } = await paidSubscription('builder', 'tampered');
+		const rec = JSON.parse((await env.ORACLE_API_KEYS.get(`claim_ready:${h}`))!) as { sealed: { iv: string; ct: string } };
+		rec.sealed.ct = btoa('x'.repeat(40));
+		await env.ORACLE_API_KEYS.put(`claim_ready:${h}`, JSON.stringify(rec));
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const { res, body } = await claim(token);
+			expect(res.status).toBe(404);
+			expect(body).toEqual({ state: 'unknown' });
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('CLAIM_UNSEAL_FAILED'))).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+		}
+	});
+
+	it('an unknown token: 404 {state: unknown}', async () => {
+		const { res, body } = await claim('ab'.repeat(32));
+		expect(res.status).toBe(404);
+		expect(body).toEqual({ state: 'unknown' });
+	});
+
+	it.each([
+		['uppercase hex', 'AB'.repeat(32)],
+		['63 chars',      'a'.repeat(63)],
+		['65 chars',      'a'.repeat(65)],
+		['a number',      42],
+		['null',          null],
+	])('malformed token (%s): 400 bad_request', async (_n, token) => {
+		const { res, body } = await claim(token);
+		expect(res.status).toBe(400);
+		expect(body.error).toBe('bad_request');
+	});
+
+	it.each([
+		['not JSON', 'claim_token=abc'],
+		['an array', '[]'],
+		['empty',    ''],
+	])('malformed body (%s): 400 bad_request', async (_n, raw) => {
+		const res = await call('/v5/claim', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: raw });
+		expect(res.status).toBe(400);
+		expect((await res.json() as Record<string, unknown>).error).toBe('bad_request');
+	});
+
+	it('a token in the URL is ignored: a ready claim token as ?claim_token= with no body field is 400', async () => {
+		const { token } = await paidSubscription('builder', 'url_token');
+		const res = await call(`/v5/claim?claim_token=${token}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+		expect(res.status).toBe(400);
+		expect(await res.text()).not.toContain('ho_live_');
+		// Control: the same token in the body is ready.
+		expect((await claim(token)).body.state).toBe('ready');
+	});
+
+	it('GET /v5/claim: 405 with Allow: POST', async () => {
+		const res = await call('/v5/claim');
+		expect(res.status).toBe(405);
+		expect(res.headers.get('Allow')).toBe('POST');
+	});
+
+	it('rate limited: 429 RATE_LIMITED retry_after_seconds 10, on its own claim: counter keyed by CF-Connecting-IP', async () => {
+		const keys: string[] = [];
+		const deny: Limiter = { limit: async (o) => { keys.push(o.key); return { success: false }; } };
+		const { res, body } = await claim('ab'.repeat(32), { WITNESS_GET_RL: deny });
+		expect(res.status).toBe(429);
+		expect(body).toMatchObject({ error: 'RATE_LIMITED', retry_after_seconds: 10 });
+		expect(keys).toEqual(['claim:203.0.113.7']);
+	});
+
+	it.each([
+		['throws',  { limit: async () => { throw new Error('limiter down'); } }],
+		['unbound', undefined],
+	])('rate limiter %s: fails open with CLAIM_RATE_LIMITER_FAILED', async (_n, limiter) => {
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const { res } = await claim('cd'.repeat(32), { WITNESS_GET_RL: limiter });
+			expect(res.status).toBe(404);
+			expect(errSpy.mock.calls.some((c) => String(c[0]).includes('CLAIM_RATE_LIMITER_FAILED'))).toBe(true);
+		} finally {
+			errSpy.mockRestore();
+		}
+	});
+
+	it('PADDLE_WEBHOOK_SECRET unset: 503 SERVICE_UNAVAILABLE retry_after_seconds 10', async () => {
+		const { res, body } = await claim('ab'.repeat(32), { PADDLE_WEBHOOK_SECRET: undefined });
+		expect(res.status).toBe(503);
+		expect(body).toMatchObject({ error: 'SERVICE_UNAVAILABLE', retry_after_seconds: 10 });
+	});
+
+	it('the key and the token never appear in console output, across checkout, mint, claim and a failed unseal', async () => {
+		const spies = (['log', 'error', 'warn', 'info', 'debug'] as const).map((m) => vi.spyOn(console, m));
+		try {
+			const { token, h } = await paidSubscription('builder', 'nolog');
+			const { body } = await claim(token);
+			const key = body.key as string;
+			expect(key).toMatch(/^ho_live_/);
+			const rec = JSON.parse((await env.ORACLE_API_KEYS.get(`claim_ready:${h}`))!) as { sealed: { iv: string; ct: string } };
+			rec.sealed.ct = btoa('y'.repeat(40));
+			await env.ORACLE_API_KEYS.put(`claim_ready:${h}`, JSON.stringify(rec));
+			expect((await claim(token)).res.status).toBe(404);
+			const out = spies.flatMap((s) => s.mock.calls.map((c) => c.map((a) => String(a)).join(' '))).join('\n');
+			// Something was logged (CLAIM_UNSEAL_FAILED at least), so the
+			// absence checks below are over real output.
+			expect(out).toContain('CLAIM_UNSEAL_FAILED');
+			expect(out).not.toContain(key);
+			expect(out).not.toContain(key.slice('ho_live_'.length));
+			expect(out).not.toContain(token);
+		} finally {
+			for (const s of spies) s.mockRestore();
+		}
+	});
+
+	it('a renewal carrying the same custom_data neither changes a filled claim nor fills a pending one', async () => {
+		// Filled claim: the renewal must leave claim_ready byte-identical.
+		const { token, h } = await paidSubscription('builder', 'renew_filled');
+		const before = await env.ORACLE_API_KEYS.get(`claim_ready:${h}`);
+		expect(before).not.toBeNull();
+		const keyBefore = (await claim(token)).body.key;
+		const s = stub();
+		try {
+			const res = await webhook({ id: 'txn_h2_renew_filled_2', customer_id: 'ctm_h2_renew_filled', subscription_id: 'sub_h2_renew_filled', origin: 'subscription_recurring', items: [{ price_id: PRICE.builder, quantity: 1 }], custom_data: { ho_claim: h } });
+			expect(res.status).toBe(200);
+			expect(await env.ORACLE_API_KEYS.get(`claim_ready:${h}`)).toBe(before);
+			expect((await claim(token)).body.key).toBe(keyBefore);
+
+			// Pending claim whose subscription already owns a key: no fill.
+			await env.ORACLE_API_KEYS.put('paddle_sub:sub_h2_renew_pending', JSON.stringify({ key_hash: 'ef'.repeat(32), plan: 'builder', created_at: '2026-10-01T00:00:00Z' }));
+			const h2 = 'cd'.repeat(32);
+			const res2 = await webhook({ id: 'txn_h2_renew_pending', customer_id: 'ctm_h2_renew_pending', subscription_id: 'sub_h2_renew_pending', origin: 'subscription_recurring', items: [{ price_id: PRICE.builder, quantity: 1 }], custom_data: { ho_claim: h2 } });
+			expect(res2.status).toBe(200);
+			expect(await env.ORACLE_API_KEYS.get(`claim_ready:${h2}`)).toBeNull();
+		} finally {
+			s.restore();
+		}
+	});
+
+	it('Cache-Control: no-store and CORS * on 400, 404, 405, 429, 503, pending and ready', async () => {
+		const deny: Limiter = { limit: async () => ({ success: false }) };
+		const { token } = await paidSubscription('builder', 'nostore');
+		const { restore } = stub({ txnIds: ['txn_h2_nostore_pending'] });
+		let pendingToken = '';
+		try {
+			pendingToken = (await checkout('builder')).body.claim_token as string;
+		} finally {
+			restore();
+		}
+		const cases: Array<[number, Response]> = [
+			[400, (await claim('XYZ')).res],
+			[404, (await claim('ab'.repeat(32))).res],
+			[405, await call('/v5/claim')],
+			[429, (await claim('ab'.repeat(32), { WITNESS_GET_RL: deny })).res],
+			[503, (await claim('ab'.repeat(32), { PADDLE_WEBHOOK_SECRET: undefined })).res],
+			[200, (await claim(pendingToken)).res],
+			[200, (await claim(token)).res],
+		];
+		for (const [status, res] of cases) {
+			expect(res.status).toBe(status);
+			expect(res.headers.get('Cache-Control')).toBe('no-store');
+			expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		}
+	});
+
+	it('openapi documents claim_token on /v5/checkout and POST /v5/claim', async () => {
+		type Spec = { paths: Record<string, { post: { responses: Record<string, { content?: Record<string, { schema: { properties: Record<string, unknown> } }> }> } }> };
+		const spec = await (await call('/openapi.json')).json() as Spec;
+		expect(Object.keys(spec.paths['/v5/checkout'].post.responses['200'].content!['application/json'].schema.properties)).toContain('claim_token');
+		expect(spec.paths['/v5/claim'].post.responses).toHaveProperty('200');
+		expect(spec.paths['/v5/claim'].post.responses).toHaveProperty('404');
 	});
 });
