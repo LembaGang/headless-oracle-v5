@@ -498,7 +498,8 @@ describe('witness: fail closed when the store is unavailable', () => {
 		await setUsage('anon', 2000);
 		const blocked = await post(bodyFor(await makeCheckpoint(id, { count: 2 }), jwkFor(id)));
 		expect(blocked.status).toBe(503);
-		expect(await blocked.json()).toEqual({ error: 'witness_unavailable' });
+		// CHANGED (H4a): the cap's 503 adds an upgrade object; status and error unchanged.
+		expect(await blocked.json()).toMatchObject({ error: 'witness_unavailable', upgrade: { plans: [{ plan: 'custody_90d' }, { plan: 'custody_1y' }] } });
 		const repeat = await postCheckpoint(id, firstCp);
 		expect(repeat.status).toBe(200);
 		expect(repeat.body).toEqual(first.body);
@@ -536,7 +537,8 @@ describe('witness: fail closed when the store is unavailable', () => {
 		// 2,000 rows today: the next new checkpoint is refused.
 		const next = await post(bodyFor(await makeCheckpoint(id, { count: 2 }), jwkFor(id)));
 		expect(next.status).toBe(503);
-		expect(await next.json()).toEqual({ error: 'witness_unavailable' });
+		// CHANGED (H4a): the cap's 503 adds an upgrade object; status and error unchanged.
+		expect(await next.json()).toMatchObject({ error: 'witness_unavailable', upgrade: { plans: [{ plan: 'custody_90d' }, { plan: 'custody_1y' }] } });
 	});
 });
 
@@ -1074,6 +1076,70 @@ describe('witness: accounts (Authorization: Bearer <Evidence plan key>)', () => 
 		} finally {
 			errors.mockRestore();
 		}
+	});
+
+	// ─── H4a: errors point at the witness, and a used-up pool says what to buy ──
+	const UPGRADE = {
+		plans: [
+			{ plan: 'custody_90d', name: 'Evidence Starter (Witness account)', amount_usd: '49.00', currency: 'USD', billing: 'monthly', checkpoints_per_utc_day: 1000 },
+			{ plan: 'custody_1y',  name: 'Evidence (Witness account)',         amount_usd: '199.00', currency: 'USD', billing: 'monthly', checkpoints_per_utc_day: 3000 },
+		],
+		checkout: {
+			method:  'POST',
+			url:     'https://headlessoracle.com/v5/checkout',
+			headers: { 'Content-Type': 'application/json' },
+			body:    { plan: 'custody_90d' },
+		},
+		pricing: 'https://headlessoracle.com/v5/pricing',
+	};
+
+	it('H4a: a witness 400 links the witness spec, not the market-state docs', async () => {
+		const res = await post('{}');
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: 'bad_request', docs: 'https://api.headlessoracle.com/v1/witness/spec' });
+		const g = await call('/v1/witness/checkpoints?kid=x&session_id=s');
+		expect(g.status).toBe(400);
+		expect((await g.json() as Record<string, unknown>).docs).toBe('https://api.headlessoracle.com/v1/witness/spec');
+	});
+
+	it('H4a: a 401 invalid_key also links the witness spec', async () => {
+		const res = await post((await newBody()).body, { Authorization: 'Bearer nope' });
+		expect(res.status).toBe(401);
+		expect(await res.json()).toEqual({ error: 'invalid_key', docs: 'https://api.headlessoracle.com/v1/witness/spec' });
+	});
+
+	it('H4a: the anonymous cap reached keeps 503 witness_unavailable and adds the upgrade object', async () => {
+		await setUsage('anon', 2000);
+		const res = await post((await newBody()).body);
+		expect(res.status).toBe(503);
+		const body = await res.json() as { error: string; upgrade: Record<string, unknown> };
+		expect(body.error).toBe('witness_unavailable');
+		expect(body.upgrade).toMatchObject(UPGRADE);
+		expect(String((body.upgrade.checkout as Record<string, unknown>).then)).toContain('POST https://headlessoracle.com/v5/claim');
+	});
+
+	it('H4a CONTROL: a 503 for an unavailable store carries no upgrade object (buying cannot fix it)', async () => {
+		const res = await post((await newBody()).body, {}, { ...testEnv, WITNESS_DB: undefined });
+		expect(res.status).toBe(503);
+		expect(await res.json()).toEqual({ error: 'witness_unavailable' });
+	});
+
+	it('H4a: a paid key over its daily quota gets the same upgrade object on its 429', async () => {
+		const k = await putKey('9', { plan: 'evidence_starter', status: 'active' });
+		await setUsage(k.accountId, 1000);
+		const res = await post((await newBody()).body, k.auth);
+		expect(res.status).toBe(429);
+		const body = await res.json() as { error: string; upgrade: unknown };
+		expect(body.error).toBe('quota_exceeded');
+		expect(body.upgrade).toMatchObject(UPGRADE);
+	});
+
+	it('H4a: the spec states the docs link and the upgrade object', async () => {
+		const spec = await (await call('/v1/witness/spec')).json() as { submit: { check_failure: string; upgrade: string; responses: Record<string, string> } };
+		expect(spec.submit.check_failure).toContain('Every 4xx carries docs, a link to this spec.');
+		expect(spec.submit.upgrade).toContain('custody_90d and custody_1y');
+		expect(spec.submit.responses['503']).toContain('also carries upgrade');
+		expect(spec.submit.responses['429']).toContain('"upgrade"');
 	});
 });
 

@@ -2678,9 +2678,9 @@ function safeIdent(raw: string, max = 64): string {
 // returned a 200 carrying a $99/month Builder checkout for something the
 // caller never asked for.
 //
-// Absent and unrecognised are different cases and only the second is a defect.
-// An absent `plan` still means Builder, the documented default. An
-// unrecognised one means we do not know what to sell, and must say so.
+// Absent and unrecognised are different cases with different answers: an
+// absent `plan` is 400 PLAN_REQUIRED (H4a, 2026-10-05; it used to mean
+// Builder), an unrecognised one is 400 UNKNOWN_PLAN. Neither calls Paddle.
 const CHECKOUT_PLAN_PRICE_ENV = {
 	builder:  'PADDLE_PRICE_ID_BUILDER',
 	pro:      'PADDLE_PRICE_ID_PRO',
@@ -2704,6 +2704,21 @@ const CHECKOUT_PLANS = [
 	...(Object.keys(CHECKOUT_PLAN_PRICE_ENV) as CheckoutPlan[]),
 	...(Object.keys(REFEREE_PRICES) as RefereeService[]),
 ] as const;
+
+// H4a: every plan a 400 names, with its price, so an agent that sent no plan,
+// an unknown plan or an unreadable body can choose without a second request.
+// Every figure is a projection of PLAN_PRICES, PRICING or REFEREE_PRICES. A
+// function because PRICING is declared further down the file.
+const checkoutPlanPrices = () => CHECKOUT_PLANS.map((plan) => {
+	if (plan === 'builder' || plan === 'pro' || plan === 'protocol') {
+		return { plan, amount_usd: PLAN_PRICES[plan].toFixed(2), currency: 'USD', billing: 'monthly' };
+	}
+	if (plan === 'credits') {
+		return { plan, amount_usd: PRICING.credit_pack_usd.toFixed(2), currency: 'USD', billing: 'one_time' };
+	}
+	const r = REFEREE_PRICES[plan as RefereeService];
+	return { plan, amount_usd: refereePriceAmount(plan as RefereeService), currency: r.currency, billing: r.cycle ? 'monthly' : 'one_time' };
+});
 
 type CheckoutPriceResolution =
 	| { kind: 'api_plan'; plan: CheckoutPlan;    priceId: string }
@@ -4468,6 +4483,18 @@ function buildPaymentOptions(): Record<string, unknown> {
 			how:   'GET /upgrade',
 		},
 		agent_native_path: 'No key, no signup. Send X-Payment with any request OR POST /v5/sandbox with X-Payment to get 10 credits instantly.',
+		// H4a: Chirindo Witness, the product the agent surfaces lead with. The free
+		// anonymous pool, then the two Evidence plans and the exact checkout call.
+		chirindo_witness: {
+			spec:      WITNESS_SPEC_URL,
+			free_pool: {
+				checkpoints_per_utc_day: WITNESS_DAILY_CAP,
+				shared_by:               'every anonymous caller',
+				how:                     `POST ${WITNESS_SUBMIT_URL} with no key`,
+				when_used_up:            '503 witness_unavailable until 00:00 UTC, with an upgrade object',
+			},
+			...witnessUpgrade(),
+		},
 	};
 }
 
@@ -5525,7 +5552,7 @@ const WITNESS_SPEC_DOC = {
 			{ order: 5, error: 'kid_mismatch', rule: 'base64url-nopad(SHA-256(UTF-8 of {"crv":"Ed25519","kty":"OKP","x":"<x>"})) equals checkpoint.kid.' },
 			{ order: 6, error: 'bad_signature', rule: 'Strict RFC 8032 Ed25519 verification of the 64 bytes obtained by base64url-decoding checkpoint.sig (not hex), over the UTF-8 JCS bytes of the checkpoint without sig. For this flat object JCS equals JSON.stringify with keys sorted and no whitespace.' },
 		],
-		check_failure: 'Checks run in order and fail closed on the first failure: 400 for every check except the key check (order 1.5), whose codes its rule lists. The body\'s error member is the code; other members, such as a docs link, may be present.',
+		check_failure: 'Checks run in order and fail closed on the first failure: 400 for every check except the key check (order 1.5), whose codes its rule lists. The body\'s error member is the code; other members may be present. Every 4xx carries docs, a link to this spec.',
 		identity: 'A checkpoint\'s identity is (kid, session_id, count, last_entry_hash); ts and sig are not part of it.',
 		responses: {
 			'201': 'A new checkpoint was stored; the body is its new receipt.',
@@ -5534,9 +5561,10 @@ const WITNESS_SPEC_DOC = {
 			'401': '{ "error": "invalid_key" }: an Authorization header was sent and is malformed or names no key.',
 			'402': '{ "error": "payment_required" }: the key is not active (for example, its subscription was cancelled).',
 			'403': '{ "error": "witness_plan_required" }: the key is not an Evidence plan key.',
-			'429': '{ "error": "RATE_LIMITED" } with Retry-After, or, for an account, { "error": "quota_exceeded" } with Retry-After set to the seconds until 00:00 UTC.',
-			'503': '{ "error": "witness_unavailable" }: the store or key store is unavailable, or the anonymous daily cap is reached. No receipt is ever returned for a checkpoint that was not stored.',
+			'429': '{ "error": "RATE_LIMITED" } with Retry-After, or, for an account, { "error": "quota_exceeded", "upgrade": {...} } with Retry-After set to the seconds until 00:00 UTC.',
+			'503': '{ "error": "witness_unavailable" }: the store or key store is unavailable, or the anonymous daily cap is reached. When the cap is the reason, the body also carries upgrade (see upgrade). No receipt is ever returned for a checkpoint that was not stored.',
 		},
+		upgrade: 'Sent with 503 witness_unavailable when the anonymous daily cap is reached, and with 429 quota_exceeded: { plans: [{ plan, name, amount_usd, currency, billing, checkpoints_per_utc_day }] for custody_90d and custody_1y, checkout: { method, url, headers, body, then }, pricing }. checkout is the exact request that starts a purchase; nothing is bought without a person paying at the returned url.',
 		fork: 'fork is "true" when, at insert time, a row with the same (kid, session_id, count) and a different last_entry_hash already exists. Two concurrent first submissions with different hashes can both get "false", so verifiers detect forks from the receipts, not from the flag.',
 		append_only: 'Rows are never updated or deleted.',
 		rate_limit: `Best effort (counted per Cloudflare location, so it can over-admit): about 60 requests per minute per client address, applied separately to POST and to GET of checkpoints, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Requests with an Authorization header are limited instead at about ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} per minute per address (counted before the body is read) and about ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} per minute per account (after the key is checked), and carry X-RateLimit-Limit: ${WITNESS_ACCT_RATE_LIMIT_PER_MIN}. Fails open on a limiter error.`,
@@ -5640,6 +5668,32 @@ export async function readWitnessBody(request: Request): Promise<Uint8Array | nu
 
 type WitnessJson = (body: unknown, status?: number, extraHeaders?: Record<string, string>) => Response;
 
+// H4a: what an agent can buy when a witness pool is used up: the two Evidence
+// plans, their prices and daily checkpoint limits, and the exact checkout call.
+// Every figure is a projection of REFEREE_PRICES and EVIDENCE_PLAN_QUOTA. A
+// function, not a const, so nothing here is read before those are initialised.
+function witnessUpgrade() {
+	const plan = (service: 'custody_90d' | 'custody_1y') => ({
+		plan:                   service,
+		name:                   REFEREE_SERVICE_NAMES[service],
+		amount_usd:             refereePriceAmount(service),
+		currency:               REFEREE_PRICES[service].currency,
+		billing:                'monthly',
+		checkpoints_per_utc_day: EVIDENCE_PLAN_QUOTA[EVIDENCE_PLAN_BY_SERVICE[service]],
+	});
+	return {
+		plans: [plan('custody_90d'), plan('custody_1y')],
+		checkout: {
+			method:  'POST',
+			url:     'https://headlessoracle.com/v5/checkout',
+			headers: { 'Content-Type': 'application/json' },
+			body:    { plan: 'custody_90d' },
+			then:    'A person pays at the returned url. POST https://headlessoracle.com/v5/claim with {"claim_token":"<claim_token from the checkout response>"} returns the key for 24 hours. Send it as Authorization: Bearer <key> on POST /v1/witness/checkpoints.',
+		},
+		pricing: 'https://headlessoracle.com/v5/pricing',
+	};
+}
+
 // POST/GET /v1/witness/checkpoints and GET /v1/witness/spec. Returns null for
 // any other path so the caller's 404 handling applies.
 async function handleWitness(request: Request, env: Env, url: URL, now: Date, json: WitnessJson): Promise<Response | null> {
@@ -5648,8 +5702,10 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	// A POST with an Authorization header is under the account limiter, so its
 	// responses name that limit instead.
 	let rlLimit = WITNESS_RATE_LIMIT_PER_MIN;
+	// H4a: a witness 4xx links the witness contract, not the market-state docs.
 	const wj: WitnessJson = (b, s = 200, h = {}) => {
-		const r = json(b, s, { ...h, 'X-RateLimit-Limit': String(rlLimit) });
+		const body = (s >= 400 && s < 500 && isPlainObject(b) && typeof b.error === 'string') ? { ...b, docs: WITNESS_SPEC_URL } : b;
+		const r = json(body, s, { ...h, 'X-RateLimit-Limit': String(rlLimit) });
 		r.headers.delete('X-RateLimit-Remaining');
 		r.headers.delete('X-RateLimit-Reset');
 		return r;
@@ -5820,12 +5876,14 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		const refuse = (): Response => {
 			if (!account) {
 				console.error(`WITNESS_DAILY_CAP_REACHED day=${day}`);
-				return unavailable();
+				// Status unchanged (spec: 503 witness_unavailable); the body adds the
+				// way out, so an agent does not have to wait for 00:00 UTC.
+				return wj({ error: 'witness_unavailable', upgrade: witnessUpgrade() }, 503);
 			}
 			const nextMidnight = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate() + 1);
 			const retryAfter = Math.min(86_400, Math.max(1, Math.ceil((nextMidnight - t.getTime()) / 1000)));
 			return reply(
-				{ error: 'quota_exceeded', message: `This key's quota of ${formatCallsGrouped(limit)} new checkpoints per UTC day is used. It resets at 00:00 UTC.`, retry_after_seconds: retryAfter },
+				{ error: 'quota_exceeded', message: `This key's quota of ${formatCallsGrouped(limit)} new checkpoints per UTC day is used. It resets at 00:00 UTC.`, retry_after_seconds: retryAfter, upgrade: witnessUpgrade() },
 				429,
 				{ 'Retry-After': String(retryAfter) },
 			);
@@ -6956,6 +7014,9 @@ const CHIRINDO_KIT_URL   = 'https://github.com/LembaGang/chirindo/tree/main/exam
 // The pilot is scoped by conversation and is not sold through /v5/checkout, so
 // no price table holds it. This is its one statement.
 const EVIDENCE_PILOT_USD = 4900;
+// The pilot sentence exactly as headless-oracle-web /pricing states it (read
+// from the live page 2026-10-05). /v5/pricing serves it unchanged.
+const EVIDENCE_PILOT_LINE = `Evidence pilot for a team in its audit window: $${EVIDENCE_PILOT_USD.toLocaleString('en-US')} fixed price, scope agreed by conversation. Write to ${CONTACT_EMAIL}.`;
 
 function wholeUsd(minorUnits: number): string {
 	return `$${(minorUnits / 100).toLocaleString('en-US')}`;
@@ -6982,6 +7043,11 @@ const CHIRINDO_SUMMARY =
 const CHIRINDO_NPM_CAVEAT = 'Witness support (chirindo checkpoint, --witness) is on GitHub main and not yet in the npm release (0.4.0).';
 
 const CHIRINDO_LIMITS = `${WITNESS_SPEC_DOC.purpose} ${WITNESS_SPEC_DOC.honest_limits.sidecar}`;
+
+// The lead every agent-facing description opens with: /llms.txt's summary and
+// the spec's own limits, never strengthened (agent.json, openapi info,
+// ai-plugin.json, /skill.md).
+const CHIRINDO_LEAD = `Chirindo by Headless Oracle: evidence for AI agents. ${CHIRINDO_SUMMARY} ${CHIRINDO_LIMITS}`;
 
 const CHIRINDO_INTRO_UNTIL = longDate(REFEREE_INTRODUCTORY_UNTIL);
 
@@ -7725,7 +7791,7 @@ SMA (Signed Market Attestation), APTS (Agent Pre-Trade Safety Standard), and MPA
 // using the Ampersend CLI (`ampersend fetch`).
 const AMPERSEND_SKILL_MD = `---
 name: headless-oracle
-description: Ed25519-signed market-state receipts for 28 global exchanges. Pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.
+description: ${JSON.stringify(`${CHIRINDO_LEAD} Also: Ed25519-signed market-state receipts for 28 global exchanges, a pre-trade verification gate for autonomous financial agents. UNKNOWN = CLOSED.`)}
 metadata:
   x402:
     endpoint: https://headlessoracle.com/v5/status
@@ -7741,6 +7807,12 @@ metadata:
 ---
 
 # Headless Oracle
+
+> ${CHIRINDO_LEAD}
+
+Chirindo Witness is a REST API, not the x402 resource below: POST ${WITNESS_SUBMIT_URL}, contract and every limit at ${WITNESS_SPEC_URL}, free pool and Evidence plans at https://headlessoracle.com/v5/pricing.
+
+## Market-state receipts (the x402 resource)
 
 ${STANDARDS_SENTENCE} The cryptographic attestation primitive for autonomous agents verifying venue state before trade execution. It provides cryptographically signed market-state receipts for 28 global exchanges. Every receipt is Ed25519-signed with a 60-second TTL — a verifiable pre-trade attestation that the agent checked market state before executing.
 
@@ -8778,14 +8850,43 @@ const ORACLE_ISSUER = 'headlessoracle.com';
 // A2A, so the fields that exist only to make an AgentCard (capabilities,
 // defaultInputModes, defaultOutputModes, skill inputModes/outputModes, authSchemes,
 // schemaVersion, humanReadableId, agentVersion) were removed on 2026-10-02.
-// Served at /.well-known/agent.json only; /.well-known/agent-card.json answers 404.
+// Served at /.well-known/agent.json only; /.well-known/agent-card.json answers 404
+// with A2A_NOT_IMPLEMENTED_BODY.
+//
+// H4a: there is no top-level `url`. A2A clients read it as the agent's endpoint
+// and POSTed JSON-RPC to the site root (5,115 x 405 in 7 days). The site address
+// is `homepage`; the endpoints that exist are listed in `interfaces`.
+// The OAuth issuer and its RFC 8414 metadata, served at three well-known paths.
+const OAUTH_ISSUER = 'https://headlessoracle.com/oauth';
+const OAUTH_AUTHORIZATION_SERVER_METADATA = {
+	issuer:                              OAUTH_ISSUER,
+	token_endpoint:                      'https://headlessoracle.com/oauth/token',
+	introspection_endpoint:              'https://headlessoracle.com/oauth/introspect',
+	grant_types_supported:               ['client_credentials'],
+	token_endpoint_auth_methods_supported: ['client_secret_post'],
+	introspection_endpoint_auth_methods_supported: ['none'],
+	scopes_supported:                    ['oracle:read'],
+} as const;
+
+const A2A_NOT_IMPLEMENTED_BODY = {
+	error:   'A2A_NOT_IMPLEMENTED',
+	message: 'Headless Oracle does not implement the A2A protocol.',
+	mcp:     'https://api.headlessoracle.com/mcp',
+	llms:    'https://headlessoracle.com/llms.txt',
+	openapi: 'https://headlessoracle.com/openapi.json',
+} as const;
+
 const AGENT_JSON = {
 	name:              'Headless Oracle',
 	version:           'v5.0',
-	description:       `Chirindo by Headless Oracle: evidence for AI agents. ${CHIRINDO_SUMMARY} ${CHIRINDO_LIMITS} ` +
+	description:       `${CHIRINDO_LEAD} ` +
 		'Also: Ed25519-signed market-state receipts (OPEN/CLOSED/HALTED/UNKNOWN) for 28 global exchanges, a pre-trade gate for autonomous agents. Fail-closed: UNKNOWN always means CLOSED.',
 	contact_email:     CONTACT_EMAIL,
-	url:               'https://headlessoracle.com',
+	homepage:          'https://headlessoracle.com',
+	interfaces: [
+		{ type: 'mcp',     transport: 'streamable-http', url: 'https://api.headlessoracle.com/mcp' },
+		{ type: 'openapi', url: 'https://headlessoracle.com/openapi.json' },
+	],
 	provider: {
 		organization: 'LembaGang',
 		url:          'https://headlessoracle.com',
@@ -8982,23 +9083,13 @@ const AGENT_JSON = {
 	mcp: {
 		endpoint:         'https://headlessoracle.com/mcp',
 		protocol_version: '2024-11-05',
-		tools: [
-			{
-				name:        'get_market_status',
-				description: 'Pre-trade verification gate: Ed25519-signed market-state receipt (OPEN/CLOSED/HALTED/UNKNOWN) for 28 exchanges. Use before any trade execution, capital commitment, or financial workflow. UNKNOWN/HALTED = CLOSED (fail-closed). Includes attestation_ref for x402 payment flows.',
-				parameters:  { mic: 'string (required) — ISO 10383 MIC code, e.g. XNYS' },
-			},
-			{
-				name:        'get_market_schedule',
-				description: 'Holiday-aware trading session schedule: next open/close UTC times, market hours, exchange operating hours, holiday calendar, lunch breaks (XJPX/XHKG/XSHG/XSHE), session status for 28 exchanges.',
-				parameters:  { mic: 'string (required) — ISO 10383 MIC code' },
-			},
-			{
-				name:        'list_exchanges',
-				description: 'Directory of all 28 supported exchanges: MIC codes, names, timezones, exchange operating hours metadata. Call at agent startup to discover all supported MIC codes.',
-				parameters:  {},
-			},
-		],
+		// H4a: derived from MCP_TOOLS, the array tools/list serves, so the count and
+		// names cannot drift (this list said 3 while tools/list served 4). Names and
+		// input schemas only; the descriptions are served by tools/list. A getter
+		// because MCP_TOOLS is declared further down; JSON.stringify reads it per request.
+		get tools() {
+			return MCP_TOOLS.map((t) => ({ name: t.name, input_schema: t.inputSchema }));
+		},
 	},
 	rest_api: {
 		base_url:     'https://headlessoracle.com',
@@ -9476,7 +9567,8 @@ const MCP_TOOLS = [
 			'Model-agnostic: works identically regardless of which AI model consumes it. ' +
 			'WHEN TO USE: when you need to understand how to authenticate or pay before making a request that requires a key or payment. ' +
 			`Returns upgrade ladder: sandbox (200 calls free), x402 per-request ($${X402_PRICE_USDC} USDC), x402 sandbox (10 credits for $${X402_PRICE_USDC}), credit packs ($5 = 1000 calls), builder subscription (${BUILDER_MONTHLY_SHORT} = ${BUILDER_CALLS_COMPACT}/day). ` +
-			'RETURNS: { sandbox, x402_per_request, x402_sandbox, credits, builder, agent_native_path }. ' +
+			`Also returns chirindo_witness: the free anonymous Witness pool (${formatCallsGrouped(WITNESS_DAILY_CAP)} new checkpoints per UTC day, shared) and the Evidence plans custody_90d and custody_1y with their prices, daily checkpoint limits and the exact checkout call. ` +
+			'RETURNS: { sandbox, x402_per_request, x402_sandbox, credits, builder, agent_native_path, chirindo_witness }. ' +
 			'No authentication required. Always returns 200.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
@@ -9532,7 +9624,8 @@ const OPENAPI_SPEC = {
 	info: {
 		title:       'Headless Oracle',
 		version:     '5.0.0',
-		description: 'Cryptographically signed market-state receipts for AI agents and automated trading systems. ' +
+		description: `${CHIRINDO_LEAD} Chirindo Witness: POST ${WITNESS_SUBMIT_URL}; contract and every limit at ${WITNESS_SPEC_URL}. ` +
+			'Also: cryptographically signed market-state receipts for AI agents and automated trading systems. ' +
 			'All signed receipts use Ed25519. Consumers MUST treat UNKNOWN status as CLOSED and halt execution. ' +
 			'Receipts expire at expires_at — do not act on stale receipts.',
 		contact: { name: 'Headless Oracle', email: CONTACT_EMAIL, url: 'https://headlessoracle.com' },
@@ -10025,9 +10118,9 @@ const OPENAPI_SPEC = {
 				summary:     'Create Paddle Checkout Transaction',
 				description: `Creates a Paddle transaction for any plan in valid_plans (${CHECKOUT_PLANS.join(', ')}) and returns the hosted payment URL. No authentication required. Redirect the user to the returned url.`,
 				requestBody: {
-					required: false,
-					content: { 'application/json': { schema: { type: 'object', properties: {
-						plan: { type: 'string', enum: [...CHECKOUT_PLANS], default: 'builder', description: 'The plan to buy. An absent body or plan means builder. custody_90d (Evidence Starter) and custody_1y (Evidence) deliver a Chirindo Witness key.' },
+					required: true,
+					content: { 'application/json': { schema: { type: 'object', required: ['plan'], properties: {
+						plan: { type: 'string', enum: [...CHECKOUT_PLANS], description: 'The plan to buy. Required: an absent body or plan is 400 PLAN_REQUIRED and nothing is created. custody_90d (Evidence Starter) and custody_1y (Evidence) deliver a Chirindo Witness key.' },
 					} } } },
 				},
 				responses: {
@@ -10040,6 +10133,7 @@ const OPENAPI_SPEC = {
 							claim_token:    { type: 'string', pattern: '^[0-9a-f]{64}$', description: `Present only for plans that mint a key (builder, pro, protocol, credits, custody_90d, custody_1y). Keep it client-side and POST it to /v5/claim after payment to receive the key. Absent when the claim could not be set up; then write to ${CONTACT_EMAIL} with the transaction ID from your Paddle receipt.` },
 						} } } },
 					},
+					'400': { description: 'PLAN_REQUIRED (no plan named), UNKNOWN_PLAN or INVALID_BODY. Nothing is created. The body carries valid_plans and plans: each plan with amount_usd, currency and billing (monthly or one_time).', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'405': { description: 'Method not allowed — use POST', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'502': { description: 'Paddle API error', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'503': { description: 'Billing not configured', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
@@ -10649,6 +10743,8 @@ const OPENAPI_SPEC = {
 								schema_version: { type: 'string', example: '1.0' },
 								spec_version:   { type: 'string', example: '2026-02-26', description: 'YYYY-MM-DD — compare against cached value to detect stale metadata.' },
 								name:           { type: 'string' },
+								homepage:       { type: 'string', format: 'uri', description: 'The website. It is not an endpoint; the endpoints are listed in interfaces.' },
+								interfaces:     { type: 'array', description: 'The machine interfaces that exist: MCP (streamable-http) and OpenAPI.', items: { type: 'object', properties: { type: { type: 'string', enum: ['mcp', 'openapi'] }, transport: { type: 'string' }, url: { type: 'string', format: 'uri' } } } },
 								mcp:            { type: 'object' },
 								rest_api:       { type: 'object' },
 								trust:          { type: 'object' },
@@ -11346,6 +11442,33 @@ const OPENAPI_SPEC = {
 	},
 };
 
+// H4a: every operation gets an operationId, derived from its method and path so
+// it is stable for as long as the route is (getV5Status, postV1WitnessCheckpoints,
+// getV1StatusByMic). Code generators and MCP-from-OpenAPI bridges name their
+// functions from it. An operationId written by hand is kept. A collision throws
+// at module load, so the worker never serves a spec with duplicate ids.
+export function openapiOperationId(method: string, path: string): string {
+	const words = path.split('/').filter(Boolean).flatMap((seg) => {
+		const param = /^\{(.+)\}$/.exec(seg);
+		const parts = (param ? param[1] : seg).split(/[^A-Za-z0-9]+/).filter(Boolean);
+		return param ? ['by', ...parts] : parts;
+	});
+	const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+	return method.toLowerCase() + words.map(cap).join('');
+}
+{
+	const seen = new Set<string>();
+	for (const [path, item] of Object.entries(OPENAPI_SPEC.paths as Record<string, Record<string, unknown>>)) {
+		for (const method of ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']) {
+			const op = item[method] as { operationId?: string } | undefined;
+			if (!op) continue;
+			op.operationId ??= openapiOperationId(method, path);
+			if (seen.has(op.operationId)) throw new Error(`duplicate openapi operationId ${op.operationId}`);
+			seen.add(op.operationId);
+		}
+	}
+}
+
 // ─── Signed Receipt Builder ───────────────────────────────────────────────────
 // Implements the 4-tier fail-closed architecture. Called by both the REST routes
 // (/v5/demo, /v5/status) and the MCP tool, so the same safety guarantees apply.
@@ -11755,7 +11878,55 @@ async function handleOAuthIntrospect(request: Request, env: Env): Promise<Respon
 	} catch { return inactive(); }
 }
 
+// H4a: one MCP_USE line per JSON-RPC message, so tools/call can be told apart
+// from browsing. Only the method, the tool name (tools/call), the client name and
+// version and the offered protocolVersion (initialize), the host and the response
+// status. Never arguments, ids, tokens, IPs or anything else from the body: each
+// field is read by name and reduced to a short identifier, so nothing else can
+// reach the line. Exported for the test that pins that.
+export function mcpUseLogLines(message: unknown, host: string, status: number | string): string[] {
+	// safeIdent's character set plus '/', which JSON-RPC method names use (tools/call).
+	const ident = (v: unknown): string | null => (typeof v === 'string' ? v.replace(/[^A-Za-z0-9_.:\/-]/g, '').slice(0, 64) : null);
+	const one = (m: unknown): string => {
+		const o = (typeof m === 'object' && m !== null && !Array.isArray(m)) ? m as Record<string, unknown> : {};
+		const method = ident(o.method);
+		const params = (typeof o.params === 'object' && o.params !== null) ? o.params as Record<string, unknown> : {};
+		const clientInfo = (typeof params.clientInfo === 'object' && params.clientInfo !== null) ? params.clientInfo as Record<string, unknown> : {};
+		return JSON.stringify({
+			event:            'MCP_USE',
+			method,
+			tool:             method === 'tools/call' ? ident(params.name) : null,
+			client_name:      method === 'initialize' ? ident(clientInfo.name) : null,
+			client_version:   method === 'initialize' ? ident(clientInfo.version) : null,
+			protocol_version: ident(params.protocolVersion),
+			host:             safeIdent(host, 64),
+			status:           typeof status === 'number' ? status : safeIdent(status, 32),
+		});
+	};
+	return Array.isArray(message) ? message.map(one) : [one(message)];
+}
+
 async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+	const host = new URL(request.url).hostname;
+	const copy = request.clone();
+	let res: Response;
+	try {
+		res = await handleMcpMessage(request, env, ctx);
+	} catch (err) {
+		await logMcpUse(copy, host, 'unhandled_error');
+		throw err;
+	}
+	await logMcpUse(copy, host, res.status);
+	return res;
+}
+
+async function logMcpUse(copy: Request, host: string, status: number | string): Promise<void> {
+	let message: unknown = null;
+	try { message = await copy.json(); } catch { /* unparseable: logged with method null */ }
+	for (const line of mcpUseLogLines(message, host, status)) console.log(line);
+}
+
+async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	// ── Parse body first — enables fast paths for stateless protocol methods ────
 	// MCP probers (Chiark, MCPScoreboard) probe via initialize → tools/list → ping
 	// sequences to check availability. Parsing first lets us return immediately for
@@ -12784,9 +12955,11 @@ export default {
 				typeof body === 'object' && body !== null && 'error' in body &&
 				typeof (body as Record<string, unknown>).error === 'string'
 			) {
+				// A body that names its own docs (the witness names its spec) keeps it.
+				const own = (body as Record<string, unknown>).docs;
 				responseBody = {
 					...(body as Record<string, unknown>),
-					docs: `https://headlessoracle.com/docs`,
+					docs: typeof own === 'string' ? own : `https://headlessoracle.com/docs`,
 				};
 			}
 			// Default rate-limit headers — overridden by withRateLimitWarning for authenticated paths.
@@ -13806,7 +13979,15 @@ export default {
 			// Agents use this to distinguish "Oracle is down" from "market is UNKNOWN".
 			// A signed OK receipt means signing infrastructure is alive.
 			// A 500 CRITICAL_FAILURE means signing is offline — treat all market state as UNKNOWN.
-			if (url.pathname === '/v5/health') {
+			// The worker answers /favicon.ico only on api. (www. redirects, the apex has no
+			// route and Pages serves the file). 204 rather than a JSON 404 a browser logs.
+			if (url.pathname === '/favicon.ico') {
+				return new Response(null, { status: 204, headers: { 'Cache-Control': 'public, max-age=86400' } });
+			}
+			// /health is the path uptime monitors guess first; same body, same signature.
+			// It reaches the worker on api. only: www. redirects to the apex, and the apex
+			// has no /health route (adding one is a zone-route change, blocked by B-115).
+			if (url.pathname === '/v5/health' || url.pathname === '/health') {
 				try {
 					const healthPayload = {
 						receipt_id:    crypto.randomUUID(),
@@ -14132,8 +14313,16 @@ export default {
 			}
 
 			// /.well-known/agent-card.json is A2A's registered well-known URI. No endpoint
-			// here implements A2A, so it is not served: it falls through to the 404 at the
-			// end of fetch. agent.json stays as plain JSON metadata (no AgentCard fields).
+			// here implements A2A, so no card is served. Directory crawlers fetch it
+			// ~1,400 times a day (H4a, 28 Sep to 5 Oct); the 404 now says so in JSON
+			// and points at the interfaces that do exist. Built without json(), which
+			// would add a docs field to the exact body the handoff specifies.
+			if (url.pathname === '/.well-known/agent-card.json') {
+				return new Response(JSON.stringify(A2A_NOT_IMPLEMENTED_BODY), {
+					status:  404,
+					headers: { ...SECURITY_HEADERS, 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=3600' },
+				});
+			}
 			if (url.pathname === '/.well-known/agent.json') {
 				return json(AGENT_JSON);
 			}
@@ -14381,34 +14570,37 @@ export default {
 					ampersend:             'https://app.ampersend.ai/agents/headless-oracle',
 				});
 			}
-			if (url.pathname === '/.well-known/oauth-protected-resource') {
-				// RFC 8705 — OAuth 2.0 Protected Resource Metadata.
-				// MCP clients fetch this to discover the authorization server for optional OAuth.
-				// OAuth is additive — /mcp continues to work without a Bearer token.
-				// bearer_methods_supported: ["header"] — token delivered via Authorization: Bearer.
+			// RFC 9728 protected-resource metadata. The bare document describes the
+			// host; /.well-known/oauth-protected-resource/mcp (RFC 9728 3.1, path-suffixed)
+			// describes the MCP endpoint itself, which is what MCP clients derive from
+			// https://<host>/mcp, so its `resource` is that URL on the host asked (3.3).
+			// OAuth is additive: /mcp answers every method without a token, and an
+			// invalid or missing token falls through as anonymous; nothing answers 401.
+			// bearer_methods_supported: ["header"]: token delivered via Authorization: Bearer.
+			if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {
+				const forMcp = url.pathname.endsWith('/mcp');
 				return json({
-					resource:                            'https://headlessoracle.com',
-					authorization_servers:               ['https://headlessoracle.com/oauth'],
+					resource:                            forMcp ? `https://${url.hostname}/mcp` : 'https://headlessoracle.com',
+					authorization_servers:               [OAUTH_ISSUER],
 					bearer_methods_supported:            ['header'],
 					resource_documentation:              'https://headlessoracle.com/docs',
 					resource_signing_alg_values_supported: ['EdDSA'],
 					scopes_supported:                    ['oracle:read'],
 				});
 			}
-			if (url.pathname === '/.well-known/oauth-authorization-server') {
-				// RFC 8414 — OAuth 2.0 Authorization Server Metadata.
-				// Describes the token endpoint and supported grant types.
-				return json({
-					issuer:                              'https://headlessoracle.com/oauth',
-					token_endpoint:                      'https://headlessoracle.com/oauth/token',
-					introspection_endpoint:              'https://headlessoracle.com/oauth/introspect',
-					grant_types_supported:               ['client_credentials'],
-					token_endpoint_auth_methods_supported: ['client_secret_post'],
-					introspection_endpoint_auth_methods_supported: ['none'],
-					scopes_supported:                    ['oracle:read'],
-				});
+			// RFC 8414 authorization-server metadata. The issuer has a path (/oauth), so
+			// RFC 8414 3.1 puts its metadata at /.well-known/oauth-authorization-server/oauth;
+			// the bare path stays for clients that ignore the path. The openid-configuration
+			// form (RFC 8414 5) serves the same document: no OIDC field is claimed.
+			if (
+				url.pathname === '/.well-known/oauth-authorization-server' ||
+				url.pathname === '/.well-known/oauth-authorization-server/oauth' ||
+				url.pathname === '/.well-known/openid-configuration/oauth'
+			) {
+				return json(OAUTH_AUTHORIZATION_SERVER_METADATA);
 			}
-			if (url.pathname === '/.well-known/x402.json') {
+			// /.well-known/x402 (no extension) is what 266 crawler fetches asked for in 7 days.
+			if (url.pathname === '/.well-known/x402.json' || url.pathname === '/.well-known/x402') {
 				// x402 payment resource discovery. x402scan fetches this to discover which
 				// endpoints require payment without probing each one individually.
 				// Only /v5/status and /v5/batch are pay-per-request. All others are free.
@@ -14447,6 +14639,22 @@ export default {
 							scheme:            'exact',
 							network:           'base',
 							maxAmountRequired: '5000',
+							asset:             X402_USDC_CONTRACT,
+							payTo,
+							extra:             { name: 'USD Coin', version: '2' },
+						}],
+					},
+					// H4a: the route the CDP Bazaar lists. Same canonical price and input as
+					// /v5/status; the only path that also carries the Bazaar extension.
+					{
+						path:        '/v5/status/x402',
+						method:      'GET',
+						description: X402_RESOURCE_SPECS.status.description,
+						input:       X402_RESOURCE_SPECS.status.input,
+						accepts: [{
+							scheme:            'exact',
+							network:           'base',
+							maxAmountRequired: X402_RESOURCE_SPECS.status.amountAtomic,
 							asset:             X402_USDC_CONTRACT,
 							payTo,
 							extra:             { name: 'USD Coin', version: '2' },
@@ -14699,13 +14907,14 @@ export default {
 				// cannot read at all was still open.
 				//
 				// Reading the raw text first is what keeps the three cases
-				// apart: no body (the documented Builder default), a JSON
-				// object (read the plan out of it), and anything else (we do
-				// not know what was asked for, so we sell nothing).
+				// apart: no body (400 PLAN_REQUIRED since H4a), a JSON object
+				// (read the plan out of it), and anything else (we do not know
+				// what was asked for, so we sell nothing).
 				const invalidCheckoutBody = () => json({
 					error:       'INVALID_BODY',
-					message:     'Send a JSON object, for example {"plan":"builder"}',
+					message:     'Send a JSON object naming a plan, for example {"plan":"builder"}',
 					valid_plans: CHECKOUT_PLANS,
+					plans:       checkoutPlanPrices(),
 				}, 400);
 
 				const rawCheckoutBody = await request.text().catch(() => '');
@@ -14731,16 +14940,28 @@ export default {
 				if (planField !== undefined && typeof planField !== 'string') {
 					return invalidCheckoutBody();
 				}
-				// Absent → Builder, unchanged. Present-but-unrecognised → 400, and
-				// no call to Paddle: see CHECKOUT_PLAN_PRICE_ENV for why the old
-				// fall-through sold Builder to anyone who mistyped a plan name.
-				const plan = planField || url.searchParams.get('type') || 'builder';
+				// H4a: a checkout must name its plan. An absent plan used to mean
+				// Builder, so an empty {} created a $99/month transaction for a
+				// caller who never chose one; it is now 400 PLAN_REQUIRED with every
+				// plan and its price, and no call to Paddle. The legacy ?type= query
+				// still names a plan. Present-but-unrecognised stays 400 UNKNOWN_PLAN
+				// (B-144): see CHECKOUT_PLAN_PRICE_ENV.
+				const plan = planField || url.searchParams.get('type') || '';
+				if (plan === '') {
+					return json({
+						error:       'PLAN_REQUIRED',
+						message:     'Name the plan to buy, for example {"plan":"custody_90d"}. Nothing was created.',
+						valid_plans: CHECKOUT_PLANS,
+						plans:       checkoutPlanPrices(),
+					}, 400);
+				}
 				const resolvedPrice = resolveCheckoutPrice(plan, env);
 				if (resolvedPrice.kind === 'unknown') {
 					return json({
 						error:       'UNKNOWN_PLAN',
 						message:     `Unknown plan '${safeIdent(plan, 32)}'`,
 						valid_plans: CHECKOUT_PLANS,
+						plans:       checkoutPlanPrices(),
 					}, 400);
 				}
 				if (resolvedPrice.kind === 'unconfigured') {
@@ -17029,6 +17250,20 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							provision:           'POST /v5/checkout {"plan":"custody_1y"}, then POST /v5/claim with the claim_token',
 							introductory_until:  REFEREE_INTRODUCTORY_UNTIL,
 						},
+						// H4a: the pilot, as /pricing states it (EVIDENCE_PILOT_LINE). Not
+						// buyable by checkout: scope is agreed by conversation.
+						{
+							id:                  'evidence_pilot',
+							name:                'Evidence pilot',
+							plan:                null,
+							price_usd:           EVIDENCE_PILOT_USD,
+							price_label:         `$${EVIDENCE_PILOT_USD.toLocaleString('en-US')} fixed price`,
+							interval:            null,
+							checkpoints_per_day: null,
+							description:         EVIDENCE_PILOT_LINE,
+							provision:           `Write to ${CONTACT_EMAIL}`,
+							introductory_until:  null,
+						},
 					],
 					// Derived from the canonical requirements object — never a literal.
 					x402: {
@@ -17989,8 +18224,8 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				schema_version: 'v1',
 				name_for_human: 'Headless Oracle',
 				name_for_model: 'headless_oracle',
-				description_for_human: 'Cryptographically signed market state verification for 28 global exchanges (equities, derivatives, and 24/7 crypto). Know if NYSE, LSE, CME, or any major exchange is OPEN, CLOSED, or HALTED before your agent acts. ' + STANDARDS_SENTENCE,
-				description_for_model: 'Use headless_oracle to get Ed25519-signed market state receipts before executing any financial transaction. Returns OPEN, CLOSED, HALTED, or UNKNOWN with an Ed25519 signature. Always call get_market_status before safe_to_execute. Supports 28 exchanges by MIC code (equities, derivatives, 24/7 crypto). Note: SMA in receipts denotes Signed Market Attestation, not Simple Moving Average. Fail-closed: if uncertain, returns UNKNOWN rather than false OPEN. ' + STANDARDS_SENTENCE,
+				description_for_human: `${CHIRINDO_LEAD} Also: ` + 'cryptographically signed market state verification for 28 global exchanges (equities, derivatives, and 24/7 crypto). Know if NYSE, LSE, CME, or any major exchange is OPEN, CLOSED, or HALTED before your agent acts. ' + STANDARDS_SENTENCE,
+				description_for_model: `${CHIRINDO_LEAD} Chirindo Witness is a REST API: POST ${WITNESS_SUBMIT_URL}; contract and every limit at ${WITNESS_SPEC_URL}. Also: ` + 'use headless_oracle to get Ed25519-signed market state receipts before executing any financial transaction. Returns OPEN, CLOSED, HALTED, or UNKNOWN with an Ed25519 signature. Always call get_market_status before safe_to_execute. Supports 28 exchanges by MIC code (equities, derivatives, 24/7 crypto). Note: SMA in receipts denotes Signed Market Attestation, not Simple Moving Average. Fail-closed: if uncertain, returns UNKNOWN rather than false OPEN. ' + STANDARDS_SENTENCE,
 				auth: {
 					type:               'api_key',
 					api_key_question:   'Enter your Headless Oracle API key (X-Oracle-Key header). Get a sandbox key: POST https://api.headlessoracle.com/v5/sandbox with body {"email":"you@example.com"}',

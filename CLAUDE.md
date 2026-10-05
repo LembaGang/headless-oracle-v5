@@ -75,12 +75,51 @@ Still requires explicit confirmation in the message:
 **ORACLE_OVERRIDES must never contain telemetry data.** Operators scan it for active circuit breakers.
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-10-04T13Z — H2/H2b key on screen deployed (63974cb5) and pushed (afc1c80); TEST_COUNT 1589 -->
+<!-- Last updated: 2026-10-05 — H4a agent front door; TEST_COUNT 1667 -->
+<!-- Before: 2026-10-04T13Z — H2/H2b key on screen deployed (63974cb5) and pushed (afc1c80); TEST_COUNT 1589 -->
 <!-- Previous: 2026-10-04 — Witness W1-W3, H1a, H1b deployed (32f367e6) and pushed (3d4b723); TEST_COUNT 1535 -->
 
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-05: H4a, the agent front door.** Deploy: __H4A_DEPLOY__. Suite
+  **1635 → 1667**. From the Lead's 7-day traffic analysis.
+  - **`/.well-known/agent-card.json`** is still 404 and still no card; the body is
+    now `A2A_NOT_IMPLEMENTED` with the MCP, llms.txt and openapi URLs.
+    **`/.well-known/agent.json`** has no top-level `url` (A2A clients POSTed JSON-RPC
+    to it: 5,115 x 405 on `POST /`); `homepage` and an `interfaces` array (MCP
+    streamable-http at api.headlessoracle.com/mcp, OpenAPI) replace it. Its
+    `mcp.tools` now derives from `MCP_TOOLS` (it said 3 while `tools/list` served 4).
+  - **Aliases**: `/.well-known/x402` = `/.well-known/x402.json`, which now lists
+    `/v5/status/x402`; `/health` = `/v5/health` and `/favicon.ico` = 204 on api. only.
+  - **OAuth**: `/.well-known/oauth-protected-resource/mcp` (RFC 9728, `resource` is
+    `https://<host>/mcp`); `/.well-known/oauth-authorization-server/oauth` and
+    `/.well-known/openid-configuration/oauth` serve the RFC 8414 document (issuer is
+    the `/oauth` form). `/mcp` needs no auth and never answers 401.
+  - **`MCP_USE`** log line per JSON-RPC message (`mcpUseLogLines`): method, tool name
+    on `tools/call`, client name/version on `initialize`, offered protocolVersion,
+    host, status. Never arguments, ids, tokens or IPs.
+  - **`POST /v5/checkout` must name a plan**: absent is **400 `PLAN_REQUIRED`** (it
+    used to mean Builder), and every checkout 400 carries `plans` with prices. The
+    legacy `?type=` query still names a plan. This supersedes the B-144/B-169
+    "absent means Builder" rule below.
+  - **Witness**: every 4xx carries `docs` = the witness spec; the anonymous-cap 503
+    and a key's 429 `quota_exceeded` carry an `upgrade` object (both Evidence plans,
+    prices, daily limits, the exact checkout call). Spec text says so (still
+    `witness-spec/0.5`: additive members).
+  - **Leads**: `/skill.md`, `ai-plugin.json` and openapi `info.description` open with
+    `CHIRINDO_LEAD` (the `/llms.txt` summary plus the spec's limits);
+    `get_payment_options` returns `chirindo_witness`; `/v5/pricing` has an
+    `evidence_pilot` tier with the `/pricing` sentence verbatim; every openapi
+    operation has a derived `operationId` (`openapiOperationId`).
+  - **Test guard**: the suite fails on a non-ASCII header in any 2xx or 402. None
+    found; the em-dash warnings were Miniflare's `MF-Vitest-Source` header.
+  - **Open (B-115, route changes)**: the empty-UA monitor's `HEAD /mcp` 404s are
+    `https://headlessoracle.com/mcp?<query>` (zone analytics, 157 in 3h, HTML 404
+    from Pages): the route `headlessoracle.com/mcp` is exact-path, so any query
+    string misses the worker. It needs `headlessoracle.com/mcp*` in the zone routes;
+    so do apex `/health` and `POST /`. The 2 Oct flip from 200 to 404 was the web
+    repo's E4 real 404 page, not a worker change.
 - **2026-10-04 (evening): H3a–H3d.** Live **`259a8bdb-d718-408a-88b9-7ccc3b3562bb`**
   (20:21:16Z, from `acaf3aa`, read from `npx wrangler deployments list`; B-115 exit 1
   after the upload, routes unchanged), replacing `306e1bfe…` (17:22:53Z: H3a `36788a2`,
@@ -152,36 +191,14 @@ here is carried forward from an earlier stamp unverified.
     has no founder line (D3; dedupe added by H2b); `/llms.txt`, `/AGENTS.md`, web `/pricing` and
     the Paddle product names not checked against Witness v0.5; no production POST to
     the witness has succeeded yet.
-- **2026-10-02: A2A claims removed (handoff `CC_HANDOFF_2026-10-02_hov5-a2a-claims_rev3`),
-  deployed in `32f367e6`.** A1 `820cbf7`: `/.well-known/agent-card.json`
-  (A2A's registered well-known URI) answers 404; `/.well-known/agent.json` stays as plain JSON
-  metadata without the AgentCard-only fields; `/llms-full.txt`, `/AGENTS.md`, `/skill.md`,
-  `/openapi.json` and the agent directory no longer claim A2A; `/v5/changelog` keeps its
-  5.2 line and adds a 2026-10-02 entry withdrawing the label; guard
-  `A2A: no served surface claims A2A support` (36 surfaces plus MCP, three allowlisted
-  strings). A2 `a012ab9`: `scripts/verify-agent-readiness.mjs` check 10 and `--only`. Suite
-  **1395 to 1432**, read from `npm run test:sync-count` and the pre-commit hook. No route
-  change. Post-deploy check: `node scripts/verify-agent-readiness.mjs --only 10`.
-- **2026-10-01: agent readiness (handoff `CC_HANDOFF_2026-10-01_hov5-agent-readiness_rev2`),
-  deployed in `32f367e6`.** W1 `1de0c53` Bazaar extension in the
-  v2 `PAYMENT-REQUIRED` header of `/v5/status/x402` only, payment-header inputs folded
-  to ASCII, `EXTENSION-RESPONSES` logged; W2 `4640b06` `/.well-known/ai-catalog.json`
-  (MCP card, agent-skills index, API catalog; no A2A); W3 `f10a48d` `/auth.md` plus the
-  `headlessoracle.com/auth.md` route (a route change: B-115 is not benign for this
-  deploy); W4 `3486ac8` server card tools derive from `MCP_TOOLS`, `A2A` removed from
-  `protocols`, halt-detection lists derived, past-dated CFTC sentence and model-tier
-  paragraph removed, Bazaar schema enums fixed; W5 `25a65d9` dead links removed from
-  `/sitemap.xml` (26 to 16), `/llms.txt`, `/llms-full.txt`, `/AGENTS.md`; W6 `89b96cf`
-  `docs/receipt-spec.md` (B-254) agrees with `/v5/keys`. Suite **1369 to 1395**, read
-  from `npm run test:sync-count` and the pre-commit hook. Post-deploy check:
-  `node scripts/verify-agent-readiness.mjs` (failed every check but liveness against
-  production before the deploy, as it should).
-- **Tests**: 1634 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
+  `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
+- **Tests**: 1667 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
-- **Worker**: see the 2026-10-04 (evening) entry above for the live version. Previous live
-  versions: `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
+- **Worker**: see the 2026-10-05 H4a entry above for the live version. Previous live
+  versions: `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
   (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and all four of 10-04 each exited 1
   on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
@@ -189,28 +206,10 @@ here is carried forward from an earlier stamp unverified.
   scripts/start-smoke.sh`. Every commit of 2026-09-07 passed all four with no
   `--no-verify`.
 
-### GAP-019 — the local test gate: NOT REPRODUCING (2026-09-07)
+### GAP-019 — NOT REPRODUCING (2026-09-07): moved verbatim to `docs/history/claude-md-moved-2026-10-05.md`
 
-The canon recorded local `npm test` as blocked by non-deterministic workerd
-timeouts, with CI as the authoritative gate and `--no-verify` reserved for
-prose-only commits. It did not reproduce on any commit of 2026-09-07: seven
-commits ran the full hook clean (tsc 0, suite green, dry-run 0, and from
-`b4c4fb4` onward the start smoke too). Full-suite wall time 120–130s.
-
-Two flakes were observed and are recorded rather than swept up, because a gate
-that goes red for the wrong reason erodes trust in the gate:
-
-- `GET /v1/status/{MIC} — in-worker rate limit > exact-limit (60) all pass; 61st
-  returns 429` failed once in a full-suite run and passed 3/3 in isolation. The
-  mechanism is identified: the limiter buckets on `Math.floor(now/60_000)`, a
-  wall-clock minute, and the test fires 61 real sequential requests. If those
-  straddle a minute boundary the counter resets and the 61st returns 200. Latent
-  since the test was written; surfaced by the extra milliseconds T3b adds per
-  receipt. One-line fix: pin the clock with `vi.setSystemTime` for that test.
-  **Flagged, not fixed** — it is outside this sprint's scope.
-- One further single-test failure during the first attempt at the `b4c4fb4`
-  commit, which passed on re-run and on retry. Not identified; the output was not
-  captured. If a third flake appears, capture the full run before retrying.
+Superseded by "GAP-019 — CLOSED 2026-09-10" below. The rule it set stands: if a
+flake appears, capture the full run before retrying.
 
 ### The receipt `coverage` block — signed payload, T3 + T3b (2026-09-07)
 
@@ -331,8 +330,8 @@ default. All three are now explicit.
   "conformance_entry"}` returned a 200 carrying a $99/month Builder checkout; so
   did a typo. Now `CHECKOUT_PLAN_PRICE_ENV`, an explicit map: an unrecognised plan
   is **400 `UNKNOWN_PLAN`** carrying `valid_plans`, and **no call to Paddle at
-  all**. An **absent** plan still means Builder — absent and unrecognised are
-  different cases and only the second was a defect.
+  all**. An **absent** plan meant Builder until H4a (2026-10-05); it is now 400
+  `PLAN_REQUIRED`, also with no call to Paddle.
 - **`transaction.completed`** and **`subscription.activated`** both opened with
   `let plan = 'pro'` under a comment calling it "fail-safe to 'pro' if
   unrecognised". It was fail-**open**: an unrecognised `price_id` minted a
@@ -427,9 +426,8 @@ created a live Builder transaction (`txn_01m25kztpkvt2hh64qdw509n97`) for a
 request whose plan the worker never read. B-144 closed this family for a plan we
 can read and do not sell; a body we cannot read at all was still open.
 
-**The rule.** The body is read as text first. Empty (or whitespace) means absent
-and still defaults to Builder — the documented default, held by two control
-tests. Anything else must parse to a **JSON object**: a parse failure, or a value
+**The rule.** The body is read as text first. Empty (or whitespace) means absent,
+which since H4a is 400 `PLAN_REQUIRED` (it defaulted to Builder before). Anything else must parse to a **JSON object**: a parse failure, or a value
 that is not an object (`null` and arrays included — `typeof null === 'object'`),
 is **400 `INVALID_BODY`** carrying `valid_plans`, with **no call to Paddle**. A
 `plan` that is present but not a string is the same refusal: it used to reach
@@ -673,19 +671,7 @@ with `Retry-After`, so the agent retries. That changes `AuthResult` (its failure
 status is typed `402 | 403`) and an established public status code, so it is flagged
 rather than smuggled into a timeout fix.
 
-### CI test-count annotation — closed 2026-09-07 (`61db54c`)
-
-The detector was the bug, not the count. `grep -oP '\d+(?= passed)' | head -1` reads
-the `Test Files  2 passed` line, so CI annotated "actual test count (2)" for as long
-as the check existed. Extraction now lives in `scripts/vitest-count.sh`, shared by
-`scripts/sync-test-count.sh` and CI so they cannot drift apart: it anchors on the
-`Tests` summary line, strips ANSI first, uses `sed` rather than `grep -P` (which the
-Git Bash running the local hook refuses outright, so the old detector returned an
-empty string locally and `npm run test:sync-count` could never have worked on this
-machine), and refuses to report a count from a run that had failures. **The CI step
-now fails on a mismatch instead of warning** — `TEST_COUNT` is served at
-`/v5/metrics/public`, so a mismatch is a number we publish and cannot support. CI also
-no longer runs the suite twice.
+### CI test-count annotation — closed 2026-09-07: moved verbatim to `docs/history/claude-md-moved-2026-10-05.md`
 
 ### Deploy procedure (amended 2026-09-07, B-115)
 

@@ -15,7 +15,33 @@ import worker, {
 	clearHaltHeartbeatMemo,
 	// plan prices stated once (rail sprint, 2026-09-07)
 	planPrices, refereePrices,
+	// H4a
+	mcpUseLogLines, openapiOperationId,
 } from '../src';
+
+// H4a step 7: every 2xx and 402 response this suite receives is checked for a
+// non-ASCII header value. workerd sends a non-ASCII header as raw UTF-8 bytes,
+// which a strict HTTP client rejects; Headers.get() hands each byte back as a
+// char, so any code point above 0x7F here is a byte above 0x7F on the wire.
+// worker.fetch is wrapped (not just fetchWorker) so direct calls are covered too.
+const __headerAsciiViolations: string[] = [];
+let __headerAsciiChecked = 0;
+{
+	const __workerFetch = worker.fetch.bind(worker);
+	(worker as { fetch: typeof worker.fetch }).fetch = (async (...args: Parameters<typeof worker.fetch>) => {
+		const res = await __workerFetch(...args);
+		if ((res.status >= 200 && res.status < 300) || res.status === 402) {
+			__headerAsciiChecked++;
+			const req = args[0] as Request;
+			res.headers.forEach((value, name) => {
+				if (/[^\x00-\x7F]/.test(value)) {
+					__headerAsciiViolations.push(`${req.method} ${new URL(req.url).pathname} ${res.status} ${name}: ${value.slice(0, 160)}`);
+				}
+			});
+		}
+		return res;
+	}) as typeof worker.fetch;
+}
 
 // Clear module-level caches before every test so that tests which
 // set KV values always read from KV rather than stale in-memory entries.
@@ -3244,8 +3270,8 @@ describe('GET /.well-known/x402.json', () => {
 		expect(body).toHaveProperty('version', 1);
 		expect(Array.isArray(body.resources)).toBe(true);
 		const resources = body.resources as Array<Record<string, unknown>>;
-		// /v5/status, /v5/batch, and /v5/x402/mint (autonomous key minting)
-		expect(resources.length).toBe(3);
+		// /v5/status, /v5/batch, /v5/status/x402 (H4a) and /v5/x402/mint
+		expect(resources.length).toBe(4);
 		expect(resources.some((r) => r.path === '/v5/x402/mint')).toBe(true);
 	});
 
@@ -3377,7 +3403,9 @@ describe('GET /.well-known/agent.json', () => {
 		// Identity
 		expect(body).toHaveProperty('name', 'Headless Oracle');
 		expect(body).toHaveProperty('version', 'v5.0');
-		expect(body).toHaveProperty('url', 'https://headlessoracle.com');
+		// CHANGED (H4a): no top-level url (A2A clients POSTed to it); homepage instead.
+		expect(body).not.toHaveProperty('url');
+		expect(body).toHaveProperty('homepage', 'https://headlessoracle.com');
 		expect(body).toHaveProperty('documentationUrl', 'https://headlessoracle.com/docs');
 		// Provider
 		const provider = body.provider as Record<string, unknown>;
@@ -4674,7 +4702,8 @@ describe('POST /v5/checkout', () => {
 		};
 
 		try {
-			const response = await fetchWorker('/v5/checkout', { method: 'POST' });
+			// CHANGED (H4a): the plan is named; an unnamed plan is 400 PLAN_REQUIRED.
+			const response = await fetchWorker('/v5/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"plan":"builder"}' });
 			expect(response.status).toBe(200);
 			const body = await response.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('url', mockCheckoutUrl);
@@ -4697,7 +4726,8 @@ describe('POST /v5/checkout', () => {
 		};
 
 		try {
-			const response = await fetchWorker('/v5/checkout', { method: 'POST' });
+			// CHANGED (H4a): the plan is named; an unnamed plan is 400 PLAN_REQUIRED.
+			const response = await fetchWorker('/v5/checkout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"plan":"builder"}' });
 			expect(response.status).toBe(502);
 			const body = await response.json() as Record<string, unknown>;
 			expect(body).toHaveProperty('error', 'CHECKOUT_FAILED');
@@ -4794,10 +4824,11 @@ describe('POST /v5/checkout', () => {
 		expect(message).toContain('scriptalert1');
 	});
 
-	// The other half of the same rule: an ABSENT plan is not an unrecognised
-	// one, and must keep its documented Builder default. Without this the fix
-	// above could have been "400 on everything" and still looked green.
-	it('B-144: POST /v5/checkout with no plan at all still sells Builder', async () => {
+	// The other half of the same rule, CHANGED by H4a: an absent plan is now
+	// 400 PLAN_REQUIRED (see the B-169 cases below). What keeps the fix above
+	// from being "400 on everything" is that a NAMED plan still sells, including
+	// through the legacy ?type= query with no body.
+	it('B-144 (H4a): POST /v5/checkout?type=builder with no body still sells Builder', async () => {
 		let capturedPriceId = '';
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -4812,7 +4843,7 @@ describe('POST /v5/checkout', () => {
 			return originalFetch(input, init);
 		};
 		try {
-			const res = await fetchWorker('/v5/checkout', { method: 'POST' });
+			const res = await fetchWorker('/v5/checkout?type=builder', { method: 'POST' });
 			expect(res.status).toBe(200);
 			expect(capturedPriceId).toBe('pri_test_builder_placeholder'); // matches .dev.vars
 		} finally {
@@ -5060,11 +5091,11 @@ describe('POST /v5/checkout', () => {
 		}
 	});
 
-	// The two controls that keep the fix from being "400 on everything". The
-	// site's buttons all send JSON.stringify({plan}), so neither of these is a
-	// path headlessoracle.com uses — they are the documented default, and a
-	// caller that sends {} is asking for it explicitly.
-	it('B-169 CONTROL: POST /v5/checkout with an empty body still sells Builder', async () => {
+	// CHANGED (H4a, 2026-10-05): these two were controls asserting that an
+	// absent plan sold Builder. An absent plan is now 400 PLAN_REQUIRED with
+	// every plan and its price, and nothing reaches Paddle. The "not 400 on
+	// everything" control is the named-plan 200 test and the ?type= case.
+	it('H4a (was B-169 CONTROL): POST /v5/checkout with an empty body is 400 PLAN_REQUIRED, ZERO calls to Paddle', async () => {
 		let capturedPriceId = '';
 		let paddleCalls = 0;
 		const originalFetch = globalThis.fetch;
@@ -5082,15 +5113,16 @@ describe('POST /v5/checkout', () => {
 		};
 		try {
 			const res = await fetchWorker('/v5/checkout', { method: 'POST' });
-			expect(res.status).toBe(200);
-			expect(capturedPriceId).toBe('pri_test_builder_placeholder'); // matches .dev.vars
-			expect(paddleCalls).toBe(1);
+			expect(res.status).toBe(400);
+			expect((await res.json() as Record<string, unknown>).error).toBe('PLAN_REQUIRED');
+			expect(capturedPriceId).toBe('');
+			expect(paddleCalls).toBe(0);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
 	});
 
-	it('B-169 CONTROL: POST /v5/checkout with body {} still sells Builder', async () => {
+	it('H4a (was B-169 CONTROL): POST /v5/checkout with body {} is 400 PLAN_REQUIRED with every plan and price, ZERO calls to Paddle', async () => {
 		let capturedPriceId = '';
 		let paddleCalls = 0;
 		const originalFetch = globalThis.fetch;
@@ -5112,9 +5144,17 @@ describe('POST /v5/checkout', () => {
 				headers: { 'Content-Type': 'application/json' },
 				body:    '{}',
 			});
-			expect(res.status).toBe(200);
-			expect(capturedPriceId).toBe('pri_test_builder_placeholder');
-			expect(paddleCalls).toBe(1);
+			expect(res.status).toBe(400);
+			const body = await res.json() as { error: string; valid_plans: string[]; plans: Array<{ plan: string; amount_usd: string; currency: string; billing: string }> };
+			expect(body.error).toBe('PLAN_REQUIRED');
+			expect(body.plans.map((p) => p.plan)).toEqual(body.valid_plans);
+			const byPlan = Object.fromEntries(body.plans.map((p) => [p.plan, p]));
+			expect(byPlan.builder).toEqual({ plan: 'builder', amount_usd: '99.00', currency: 'USD', billing: 'monthly' });
+			expect(byPlan.credits).toEqual({ plan: 'credits', amount_usd: '5.00', currency: 'USD', billing: 'one_time' });
+			expect(byPlan.custody_90d).toEqual({ plan: 'custody_90d', amount_usd: '49.00', currency: 'USD', billing: 'monthly' });
+			expect(byPlan.conformance_entry).toEqual({ plan: 'conformance_entry', amount_usd: '2500.00', currency: 'USD', billing: 'one_time' });
+			expect(capturedPriceId).toBe('');
+			expect(paddleCalls).toBe(0);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
@@ -17202,6 +17242,18 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		// H2: the claim route's static prose is its 405; the ready body's
 		// instructions are asserted by value in the H2 describe block.
 		['/v5/claim',                            '/v5/claim', undefined, 405],
+		// H4a: the served-text routes this change added or rewrote.
+		['/.well-known/x402',                    '/.well-known/x402'],
+		['/.well-known/agent-card.json',         '/.well-known/agent-card.json', undefined, 404],
+		['/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-protected-resource/mcp'],
+		['/.well-known/oauth-authorization-server/oauth', '/.well-known/oauth-authorization-server/oauth'],
+		['/.well-known/openid-configuration/oauth', '/.well-known/openid-configuration/oauth'],
+		['/.well-known/ai-plugin.json',          '/.well-known/ai-plugin.json'],
+		// /skill.md is not listed: its JavaScript sample legitimately contains
+		// `${result.reason}`; its new lead is pinned by the H4a lead test.
+		['/health',                              '/health'],
+		['/v5/checkout (PLAN_REQUIRED)',         '/v5/checkout',
+			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 400],
 	];
 
 	// No served byte may carry a template placeholder the runtime never filled.
@@ -18009,11 +18061,13 @@ describe('A2A: no served surface claims A2A support', () => {
 		'securitySchemes', 'supportsAuthenticatedExtendedCard',
 	];
 
-	it('GET /.well-known/agent-card.json answers 404', async () => {
+	// CHANGED (H4a): still 404 and still no card, but the body now says why and
+	// where the interfaces that do exist are.
+	it('GET /.well-known/agent-card.json answers 404 A2A_NOT_IMPLEMENTED', async () => {
 		const res = await fetchWorker('/.well-known/agent-card.json');
 		expect(res.status).toBe(404);
 		const body = await res.json() as Record<string, unknown>;
-		expect(body.error).toBe('NOT_FOUND');
+		expect(body.error).toBe('A2A_NOT_IMPLEMENTED');
 	});
 
 	it('GET /.well-known/agent.json is plain JSON metadata with no A2A-only field', async () => {
@@ -19083,5 +19137,224 @@ describe('H3b: corrected Chirindo summary and npm caveat', () => {
 	it('mcp-servers.json standards names the IETF draft, not the retired names', async () => {
 		const body = await fetchJSON('/.well-known/mcp-servers.json') as { servers: Array<{ standards: string[] }> };
 		expect(body.servers[0].standards).toEqual(['draft-borthwick-msebenzi-environment-state']);
+	});
+});
+
+// ─── H4a: the agent front door (2026-10-05) ──────────────────────────────────
+// In 7 days the worker answered ~56k fetches; directory crawlers and MCP/x402
+// monitors failed on the same few paths. Each case below pins one fix.
+describe('H4a: agent front door', () => {
+	const LEAD_PREFIX = 'Chirindo by Headless Oracle: evidence for AI agents. ';
+	// The summary as /llms.txt serves it, read from the served bytes so the
+	// surfaces below are compared with llms.txt and not with a constant.
+	async function llmsSummary(): Promise<string> {
+		const llms = await (await fetchWorker('/llms.txt')).text();
+		const line = llms.split('\n').find((l) => l.startsWith('> Evidence for AI agents. '));
+		expect(line, '/llms.txt has its summary line').toBeDefined();
+		return line!.slice('> Evidence for AI agents. '.length);
+	}
+
+	// Step 2
+	it('/health answers like /v5/health: 200, a signed OK receipt', async () => {
+		const res = await fetchWorker('/health');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const receipt = (body.receipt ?? body) as Record<string, unknown>;
+		expect(receipt.status).toBe('OK');
+		expect(typeof receipt.signature).toBe('string');
+		expect((receipt.signature as string).length).toBe(128);
+	});
+
+	it('/favicon.ico on the worker is 204 with no body', async () => {
+		const res = await fetchWorker('/favicon.ico');
+		expect(res.status).toBe(204);
+		expect(await res.text()).toBe('');
+	});
+
+	// Step 3
+	it('/.well-known/agent-card.json is 404 with the exact A2A_NOT_IMPLEMENTED body', async () => {
+		const res = await fetchWorker('/.well-known/agent-card.json');
+		expect(res.status).toBe(404);
+		expect(res.headers.get('Content-Type')).toContain('application/json');
+		expect(await res.json()).toEqual({
+			error:   'A2A_NOT_IMPLEMENTED',
+			message: 'Headless Oracle does not implement the A2A protocol.',
+			mcp:     'https://api.headlessoracle.com/mcp',
+			llms:    'https://headlessoracle.com/llms.txt',
+			openapi: 'https://headlessoracle.com/openapi.json',
+		});
+	});
+
+	it('/.well-known/agent.json has no top-level url, a homepage, and interfaces naming MCP and OpenAPI', async () => {
+		const body = await fetchJSON('/.well-known/agent.json');
+		expect(Object.keys(body)).not.toContain('url');
+		expect(body.homepage).toBe('https://headlessoracle.com');
+		expect(body.interfaces).toEqual([
+			{ type: 'mcp', transport: 'streamable-http', url: 'https://api.headlessoracle.com/mcp' },
+			{ type: 'openapi', url: 'https://headlessoracle.com/openapi.json' },
+		]);
+	});
+
+	// Step 4
+	it('/.well-known/x402 serves the same body and content type as /.well-known/x402.json', async () => {
+		const a = await fetchWorker('/.well-known/x402');
+		const b = await fetchWorker('/.well-known/x402.json');
+		expect(a.status).toBe(200);
+		expect(a.headers.get('Content-Type')).toBe(b.headers.get('Content-Type'));
+		expect(await a.text()).toBe(await b.text());
+	});
+
+	it('/.well-known/x402.json lists /v5/status/x402 at the canonical status price', async () => {
+		const body = await fetchJSON('/.well-known/x402.json') as { resources: Array<{ path: string; method: string; accepts: Array<Record<string, unknown>>; input: { required: string[] } }> };
+		const r = body.resources.find((x) => x.path === '/v5/status/x402');
+		expect(r).toBeDefined();
+		expect(r!.method).toBe('GET');
+		expect(r!.accepts[0].maxAmountRequired).toBe(x402ResourceSpecs().status.amountAtomic);
+		expect(r!.input.required).toEqual(['mic']);
+	});
+
+	// Step 5
+	it('/.well-known/oauth-protected-resource/mcp is the RFC 9728 path-suffixed document for the MCP endpoint', async () => {
+		const bare = await fetchJSON('/.well-known/oauth-protected-resource');
+		const mcp = await fetchJSON('/.well-known/oauth-protected-resource/mcp');
+		expect(mcp.resource).toBe('https://example.com/mcp'); // the host asked, then /mcp
+		const { resource: _a, ...bareRest } = bare;
+		const { resource: _b, ...mcpRest } = mcp;
+		expect(mcpRest).toEqual(bareRest);
+	});
+
+	it('the /oauth-suffixed authorization-server documents equal the bare one, whose issuer is the /oauth form', async () => {
+		const bare = await fetchJSON('/.well-known/oauth-authorization-server');
+		expect(bare.issuer).toBe('https://headlessoracle.com/oauth');
+		for (const path of ['/.well-known/oauth-authorization-server/oauth', '/.well-known/openid-configuration/oauth']) {
+			const res = await fetchWorker(path);
+			expect(res.status, path).toBe(200);
+			expect(await res.json(), path).toEqual(bare);
+		}
+	});
+
+	// Step 6
+	it('POST /mcp logs one MCP_USE line per message with method, tool, client and status, and never the arguments', async () => {
+		const SECRET = 'H4A_SECRET_ARGUMENT_9f3c';
+		const logs = vi.spyOn(console, 'log');
+		try {
+			await postMcp({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'h4a-probe', version: '1.2.3' } } });
+			await postMcp({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_market_status', arguments: { mic: 'XNYS', note: SECRET } } });
+			await postMcp({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { cursor: SECRET } });
+			const lines = logs.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"MCP_USE"'));
+			expect(lines.length).toBe(3);
+			const [init, call, list] = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+			expect(init).toEqual({ event: 'MCP_USE', method: 'initialize', tool: null, client_name: 'h4a-probe', client_version: '1.2.3', protocol_version: '2025-03-26', host: 'example.com', status: 200 });
+			expect(call).toMatchObject({ event: 'MCP_USE', method: 'tools/call', tool: 'get_market_status', client_name: null, status: 200 });
+			expect(list).toMatchObject({ event: 'MCP_USE', method: 'tools/list', tool: null, status: 200 });
+			for (const l of logs.mock.calls.map((c) => c.map(String).join(' '))) expect(l).not.toContain(SECRET);
+		} finally {
+			logs.mockRestore();
+		}
+	});
+
+	it('mcpUseLogLines reads only named fields: arguments, ids and unknown members never reach the line', () => {
+		const SECRET = 'H4A_SECRET_2';
+		const lines = mcpUseLogLines([
+			{ jsonrpc: '2.0', id: SECRET, method: 'tools/call', params: { name: 'get_market_status', arguments: { a: SECRET }, token: SECRET } },
+			{ method: 'initialize', params: { clientInfo: { name: `bad name ${SECRET}<script>`, version: SECRET } } },
+		], 'api.headlessoracle.com', 200);
+		expect(lines.length).toBe(2);
+		expect(JSON.parse(lines[0])).toEqual({ event: 'MCP_USE', method: 'tools/call', tool: 'get_market_status', client_name: null, client_version: null, protocol_version: null, host: 'api.headlessoracle.com', status: 200 });
+		// A client name is caller text: reduced to identifier characters and capped.
+		const init = JSON.parse(lines[1]) as Record<string, string>;
+		expect(init.client_name).toBe(`badname${SECRET}script`);
+		expect(lines[0]).not.toContain(SECRET);
+	});
+
+	// Step 8
+	it('openapi /v5/checkout requires a body naming the plan and documents the 400', async () => {
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, any> };
+		const post = spec.paths['/v5/checkout'].post;
+		expect(post.requestBody.required).toBe(true);
+		expect(post.requestBody.content['application/json'].schema.required).toEqual(['plan']);
+		expect(post.requestBody.content['application/json'].schema.properties.plan.default).toBeUndefined();
+		expect(post.responses['400'].description).toContain('PLAN_REQUIRED');
+	});
+
+	// Step 10
+	it('/skill.md, ai-plugin.json and openapi info.description lead with the /llms.txt Chirindo summary', async () => {
+		const summary = await llmsSummary();
+		const skill = await (await fetchWorker('/skill.md')).text();
+		const descLine = skill.split('\n').find((l) => l.startsWith('description: '))!;
+		const desc = JSON.parse(descLine.slice('description: '.length)) as string;
+		expect(desc.startsWith(LEAD_PREFIX + summary)).toBe(true);
+		expect(skill).toContain(`\n# Headless Oracle\n\n> ${LEAD_PREFIX}${summary}`);
+		const plugin = await fetchJSON('/.well-known/ai-plugin.json');
+		expect(String(plugin.description_for_human).startsWith(LEAD_PREFIX + summary)).toBe(true);
+		expect(String(plugin.description_for_model).startsWith(LEAD_PREFIX + summary)).toBe(true);
+		const spec = await fetchJSON('/openapi.json') as { info: { description: string } };
+		expect(spec.info.description.startsWith(LEAD_PREFIX + summary)).toBe(true);
+	});
+
+	it('ai-plugin.json links a logo and legal page that exist on the site', async () => {
+		const plugin = await fetchJSON('/.well-known/ai-plugin.json');
+		// Both answered 200 live on 2026-10-05 (curl); the check-live-links run covers them after deploy.
+		expect(plugin.logo_url).toBe('https://headlessoracle.com/og-image.png');
+		expect(plugin.legal_info_url).toBe('https://headlessoracle.com/terms');
+	});
+
+	it('get_payment_options lists the free anonymous Witness pool and the Evidence plans', async () => {
+		const res = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_payment_options', arguments: {} } });
+		const text = ((res.result as { content: Array<{ text: string }> }).content[0]).text;
+		const opts = JSON.parse(text) as { chirindo_witness: { free_pool: Record<string, unknown>; plans: Array<Record<string, unknown>>; checkout: Record<string, unknown> } };
+		expect(opts.chirindo_witness.free_pool.checkpoints_per_utc_day).toBe(2000);
+		expect(opts.chirindo_witness.plans.map((p) => [p.plan, p.amount_usd, p.checkpoints_per_utc_day])).toEqual([['custody_90d', '49.00', 1000], ['custody_1y', '199.00', 3000]]);
+		expect(opts.chirindo_witness.checkout.url).toBe('https://headlessoracle.com/v5/checkout');
+	});
+
+	it('/v5/pricing lists the Evidence pilot exactly as /pricing states it', async () => {
+		const body = await fetchJSON('/v5/pricing') as { tiers: Array<Record<string, unknown>> };
+		const pilot = body.tiers.find((t) => t.id === 'evidence_pilot');
+		expect(pilot).toBeDefined();
+		// Copied from the live headlessoracle.com/pricing page, 2026-10-05.
+		expect(pilot!.description).toBe('Evidence pilot for a team in its audit window: $4,900 fixed price, scope agreed by conversation. Write to mike@headlessoracle.com.');
+		expect(pilot!.price_usd).toBe(4900);
+		expect(pilot!.plan).toBeNull();
+	});
+
+	it('every surface that states the MCP tools states as many as tools/list serves', async () => {
+		const list = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		const names = ((list.result as { tools: Array<{ name: string }> }).tools).map((t) => t.name);
+		expect(names.length).toBeGreaterThan(0);
+		expect((await fetchJSON('/v5/metrics/public')).mcp_tools).toBe(names.length);
+		// The server card lists tool names as strings.
+		expect((await fetchJSON('/.well-known/mcp/server-card.json')).tools).toEqual(names);
+		expect((((await fetchJSON('/.well-known/agent.json')).mcp as { tools: Array<{ name: string }> }).tools).map((t) => t.name)).toEqual(names);
+		expect((((await fetchJSON('/.well-known/mcp-servers.json')).servers as Array<{ tools: Array<{ name: string }> }>)[0].tools).map((t) => t.name)).toEqual(names);
+	});
+
+	it('every openapi operation has a unique camelCase operationId derived from method and path', async () => {
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, Record<string, { operationId?: string }>> };
+		const ids: string[] = [];
+		for (const [path, item] of Object.entries(spec.paths)) {
+			for (const method of ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']) {
+				const op = item[method];
+				if (!op) continue;
+				expect(op.operationId, `${method} ${path}`).toMatch(/^[a-z]+[A-Za-z0-9]*$/);
+				ids.push(op.operationId!);
+			}
+		}
+		expect(ids.length).toBeGreaterThan(70);
+		expect(new Set(ids).size).toBe(ids.length);
+		expect(spec.paths['/v5/status'].get.operationId).toBe('getV5Status');
+		expect(spec.paths['/v5/checkout'].post.operationId).toBe('postV5Checkout');
+		expect(openapiOperationId('get', '/v1/status/{mic}')).toBe('getV1StatusByMic');
+		expect(openapiOperationId('get', '/.well-known/x402.json')).toBe('getWellKnownX402Json');
+	});
+});
+
+// Runs last in this file, after every other test has sent its requests.
+describe('H4a: response headers are ASCII', () => {
+	it('no 2xx or 402 response in this suite carried a non-ASCII header value', () => {
+		// Proves the wrapper saw responses; in a full run this is well over 1,000,
+		// in a -t filtered run it is whatever ran before this test.
+		expect(__headerAsciiChecked).toBeGreaterThan(0);
+		expect(__headerAsciiViolations).toEqual([]);
 	});
 });
