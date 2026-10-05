@@ -68,11 +68,13 @@ describe('Production Smoke Tests', () => {
 		expect(text).toContain('headless-oracle-mcp');
 	});
 
-	it('GET /llms.txt → 200, starts with # Headless Oracle', async () => {
+	// The heading is a product decision (H3a): pinned exactly, not loosened to a substring.
+	it('GET /llms.txt → 200, first line is # Chirindo by Headless Oracle, mentions Witness', async () => {
 		const res = await fetch(`${BASE}/llms.txt`);
 		expect(res.status).toBe(200);
 		const text = await res.text();
-		expect(text.trimStart().startsWith('# Headless Oracle')).toBe(true);
+		expect(text.trimStart().split('\n')[0].trimEnd()).toBe('# Chirindo by Headless Oracle');
+		expect(text).toContain('Witness');
 	});
 
 	it('GET /llms-full.txt → 200, contains XNYS and Ed25519', async () => {

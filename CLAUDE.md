@@ -694,6 +694,16 @@ no longer runs the suite twice.
 2. `npm run deploy` (`npx wrangler deploy`). Expect an uploaded version id and the
    trigger list, with no red.
 3. Live-verify the changed endpoints by fetching them; record the version id.
+4. Run `npm run test:smoke` (the eleven production checks in
+   `test/integration/smoke.test.ts`) after **every** `npm run deploy`, whatever the
+   deploy's exit code, and paste its result into the session's RUNS file. A failure
+   is reported there, not retried away. The pre-commit hook never runs this suite,
+   which is how H3a changed the `/llms.txt` heading and CI's "Smoke Tests
+   (production)" went red on `660a241` and `7027ecd` unnoticed (fixed by H3e). It is
+   a manual step and not an npm `postdeploy` hook on purpose: npm runs `postdeploy`
+   only when `deploy` exits 0, and every deploy since 2026-09-24 has exited 1 on the
+   B-115 route-listing step, so the hook would never have fired. Once B-115 is
+   closed, a `postdeploy` hook is the better home for it.
 
 **Known benign failure, with a hard limit.** The 2026-09-07T12:41Z deploy uploaded
 successfully but failed while listing zone routes
