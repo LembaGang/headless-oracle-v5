@@ -784,8 +784,8 @@ describe('W5: no worker surface links a page that does not exist', () => {
 	const SITEMAP_LOCS = [
 		'/', '/docs', '/pricing', '/status', '/docs/x402-payments', '/docs/integrations/datacamp-workspace',
 		'/v5/metrics/public', '/docs/integrations/tradingagents-risk', '/docs/specifications/pre-trade-stack',
-		'/docs/integrations/ampersend', '/docs/specifications/cpvr-1', '/standards', '/essays/',
-		'/essays/environment-internet-draft', '/essays/trust-primitive', '/halt-gate',
+		'/docs/integrations/ampersend', '/docs/specifications/cpvr-1', '/standards', '/halt-gate',
+		'/witness', '/auditors', '/about', '/verify',
 	].map((p) => `https://headlessoracle.com${p}`);
 
 	// Pages served by headless-oracle-web at 9dee09c (each file confirmed tracked there).
@@ -806,7 +806,7 @@ describe('W5: no worker surface links a page that does not exist', () => {
 
 	const SURFACE_PATHS = ['/sitemap.xml', '/llms.txt', '/llms-full.txt', '/AGENTS.md'];
 
-	it('/sitemap.xml lists exactly the sixteen pages that exist', async () => {
+	it('/sitemap.xml lists exactly the seventeen pages that exist', async () => {
 		const xml = await (await fetchWorker('/sitemap.xml')).text();
 		const locs = Array.from(xml.matchAll(/<loc>([^<]+)<\/loc>/g), (m) => m[1]);
 		expect([...locs].sort()).toEqual([...SITEMAP_LOCS].sort());
@@ -13854,6 +13854,14 @@ describe('/sitemap.xml', () => {
 		const res  = await fetchWorker('/sitemap.xml');
 		const body = await res.text();
 		expect(body).toContain('<loc>https://headlessoracle.com/halt-gate</loc>');
+	});
+
+	it('H3f: lists /witness, /auditors, /about, /verify and no /essays/ URL (the essays are noindex)', async () => {
+		const body = await (await fetchWorker('/sitemap.xml')).text();
+		for (const p of ['/witness', '/auditors', '/about', '/verify']) {
+			expect(body, p).toContain(`<loc>https://headlessoracle.com${p}</loc>`);
+		}
+		expect(body).not.toMatch(/<loc>[^<]*\/essays\//);
 	});
 });
 
