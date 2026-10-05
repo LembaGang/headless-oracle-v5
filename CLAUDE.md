@@ -82,7 +82,7 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-05: H4a, the agent front door.** Deploy: __H4A_DEPLOY__. Suite
+- **2026-10-05: H4a, the agent front door.** Live **`7b3bbfe5-93a9-4466-a0a6-e2cf0d466dd0`** (10:21:06Z, from `f2078ca`; B-115 exit 1 after the upload, routes unchanged). Suite
   **1635 → 1667**. From the Lead's 7-day traffic analysis.
   - **`/.well-known/agent-card.json`** is still 404 and still no card; the body is
     now `A2A_NOT_IMPLEMENTED` with the MCP, llms.txt and openapi URLs.

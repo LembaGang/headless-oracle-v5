@@ -1,4 +1,10 @@
 # Active Priorities — Headless Oracle V5
+## 2026-10-05 — H3e, H3f, H4a deployed; TEST_COUNT 1667
+
+`e5f6c80` H3e smoke test; `196d8d0` H3f sitemap (deployed `dfdeb3b7`); `f2078ca` H4a
+agent front door (1635 → 1667), deployed `7b3bbfe5…`. Detail in `CLAUDE.md`. Open:
+zone route `headlessoracle.com/mcp*` (and apex `/health`, `POST /`) blocked by B-115.
+
 ## 2026-10-04 (evening) — H3a–H3d deployed; TEST_COUNT 1634
 
 | commit | what |
