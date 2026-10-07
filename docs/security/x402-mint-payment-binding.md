@@ -1,7 +1,14 @@
-# `/v5/x402/mint`: a payment is not bound to its payer (open, needs a founder decision)
+# `/v5/x402/mint`: a payment is not bound to its payer (B implemented 2026-10-07; A open)
 
 Found 2026-10-07 by the revenue-path audit; verified against `src/index.ts` at `aec5715`.
-Not fixed: every complete fix changes the public payment protocol.
+
+**Status (2026-10-07, founder ruling).** Option B is implemented on branch
+`claude/mint-claim-mcp-key` in the commit "x402 mint: claim each payment hash
+atomically in D1" (see `git log --grep "claim each payment hash"`). It closes
+failures B and C below. **Option A (payer binding) remains open**: until it ships,
+`/v5/x402/mint` is still first-come-first-served on a public transfer, and failure A
+stands. The sections "What the code does" and "Three failures" describe the code
+before B, as found.
 
 ## What the code does
 
@@ -55,3 +62,34 @@ and log + alert on scenario C. Narrows B and C; does nothing for A.
 B now (no client-visible change, closes the double-mint and paid-no-key holes), A before
 mint is promoted anywhere an agent might use it at volume. Until A ships, the honest
 position is that `/v5/x402/mint` is first-come-first-served on a public transfer.
+
+## What B shipped (2026-10-07)
+
+- **Store.** Two insert-only tables in the existing `HALT_ARCHIVE` D1 database
+  (`halt_archive`): `x402_mint_claims` (PRIMARY KEY `tx_hash`, lowercase enforced by a
+  CHECK) and `x402_mint_outcomes` (PRIMARY KEY `tx_hash`, `outcome` `minted` | `failed`,
+  `key_hash`, never the key). The worker creates them on first use
+  (`ensureX402MintClaimSchema`, mirrored by `migrations/0002_x402_mint_claims.sql`); no
+  new Cloudflare resource and no manual migration. `halt_archive` rather than
+  `chirindo_witness` because nothing an anonymous caller sends writes to it, so a
+  witness flood cannot stop a paid mint.
+- **Order.** Verify on chain (unchanged: amount, recipient, 600s age) → `INSERT … ON
+  CONFLICT (tx_hash) DO NOTHING`; zero rows changed is **409 `CONFLICT`** (body now also
+  carries `claim_status`) → write the KV mark `x402_used_tx:` → mint and store the key →
+  insert outcome `minted` with the key hash.
+- **Claim store down** → **503 `SERVICE_UNAVAILABLE`**, `detail:
+  MINT_CLAIM_STORE_UNAVAILABLE`, `Retry-After: 30`, no key, and no KV mark, so the
+  retry can still mint. Log `X402_MINT_CLAIM_UNAVAILABLE`. `HALT_ARCHIVE` or
+  `ORACLE_API_KEYS` unbound → 503 before the payment is read.
+- **Key store write fails after the claim** → outcome `failed`, log
+  `X402_MINT_KEY_STORE_FAILED`, and a `paddle_revenue_event:` row with tier
+  `x402_mint_failed` and `txn_id` = the hash (the B-144 alert path: `/v5/revenue-pulse`
+  → `health-check.yml` opens a GitHub issue per txn_id). The caller gets **500
+  `MINT_KEY_NOT_STORED`** with `payment_received: true`, `tx_hash` and `contact`; a retry
+  gets 409 with `claim_status: failed` and the same contact.
+- **The KV mark** `x402_used_tx:` is still written (after the claim) and still read as
+  an early refusal, but it no longer decides whether a second key is minted.
+- **Not covered.** A request that dies between the claim and its outcome (isolate
+  killed mid-mint) leaves a claim with no outcome: the hash is spent, no key, and no
+  alert fires. A sweep of claims without an outcome older than a few minutes into the
+  same alert path would close it; not built.

@@ -4404,9 +4404,111 @@ async function verifyX402MintPayment(
 	const fromTopic = transferLog.topics[1];
 	const from      = fromTopic ? ('0x' + fromTopic.slice(-40)).toLowerCase() : undefined;
 
-	// Mark as used — 365-day TTL so the same tx can never be replayed to mint a second key
-	await env.ORACLE_TELEMETRY.put(replayKey, '1', { expirationTtl: 86_400 * 365 }).catch(() => {});
+	// No mark is written here. The route claims the hash in D1 (claimX402MintTx)
+	// and writes the x402_used_tx: mark only after the claim holds, so a claim
+	// store outage refuses with 503 without spending the payment.
 	return { valid: true, amountPaid, from, blockTimestampSec };
+}
+
+// ─── x402 mint: one payment hash, at most one key (2026-10-07) ──────────────
+// Option B of docs/security/x402-mint-payment-binding.md. The KV mark
+// x402_used_tx: was check-then-set across two RPC round trips, eventually
+// consistent across locations, and its write failure was swallowed: one
+// payment could mint N keys. The claim is now an INSERT into a D1 table whose
+// PRIMARY KEY is the lowercase hash; D1 serialises writes, so exactly one
+// INSERT for a hash changes a row and every other one is a conflict.
+//
+// Order in the route: verify on chain -> claim (conflict = 409, store down =
+// 503, no key) -> write the KV mark -> mint and store the key -> record the
+// outcome `minted` (key hash and plan, never the key). If the key store write
+// fails, the outcome is `failed`, X402_MINT_KEY_STORE_FAILED is logged, and the
+// payment is routed into the per-payment alert path (recordPaddleRevenueEvent
+// -> /v5/revenue-pulse -> health-check.yml opens a GitHub issue per txn_id).
+//
+// The tables live in HALT_ARCHIVE (halt_archive), not WITNESS_DB: nothing an
+// anonymous caller sends writes to halt_archive, so a witness flood that fills
+// chirindo_witness cannot stop a paid mint. Both tables are insert-only, the
+// discipline that database already keeps: the claim is one row, its outcome
+// another, and no row is ever rewritten. Mirrors
+// migrations/0002_x402_mint_claims.sql; keep them in step. Created on first
+// use, so no manual migration or new Cloudflare resource is needed.
+// Option A (binding the payment to its payer) is not done: a watcher of the
+// chain can still claim a public transfer first.
+const X402_MINT_CLAIM_RETRY_AFTER_SECONDS = 30;
+
+let _x402MintClaimSchemaPromise: Promise<void> | null = null;
+
+// Tests call this in beforeEach: a per-test D1 instance does not keep a table
+// the memo thinks exists.
+export function clearX402MintClaimSchemaCache(): void {
+	_x402MintClaimSchemaPromise = null;
+}
+
+async function ensureX402MintClaimSchema(db: D1Database): Promise<void> {
+	if (_x402MintClaimSchemaPromise) return _x402MintClaimSchemaPromise;
+	_x402MintClaimSchemaPromise = (async () => {
+		await db.prepare(
+			`CREATE TABLE IF NOT EXISTS x402_mint_claims (
+				tx_hash       TEXT PRIMARY KEY CHECK (tx_hash = lower(tx_hash)),
+				tier          TEXT NOT NULL,
+				amount_units  TEXT NOT NULL,
+				payer         TEXT,
+				claimed_at    TEXT NOT NULL
+			)`,
+		).run();
+		await db.prepare(
+			`CREATE TABLE IF NOT EXISTS x402_mint_outcomes (
+				tx_hash       TEXT PRIMARY KEY,
+				outcome       TEXT NOT NULL CHECK (outcome IN ('minted', 'failed')),
+				tier          TEXT NOT NULL,
+				key_hash      TEXT,
+				detail        TEXT,
+				recorded_at   TEXT NOT NULL
+			)`,
+		).run();
+	})().catch((err) => {
+		_x402MintClaimSchemaPromise = null;
+		throw err;
+	});
+	return _x402MintClaimSchemaPromise;
+}
+
+// 'claimed': this request holds the hash. 'conflict': another request already
+// does. Throws when the store cannot answer; the caller refuses (fail closed).
+async function claimX402MintTx(
+	db: D1Database,
+	claim: { tx_hash: string; tier: string; amount_units: string; payer: string | null; claimed_at: string },
+): Promise<'claimed' | 'conflict'> {
+	await ensureX402MintClaimSchema(db);
+	const res = await db.prepare(
+		`INSERT INTO x402_mint_claims (tx_hash, tier, amount_units, payer, claimed_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT (tx_hash) DO NOTHING`,
+	).bind(claim.tx_hash, claim.tier, claim.amount_units, claim.payer, claim.claimed_at).run();
+	return (res.meta?.changes ?? 0) === 1 ? 'claimed' : 'conflict';
+}
+
+async function recordX402MintOutcome(
+	db: D1Database,
+	o: { tx_hash: string; outcome: 'minted' | 'failed'; tier: string; key_hash: string | null; detail: string | null; recorded_at: string },
+): Promise<void> {
+	await db.prepare(
+		`INSERT INTO x402_mint_outcomes (tx_hash, outcome, tier, key_hash, detail, recorded_at) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (tx_hash) DO NOTHING`,
+	).bind(o.tx_hash, o.outcome, o.tier, o.key_hash, o.detail, o.recorded_at).run();
+}
+
+// For a 409: what became of the request that holds the hash. 'claimed' means a
+// claim with no outcome yet (in flight, or a request that died mid-mint).
+// null when the store cannot say; the 409 stands either way.
+async function readX402MintClaimStatus(db: D1Database, txHash: string): Promise<'minted' | 'failed' | 'claimed' | null> {
+	try {
+		const row = await db.prepare(`SELECT outcome FROM x402_mint_outcomes WHERE tx_hash = ?`).bind(txHash).first<{ outcome: string }>();
+		if (row?.outcome === 'minted' || row?.outcome === 'failed') return row.outcome;
+		const claim = await db.prepare(`SELECT tx_hash FROM x402_mint_claims WHERE tx_hash = ?`).bind(txHash).first();
+		return claim ? 'claimed' : null;
+	} catch {
+		return null;
+	}
 }
 
 // Build the x402 payment payload for a 402 response.
@@ -10954,7 +11056,7 @@ const OPENAPI_SPEC = {
 			post: {
 				tags:        ['Billing'],
 				summary:     'Mint a persistent API key via x402 USDC payment',
-				description: `Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: ${BUILDER_PRICE_USDC} = ${BUILDER_CALLS_COMPACT} calls/day. Pro tier: ${PRO_PRICE_USDC} = ${PRO_CALLS_COMPACT} calls/day. Replay protection: each tx_hash can only be used once (365-day TTL).`,
+				description: `Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: ${BUILDER_PRICE_USDC} = ${BUILDER_CALLS_COMPACT} calls/day. Pro tier: ${PRO_PRICE_USDC} = ${PRO_CALLS_COMPACT} calls/day. Each tx_hash mints at most one key: the hash is claimed atomically before the key is created.`,
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {
@@ -10980,8 +11082,9 @@ const OPENAPI_SPEC = {
 						} } },
 					},
 					'400': { description: 'Invalid tx_hash or payment amount insufficient', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
-					'409': { description: 'Transaction already used to mint a key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
-					'503': { description: 'Base mainnet RPC unavailable', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'409': { description: 'CONFLICT: the transaction hash is already claimed. A hash mints at most one key. claim_status says what became of it (minted, failed, or claimed and in flight); when failed, the body names the contact address.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'500': { description: 'MINT_KEY_NOT_STORED: the payment was received and claimed, but the key could not be stored, so none was issued. Do not pay again or retry; write to the contact address in the body with tx_hash. The operator is alerted.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'503': { description: 'SERVICE_UNAVAILABLE: minting is not configured, or the payment was verified but could not be claimed (detail MINT_CLAIM_STORE_UNAVAILABLE; no key minted, payment not spent; retry after Retry-After).', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
 		},
@@ -14768,6 +14871,13 @@ export default {
 				if (!env.ORACLE_PAYMENT_ADDRESS) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 key minting is not configured on this instance' }, 503);
 				}
+				// Without the claim store a hash cannot be held to one key, and
+				// without the key store a key would be returned that authenticates
+				// nothing. Refuse before the caller's payment is looked at.
+				if (!env.HALT_ARCHIVE || !env.ORACLE_API_KEYS) {
+					return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 key minting is not configured on this instance' }, 503);
+				}
+				const mintClaimDb = env.HALT_ARCHIVE;
 
 				let mintBody: { tx_hash?: unknown; network?: unknown; tier?: unknown; email?: unknown };
 				try { mintBody = await request.json() as typeof mintBody; }
@@ -14797,16 +14907,28 @@ export default {
 				const minAmountUnits = tier === 'pro' ? X402_MINT_PRO_UNITS : X402_MINT_BUILDER_UNITS;
 				const verification   = await verifyX402MintPayment(txHash, env.ORACLE_PAYMENT_ADDRESS, minAmountUnits, env);
 
+				const txHashLower = txHash.toLowerCase();
+				// One 409 for every route to "this hash is taken", carrying what
+				// became of it when the claim store can say.
+				const mintConflict = async () => {
+					const claimStatus = await readX402MintClaimStatus(mintClaimDb, txHashLower);
+					return json({
+						error:   'CONFLICT',
+						message: claimStatus === 'failed'
+							? `This transaction hash was already claimed: the payment was received but its key could not be stored. Do not send another payment. Write to ${CONTACT_EMAIL} with the transaction hash ${txHashLower}.`
+							: 'This transaction hash has already been used to mint a key',
+						detail:  'TRANSACTION_ALREADY_USED',
+						...(claimStatus ? { claim_status: claimStatus } : {}),
+						...(claimStatus === 'failed' ? { tx_hash: txHashLower, contact: CONTACT_EMAIL } : {}),
+					}, 409);
+				};
+
 				if (!verification.valid) {
 					// Return 409 for replay (already used), 402 for payment issues
 					const isReplay = verification.detail === 'TRANSACTION_ALREADY_USED';
 					const isWrongAmount = verification.detail?.startsWith('INSUFFICIENT_AMOUNT');
 					if (isReplay) {
-						return json({
-							error:    'CONFLICT',
-							message:  'This transaction hash has already been used to mint a key',
-							detail:   verification.detail,
-						}, 409);
+						return mintConflict();
 					}
 					if (isWrongAmount) {
 						return json({
@@ -14825,14 +14947,49 @@ export default {
 					return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: 'On-chain payment could not be verified', detail: verification.detail }, 402);
 				}
 
-				// Payment verified — mint a persistent ho_live_ key
+				// Payment verified. Claim the hash before any key exists: exactly
+				// one request per hash gets 'claimed'. A store that cannot answer
+				// refuses (fail closed); nothing is marked, so a retry can mint.
+				const mintAmountUnitsStr = (verification.amountPaid ?? 0n).toString();
+				let claimResult: 'claimed' | 'conflict';
+				try {
+					claimResult = await claimX402MintTx(mintClaimDb, {
+						tx_hash:      txHashLower,
+						tier,
+						amount_units: mintAmountUnitsStr,
+						payer:        verification.from ?? null,
+						claimed_at:   now.toISOString(),
+					});
+				} catch (err) {
+					console.error(JSON.stringify({ event: 'X402_MINT_CLAIM_UNAVAILABLE', tx_hash: txHashLower, tier, message: err instanceof Error ? err.message : String(err) }));
+					return json({
+						error:               'SERVICE_UNAVAILABLE',
+						message:             `The payment was verified but could not be claimed, so no key was minted and the payment is not spent. Retry the same request after ${X402_MINT_CLAIM_RETRY_AFTER_SECONDS} seconds.`,
+						detail:              'MINT_CLAIM_STORE_UNAVAILABLE',
+						tx_hash:             txHashLower,
+						retry_after_seconds: X402_MINT_CLAIM_RETRY_AFTER_SECONDS,
+					}, 503, { 'Retry-After': String(X402_MINT_CLAIM_RETRY_AFTER_SECONDS) });
+				}
+				if (claimResult === 'conflict') {
+					return mintConflict();
+				}
+
+				// The KV mark is kept for readers of x402_used_tx: (and as the early
+				// refusal in verifyX402MintPayment). It no longer guards the mint,
+				// so a failed write is logged, not fatal.
+				await env.ORACLE_TELEMETRY.put(`x402_used_tx:${txHashLower}`, '1', { expirationTtl: 86_400 * 365 }).catch((err: unknown) => {
+					console.error(JSON.stringify({ event: 'X402_MINT_MARK_WRITE_FAILED', tx_hash: txHashLower, message: err instanceof Error ? err.message : String(err) }));
+				});
+
+				// Mint a persistent ho_live_ key
 				const rawKeyBytes = crypto.getRandomValues(new Uint8Array(32));
 				const keyValue    = 'ho_live_' + toHex(rawKeyBytes);
 				const mintKeyHash = await sha256Hex(keyValue);
 				const keyPrefix   = keyValue.substring(0, 14); // 'ho_live_' + 6 chars
+				const mintAmountUsdc = (Number(verification.amountPaid ?? 0n) / 1_000_000).toFixed(2);
 
 				// Store in ORACLE_API_KEYS KV (persistent, no TTL)
-				if (env.ORACLE_API_KEYS) {
+				try {
 					await env.ORACLE_API_KEYS.put(
 						mintKeyHash,
 						JSON.stringify({
@@ -14843,7 +15000,47 @@ export default {
 							created_at: now.toISOString(),
 						}),
 					);
+				} catch (err) {
+					// Paid, claimed, no key. The hash is spent (a retry is a 409
+					// that says so), so a human must re-issue: record the outcome,
+					// log it, and raise the per-payment alert.
+					const reason = err instanceof Error ? err.message : String(err);
+					console.error(JSON.stringify({ event: 'X402_MINT_KEY_STORE_FAILED', tx_hash: txHashLower, tier, amount_units: mintAmountUnitsStr, payer: verification.from ?? null, message: reason }));
+					await recordX402MintOutcome(mintClaimDb, {
+						tx_hash: txHashLower, outcome: 'failed', tier, key_hash: null,
+						detail: `key store write failed: ${reason}`.slice(0, 500), recorded_at: new Date().toISOString(),
+					}).catch((e: unknown) => {
+						console.error(JSON.stringify({ event: 'X402_MINT_OUTCOME_WRITE_FAILED', tx_hash: txHashLower, outcome: 'failed', message: e instanceof Error ? e.message : String(e) }));
+					});
+					// The alert path B-144 uses for a payment that was not
+					// provisioned: served by /v5/revenue-pulse, turned into one
+					// GitHub issue per txn_id by health-check.yml.
+					await recordPaddleRevenueEvent(env, {
+						tier:        'x402_mint_failed',
+						plan:        tier,
+						amount:      mintAmountUsdc,
+						currency:    'USDC',
+						txn_id:      txHashLower,
+						customer_id: verification.from ?? null,
+					});
+					return json({
+						error:            'MINT_KEY_NOT_STORED',
+						message:          `Payment received (transaction ${txHashLower}), but the key could not be stored, so no key was issued. Do not send another payment, and do not retry: this transaction hash is now claimed. Write to ${CONTACT_EMAIL} with the transaction hash ${txHashLower}; the failure has been recorded and the operator alerted.`,
+						payment_received: true,
+						tx_hash:          txHashLower,
+						tier,
+						contact:          CONTACT_EMAIL,
+					}, 500);
 				}
+
+				await recordX402MintOutcome(mintClaimDb, {
+					tx_hash: txHashLower, outcome: 'minted', tier, key_hash: mintKeyHash,
+					detail: null, recorded_at: new Date().toISOString(),
+				}).catch((e: unknown) => {
+					// The key is stored and is returned below. The claim row still
+					// holds the hash, so this cannot open a second mint.
+					console.error(JSON.stringify({ event: 'X402_MINT_OUTCOME_WRITE_FAILED', tx_hash: txHashLower, outcome: 'minted', message: e instanceof Error ? e.message : String(e) }));
+				});
 
 				// Insert into Supabase api_keys table (non-blocking — KV is source of truth for auth)
 				if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {

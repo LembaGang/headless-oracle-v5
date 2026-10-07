@@ -3,8 +3,12 @@
 // We use a separate file to avoid heredoc quoting issues in the main spec.
 
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, it, expect } from 'vitest';
-import worker from '../src';
+import { describe, it, expect, beforeEach } from 'vitest';
+import worker, { clearX402MintClaimSchemaCache } from '../src';
+
+// The mint claims its hash in D1 (x402_mint_claims). Each test gets a fresh D1,
+// so the schema memo is cleared to have the table created again.
+beforeEach(() => { clearX402MintClaimSchemaCache(); });
 
 async function fetchW(path: string, options: RequestInit = {}): Promise<Response> {
 	const request = new Request<unknown, IncomingRequestCfProperties>(

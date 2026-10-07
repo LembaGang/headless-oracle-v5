@@ -17,6 +17,8 @@ import worker, {
 	planPrices, refereePrices,
 	// H4a
 	mcpUseLogLines, openapiOperationId,
+	// x402 mint atomic claim (2026-10-07)
+	clearX402MintClaimSchemaCache,
 } from '../src';
 
 // H4a step 7: every 2xx and 402 response this suite receives is checked for a
@@ -19835,6 +19837,168 @@ describe('H4a: agent front door', () => {
 		expect(spec.paths['/v5/checkout'].post.operationId).toBe('postV5Checkout');
 		expect(openapiOperationId('get', '/v1/status/{mic}')).toBe('getV1StatusByMic');
 		expect(openapiOperationId('get', '/.well-known/x402.json')).toBe('getWellKnownX402Json');
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// x402 mint: one payment, at most one key (option B of
+// docs/security/x402-mint-payment-binding.md, 2026-10-07)
+//
+// The hash is claimed in D1 (HALT_ARCHIVE, table x402_mint_claims, PRIMARY KEY
+// tx_hash) after the on-chain check and before a key exists. The KV mark
+// x402_used_tx: is still written, but it is no longer what stops a second key.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('x402 mint — atomic claim: one payment hash, at most one key', () => {
+	const PAYER = '0xabcdef1234567890abcdef1234567890abcdef12';
+	beforeEach(() => { clearX402MintClaimSchemaCache(); });
+
+	async function mintOnce(txHash: string, e: typeof env = env): Promise<Response> {
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/v5/x402/mint', {
+			method: 'POST', headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ tx_hash: txHash, tier: 'builder', network: 'base' }),
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, e, ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+	// Every key the mint route stored, read back from the key store itself.
+	async function mintedKeyRecords(): Promise<Array<Record<string, unknown>>> {
+		const listed = await env.ORACLE_API_KEYS.list();
+		const recs = await Promise.all(listed.keys.map(async (k) => {
+			const raw = await env.ORACLE_API_KEYS.get(k.name);
+			try { return raw ? JSON.parse(raw) as Record<string, unknown> : null; } catch { return null; }
+		}));
+		return recs.filter((r): r is Record<string, unknown> => r !== null && r.source === 'x402_onchain');
+	}
+	const builderUnits = String(BigInt(planPrices().builder) * 1_000_000n);
+	const payTo = () => env.ORACLE_PAYMENT_ADDRESS as string;
+	const nowSec = () => Math.floor(Date.now() / 1000);
+
+	it('N concurrent POSTs with one tx hash: exactly one 200 with a key, the rest 409', async () => {
+		const txHash  = '0x' + 'c1'.repeat(32);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		let results: Response[];
+		try {
+			results = await Promise.all(Array.from({ length: 6 }, () => mintOnce(txHash)));
+		} finally { restore(); }
+		const statuses = results.map((r) => r.status).sort();
+		expect(statuses).toEqual([200, 409, 409, 409, 409, 409]);
+		const ok = results.find((r) => r.status === 200)!;
+		const body = await ok.json() as Record<string, unknown>;
+		expect(String(body.api_key)).toMatch(/^ho_live_[0-9a-f]{64}$/);
+		for (const r of results.filter((x) => x.status === 409)) {
+			const b = await r.json() as Record<string, unknown>;
+			expect(b.error).toBe('CONFLICT');
+			expect(b.api_key).toBeUndefined();
+		}
+		expect((await mintedKeyRecords()).length).toBe(1);
+	});
+
+	it('happy path: 200 with the key; the claim is recorded minted with the key hash, never the key', async () => {
+		const txHash  = '0x' + 'c2'.repeat(32);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		let res: Response;
+		try { res = await mintOnce(txHash); } finally { restore(); }
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		const key  = String(body.api_key);
+		expect(key).toMatch(/^ho_live_[0-9a-f]{64}$/);
+		expect(body.tier).toBe('builder');
+		expect(body.source).toBe('x402_onchain');
+		const keyHash = await sha256Hex(key);
+		const stored  = JSON.parse((await env.ORACLE_API_KEYS.get(keyHash))!) as Record<string, unknown>;
+		expect(stored.plan).toBe('builder');
+		expect(stored.status).toBe('active');
+		// The KV mark is still written, for the paths that read it.
+		expect(await env.ORACLE_TELEMETRY.get(`x402_used_tx:${txHash}`)).toBe('1');
+		const claim = await env.HALT_ARCHIVE!.prepare('SELECT * FROM x402_mint_claims WHERE tx_hash = ?').bind(txHash).first<Record<string, unknown>>();
+		expect(claim?.tier).toBe('builder');
+		expect(claim?.amount_units).toBe(builderUnits);
+		expect(claim?.payer).toBe(PAYER);
+		const outcome = await env.HALT_ARCHIVE!.prepare('SELECT * FROM x402_mint_outcomes WHERE tx_hash = ?').bind(txHash).first<Record<string, unknown>>();
+		expect(outcome?.outcome).toBe('minted');
+		expect(outcome?.key_hash).toBe(keyHash);
+		expect(JSON.stringify([claim, outcome])).not.toContain(key);
+	});
+
+	it('a second request after a successful mint is 409, and no second key is stored', async () => {
+		const txHash  = '0x' + 'c3'.repeat(32);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		try {
+			expect((await mintOnce(txHash)).status).toBe(200);
+			// Drop the KV mark: the claim alone must refuse the second mint.
+			await env.ORACLE_TELEMETRY.delete(`x402_used_tx:${txHash}`);
+			const again = await mintOnce(txHash);
+			expect(again.status).toBe(409);
+			const b = await again.json() as Record<string, unknown>;
+			expect(b.error).toBe('CONFLICT');
+			expect(b.detail).toBe('TRANSACTION_ALREADY_USED');
+			expect(b.claim_status).toBe('minted');
+		} finally { restore(); }
+		expect((await mintedKeyRecords()).length).toBe(1);
+	});
+
+	it('claim store unavailable: 503 with Retry-After, no key stored, no KV mark (a retry can still mint)', async () => {
+		const txHash  = '0x' + 'c4'.repeat(32);
+		const brokenD1 = { prepare: () => { throw new Error('D1_ERROR: simulated outage'); } } as unknown as D1Database;
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		let res: Response;
+		try { res = await mintOnce(txHash, { ...env, HALT_ARCHIVE: brokenD1 } as typeof env); } finally { restore(); }
+		expect(res.status).toBe(503);
+		expect(res.headers.get('Retry-After')).toBe('30');
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('SERVICE_UNAVAILABLE');
+		expect(body.api_key).toBeUndefined();
+		expect(body.retry_after_seconds).toBe(30);
+		expect((await mintedKeyRecords()).length).toBe(0);
+		expect(await env.ORACLE_TELEMETRY.get(`x402_used_tx:${txHash}`)).toBeNull();
+		// The store comes back: the same payment mints.
+		const restore2 = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		try { expect((await mintOnce(txHash)).status).toBe(200); } finally { restore2(); }
+	});
+
+	it('key store fails after the claim: the caller is told the payment was received, the claim is failed, the alert is recorded', async () => {
+		const txHash = '0x' + 'c5'.repeat(32);
+		const kv = env.ORACLE_API_KEYS;
+		const brokenKeys = {
+			get:    kv.get.bind(kv),
+			put:    async () => { throw new Error('KV put failed: simulated'); },
+			delete: kv.delete.bind(kv),
+			list:   kv.list.bind(kv),
+		} as unknown as typeof env.ORACLE_API_KEYS;
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		let res: Response;
+		try { res = await mintOnce(txHash, { ...env, ORACLE_API_KEYS: brokenKeys } as typeof env); } finally { restore(); }
+		expect(res.status).toBe(500);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('MINT_KEY_NOT_STORED');
+		expect(body.payment_received).toBe(true);
+		expect(body.tx_hash).toBe(txHash);
+		expect(body.contact).toBe('mike@headlessoracle.com');
+		expect(String(body.message)).toContain(txHash);
+		expect(String(body.message)).toContain('mike@headlessoracle.com');
+		expect(body.api_key).toBeUndefined();
+		const outcome = await env.HALT_ARCHIVE!.prepare('SELECT * FROM x402_mint_outcomes WHERE tx_hash = ?').bind(txHash).first<Record<string, unknown>>();
+		expect(outcome?.outcome).toBe('failed');
+		expect(outcome?.key_hash).toBeNull();
+		// The alert: the existing per-payment path (/v5/revenue-pulse ->
+		// health-check.yml opens a GitHub issue per txn_id).
+		const pulse = await fetchJSON('/v5/revenue-pulse', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } });
+		const events = (pulse.paddle as Record<string, unknown>).recent_events as Array<Record<string, unknown>>;
+		const evt = events.find((e) => e.txn_id === txHash);
+		expect(evt?.tier).toBe('x402_mint_failed');
+		expect(evt?.plan).toBe('builder');
+		expect(evt?.currency).toBe('USDC');
+		// A retry is refused, and says why.
+		const restore2 = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		try {
+			const again = await mintOnce(txHash);
+			expect(again.status).toBe(409);
+			const b = await again.json() as Record<string, unknown>;
+			expect(b.claim_status).toBe('failed');
+			expect(String(b.message)).toContain('mike@headlessoracle.com');
+		} finally { restore2(); }
 	});
 });
 
