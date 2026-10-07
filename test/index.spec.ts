@@ -7062,6 +7062,17 @@ describe('/v5/credits/purchase — grant sized from the on-chain amount, not the
 		expect(stored.balance).toBe(1000);
 	});
 
+	it('the openapi 200 schema names exactly the fields the route returns', async () => {
+		const key  = 'ho_free_' + 'p4'.repeat(32);
+		await setupFreeKey(key);
+		const res  = await purchase(key, '0x' + 'a4'.repeat(32), '1000', '1000');
+		expect(res.status).toBe(200);
+		const served = Object.keys(await res.json() as Record<string, unknown>).sort();
+		const spec   = await fetchJSON('/openapi.json') as { paths: Record<string, { post: { responses: Record<string, { content: Record<string, { schema: { properties: Record<string, unknown> } }> }> } }> };
+		const props  = Object.keys(spec.paths['/v5/credits/purchase'].post.responses['200'].content['application/json'].schema.properties).sort();
+		expect(props).toEqual(served);
+	});
+
 	it('a 90000-unit transfer with a header claiming 1000 still grants 100 (the chain decides both ways)', async () => {
 		const key  = 'ho_free_' + 'p3'.repeat(32);
 		await setupFreeKey(key);
@@ -19385,10 +19396,23 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 		const before = body.tiers.slice(0, 7).map((t) => ({ ...t }));
 		before[0].description = 'Instant sandbox key via email. 200 calls over 7 days. IP-fingerprinted — one per IP.';
 		before[1].description = 'Self-provision free API key via email. 500 calls/day.';
+		// 2026-10-07 (later): the protocol tier stopped promising an "Enterprise SLA"
+		// (no SLA is in force during the public beta). Only its description and that
+		// one feature moved; restored here, the seven still hash to the same pin.
+		before[6].description = 'Unlimited calls/day. Unlimited webhooks. Enterprise SLA.';
+		before[6].features    = ['Unlimited calls/day', 'Unlimited webhooks', '28 exchanges', 'Enterprise SLA', 'Paddle billing'];
 		expect(await sha256Hex(JSON.stringify(before))).toBe('0cc0e4765f5e2f6224ac98b610f43b9187183a62ea3a4bacf5b5328129530768');
 		const rest: Record<string, unknown> = { ...body };
 		delete rest.tiers;
 		expect(await sha256Hex(JSON.stringify(rest))).toBe('03c9cd531c91d5a72419c58c98da2c9f39a61a11f82bef12b7396803377777ce');
+	});
+
+	it('(c) the protocol tier promises no SLA during the public beta', async () => {
+		const body = await fetchJSON('/v5/pricing') as { tiers: Array<{ id: string; description: string; features: string[] }> };
+		const protocol = body.tiers.find((t) => t.id === 'protocol')!;
+		const text = [protocol.description, ...protocol.features].join(' ');
+		expect(text).not.toMatch(/\bSLA\b/);
+		expect(protocol.description).toContain('service levels by agreement after the public beta');
 	});
 
 	it('(d) openapi /v5/checkout has a plan enum equal to the valid_plans the route enforces', async () => {
