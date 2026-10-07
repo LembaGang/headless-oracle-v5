@@ -11936,6 +11936,31 @@ async function logMcpUse(copy: Request, host: string, status: number | string): 
 	for (const line of mcpUseLogLines(message, host, status)) console.log(line);
 }
 
+// Debit one credit from a credit-pack key's ORACLE_API_KEYS record, under the
+// same rules checkApiKey applies on the X-Oracle-Key path: the record must be
+// tier 'credits', active, with a positive balance. Get-then-put, as there.
+// Any read, parse or write failure refuses: a credit is never given away
+// because the store could not be consulted.
+async function spendPackCredit(keyHash: string, env: Env): Promise<{ ok: true } | { ok: false; message: string }> {
+	const exhausted = 'CREDITS_EXHAUSTED: this credit pack has no calls left (or is no longer active). Buy a new pack at https://headlessoracle.com/upgrade, or subscribe for a daily allowance.';
+	let record: StoredKeyRecord | null;
+	try {
+		const raw = await env.ORACLE_API_KEYS.get(keyHash);
+		record = raw ? JSON.parse(raw) as StoredKeyRecord : null;
+	} catch {
+		return { ok: false, message: 'CREDITS_UNAVAILABLE: the credit balance could not be read, so no credit was spent. Retry shortly.' };
+	}
+	if (!record || record.tier !== 'credits' || record.status !== 'active' || !record.balance || record.balance <= 0) {
+		return { ok: false, message: exhausted };
+	}
+	try {
+		await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ ...record, balance: record.balance - 1 }));
+	} catch {
+		return { ok: false, message: 'CREDITS_UNAVAILABLE: the credit balance could not be updated, so the call was not served. Retry shortly.' };
+	}
+	return { ok: true };
+}
+
 async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	// ── Parse body first — enables fast paths for stateless protocol methods ────
 	// MCP probers (Chiark, MCPScoreboard) probe via initialize → tools/list → ping
@@ -12149,7 +12174,20 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 			}
 			incrementDailyUsage(_mcpKeyHash, env, ctx, mcpDailyUsage);
 		} else if (_mcpPlan === 'credits') {
-			// Credits tier — balance was already decremented atomically in checkApiKey().
+			// Credits tier — one credit per metered call, debited here. checkApiKey
+			// (the debit on the X-Oracle-Key path) ran once, when the OAuth token was
+			// issued; the token then lives an hour, and MCP authenticates only by
+			// that token, so without this debit one credit bought an hour of calls.
+			// Fail closed: no spendable balance, or a store we cannot read or
+			// write, refuses the call.
+			const spend = await spendPackCredit(_mcpKeyHash, env);
+			if (!spend.ok) {
+				return new Response(JSON.stringify({
+					jsonrpc: '2.0',
+					id,
+					error: { code: -32000, message: spend.message },
+				}), { status: 200, headers: MCP_RESPONSE_HEADERS });
+			}
 			// Mirror the credits_usage counter write we do for REST so MCP-originated
 			// consumption is equally observable.
 			const mcpCreditsUsage = await getCreditsUsage(_mcpKeyHash, env);

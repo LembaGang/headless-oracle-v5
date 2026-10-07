@@ -3945,6 +3945,98 @@ describe('POST /mcp — OAuth soft auth', () => {
 	});
 });
 
+// ─── OAuth 2.0 — MCP credit-pack metering ────────────────────────────────────
+// handleOAuthToken stores plan 'credits' on a 1-hour token; the MCP credits
+// branch only bumped a usage counter, so one credit (spent issuing the token)
+// bought an hour of unmetered MCP calls.
+describe('POST /mcp — credit-pack token calls cost one credit each', () => {
+	async function hashOf(value: string): Promise<string> {
+		const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+		return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+	async function putToken(token: string, keyHash: string): Promise<void> {
+		await env.ORACLE_API_KEYS.put(`oauth:${await hashOf(token)}`, JSON.stringify({ keyHash, plan: 'credits', status: 'active' }), { expirationTtl: 3600 });
+	}
+	async function balanceOf(keyHash: string): Promise<number | undefined> {
+		return (JSON.parse((await env.ORACLE_API_KEYS.get(keyHash)) ?? '{}') as { balance?: number }).balance;
+	}
+	function mcpStatus(headers: Record<string, string>) {
+		return fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', ...headers },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'get_market_status', arguments: { mic: 'XNYS' } } }),
+		});
+	}
+
+	it('each token-authenticated call debits one credit, and the call at zero is refused', async () => {
+		const key   = 'ho_crd_' + 'm1'.repeat(32);
+		const hash  = await hashOf(key);
+		const token = 'mcp_credits_token_' + 'm1'.repeat(23);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 2 }));
+		await putToken(token, hash);
+
+		const r1 = await mcpStatus({ 'Authorization': `Bearer ${token}` });
+		expect(await r1.json()).toHaveProperty('result');
+		expect(await balanceOf(hash)).toBe(1);
+
+		const r2 = await mcpStatus({ 'Authorization': `Bearer ${token}` });
+		expect(await r2.json()).toHaveProperty('result');
+		expect(await balanceOf(hash)).toBe(0);
+
+		const r3 = await mcpStatus({ 'Authorization': `Bearer ${token}` });
+		expect(r3.status).toBe(200); // MCP always HTTP 200
+		const b3 = await r3.json() as Record<string, unknown>;
+		expect(b3).not.toHaveProperty('result');
+		const err = b3.error as Record<string, unknown>;
+		expect(err.code).toBe(-32000);
+		expect(String(err.message)).toContain('CREDITS_EXHAUSTED');
+		expect(await balanceOf(hash)).toBe(0);
+	});
+
+	it('a token issued by POST /oauth/token for a credit-pack key is metered per call', async () => {
+		const key  = 'ho_crd_' + 'm2'.repeat(32);
+		const hash = await hashOf(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 3 }));
+		const tokenRes = await fetchWorker('/oauth/token', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body:    `grant_type=client_credentials&client_id=${key}`,
+		});
+		expect(tokenRes.status).toBe(200);
+		const { access_token } = await tokenRes.json() as { access_token: string };
+		const afterIssue = await balanceOf(hash); // issuing authenticates via checkApiKey (unchanged)
+		const r1 = await mcpStatus({ 'Authorization': `Bearer ${access_token}` });
+		expect(await r1.json()).toHaveProperty('result');
+		expect(await balanceOf(hash)).toBe((afterIssue as number) - 1);
+	});
+
+	it('a call carrying both X-Oracle-Key and the Bearer token for the same pack is charged exactly once', async () => {
+		const key   = 'ho_crd_' + 'm3'.repeat(32);
+		const hash  = await hashOf(key);
+		const token = 'mcp_credits_token_' + 'm3'.repeat(23);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 4 }));
+		await putToken(token, hash);
+		const res = await mcpStatus({ 'Authorization': `Bearer ${token}`, 'X-Oracle-Key': key });
+		expect(await res.json()).toHaveProperty('result');
+		expect(await balanceOf(hash)).toBe(3);
+	});
+
+	it('the X-Oracle-Key REST path still debits exactly once per call', async () => {
+		vi.setSystemTime(new Date('2026-03-16T14:00:00Z'));
+		const key  = 'ho_crd_' + 'm4'.repeat(32);
+		const hash = await hashOf(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 3 }));
+		try {
+			expect((await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } })).status).toBe(200);
+			expect(await balanceOf(hash)).toBe(2);
+			expect((await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } })).status).toBe(200);
+			expect(await balanceOf(hash)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 // ─── OAuth 2.0 — MCP rate limiting ───────────────────────────────────────────
 
 describe('POST /mcp — OAuth rate limiting', () => {
