@@ -13771,12 +13771,109 @@ describe('/v5/credits/purchase — error paths', () => {
 		expect(res.status).toBe(403);
 	});
 
-	it('POST with valid key but no payment returns 402', async () => {
+	// Was a beta key: beta and master keys authenticate as plan 'internal', which
+	// can never spend purchased credits, and are now refused with 409 (see the
+	// CREDITS_NOT_APPLICABLE describe). The 402 contract is a free key's.
+	it('POST with valid free key but no payment returns 402', async () => {
+		const key = 'ho_free_' + 'np'.repeat(32);
+		await setupFreeKey(key);
 		const res = await fetchWorker('/v5/credits/purchase', {
 			method: 'POST',
-			headers: { 'X-Oracle-Key': 'test_beta_key_1' },
+			headers: { 'X-Oracle-Key': key },
 		});
 		expect(res.status).toBe(402);
+	});
+});
+
+// Credits bought here are stored in credits:{hash} and spent only by keys whose
+// auth plan is 'free'. Every other plan paid for credits it could never use.
+describe('/v5/credits/purchase — CREDITS_NOT_APPLICABLE for any plan but free', () => {
+	async function hashOf(value: string): Promise<string> {
+		const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+		return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+
+	// Records every outbound fetch that is not Supabase, answering Base RPC as a
+	// valid 800000-unit transfer so the pre-fix code would happily grant credits.
+	function spyPaymentCalls() {
+		const original = globalThis.fetch;
+		const restoreRpc = mockBaseRpc(TEST_PAYMENT_ADDRESS, '800000', Math.floor(Date.now() / 1000) - 10);
+		const mocked = globalThis.fetch;
+		const calls: string[] = [];
+		globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+			if (!url.includes('supabase.co')) calls.push(url);
+			return mocked(input, init);
+		}) as typeof fetch;
+		return { calls, restore: () => { restoreRpc(); globalThis.fetch = original; } };
+	}
+
+	async function purchaseWith(key: string, txHash: string) {
+		const payment = JSON.stringify({ txHash, network: 'base', amount: '800000', paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+		const spy = spyPaymentCalls();
+		try {
+			const res = await fetchWorker('/v5/credits/purchase', { method: 'POST', headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+			return { res, calls: spy.calls };
+		} finally {
+			spy.restore();
+		}
+	}
+
+	it('a builder key gets 409 CREDITS_NOT_APPLICABLE and no payment is verified', async () => {
+		const key    = 'ho_live_' + 'nb'.repeat(32);
+		const hash   = await hashOf(key);
+		const txHash = '0x' + 'b1'.repeat(32);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ plan: 'builder', status: 'active' }));
+		const { res, calls } = await purchaseWith(key, txHash);
+		expect(res.status).toBe(409);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('CREDITS_NOT_APPLICABLE');
+		expect(body.plan).toBe('builder');
+		expect(String(body.message)).toContain('"builder"');
+		expect(calls).toEqual([]);                                             // no RPC, no facilitator
+		expect(await env.ORACLE_TELEMETRY.get(`x402_used:${txHash}`)).toBeNull(); // tx not consumed
+		expect(await env.ORACLE_TELEMETRY.get(`credits:${hash}`)).toBeNull();
+	});
+
+	it('a credits-tier key gets 409, no payment is verified, and the refusal costs it no credit', async () => {
+		const key    = 'ho_crd_' + 'nc'.repeat(32);
+		const hash   = await hashOf(key);
+		const txHash = '0x' + 'b2'.repeat(32);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 5 }));
+		const { res, calls } = await purchaseWith(key, txHash);
+		expect(res.status).toBe(409);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('CREDITS_NOT_APPLICABLE');
+		expect(body.plan).toBe('credits');
+		expect(calls).toEqual([]);
+		expect(await env.ORACLE_TELEMETRY.get(`x402_used:${txHash}`)).toBeNull();
+		const rec = JSON.parse((await env.ORACLE_API_KEYS.get(hash)) ?? '{}') as { balance?: number };
+		expect(rec.balance).toBe(5);
+	});
+
+	it('a beta key (plan internal) gets 409 before any payment is asked for', async () => {
+		const res = await fetchWorker('/v5/credits/purchase', { method: 'POST', headers: { 'X-Oracle-Key': 'test_beta_key_1' } });
+		expect(res.status).toBe(409);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('CREDITS_NOT_APPLICABLE');
+		expect(body.plan).toBe('internal');
+	});
+
+	it('a free key still buys: verified payment, 200, credits granted', async () => {
+		const key    = 'ho_free_' + 'nf'.repeat(32);
+		const hash   = await setupFreeKey(key);
+		const { res, calls } = await purchaseWith(key, '0x' + 'b3'.repeat(32));
+		expect(res.status).toBe(200);
+		expect(calls.some((u) => u === 'https://mainnet.base.org')).toBe(true);
+		const stored = JSON.parse((await env.ORACLE_TELEMETRY.get(`credits:${hash}`)) ?? '{}') as { balance?: number };
+		expect(stored.balance).toBe(1000);
+	});
+
+	it('/v5/errors/CREDITS_NOT_APPLICABLE documents the 409', async () => {
+		const res = await fetchWorker('/v5/errors/CREDITS_NOT_APPLICABLE');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.http_status).toBe(409);
 	});
 });
 

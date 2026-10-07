@@ -2044,7 +2044,11 @@ async function readKeyRecord(keyHash: string, env: Env): Promise<KeyRecordRead> 
 	return { state: 'missing' };
 }
 
-async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
+// spendCredit: false authenticates a credits-tier key under exactly the same
+// rules (unknown, inactive and zero-balance keys are refused as always) but
+// does not debit its balance. Only routes that consume no oracle capacity
+// pass it: a balance read, and a credits purchase that will refuse the key.
+async function checkApiKey(key: string, env: Env, opts: { spendCredit?: boolean } = {}): Promise<AuthResult> {
 	// Step 1: master key — fastest possible path
 	if (key === env.MASTER_API_KEY) return { allowed: true, plan: 'internal' };
 
@@ -2095,6 +2099,7 @@ async function checkApiKey(key: string, env: Env): Promise<AuthResult> {
 					},
 				};
 			}
+			if (opts.spendCredit === false) return { allowed: true, plan: 'credits', keyHash };
 			// Atomic-style decrement: get-then-put (KV has no native atomic operations)
 			const newBalance = parsed.balance - 1;
 			await env.ORACLE_API_KEYS.put(keyHash, JSON.stringify({ ...parsed, balance: newBalance }));
@@ -10984,7 +10989,7 @@ const OPENAPI_SPEC = {
 			post: {
 				tags:        ['Billing'],
 				summary:     'Purchase prepaid credits via x402 USDC payment',
-				description: 'Submit a verified Base mainnet USDC payment to add prepaid credits to your key. Credit tiers: 0.001 USDC = 1 credit, 0.09 USDC = 100 credits, 0.80 USDC = 1000 credits. Requires X-Payment header with verified tx.',
+				description: 'Submit a verified Base mainnet USDC payment to add prepaid credits to a free-plan key (any other plan is refused with 409 CREDITS_NOT_APPLICABLE before payment). Credit tiers: 0.001 USDC = 1 credit, 0.09 USDC = 100 credits, 0.80 USDC = 1000 credits. Requires X-Payment header with verified tx.',
 				security:    [{ ApiKeyAuth: [] }],
 				responses: {
 					'200': {
@@ -10999,6 +11004,7 @@ const OPENAPI_SPEC = {
 						} } },
 					},
 					'402': { description: 'Payment required or insufficient amount', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'409': { description: 'CREDITS_NOT_APPLICABLE: the key\'s plan is not free, so purchased credits could never be spent. Refused before any payment is requested or verified.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'503': { description: 'Payment verification service unavailable', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
@@ -14297,6 +14303,7 @@ export default {
 					ACCOUNT_NOT_FOUND:     { message: 'No account found for this API key.', resolution: `Verify your X-Oracle-Key. If you paid via Paddle, POST /v5/claim with the claim_token from your checkout response returns the key for 24 hours; otherwise write to ${CONTACT_EMAIL} with the transaction ID from your Paddle receipt.`, http_status: 404 },
 					SANDBOX_LIMIT_REACHED: { message: 'Sandbox key has reached its 200-call limit.', resolution: `Upgrade to a credit pack ($5 for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder (${BUILDER_MONTHLY_SHORT}) for ${BUILDER_CALLS_PER_DAY} calls/day.`, http_status: 402 },
 					SANDBOX_KEY_EXPIRED:   { message: 'Sandbox key has expired (7-day TTL).', resolution: `Upgrade to a credit pack ($${PRICING.credit_pack_usd} for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder (${BUILDER_MONTHLY_SHORT}).`, http_status: 402 },
+					CREDITS_NOT_APPLICABLE: { message: 'Prepaid credits from /v5/credits/purchase are spent only by free-plan keys; this key\'s plan would never spend them.', resolution: 'No payment was requested or taken. A credit-pack key buys a new pack (POST /v5/checkout {"plan":"credits"}); a sandbox key gets a free key first (POST /v5/keys/instant); a subscription plan upgrades at https://headlessoracle.com/upgrade.', http_status: 409 },
 					CREDITS_EXHAUSTED:     { message: 'Credit pack balance is zero.', resolution: `Purchase a new credit pack at https://headlessoracle.com/upgrade, or subscribe to Builder (${BUILDER_MONTHLY_SHORT}) for a daily allowance.`, http_status: 402 },
 					PLAN_LIMIT_EXCEEDED:   { message: 'Daily request limit for your plan has been reached.', resolution: 'Upgrade your plan at https://headlessoracle.com/upgrade. Limit resets at UTC midnight.', http_status: 429 },
 				};
@@ -17517,9 +17524,29 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				if (!apiKey) {
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
 				}
-				const creditAuth = await checkApiKey(apiKey, env);
+				// Not a capacity call: authenticating to buy (or be refused) costs no credit.
+				const creditAuth = await checkApiKey(apiKey, env, { spendCredit: false });
 				if (!creditAuth.allowed) {
 					return json({ error: creditAuth.error, message: creditAuth.message }, creditAuth.status);
+				}
+				// Credits bought here land in credits:{hash} and are spent only by a
+				// free-plan key once its daily allowance is used. Any other plan would
+				// pay for credits it can never spend, so it is refused before any
+				// payment is asked for or verified.
+				if (creditAuth.plan !== 'free') {
+					const plan = creditAuth.plan;
+					const instead = plan === 'credits'
+						? 'A credit-pack key spends only its own pack balance, and this route cannot top it up. For more calls buy a new pack (POST /v5/checkout with {"plan":"credits"}), pay x402 at POST /v5/sandbox for a new credit key, or subscribe at https://headlessoracle.com/upgrade.'
+						: plan === 'sandbox'
+							? 'Sandbox keys cannot spend prepaid credits. Get a free key (POST /v5/keys/instant) and buy credits with it, or upgrade at https://headlessoracle.com/upgrade.'
+							: `Your ${plan} plan's own allowance applies to every call, so prepaid credits would never be spent. Do not buy them for this key; for more capacity upgrade at https://headlessoracle.com/upgrade.`;
+					return json({
+						error:      'CREDITS_NOT_APPLICABLE',
+						message:    `Prepaid credits are spent only by free-plan keys after the ${FREE_TIER_DAILY_LIMIT} req/day free limit. This key's plan is "${plan}". ${instead}`,
+						plan,
+						applies_to: ['free'],
+						docs:       'https://headlessoracle.com/v5/errors/CREDITS_NOT_APPLICABLE',
+					}, 409);
 				}
 				const paymentHeader = getPaymentHeader(request);
 				if (!paymentHeader) {
@@ -17932,7 +17959,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						tier:            'credits',
 						credits:         10,
 						source:          'x402_sandbox',
-						note:            'Paid via x402. Credits do not expire. Buy more at /v5/credits/purchase.',
+						note:            'Paid via x402. Credits do not expire. For more, pay again here for a new credit key; /v5/credits/purchase tops up free-plan keys only.',
 						upgrade_url:     'https://headlessoracle.com/upgrade',
 						quickstart: {
 							curl:   `curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' -H 'X-Oracle-Key: ${sbCrdKey}'`,
