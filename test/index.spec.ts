@@ -6912,6 +6912,52 @@ describe('x402 — credit balance and consumption', () => {
 	});
 });
 
+// The grant was sized from payment.amount, a value the caller writes in the
+// header; verifyX402Payment read the real Transfer amount and threw it away.
+describe('/v5/credits/purchase — grant sized from the on-chain amount, not the header', () => {
+	async function purchase(key: string, txHash: string, onChainUnits: string, claimedUnits: string) {
+		const nowSec  = Math.floor(Date.now() / 1000);
+		const restore = mockBaseRpc(TEST_PAYMENT_ADDRESS, onChainUnits, nowSec - 10);
+		try {
+			const payment = JSON.stringify({ txHash, network: 'base', amount: claimedUnits, paymentAddress: TEST_PAYMENT_ADDRESS, memo: '' });
+			return await fetchWorker('/v5/credits/purchase', { method: 'POST', headers: { 'X-Oracle-Key': key, 'X-Payment': payment } });
+		} finally {
+			restore();
+		}
+	}
+
+	it('a 1000-unit transfer with a header claiming 800000 grants 1 credit, not 1000', async () => {
+		const key  = 'ho_free_' + 'p1'.repeat(32);
+		const hash = await setupFreeKey(key);
+		const res  = await purchase(key, '0x' + 'a1'.repeat(32), '1000', '800000');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.purchased).toBe(1);
+		const stored = JSON.parse((await env.ORACLE_TELEMETRY.get(`credits:${hash}`)) ?? '{}') as { balance?: number };
+		expect(stored.balance).toBe(1);
+	});
+
+	it('a genuine 800000-unit transfer still grants 1000 credits', async () => {
+		const key  = 'ho_free_' + 'p2'.repeat(32);
+		const hash = await setupFreeKey(key);
+		const res  = await purchase(key, '0x' + 'a2'.repeat(32), '800000', '800000');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.purchased).toBe(1000);
+		const stored = JSON.parse((await env.ORACLE_TELEMETRY.get(`credits:${hash}`)) ?? '{}') as { balance?: number };
+		expect(stored.balance).toBe(1000);
+	});
+
+	it('a 90000-unit transfer with a header claiming 1000 still grants 100 (the chain decides both ways)', async () => {
+		const key  = 'ho_free_' + 'p3'.repeat(32);
+		await setupFreeKey(key);
+		const res  = await purchase(key, '0x' + 'a3'.repeat(32), '90000', '1000');
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.purchased).toBe(100);
+	});
+});
+
 describe('x402 — health includes payment_schemes', () => {
 	it('GET /v5/health includes payment_schemes: ["x402"]', async () => {
 		const body = await fetchJSON('/v5/health');
