@@ -10111,10 +10111,32 @@ describe('Halt monitor timeout handling (FINDING-09)', () => {
 	it('runHaltMonitor: cron with no POLYGON_API_KEY resolves without throwing', async () => {
 		const scheduledController = createScheduledController({ scheduledTime: Date.now(), cron: '* * * * *' });
 		const ctx = createExecutionContext();
-		// Remove POLYGON_API_KEY so fetch is skipped — should not throw
+		// Remove POLYGON_API_KEY so the Polygon path is skipped — should not throw.
 		const testEnv = { ...env, POLYGON_API_KEY: undefined };
-		await expect(worker.scheduled(scheduledController, testEnv as typeof env, ctx)).resolves.not.toThrow();
-		await waitOnExecutionContext(ctx);
+		// With no Polygon key the minute cron reads the live Nasdaq halts RSS. Left
+		// unstubbed, this test's runtime was the feed's latency: on a slow link it
+		// passed vitest's 5s limit and failed at random, on any commit (2026-10-07,
+		// founder's re-sign run). Serve an empty feed and refuse anything else, so
+		// the test measures our code and the cron's own failure handling only.
+		const originalFetch = globalThis.fetch;
+		const called: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const u = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			called.push(u);
+			if (u.includes('nasdaqtrader.com')) {
+				return Promise.resolve(new Response('<rss version="2.0"><channel></channel></rss>', {
+					status: 200, headers: { 'Content-Type': 'application/rss+xml' },
+				}));
+			}
+			return Promise.resolve(new Response('stubbed: no network in this test', { status: 503 }));
+		}) as typeof fetch;
+		try {
+			await expect(worker.scheduled(scheduledController, testEnv as typeof env, ctx)).resolves.not.toThrow();
+			await waitOnExecutionContext(ctx);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+		expect(called.some((u) => u.includes('nasdaqtrader.com'))).toBe(true);
 	});
 });
 
