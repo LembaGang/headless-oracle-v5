@@ -11029,6 +11029,7 @@ const OPENAPI_SPEC = {
 					},
 					'401': { description: 'Missing API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'403': { description: 'Invalid API key', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'503': { description: 'SERVICE_UNAVAILABLE: the credit-pack balance could not be read. The key was not rejected; retry after the Retry-After header.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 				},
 			},
 		},
@@ -15767,7 +15768,8 @@ export default {
 				if (!apiKey) {
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
 				}
-				const usageAuth = await checkApiKey(apiKey, env);
+				// A usage read is not a capacity call: it spends no credit.
+				const usageAuth = await checkApiKey(apiKey, env, { spendCredit: false });
 				if (!usageAuth.allowed) {
 					return json({ error: usageAuth.error, message: usageAuth.message }, usageAuth.status);
 				}
@@ -17648,7 +17650,23 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				if (balanceAuth.plan === 'credits') {
 					// A credit-pack key spends the balance on its ORACLE_API_KEYS record,
 					// not credits:{hash} (that is the free-plan overflow store).
-					const read = await readKeyRecord(keyHash, env);
+					// A store that could not answer is not an invalid key: 403 would
+					// tell the agent to rotate a key that is probably fine. readKeyRecord
+					// reports a Supabase failure as 'unavailable' and lets a KV read
+					// throw; both are 503 with Retry-After.
+					let read: KeyRecordRead;
+					try {
+						read = await readKeyRecord(keyHash, env);
+					} catch {
+						read = { state: 'unavailable' };
+					}
+					if (read.state === 'unavailable') {
+						return json({
+							error:               'SERVICE_UNAVAILABLE',
+							message:             'The credit balance store could not be read. Your key was not rejected; retry shortly.',
+							retry_after_seconds: 10,
+						}, 503, { 'Retry-After': '10' });
+					}
 					if (read.state !== 'found' || typeof read.record.balance !== 'number') {
 						return json({ error: 'INVALID_API_KEY', message: 'Invalid API key' }, 403);
 					}
