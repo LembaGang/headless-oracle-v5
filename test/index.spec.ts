@@ -2333,7 +2333,8 @@ describe('POST /mcp', () => {
 			const note = result['x-oracle-note'] as string;
 			expect(note).toContain('POST https://headlessoracle.com/v5/keys/instant');
 			expect(note).toContain('"agent_id"');
-			expect(note).toContain('https://headlessoracle.com/oauth/token');
+			// MCP reads the API key itself (2026-10-07): the note says to send it.
+			expect(note).toContain('Authorization: Bearer <api key>');
 			expect(note).not.toContain('/v5/keys/request');
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(kvKey);
@@ -3631,13 +3632,15 @@ describe('Agent Skills discovery (agentskills.io 0.2.0)', () => {
 		expect(entry.description).toContain(`its ${words[served.length]} market-state tools`);
 	});
 
-	// The skill said "Optional OAuth 2.0 bearer and X-Oracle-Key are accepted"; MCP
-	// reads only an OAuth access token from Bearer, never X-Oracle-Key.
-	it('mcp-tool-catalog does not claim MCP accepts X-Oracle-Key, and names the token exchange', async () => {
+	// Since 2026-10-07 MCP reads the API key itself (Bearer or X-Oracle-Key), and
+	// still accepts an OAuth access token. The skill says both, and no longer
+	// says MCP reads neither.
+	it('mcp-tool-catalog says MCP reads the API key in Bearer or X-Oracle-Key, and that the token exchange still works', async () => {
 		const md = await fetchWorker('/.well-known/agent-skills/mcp-tool-catalog/SKILL.md').then((r) => r.text());
-		expect(md).not.toMatch(/X-Oracle-Key (are|is) accepted/);
+		expect(md).toContain('Authorization: Bearer <api key>');
+		expect(md).toContain('X-Oracle-Key: <api key>');
 		expect(md).toContain('POST https://headlessoracle.com/oauth/token');
-		expect(md).toContain('Authorization: Bearer <access_token>');
+		expect(md).not.toContain('MCP reads neither');
 	});
 
 	it('no agent skill describes verify_receipt as an MCP tool', async () => {
@@ -3949,16 +3952,165 @@ describe('POST /mcp — OAuth soft auth', () => {
 		expect(body).toHaveProperty('result');
 	});
 
-	it('invalid Bearer token falls through as anonymous — does not return 401', async () => {
+	// The handshake is unmetered and runs before auth, so a bad credential cannot
+	// break it. What a bad credential gets on a metered call is pinned in
+	// 'POST /mcp — an API key in Bearer or X-Oracle-Key authenticates'.
+	it('an invalid Bearer value does not affect the handshake — initialize answers, never 401', async () => {
 		const res = await fetchWorker('/mcp', {
 			method:  'POST',
 			headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer this_is_not_a_valid_token_at_all' },
 			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } }),
 		});
-		// Must not block — fall through to serve the request anonymously
 		expect(res.status).toBe(200);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('result');
+	});
+});
+
+// ─── MCP reads the API key itself (2026-10-07) ───────────────────────────────
+// Most MCP clients send their API key as Authorization: Bearer. MCP read a
+// Bearer value only as an OAuth access token, so a raw key there was served as
+// anonymous (10 get_market_status per IP per day) while the caller believed it
+// was on its plan. Now: a valid OAuth token first, then X-Oracle-Key, then the
+// Bearer value as an API key. A credential that is presented and not accepted
+// is a JSON-RPC error, never a silent fall back to anonymous.
+describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () => {
+	const today = () => new Date().toISOString().slice(0, 10);
+	async function anonKey(): Promise<string> { return `unauth_mcp_status:${await sha256Hex('')}:${today()}`; }
+	function mcpCall(headers: Record<string, string>, method = 'tools/call', e: typeof env = env) {
+		const body = method === 'tools/call'
+			? { jsonrpc: '2.0', id: 31, method, params: { name: 'get_market_status', arguments: { mic: 'XNYS' } } }
+			: { jsonrpc: '2.0', id: 31, method, params: method === 'initialize' ? { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } : undefined };
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+		});
+		const ctx = createExecutionContext();
+		return worker.fetch(request, e, ctx).then(async (res) => { await waitOnExecutionContext(ctx); return res.json() as Promise<Record<string, unknown>>; });
+	}
+	const receiptOf = (b: Record<string, unknown>) => {
+		const r = b.result as Record<string, unknown>;
+		expect(r.isError).not.toBe(true);
+		return JSON.parse((r.content as Array<{ text: string }>)[0].text) as Record<string, unknown>;
+	};
+	const balanceOf = async (keyHash: string) => (JSON.parse((await env.ORACLE_API_KEYS.get(keyHash)) ?? '{}') as { balance?: number }).balance;
+
+	it('a raw free key as Bearer is metered against that key, not the anonymous IP cap', async () => {
+		const key  = 'ho_free_' + 'k1'.repeat(32);
+		const hash = await setupFreeKey(key);
+		await env.ORACLE_TELEMETRY.put(await anonKey(), '10'); // anonymous cap already spent
+		const b = await mcpCall({ 'Authorization': `Bearer ${key}` });
+		expect(receiptOf(b).mic).toBe('XNYS');
+		expect(await env.ORACLE_TELEMETRY.get(`free_usage:${hash}:${today()}`)).toBe('1');
+		expect(await env.ORACLE_TELEMETRY.get(await anonKey())).toBe('10');
+	});
+
+	it('X-Oracle-Key authenticates MCP the same way', async () => {
+		const key  = 'ho_free_' + 'k2'.repeat(32);
+		const hash = await setupFreeKey(key);
+		await env.ORACLE_TELEMETRY.put(await anonKey(), '10');
+		const b = await mcpCall({ 'X-Oracle-Key': key });
+		expect(receiptOf(b).mic).toBe('XNYS');
+		expect(await env.ORACLE_TELEMETRY.get(`free_usage:${hash}:${today()}`)).toBe('1');
+	});
+
+	it('a credit-pack key as Bearer is debited exactly one credit per call and refused at zero', async () => {
+		const key  = 'ho_crd_' + 'k3'.repeat(32);
+		const hash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 2 }));
+		expect(receiptOf(await mcpCall({ 'Authorization': `Bearer ${key}` })).mic).toBe('XNYS');
+		expect(await balanceOf(hash)).toBe(1);
+		expect(receiptOf(await mcpCall({ 'Authorization': `Bearer ${key}` })).mic).toBe('XNYS');
+		expect(await balanceOf(hash)).toBe(0);
+		const b3 = await mcpCall({ 'Authorization': `Bearer ${key}` });
+		expect(b3).not.toHaveProperty('result');
+		expect(String((b3.error as Record<string, unknown>).message)).toContain('CREDITS_EXHAUSTED');
+		expect(await balanceOf(hash)).toBe(0);
+	});
+
+	it('a credit-pack key in X-Oracle-Key is debited once per call, not twice', async () => {
+		const key  = 'ho_crd_' + 'k4'.repeat(32);
+		const hash = await sha256Hex(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 3 }));
+		expect(receiptOf(await mcpCall({ 'X-Oracle-Key': key })).mic).toBe('XNYS');
+		expect(await balanceOf(hash)).toBe(2);
+	});
+
+	it('a recognised key at its daily limit is refused, and does not fall back to anonymous', async () => {
+		const key  = 'ho_free_' + 'k5'.repeat(32);
+		const hash = await setupFreeKey(key);
+		await env.ORACLE_TELEMETRY.put(`free_usage:${hash}:${today()}`, '500');
+		const b = await mcpCall({ 'Authorization': `Bearer ${key}` });
+		expect(b).not.toHaveProperty('result');
+		const err = b.error as Record<string, unknown>;
+		expect(err.code).toBe(-32000);
+		expect(String(err.message)).toContain('RATE_LIMITED');
+		expect(await env.ORACLE_TELEMETRY.get(await anonKey())).toBeNull();
+	});
+
+	it('a garbage Bearer value is a JSON-RPC INVALID_API_KEY error, not anonymous; the handshake is unaffected', async () => {
+		const b = await mcpCall({ 'Authorization': 'Bearer this_is_neither_a_token_nor_a_key' });
+		expect(b).not.toHaveProperty('result');
+		const err = b.error as Record<string, unknown>;
+		expect(err.code).toBe(-32001);
+		expect(String(err.message)).toMatch(/^INVALID_API_KEY: /);
+		expect(String(err.message)).toContain('POST https://headlessoracle.com/v5/keys/instant');
+		expect(String(err.message)).not.toContain('this_is_neither');
+		expect(await env.ORACLE_TELEMETRY.get(await anonKey())).toBeNull();
+		const init = await mcpCall({ 'Authorization': 'Bearer this_is_neither_a_token_nor_a_key' }, 'initialize');
+		expect(init).toHaveProperty('result');
+	});
+
+	it('an unknown X-Oracle-Key is the same INVALID_API_KEY error', async () => {
+		const b = await mcpCall({ 'X-Oracle-Key': 'ho_free_' + '0'.repeat(64) });
+		expect((b.error as Record<string, unknown>).code).toBe(-32001);
+	});
+
+	it('a recognised but expired sandbox key is refused with its reason', async () => {
+		const key  = 'sb_' + 'k6'.repeat(16);
+		await env.ORACLE_API_KEYS.put(await sha256Hex(key), JSON.stringify({ tier: 'sandbox', plan: 'sandbox', status: 'active', expires_at: '2020-01-01T00:00:00Z' }));
+		const b = await mcpCall({ 'Authorization': `Bearer ${key}` });
+		const err = b.error as Record<string, unknown>;
+		expect(err.code).toBe(-32000);
+		expect(String(err.message)).toContain('SANDBOX_KEY_EXPIRED');
+	});
+
+	it('an OAuth token record that has expired is refused, with the way forward', async () => {
+		const token = 'expired_oauth_token_' + 'k7'.repeat(22);
+		await env.ORACLE_API_KEYS.put(`oauth:${await sha256Hex(token)}`, JSON.stringify({ keyHash: 'x'.repeat(64), plan: 'free', status: 'active', expires_at: 1 }));
+		const b = await mcpCall({ 'Authorization': `Bearer ${token}` });
+		const err = b.error as Record<string, unknown>;
+		expect(err.code).toBe(-32001);
+		expect(String(err.message)).toMatch(/^OAUTH_TOKEN_EXPIRED: /);
+		expect(String(err.message)).toContain('Authorization: Bearer <api key>');
+	});
+
+	it('a key store that cannot be read refuses the call (fail closed), not anonymous', async () => {
+		const kv = env.ORACLE_API_KEYS;
+		const broken = {
+			get: async () => { throw new Error('KV unavailable'); },
+			put: kv.put.bind(kv), delete: kv.delete.bind(kv), list: kv.list.bind(kv),
+		} as unknown as typeof env.ORACLE_API_KEYS;
+		const b = await mcpCall({ 'Authorization': `Bearer ho_free_${'k8'.repeat(32)}` }, 'tools/call', { ...env, ORACLE_API_KEYS: broken } as typeof env);
+		const err = b.error as Record<string, unknown>;
+		expect(err.code).toBe(-32000);
+		expect(String(err.message)).toMatch(/^AUTH_UNAVAILABLE: /);
+	});
+
+	it('the OAuth token path is unchanged: a token for a free key meters that key', async () => {
+		const key  = 'ho_free_' + 'k9'.repeat(32);
+		const hash = await setupFreeKey(key);
+		const tokenRes = await fetchWorker('/oauth/token', {
+			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: `grant_type=client_credentials&client_id=${key}`,
+		});
+		const { access_token } = await tokenRes.json() as { access_token: string };
+		expect(receiptOf(await mcpCall({ 'Authorization': `Bearer ${access_token}` })).mic).toBe('XNYS');
+		expect(await env.ORACLE_TELEMETRY.get(`free_usage:${hash}:${today()}`)).toBe('1');
+	});
+
+	it('the /mcp CORS preflight headers allow X-Oracle-Key', async () => {
+		const res = await fetchWorker('/mcp', { method: 'HEAD' });
+		expect(res.headers.get('Access-Control-Allow-Headers') ?? '').toContain('X-Oracle-Key');
 	});
 });
 
@@ -4186,13 +4338,14 @@ describe('POST /mcp — OAuth rate limiting', () => {
 			const text = JSON.parse((result.content as Array<{ text: string }>)[0].text) as Record<string, unknown>;
 			expect(text.error).toBe('UNAUTHENTICATED_LIMIT_REACHED');
 			expect(text).toHaveProperty('upgrade_url');
-			// MCP resolves a Bearer only as an OAuth access token; a raw key there is
-			// anonymous. The message must not tell callers to send their key as Bearer.
+			// Since 2026-10-07 MCP reads the API key itself, in Bearer or
+			// X-Oracle-Key; the message says so and no longer sends callers through
+			// the token exchange.
 			const msg = String(text.message);
-			expect(msg).not.toMatch(/key as a Bearer/i);
-			expect(msg).toContain('POST https://headlessoracle.com/oauth/token');
-			expect(msg).toContain('grant_type=client_credentials&client_id=');
-			expect(msg).toContain('Authorization: Bearer <access_token>');
+			expect(msg).toContain('Authorization: Bearer <api key>');
+			expect(msg).toContain('X-Oracle-Key: <api key>');
+			expect(msg).not.toContain('MCP does not read');
+			expect(msg).toContain('POST https://headlessoracle.com/v5/keys/instant');
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(unauthKey);
 		}
@@ -4238,7 +4391,11 @@ describe('POST /mcp — OAuth rate limiting', () => {
 		}
 	});
 
-	it('logically expired Bearer token falls through as anonymous — not blocked', async () => {
+	// Was "falls through as anonymous — not blocked". Since 2026-10-07 a credential
+	// that is sent and not accepted is a JSON-RPC error (still HTTP 200, never
+	// 401): silently serving it as anonymous left the caller believing it was on
+	// its plan.
+	it('logically expired Bearer token is refused with OAUTH_TOKEN_EXPIRED, not served as anonymous', async () => {
 		// Seed a token record with expires_at already in the past
 		const token   = 'mcp_expired_token_test_' + 'c'.repeat(41);
 		const keyHash = 'mcp_expired_keyhash_test_' + 'c'.repeat(39);
@@ -4253,11 +4410,12 @@ describe('POST /mcp — OAuth rate limiting', () => {
 				headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
 				body:    mcpInit,
 			});
-			// Expired token must NOT block — proceeds as anonymous (result, not error)
 			expect(res.status).toBe(200);
 			const body = await res.json() as Record<string, unknown>;
-			expect(body).toHaveProperty('result');
-			expect(body).not.toHaveProperty('error');
+			expect(body).not.toHaveProperty('result');
+			const err = body.error as Record<string, unknown>;
+			expect(err.code).toBe(-32001);
+			expect(String(err.message)).toMatch(/^OAUTH_TOKEN_EXPIRED: /);
 		} finally {
 			await env.ORACLE_API_KEYS.delete(`oauth:${tokenHash}`);
 		}

@@ -7455,7 +7455,7 @@ Server card: GET https://headlessoracle.com/.well-known/mcp/server-card.json
 Protocol: MCP-2024-11-05
 Endpoint: POST https://headlessoracle.com/mcp
 Tools: get_market_status, get_market_schedule, list_exchanges
-Auth: optional Bearer token (Oracle API key via POST /oauth/token)
+Auth: optional. Send your API key as Authorization: Bearer <api key> or X-Oracle-Key; an OAuth access token from POST /oauth/token also works
 
 ## Agent Framework Integrations
 - [TradingAgents Integration](https://headlessoracle.com/docs/integrations/tradingagents-risk) — Pre-trade gate for TauricResearch/TradingAgents multi-agent framework
@@ -8901,7 +8901,7 @@ const AUTH_MD = `# Headless Oracle auth.md
 
 Autonomous agents, and the people who run them, that need a credential to call Headless Oracle. Each section below names one way to get a credential (or to pay without one), what you send, what comes back, how you present it, and its limits.
 
-API keys are presented in the \`X-Oracle-Key\` request header on every keyed endpoint, for example \`GET https://headlessoracle.com/v5/status?mic=XNYS\`. \`GET /v1/halts\` and \`GET /v1/safe-to-trade\` also accept the same API key as \`Authorization: Bearer <api key>\`.
+API keys are presented in the \`X-Oracle-Key\` request header on every keyed endpoint, for example \`GET https://headlessoracle.com/v5/status?mic=XNYS\`. \`GET /v1/halts\`, \`GET /v1/safe-to-trade\` and \`POST https://headlessoracle.com/mcp\` also accept the same API key as \`Authorization: Bearer <api key>\`; MCP reads \`X-Oracle-Key\` too.
 
 ## 1. POST /v5/keys/instant
 
@@ -8944,7 +8944,7 @@ API keys are presented in the \`X-Oracle-Key\` request header on every keyed end
 - This exchanges an existing API key for a short-lived access token. It is not a way to obtain a first credential.
 - Request: \`POST https://headlessoracle.com/oauth/token\` with a form-encoded body \`grant_type=client_credentials&client_id=<existing API key>\`.
 - Response: \`{"access_token": "...", "token_type": "bearer", "expires_in": <seconds>, "scope": "oracle:read"}\`.
-- Present it as: \`Authorization: Bearer <access_token>\` on \`POST https://headlessoracle.com/mcp\`. The REST endpoints read the API key itself, not this token.
+- Present it as: \`Authorization: Bearer <access_token>\` on \`POST https://headlessoracle.com/mcp\`. The REST endpoints read the API key itself, not this token. MCP also reads the API key itself, so this exchange is optional.
 
 ## Scope
 
@@ -9478,7 +9478,7 @@ Wire an MCP-capable agent (Claude Desktop, Cursor, Cline, Windsurf, or any MCP c
 ### Remote (Streamable HTTP)
 - Endpoint: POST https://headlessoracle.com/mcp
 - Protocol version: 2024-11-05
-- No auth required for tool calls (anonymous reads). For keyed limits, exchange an API key at POST https://headlessoracle.com/oauth/token (form-encoded grant_type=client_credentials&client_id=<API key>) for a 1-hour access_token and send Authorization: Bearer <access_token>. MCP reads neither X-Oracle-Key nor a raw API key in the Bearer header.
+- No auth required for tool calls (anonymous reads). For keyed limits, send your API key as Authorization: Bearer <api key> or X-Oracle-Key: <api key>; calls then count against that key's plan, as on REST. An OAuth access token from POST https://headlessoracle.com/oauth/token (form-encoded grant_type=client_credentials&client_id=<API key>) is also accepted as the Bearer value. A credential that is sent and not accepted (unknown, expired, out of quota) is answered with a JSON-RPC error, never served as anonymous.
 
 ### Local (stdio)
 - Package: npx headless-oracle-mcp
@@ -10215,7 +10215,8 @@ const OPENAPI_SPEC = {
 				tags:        ['MCP'],
 				summary:     'MCP (Model Context Protocol) endpoint',
 				description: 'JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05). ' +
-					'Tools: get_market_status, get_market_schedule, list_exchanges. No authentication required.',
+					'Tools: get_market_status, get_market_schedule, list_exchanges. No authentication required. ' +
+					'Optional: an API key as Authorization: Bearer <api key> or X-Oracle-Key, or an OAuth access token from /oauth/token, meters calls against that key\'s plan; a credential that is sent and not accepted is a JSON-RPC error, not anonymous.',
 				responses: {
 					'200': { description: 'JSON-RPC 2.0 response' },
 					'202': { description: 'Notification accepted (no body)' },
@@ -11891,7 +11892,7 @@ const MCP_RESPONSE_HEADERS = {
 	'MCP-Protocol-Version':         MCP_PROTOCOL_VERSION,
 	'Access-Control-Allow-Origin':  '*',
 	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+	'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Oracle-Key',
 };
 
 // ─── OAuth 2.0 Token Endpoint ────────────────────────────────────────────────
@@ -12065,6 +12066,52 @@ async function spendPackCredit(keyHash: string, env: Env): Promise<{ ok: true } 
 	return { ok: true };
 }
 
+// Who is calling /mcp. Order: a Bearer value that is an OAuth access token
+// (oauth:{sha256} in ORACLE_API_KEYS); else X-Oracle-Key; else the Bearer value
+// as an API key. checkApiKey is called with spendCredit:false, because the
+// metering in handleMcpMessage debits a credit pack exactly once per call.
+// Nothing here logs or echoes the credential.
+type McpAuth =
+	| { kind: 'anonymous' }
+	| { kind: 'authenticated'; keyHash: string; plan: string }
+	| { kind: 'refused'; code: number; message: string };
+
+const MCP_INVALID_CREDENTIAL = 'INVALID_API_KEY: the credential sent in Authorization: Bearer or X-Oracle-Key is not a valid API key or an active OAuth access token, so this call was not served. Send a valid key, or send no credential to use the anonymous tier. No key yet? POST https://headlessoracle.com/v5/keys/instant with JSON {"agent_id":"<unique id>"} returns a free key in the response.';
+
+async function resolveMcpCredential(request: Request, env: Env): Promise<McpAuth> {
+	const authHeader = request.headers.get('Authorization') ?? '';
+	const bearer     = /^Bearer\s+/i.test(authHeader) ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+	const headerKey  = (request.headers.get('X-Oracle-Key') ?? '').trim();
+	if (!bearer && !headerKey) return { kind: 'anonymous' };
+	const unavailable: McpAuth = { kind: 'refused', code: -32000, message: 'AUTH_UNAVAILABLE: the credential could not be checked, so this call was not served. Retry shortly.' };
+	try {
+		if (bearer && env.ORACLE_API_KEYS) {
+			const cached = await env.ORACLE_API_KEYS.get(`oauth:${await sha256Hex(bearer)}`);
+			if (cached) {
+				const parsed = JSON.parse(cached) as { keyHash: string; plan: string; status: string; expires_at?: number };
+				if (parsed.status === 'active' && !(parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at)) {
+					return { kind: 'authenticated', keyHash: parsed.keyHash, plan: parsed.plan };
+				}
+				return {
+					kind: 'refused', code: -32001,
+					message: 'OAUTH_TOKEN_EXPIRED: this access token has expired or is no longer active, so this call was not served. Send your API key itself as Authorization: Bearer <api key> (or X-Oracle-Key), or get a new token at POST https://headlessoracle.com/oauth/token.',
+				};
+			}
+		}
+		const key  = headerKey || bearer;
+		const auth = await checkApiKey(key, env, { spendCredit: false });
+		if (auth.allowed) {
+			return { kind: 'authenticated', keyHash: auth.keyHash ?? await sha256Hex(key), plan: auth.plan };
+		}
+		if (auth.status === 403) return { kind: 'refused', code: -32001, message: MCP_INVALID_CREDENTIAL };
+		// Recognised, and refused for a reason REST would also give (expired
+		// sandbox, exhausted pack, suspended subscription).
+		return { kind: 'refused', code: -32000, message: `${auth.error}: ${auth.message}` };
+	} catch {
+		return unavailable;
+	}
+}
+
 async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	// ── Parse body first — enables fast paths for stateless protocol methods ────
 	// MCP probers (Chiark, MCPScoreboard) probe via initialize → tools/list → ping
@@ -12229,29 +12276,25 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 		// ctx.waitUntil unavailable — fire-and-forget (telemetry is best-effort).
 		console.error('TELEMETRY_CTX_NO_WAITUNTIL');
 	}
-	// ── Soft OAuth auth — completely additive, never blocks unauthenticated access ──
-	// If a valid Bearer token is present, mcpKeyHash/mcpPlan are populated for
-	// rate-limit accounting. Any failure (missing token, KV miss, parse error,
-	// expired token) falls through silently — request proceeds as anonymous.
-	let _mcpKeyHash: string | null = null; // eslint-disable-line @typescript-eslint/no-unused-vars
-	let _mcpPlan:    string | null = null; // eslint-disable-line @typescript-eslint/no-unused-vars
-	try {
-		const authHeader = request.headers.get('Authorization');
-		if (authHeader?.startsWith('Bearer ') && env.ORACLE_API_KEYS) {
-			const token      = authHeader.slice(7);
-			const tokenHash  = await sha256Hex(token);
-			const cached     = await env.ORACLE_API_KEYS.get(`oauth:${tokenHash}`);
-			if (cached) {
-				const parsed = JSON.parse(cached) as { keyHash: string; plan: string; status: string; expires_at?: number };
-				if (parsed.status === 'active' && !(parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at)) {
-					_mcpKeyHash = parsed.keyHash;
-					_mcpPlan    = parsed.plan;
-				}
-			}
-		}
-	} catch { /* fall through as anonymous — soft auth must never break MCP access */ }
+	// ── MCP auth: an OAuth access token, or the API key itself ───────────────
+	// No credential: anonymous, as always. A credential that is presented and
+	// accepted meters this call against that key's plan (below). One that is
+	// presented and NOT accepted is a JSON-RPC error, never a silent fall back
+	// to anonymous: the caller believes it is on its plan, and REST answers the
+	// same key with 403/402, not the trial. The handshake methods above never
+	// reach here, so a bad credential cannot break initialize or ping.
+	let _mcpKeyHash: string | null = null;
+	let _mcpPlan:    string | null = null;
+	const mcpAuth = await resolveMcpCredential(request, env);
+	if (mcpAuth.kind === 'refused') {
+		return rpcError(mcpAuth.code, mcpAuth.message);
+	}
+	if (mcpAuth.kind === 'authenticated') {
+		_mcpKeyHash = mcpAuth.keyHash;
+		_mcpPlan    = mcpAuth.plan;
+	}
 
-	// ── MCP rate limiting — OAuth-authenticated requests only ─────────────────
+	// ── MCP rate limiting — authenticated requests only (OAuth token or API key) ──
 	// Unauthenticated MCP (_mcpKeyHash === null) is structurally unreachable here.
 	// Shares the same KV counter as the REST auth gate so REST + MCP calls count
 	// together against a single daily limit per key.
@@ -12278,12 +12321,12 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 			}
 			incrementDailyUsage(_mcpKeyHash, env, ctx, mcpDailyUsage);
 		} else if (_mcpPlan === 'credits') {
-			// Credits tier — one credit per metered call, debited here. checkApiKey
-			// (the debit on the X-Oracle-Key path) ran once, when the OAuth token was
-			// issued; the token then lives an hour, and MCP authenticates only by
-			// that token, so without this debit one credit bought an hour of calls.
-			// Fail closed: no spendable balance, or a store we cannot read or
-			// write, refuses the call.
+			// Credits tier — one credit per metered call, debited here and only
+			// here. An OAuth token was paid for once, at issue, and lives an hour;
+			// an API key is authenticated by resolveMcpCredential with
+			// spendCredit:false, so checkApiKey debits nothing on MCP. Fail closed:
+			// no spendable balance, or a store we cannot read or write, refuses
+			// the call.
 			const spend = await spendPackCredit(_mcpKeyHash, env);
 			if (!spend.ok) {
 				return new Response(JSON.stringify({
@@ -12309,7 +12352,7 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 			const toolsResult: Record<string, unknown> = { tools: MCP_TOOLS };
 			if (requestCount > 50) {
 				toolsResult['x-oracle-note'] =
-					'You\'re using the anonymous tier. Get a free API key, returned in the response, with POST https://headlessoracle.com/v5/keys/instant and JSON {"agent_id":"<unique id>"}; for higher MCP limits exchange it at POST https://headlessoracle.com/oauth/token (form-encoded grant_type=client_credentials&client_id=<key>) and send the access_token as Authorization: Bearer.';
+					'You\'re using the anonymous tier. Get a free API key, returned in the response, with POST https://headlessoracle.com/v5/keys/instant and JSON {"agent_id":"<unique id>"}, then send it on /mcp as Authorization: Bearer <api key> (or X-Oracle-Key) for your plan\'s limits.';
 			}
 			return rpcResult(toolsResult);
 		}
@@ -12364,7 +12407,7 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 							isError: true,
 							content: [{ type: 'text', text: JSON.stringify({
 								error:       'UNAUTHENTICATED_LIMIT_REACHED',
-								message:     'Free market status checks exhausted. MCP does not read a raw API key: exchange one at POST https://headlessoracle.com/oauth/token (form-encoded body grant_type=client_credentials&client_id=<your API key>) for a 1-hour access_token, and send Authorization: Bearer <access_token>. No key yet? POST https://headlessoracle.com/v5/keys/instant with JSON {"agent_id":"<unique id>"} returns a free key in the response. Or upgrade.',
+								message:     'Free market status checks exhausted. Send your API key as Authorization: Bearer <api key> (or X-Oracle-Key: <api key>) and calls count against that key\'s plan instead. No key yet? POST https://headlessoracle.com/v5/keys/instant with JSON {"agent_id":"<unique id>"} returns a free key in the response. Or upgrade.',
 								upgrade_url: 'https://headlessoracle.com/upgrade',
 							}) }],
 						});
@@ -14727,8 +14770,9 @@ export default {
 			// host; /.well-known/oauth-protected-resource/mcp (RFC 9728 3.1, path-suffixed)
 			// describes the MCP endpoint itself, which is what MCP clients derive from
 			// https://<host>/mcp, so its `resource` is that URL on the host asked (3.3).
-			// OAuth is additive: /mcp answers every method without a token, and an
-			// invalid or missing token falls through as anonymous; nothing answers 401.
+			// OAuth is additive: /mcp answers every method without a credential, reads
+			// an API key directly too, and answers a credential it cannot accept with a
+			// JSON-RPC error (HTTP 200); nothing answers 401.
 			// bearer_methods_supported: ["header"]: token delivered via Authorization: Bearer.
 			if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {
 				const forMcp = url.pathname.endsWith('/mcp');
