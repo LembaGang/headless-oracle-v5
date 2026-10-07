@@ -2429,6 +2429,28 @@ describe('GET /v5/payment-proof', () => {
 // ─── GET /v5/pricing ──────────────────────────────────────────────────────────
 
 describe('GET /v5/pricing', () => {
+	// Buyer email is failing (Resend team mismatch, 2026-10-04): no served text may
+	// say a key arrives "via email" where the response carries it, and the paths that
+	// do email must point at the path that does not.
+	it('sandbox and free tiers do not promise email delivery the response does not depend on', async () => {
+		const body  = await fetchJSON('/v5/pricing');
+		const tiers = body.tiers as Array<{ id: string; description: string }>;
+		const sandbox = tiers.find((t) => t.id === 'sandbox')!;
+		const free    = tiers.find((t) => t.id === 'free')!;
+		expect(sandbox.description).not.toMatch(/via email/i);
+		expect(sandbox.description).toContain('returned in the response');
+		expect(free.description).toContain('currently unreliable');
+		expect(free.description).toContain('/v5/keys/instant');
+	});
+
+	it('ACCOUNT_NOT_FOUND points a Paddle buyer at /v5/claim, not at their inbox', async () => {
+		const body = await fetchJSON('/v5/errors/ACCOUNT_NOT_FOUND');
+		const text = JSON.stringify(body);
+		expect(text).not.toMatch(/check your email/i);
+		expect(text).toContain('/v5/claim');
+		expect(text).toContain('mike@headlessoracle.com');
+	});
+
 	it('returns 200 with tiers array and x402 metadata', async () => {
 		const res = await fetchWorker('/v5/pricing');
 		expect(res.status).toBe(200);
@@ -3580,6 +3602,33 @@ describe('Agent Skills discovery (agentskills.io 0.2.0)', () => {
 	it('unknown skill name returns 404', async () => {
 		const res = await fetchWorker('/.well-known/agent-skills/does-not-exist/SKILL.md');
 		expect(res.status).toBe(404);
+	});
+
+	// The mcp-tool-catalog skill listed verify_receipt as an MCP tool and said "five
+	// tools" while tools/list served four. Its ## Tools section must name exactly the
+	// tools POST /mcp tools/list serves, and the index must state the same count.
+	it('mcp-tool-catalog names exactly the tools POST /mcp tools/list serves', async () => {
+		const listed = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		const served = ((listed.result as Record<string, unknown>).tools as Array<{ name: string }>).map((t) => t.name);
+		const md     = await fetchWorker('/.well-known/agent-skills/mcp-tool-catalog/SKILL.md').then((r) => r.text());
+		const section = md.split('## Tools')[1].split('\n## ')[0];
+		const named  = [...section.matchAll(/^- ([a-z_]+) \{/gm)].map((m) => m[1]);
+		expect([...named].sort()).toEqual([...served].sort());
+		const front  = md.split('---')[1];
+		for (const name of served) expect(front).toContain(name);
+		expect(front).not.toContain('verify_receipt');
+		const index  = await fetchJSON('/.well-known/agent-skills/index.json');
+		const entry  = (index.skills as Array<{ name: string; description: string }>).find((s) => s.name === 'mcp-tool-catalog')!;
+		const words  = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+		expect(entry.description).toContain(`its ${words[served.length]} market-state tools`);
+	});
+
+	it('no agent skill describes verify_receipt as an MCP tool', async () => {
+		for (const name of ['verify-receipt', 'read-market-state', 'subscribe-halts', 'pay-with-x402', 'mcp-tool-catalog']) {
+			const md = await fetchWorker(`/.well-known/agent-skills/${name}/SKILL.md`).then((r) => r.text());
+			expect(md, name).not.toMatch(/verify_receipt is (also )?an MCP tool/);
+			expect(md, name).not.toMatch(/^- verify_receipt \{/m);
+		}
 	});
 });
 
@@ -18939,7 +18988,13 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 	it('(c) the seven pre-existing tiers and every non-tier field are byte-identical to production before H3a', async () => {
 		const body = await fetchJSON('/v5/pricing') as { tiers: Array<Record<string, unknown>> } & Record<string, unknown>;
 		expect(body.tiers.slice(0, 7).map((t) => t.id)).toEqual(['sandbox', 'free', 'x402', 'credits', 'builder', 'pro', 'protocol']);
-		expect(await sha256Hex(JSON.stringify(body.tiers.slice(0, 7)))).toBe('0cc0e4765f5e2f6224ac98b610f43b9187183a62ea3a4bacf5b5328129530768');
+		// 2026-10-07: the sandbox and free descriptions stopped promising email delivery
+		// (buyer email failing). Only those two strings moved: with the pre-change text
+		// put back, the seven tiers hash to the 2026-10-04 production pin.
+		const before = body.tiers.slice(0, 7).map((t) => ({ ...t }));
+		before[0].description = 'Instant sandbox key via email. 200 calls over 7 days. IP-fingerprinted — one per IP.';
+		before[1].description = 'Self-provision free API key via email. 500 calls/day.';
+		expect(await sha256Hex(JSON.stringify(before))).toBe('0cc0e4765f5e2f6224ac98b610f43b9187183a62ea3a4bacf5b5328129530768');
 		const rest: Record<string, unknown> = { ...body };
 		delete rest.tiers;
 		expect(await sha256Hex(JSON.stringify(rest))).toBe('03c9cd531c91d5a72419c58c98da2c9f39a61a11f82bef12b7396803377777ce');

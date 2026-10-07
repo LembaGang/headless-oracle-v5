@@ -4527,7 +4527,7 @@ function buildUpgradePaths(options?: { include_paid?: boolean; paid_first?: bool
 			method:          'POST',
 			url:             '/v5/keys/request',
 			body:            { email: '<your-email>' },
-			result:          'Free API key via email, 500 calls/day',
+			result:          'Free API key by email (delivery currently unreliable; instant_key returns the key in the response), 500 calls/day',
 			time_to_access:  '~ 2 minutes',
 		},
 		{
@@ -8803,7 +8803,7 @@ API keys are presented in the \`X-Oracle-Key\` request header on every keyed end
 ## 2. POST /v5/keys/request
 
 - Request: \`POST https://headlessoracle.com/v5/keys/request\` with JSON body \`{"email": "<address>"}\`.
-- Response: \`{"plan": "free", "message": "API key sent to your email"}\`. The key, beginning \`ho_free_\`, is delivered by email and is not in the response.
+- Response: \`{"plan": "free", "message": "API key sent to your email"}\`. The key, beginning \`ho_free_\`, is delivered by email and is not in the response. Email delivery is currently unreliable; section 1 (POST /v5/keys/instant) returns a key in the response.
 - Present it as: \`X-Oracle-Key: <key>\`.
 - Limits: ${FREE_TIER_DAILY_LIMIT} calls per day on the free plan. Requests are rate-limited per IP.
 
@@ -9204,7 +9204,7 @@ Install: pip install headless-oracle
 
 ## Related
 - read-market-state: how to fetch a receipt in the first place.
-- mcp-tool-catalog: verify_receipt is also an MCP tool and a REST endpoint at POST /v5/verify.
+- mcp-tool-catalog: the MCP tools. Verification is not one of them: verify offline, or via the REST endpoint POST /v5/verify.
 `;
 
 const SKILL_READ_MARKET_STATE_MD = `---
@@ -9352,7 +9352,7 @@ Retry example:
 
 const SKILL_MCP_TOOL_CATALOG_MD = `---
 name: mcp-tool-catalog
-description: Connect to the Headless Oracle MCP server and use its tools (get_market_status, get_market_schedule, list_exchanges, verify_receipt, get_payment_options) for pre-trade market-state verification.
+description: Connect to the Headless Oracle MCP server and use its tools (get_market_status, get_market_schedule, list_exchanges, get_payment_options) for pre-trade market-state verification.
 version: 1.0.0
 author: Headless Oracle
 license: MIT
@@ -9380,8 +9380,9 @@ Full machine-readable server card: https://headlessoracle.com/.well-known/mcp/se
 - get_market_status { mic }: Ed25519-signed OPEN/CLOSED/HALTED/UNKNOWN receipt. The pre-trade gate. UNKNOWN/HALTED = CLOSED.
 - get_market_schedule { mic }: next open/close UTC times, holidays, lunch breaks, DST-aware.
 - list_exchanges {}: directory of all 28 exchanges with MIC codes and timezones. Call at startup.
-- verify_receipt { receipt }: confirm an Ed25519 signature in-server (offline verification with the published key is preferred for agents).
 - get_payment_options {}: the upgrade ladder (sandbox, x402, credits, Builder).
+
+There is no verify_receipt MCP tool. Verify a receipt offline with @headlessoracle/verify (npm) or headless-oracle (PyPI), or via the REST endpoint POST /v5/verify.
 
 ## Usage pattern
 1. At startup, call list_exchanges to learn supported MICs.
@@ -9402,7 +9403,7 @@ const AGENT_SKILLS: Array<{ name: string; description: string; body: string }> =
 	{ name: 'read-market-state', description: 'Query the 28-exchange oracle for a signed OPEN/CLOSED/HALTED/UNKNOWN receipt as a pre-trade gate.',        body: SKILL_READ_MARKET_STATE_MD },
 	{ name: 'subscribe-halts',   description: 'Subscribe over SSE to signed market-state events and react the moment an exchange halts.',                   body: SKILL_SUBSCRIBE_HALTS_MD },
 	{ name: 'pay-with-x402',     description: 'Pay for paid Headless Oracle endpoints autonomously with USDC on Base via x402.',                            body: SKILL_PAY_WITH_X402_MD },
-	{ name: 'mcp-tool-catalog',  description: 'Connect to the Headless Oracle MCP server and use its five market-state tools.',                             body: SKILL_MCP_TOOL_CATALOG_MD },
+	{ name: 'mcp-tool-catalog',  description: 'Connect to the Headless Oracle MCP server and use its four market-state tools.',                             body: SKILL_MCP_TOOL_CATALOG_MD },
 ];
 
 // Agent-directory payload — shared by /agent-directory.json (worker-routed) and
@@ -14290,7 +14291,7 @@ export default {
 					PAYMENT_VERIFICATION_FAILED: { message: 'The on-chain USDC payment could not be verified.', resolution: 'Ensure the transaction is confirmed on Base mainnet, sent to the correct paymentAddress, and is < 300 seconds old.', http_status: 402 },
 					PAYMENT_ALREADY_USED:  { message: 'This transaction hash has already been used for a payment.', resolution: 'Each txHash can only be used once. Send a new USDC transaction.', http_status: 402 },
 					PAYMENT_EXPIRED:       { message: 'The transaction is older than 300 seconds.', resolution: 'Send a new USDC transaction and retry immediately.', http_status: 402 },
-					ACCOUNT_NOT_FOUND:     { message: 'No account found for this API key.', resolution: 'Verify your X-Oracle-Key. If subscribed via Paddle, check your email for the key.', http_status: 404 },
+					ACCOUNT_NOT_FOUND:     { message: 'No account found for this API key.', resolution: `Verify your X-Oracle-Key. If you paid via Paddle, POST /v5/claim with the claim_token from your checkout response returns the key for 24 hours; otherwise write to ${CONTACT_EMAIL} with the transaction ID from your Paddle receipt.`, http_status: 404 },
 					SANDBOX_LIMIT_REACHED: { message: 'Sandbox key has reached its 200-call limit.', resolution: `Upgrade to a credit pack ($5 for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder (${BUILDER_MONTHLY_SHORT}) for ${BUILDER_CALLS_PER_DAY} calls/day.`, http_status: 402 },
 					SANDBOX_KEY_EXPIRED:   { message: 'Sandbox key has expired (7-day TTL).', resolution: `Upgrade to a credit pack ($${PRICING.credit_pack_usd} for 1,000 calls) at https://headlessoracle.com/upgrade, or subscribe to Builder (${BUILDER_MONTHLY_SHORT}).`, http_status: 402 },
 					CREDITS_EXHAUSTED:     { message: 'Credit pack balance is zero.', resolution: `Purchase a new credit pack at https://headlessoracle.com/upgrade, or subscribe to Builder (${BUILDER_MONTHLY_SHORT}) for a daily allowance.`, http_status: 402 },
@@ -17139,7 +17140,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							duration:     '7 days',
 							key_prefix:   'sb_',
 							provision:    'POST /v5/sandbox',
-							description:  'Instant sandbox key via email. 200 calls over 7 days. IP-fingerprinted — one per IP.',
+							description:  'Instant sandbox key, returned in the response (send an email address in the body). 200 calls over 7 days. IP-fingerprinted — one per IP.',
 							features:     ['200 calls total', '28 exchanges', 'Ed25519 signed receipts', 'MCP tools included', 'No credit card'],
 						},
 						{
@@ -17150,7 +17151,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							calls_per_day: FREE_TIER_DAILY_LIMIT,
 							key_prefix:   'ho_free_',
 							provision:    'POST /v5/keys/request',
-							description:  'Self-provision free API key via email. 500 calls/day.',
+							description:  'Self-provision free API key by email. 500 calls/day. Email delivery is currently unreliable; POST /v5/keys/instant returns a free key in the response.',
 							features:     ['500 calls/day', '28 exchanges', 'Ed25519 signed receipts', 'MCP tools included', 'No credit card'],
 						},
 						{

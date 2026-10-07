@@ -82,6 +82,12 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-07 (committed, NOT deployed): served text stops promising email and a
+  fifth MCP tool.** Suite **1667 → 1671**. `/v5/pricing` sandbox ("returned in the
+  response") and free ("email currently unreliable; `/v5/keys/instant`") descriptions,
+  `/auth.md` §2, `buildUpgradePaths` `email_key`, and `/v5/errors/ACCOUNT_NOT_FOUND`
+  (now `/v5/claim`, else write to mike@). The H3a byte pin on the seven pricing tiers
+  now proves only those two descriptions moved. `verify_receipt` row below is closed.
 - **2026-10-05: H4a, the agent front door.** Live **`7b3bbfe5-93a9-4466-a0a6-e2cf0d466dd0`** (10:21:06Z, from `f2078ca`; B-115 exit 1 after the upload, routes unchanged). Suite
   **1635 → 1667**. From the Lead's 7-day traffic analysis.
   - **`/.well-known/agent-card.json`** is still 404 and still no card; the body is
@@ -596,15 +602,13 @@ is where in the minute the burst starts. Proved it still fails for the right
 reason: with the two limit constants temporarily at 9999 both tests went red
 with "expected 200 to be 429".
 
-### FLAGGED, NOT FIXED — `verify_receipt` is not an MCP tool
+### `verify_receipt` is not an MCP tool — CLOSED 2026-10-07 (not deployed)
 
-`MCP_TOOLS` has **four** entries — `get_market_status`, `get_market_schedule`,
-`list_exchanges`, `get_payment_options` — and `tools/list` serves `MCP_TOOLS`.
-But `src/index.ts` contradicts itself about it: one served surface says "Do not
-expect a `verify_receipt` MCP tool" while `/SKILL.md` and the agent-skills text
-list it among the MCP tools. **This file's own "5 tools" claims are wrong too.**
-Verification is REST-only (`POST /v5/verify`) or offline. Not fixed here — it
-touches several served agent-facing surfaces and is its own row.
+`tools/list` serves the four `MCP_TOOLS`. The `mcp-tool-catalog` and `verify-receipt`
+agent skills no longer list `verify_receipt` as one, and the skills index says "four";
+a test pins the catalog's `## Tools` list to `tools/list`. Verification is REST
+(`POST /v5/verify`) or offline. Not swept: `packages/headless-oracle-mcp/README.md`,
+`docs/` (not served by the worker).
 
 ### The placeholder guard (2026-09-07, T2b)
 
