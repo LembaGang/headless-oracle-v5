@@ -2326,7 +2326,13 @@ describe('POST /mcp', () => {
 			const result = body.result as Record<string, unknown>;
 			expect(result).toHaveProperty('x-oracle-note');
 			expect(typeof result['x-oracle-note']).toBe('string');
-			expect(result['x-oracle-note'] as string).toContain('https://headlessoracle.com/v5/keys/request');
+			// Was /v5/keys/request (email-only, served elsewhere as unreliable). The
+			// hint now names the route that returns the key in its response.
+			const note = result['x-oracle-note'] as string;
+			expect(note).toContain('POST https://headlessoracle.com/v5/keys/instant');
+			expect(note).toContain('"agent_id"');
+			expect(note).toContain('https://headlessoracle.com/oauth/token');
+			expect(note).not.toContain('/v5/keys/request');
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(kvKey);
 		}
@@ -3623,6 +3629,15 @@ describe('Agent Skills discovery (agentskills.io 0.2.0)', () => {
 		expect(entry.description).toContain(`its ${words[served.length]} market-state tools`);
 	});
 
+	// The skill said "Optional OAuth 2.0 bearer and X-Oracle-Key are accepted"; MCP
+	// reads only an OAuth access token from Bearer, never X-Oracle-Key.
+	it('mcp-tool-catalog does not claim MCP accepts X-Oracle-Key, and names the token exchange', async () => {
+		const md = await fetchWorker('/.well-known/agent-skills/mcp-tool-catalog/SKILL.md').then((r) => r.text());
+		expect(md).not.toMatch(/X-Oracle-Key (are|is) accepted/);
+		expect(md).toContain('POST https://headlessoracle.com/oauth/token');
+		expect(md).toContain('Authorization: Bearer <access_token>');
+	});
+
 	it('no agent skill describes verify_receipt as an MCP tool', async () => {
 		for (const name of ['verify-receipt', 'read-market-state', 'subscribe-halts', 'pay-with-x402', 'mcp-tool-catalog']) {
 			const md = await fetchWorker(`/.well-known/agent-skills/${name}/SKILL.md`).then((r) => r.text());
@@ -4169,6 +4184,13 @@ describe('POST /mcp — OAuth rate limiting', () => {
 			const text = JSON.parse((result.content as Array<{ text: string }>)[0].text) as Record<string, unknown>;
 			expect(text.error).toBe('UNAUTHENTICATED_LIMIT_REACHED');
 			expect(text).toHaveProperty('upgrade_url');
+			// MCP resolves a Bearer only as an OAuth access token; a raw key there is
+			// anonymous. The message must not tell callers to send their key as Bearer.
+			const msg = String(text.message);
+			expect(msg).not.toMatch(/key as a Bearer/i);
+			expect(msg).toContain('POST https://headlessoracle.com/oauth/token');
+			expect(msg).toContain('grant_type=client_credentials&client_id=');
+			expect(msg).toContain('Authorization: Bearer <access_token>');
 		} finally {
 			await env.ORACLE_TELEMETRY.delete(unauthKey);
 		}
@@ -9273,6 +9295,10 @@ describe('POST /v5/sandbox', () => {
 		expect(body.email_captured).toBe(true);
 		expect(body.calls_remaining).toBe(200);
 		expect(body.follow_up).toBeTruthy();
+		// The key is in this response and buyer email is failing: follow_up must
+		// not send the agent to an inbox for it.
+		expect(body.follow_up).not.toMatch(/check your inbox/i);
+		expect(body.follow_up).toContain('in this response');
 		expect(body.upgrade).toBeTruthy();
 		expect(body.quickstart.curl).toContain(body.api_key);
 		expect(body.quickstart.node).toContain(body.api_key);

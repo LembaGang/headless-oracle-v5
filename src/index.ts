@@ -9376,7 +9376,7 @@ Wire an MCP-capable agent (Claude Desktop, Cursor, Cline, Windsurf, or any MCP c
 ### Remote (Streamable HTTP)
 - Endpoint: POST https://headlessoracle.com/mcp
 - Protocol version: 2024-11-05
-- No auth required for tool calls (anonymous reads). Optional OAuth 2.0 bearer and X-Oracle-Key are accepted for higher limits.
+- No auth required for tool calls (anonymous reads). For keyed limits, exchange an API key at POST https://headlessoracle.com/oauth/token (form-encoded grant_type=client_credentials&client_id=<API key>) for a 1-hour access_token and send Authorization: Bearer <access_token>. MCP reads neither X-Oracle-Key nor a raw API key in the Bearer header.
 
 ### Local (stdio)
 - Package: npx headless-oracle-mcp
@@ -12206,7 +12206,7 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 			const toolsResult: Record<string, unknown> = { tools: MCP_TOOLS };
 			if (requestCount > 50) {
 				toolsResult['x-oracle-note'] =
-					"You're using the demo tier. Get a free API key at https://headlessoracle.com/v5/keys/request for higher limits and production receipts.";
+					'You\'re using the anonymous tier. Get a free API key, returned in the response, with POST https://headlessoracle.com/v5/keys/instant and JSON {"agent_id":"<unique id>"}; for higher MCP limits exchange it at POST https://headlessoracle.com/oauth/token (form-encoded grant_type=client_credentials&client_id=<key>) and send the access_token as Authorization: Bearer.';
 			}
 			return rpcResult(toolsResult);
 		}
@@ -12261,7 +12261,7 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 							isError: true,
 							content: [{ type: 'text', text: JSON.stringify({
 								error:       'UNAUTHENTICATED_LIMIT_REACHED',
-								message:     'Free market status checks exhausted. Add your sandbox key as a Bearer token or upgrade.',
+								message:     'Free market status checks exhausted. MCP does not read a raw API key: exchange one at POST https://headlessoracle.com/oauth/token (form-encoded body grant_type=client_credentials&client_id=<your API key>) for a 1-hour access_token, and send Authorization: Bearer <access_token>. No key yet? POST https://headlessoracle.com/v5/keys/instant with JSON {"agent_id":"<unique id>"} returns a free key in the response. Or upgrade.',
 								upgrade_url: 'https://headlessoracle.com/upgrade',
 							}) }],
 						});
@@ -18177,7 +18177,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 					expires_at:      expiresAt,
 					calls_remaining: 200,
 					upgrade:         'https://headlessoracle.com/upgrade',
-					follow_up:       'Check your inbox for your key and quickstart.',
+					follow_up:       'Your key is api_key in this response; store it now. A copy is also emailed, but email delivery is currently unreliable and it may not arrive.',
 					quickstart: {
 						curl:   `curl 'https://api.headlessoracle.com/v5/status?mic=XNYS' -H 'X-Oracle-Key: ${rawKey}'`,
 						node:   `const res = await fetch('https://api.headlessoracle.com/v5/status?mic=XNYS', {headers: {'X-Oracle-Key': '${rawKey}'}})`,
