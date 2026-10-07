@@ -82,6 +82,16 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-07 (later, NOT deployed): credits and x402 audit fixes.** Suite **1671 →
+  1693**. `/v5/credits/purchase` sizes the grant from the on-chain amount
+  (`verifyX402Payment` returns `amount_units`), never the caller's header, and refuses
+  any non-free plan with 409 `CREDITS_NOT_APPLICABLE` before payment. Balance and
+  usage reads spend no credit (`checkApiKey(..., {spendCredit:false})`); a pack-key
+  balance read with the store down is 503, not 403. MCP debits a credit-pack token one
+  credit per call (`spendPackCredit`). MCP auth text names the `/oauth/token` exchange
+  (a raw key in Bearer is anonymous). No SLA promised in beta. **Open**: `/v5/x402/mint`
+  does not bind a payment to its payer and its replay mark is not atomic — see
+  `docs/security/x402-mint-payment-binding.md` (founder decision).
 - **2026-10-07: served text stops promising email and a fifth MCP tool.** Live
   **`2e68085f-a934-4869-9731-efc85b20f59b`** (08:34Z, from `c19824b`; B-115 exit 1,
   routes unchanged). Suite **1667 → 1671**. `/v5/pricing` sandbox ("returned in the
@@ -200,7 +210,7 @@ here is carried forward from an earlier stamp unverified.
     the witness has succeeded yet.
 - **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
   `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
-- **Tests**: 1671 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1693 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
