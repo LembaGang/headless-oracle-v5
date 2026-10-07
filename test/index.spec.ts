@@ -14537,22 +14537,41 @@ describe('GET /docs/integrations/:slug — wildcard handler', () => {
 		expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
 	});
 
+	// The Pages passthrough is fetch(request) to the test host. Unstubbed, that
+	// went to the network: where example.com is unreachable (an egress-filtered
+	// sandbox), workerd threw "internal error" out of worker.fetch and both tests
+	// below failed for a reason unrelated to the handler. Pages is stubbed, so
+	// each test proves the request was forwarded and not served from the map.
+	async function viaStubbedPages(path: string): Promise<{ response: Response; forwarded: string[] }> {
+		const forwarded: string[] = [];
+		const original = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+			if (new URL(url).hostname === 'example.com') {
+				forwarded.push(new URL(url).pathname);
+				return new Response('<!doctype html><title>Not found</title>', { status: 404, headers: { 'Content-Type': 'text/html' } });
+			}
+			return original(input, init);
+		}) as typeof fetch;
+		try {
+			return { response: await fetchWorker(path), forwarded };
+		} finally {
+			globalThis.fetch = original;
+		}
+	}
+
 	it('unknown slug falls through (not served as markdown from the map)', async () => {
 		// A slug not in INTEGRATION_GUIDES must not return our markdown payload.
-		// In the test harness the Pages passthrough target is unreachable, so
-		// whatever comes back must not be a 200 text/markdown response from us.
-		const response = await fetchWorker('/docs/integrations/this-guide-does-not-exist');
-		if (response.status === 200) {
-			expect(response.headers.get('Content-Type') || '').not.toContain('text/markdown');
-		}
+		const { response, forwarded } = await viaStubbedPages('/docs/integrations/this-guide-does-not-exist');
+		expect(forwarded).toEqual(['/docs/integrations/this-guide-does-not-exist']);
+		expect(response.headers.get('Content-Type') || '').not.toContain('text/markdown');
 	});
 
 	it('does not serve uppercase slugs (regex is lowercase-only)', async () => {
-		const response = await fetchWorker('/docs/integrations/Korea-Investment-MCP');
-		// Must not return our markdown — either 404, 5xx, or Pages passthrough.
-		if (response.status === 200) {
-			expect(response.headers.get('Content-Type') || '').not.toContain('text/markdown');
-		}
+		// Must not return our markdown: the request goes to the Pages passthrough.
+		const { response, forwarded } = await viaStubbedPages('/docs/integrations/Korea-Investment-MCP');
+		expect(forwarded).toEqual(['/docs/integrations/Korea-Investment-MCP']);
+		expect(response.headers.get('Content-Type') || '').not.toContain('text/markdown');
 	});
 });
 
