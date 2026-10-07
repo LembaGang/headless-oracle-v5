@@ -82,6 +82,13 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-07 (latest, NOT deployed): mint claim + MCP keys.** Suite **1693 → 1713**.
+  `/v5/x402/mint` claims each tx hash once in D1 `HALT_ARCHIVE` (`x402_mint_claims` /
+  `x402_mint_outcomes`, auto-created); store down → 503, key-store failure after claim →
+  500 `MINT_KEY_NOT_STORED` + revenue-pulse alert. Payer binding still open. `/mcp`
+  reads an API key as Bearer or `X-Oracle-Key`; an HO-issued credential that is not
+  accepted → JSON-RPC error; foreign Bearer values stay anonymous
+  (`HO_ISSUED_CREDENTIAL_SHAPES`).
 - **2026-10-07 (later, NOT deployed): credits and x402 audit fixes.** Suite **1671 →
   1693**. `/v5/credits/purchase` sizes the grant from the on-chain amount
   (`verifyX402Payment` returns `amount_units`), never the caller's header, and refuses
@@ -210,7 +217,7 @@ here is carried forward from an earlier stamp unverified.
     the witness has succeeded yet.
 - **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
   `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
-- **Tests**: 1693 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1713 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.

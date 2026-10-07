@@ -3616,6 +3616,15 @@ describe('Agent Skills discovery (agentskills.io 0.2.0)', () => {
 	// The mcp-tool-catalog skill listed verify_receipt as an MCP tool and said "five
 	// tools" while tools/list served four. Its ## Tools section must name exactly the
 	// tools POST /mcp tools/list serves, and the index must state the same count.
+	it('openapi /mcp description names exactly the tools POST /mcp tools/list serves', async () => {
+		const listed = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+		const served = ((listed.result as Record<string, unknown>).tools as Array<{ name: string }>).map((t) => t.name);
+		const spec   = await fetchJSON('/openapi.json') as { paths: Record<string, { post: { description: string } }> };
+		const desc   = spec.paths['/mcp'].post.description;
+		const named  = (desc.match(/Tools: ([a-z_, ]+)\./) ?? [])[1]?.split(', ') ?? [];
+		expect([...named].sort()).toEqual([...served].sort());
+	});
+
 	it('mcp-tool-catalog names exactly the tools POST /mcp tools/list serves', async () => {
 		const listed = await postMcpJSON({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 		const served = ((listed.result as Record<string, unknown>).tools as Array<{ name: string }>).map((t) => t.name);

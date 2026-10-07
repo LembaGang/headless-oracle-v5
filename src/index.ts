@@ -10215,7 +10215,7 @@ const OPENAPI_SPEC = {
 				tags:        ['MCP'],
 				summary:     'MCP (Model Context Protocol) endpoint',
 				description: 'JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05). ' +
-					'Tools: get_market_status, get_market_schedule, list_exchanges. No authentication required. ' +
+					'Tools: ' + MCP_TOOLS.map((t) => t.name).join(', ') + '. No authentication required. ' +
 					'Optional: an API key as Authorization: Bearer <api key> or X-Oracle-Key, or an OAuth access token from /oauth/token, meters calls against that key\'s plan; an API key or token issued by Headless Oracle that is not accepted is answered with a JSON-RPC error; other Authorization values are ignored.',
 				responses: {
 					'200': { description: 'JSON-RPC 2.0 response' },
