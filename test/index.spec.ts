@@ -14022,6 +14022,65 @@ describe('/v5/credits/balance — reads the balance the key spends, and spends n
 		expect(body.last_purchased).toBe('2026-10-02T00:00:00Z');
 	});
 
+	// The pack record is read twice: once inside checkApiKey (must succeed), then
+	// again for the balance. secondRead decides what that second read sees.
+	async function balanceWithSecondRead(key: string, secondRead: 'throw' | 'null') {
+		const hash = await hashOf(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 5 }));
+		let reads = 0;
+		const kv = env.ORACLE_API_KEYS;
+		const wrapped = {
+			get: async (k: string, ...rest: unknown[]) => {
+				if (k === hash && ++reads > 1) {
+					if (secondRead === 'throw') throw new Error('KV unavailable');
+					return null;
+				}
+				return (kv.get as (k: string, ...r: unknown[]) => Promise<string | null>)(k, ...rest);
+			},
+			put:    kv.put.bind(kv),
+			delete: kv.delete.bind(kv),
+			list:   kv.list.bind(kv),
+		} as unknown as typeof env.ORACLE_API_KEYS;
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/v5/credits/balance', { headers: { 'X-Oracle-Key': key } });
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, { ...env, ORACLE_API_KEYS: wrapped } as typeof env, ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+
+	it('a pack balance store that throws answers 503 SERVICE_UNAVAILABLE with Retry-After, not 403', async () => {
+		const res = await balanceWithSecondRead('ho_crd_' + 'u1'.repeat(32), 'throw');
+		expect(res.status).toBe(503);
+		expect(res.headers.get('Retry-After')).toBe('10');
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('SERVICE_UNAVAILABLE');
+		expect(body.retry_after_seconds).toBe(10);
+	});
+
+	it('a KV miss with Supabase failing (readKeyRecord unavailable) answers 503, not 403', async () => {
+		const prior = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : (input instanceof URL ? input.toString() : (input as Request).url);
+			if (url.includes('supabase.co') && url.includes('api_keys')) {
+				return new Response(JSON.stringify({ code: 'XX000', message: 'upstream down', details: null, hint: null }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+			}
+			return prior(input, init);
+		}) as typeof fetch;
+		try {
+			const res = await balanceWithSecondRead('ho_crd_' + 'u2'.repeat(32), 'null');
+			expect(res.status).toBe(503);
+			expect(res.headers.get('Retry-After')).toBe('10');
+		} finally {
+			globalThis.fetch = prior;
+		}
+	});
+
+	it('a record genuinely gone between the two reads (every store says no such key) still answers 403 INVALID_API_KEY', async () => {
+		const res = await balanceWithSecondRead('ho_crd_' + 'u3'.repeat(32), 'null'); // default stub: PGRST116, no rows
+		expect(res.status).toBe(403);
+		expect((await res.json() as Record<string, unknown>).error).toBe('INVALID_API_KEY');
+	});
+
 	it('rejections are unchanged: unknown key 403, cancelled pack 402 CREDITS_EXHAUSTED, empty pack 402 CREDITS_EXHAUSTED', async () => {
 		const unknown = await fetchWorker('/v5/credits/balance', { headers: { 'X-Oracle-Key': 'ho_crd_' + 'zz'.repeat(32) } });
 		expect(unknown.status).toBe(403);
@@ -14038,6 +14097,19 @@ describe('/v5/credits/balance — reads the balance the key spends, and spends n
 		const r2 = await fetchWorker('/v5/credits/balance', { headers: { 'X-Oracle-Key': empty } });
 		expect(r2.status).toBe(402);
 		expect((await r2.json() as Record<string, unknown>).error).toBe('CREDITS_EXHAUSTED');
+	});
+});
+
+describe('GET /v5/usage — a usage read spends no credit', () => {
+	it('a credit-pack key with balance 5 reads usage twice and still has 5', async () => {
+		const key  = 'ho_crd_' + 'us'.repeat(32);
+		const buf  = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+		const hash = Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 5 }));
+		expect((await fetchWorker('/v5/usage', { headers: { 'X-Oracle-Key': key } })).status).toBe(200);
+		expect((await fetchWorker('/v5/usage', { headers: { 'X-Oracle-Key': key } })).status).toBe(200);
+		const rec = JSON.parse((await env.ORACLE_API_KEYS.get(hash)) ?? '{}') as { balance?: number };
+		expect(rec.balance).toBe(5);
 	});
 });
 
