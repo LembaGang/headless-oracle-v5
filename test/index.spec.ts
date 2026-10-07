@@ -13891,6 +13891,64 @@ describe('/v5/credits/balance — additional cases', () => {
 	});
 });
 
+// /v5/credits/balance authenticated through checkApiKey, which debits a
+// credit-pack key on every call, and then reported credits:{hash}, which a
+// credit-pack key never spends from (always 0 for it).
+describe('/v5/credits/balance — reads the balance the key spends, and spends none', () => {
+	async function hashOf(value: string): Promise<string> {
+		const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+		return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+
+	it('a Paddle credit-pack key with balance 5 reads 5 twice in a row, and the record still holds 5', async () => {
+		const key  = 'ho_crd_' + 'cb'.repeat(32);
+		const hash = await hashOf(key);
+		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({
+			tier: 'credits', status: 'active', balance: 5, created_at: '2026-10-01T12:00:00.000Z', source: 'paddle_credits',
+		}));
+		const first  = await fetchWorker('/v5/credits/balance', { headers: { 'X-Oracle-Key': key } });
+		expect(first.status).toBe(200);
+		const b1 = await first.json() as Record<string, unknown>;
+		const second = await fetchWorker('/v5/credits/balance', { headers: { 'X-Oracle-Key': key } });
+		expect(second.status).toBe(200);
+		const b2 = await second.json() as Record<string, unknown>;
+		expect(b1.balance).toBe(5);
+		expect(b1.estimated_requests_remaining).toBe(5);
+		expect(b1.last_purchased).toBe('2026-10-01T12:00:00.000Z');
+		expect(b2.balance).toBe(5);
+		const rec = JSON.parse((await env.ORACLE_API_KEYS.get(hash)) ?? '{}') as { balance?: number };
+		expect(rec.balance).toBe(5);
+	});
+
+	it('a free key with telemetry credits still reads them', async () => {
+		const key  = 'ho_free_' + 'cf'.repeat(32);
+		const hash = await setupFreeKey(key);
+		await env.ORACLE_TELEMETRY.put(`credits:${hash}`, JSON.stringify({ balance: 7, last_purchased: '2026-10-02T00:00:00Z' }));
+		const body = await fetchJSON('/v5/credits/balance', { headers: { 'X-Oracle-Key': key } });
+		expect(body.balance).toBe(7);
+		expect(body.estimated_requests_remaining).toBe(7);
+		expect(body.last_purchased).toBe('2026-10-02T00:00:00Z');
+	});
+
+	it('rejections are unchanged: unknown key 403, cancelled pack 402 CREDITS_EXHAUSTED, empty pack 402 CREDITS_EXHAUSTED', async () => {
+		const unknown = await fetchWorker('/v5/credits/balance', { headers: { 'X-Oracle-Key': 'ho_crd_' + 'zz'.repeat(32) } });
+		expect(unknown.status).toBe(403);
+		expect((await unknown.json() as Record<string, unknown>).error).toBe('INVALID_API_KEY');
+
+		const cancelled = 'ho_crd_' + 'cx'.repeat(32);
+		await env.ORACLE_API_KEYS.put(await hashOf(cancelled), JSON.stringify({ tier: 'credits', status: 'cancelled', balance: 5 }));
+		const r1 = await fetchWorker('/v5/credits/balance', { headers: { 'X-Oracle-Key': cancelled } });
+		expect(r1.status).toBe(402);
+		expect((await r1.json() as Record<string, unknown>).error).toBe('CREDITS_EXHAUSTED');
+
+		const empty = 'ho_crd_' + 'ce'.repeat(32);
+		await env.ORACLE_API_KEYS.put(await hashOf(empty), JSON.stringify({ tier: 'credits', status: 'active', balance: 0 }));
+		const r2 = await fetchWorker('/v5/credits/balance', { headers: { 'X-Oracle-Key': empty } });
+		expect(r2.status).toBe(402);
+		expect((await r2.json() as Record<string, unknown>).error).toBe('CREDITS_EXHAUSTED');
+	});
+});
+
 // ─── /.well-known/* endpoints — comprehensive ───────────────────────────────
 
 describe('/.well-known/* endpoints — coverage', () => {
