@@ -10996,10 +10996,10 @@ const OPENAPI_SPEC = {
 						description: 'Credits added',
 						content: { 'application/json': { schema: {
 							type: 'object',
+							required: ['purchased', 'message'],
 							properties: {
-								credits_added:    { type: 'integer' },
-								new_balance:      { type: 'integer' },
-								tier:             { type: 'string' },
+								purchased: { type: 'integer', description: 'Credits added by this payment (1, 100 or 1000, sized from the verified on-chain amount). The new total is at GET /v5/credits/balance.' },
+								message:   { type: 'string', example: '1000 credits added to your account' },
 							},
 						} } },
 					},
@@ -17261,8 +17261,8 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							calls_per_day: null,
 							key_prefix:   'ho_live_',
 							provision:    'POST /v5/checkout',
-							description:  'Unlimited calls/day. Unlimited webhooks. Enterprise SLA.',
-							features:     ['Unlimited calls/day', 'Unlimited webhooks', '28 exchanges', 'Enterprise SLA', 'Paddle billing'],
+							description:  'Unlimited calls/day. Unlimited webhooks. Dedicated support and direct engineering access; service levels by agreement after the public beta.',
+							features:     ['Unlimited calls/day', 'Unlimited webhooks', '28 exchanges', 'Dedicated support', 'Paddle billing'],
 						},
 						// H3a (G6): Chirindo Witness. The free pool and the two
 						// Evidence plans, projected from the constants the witness
