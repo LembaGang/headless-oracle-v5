@@ -82,23 +82,22 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-07 (latest, NOT deployed): mint claim + MCP keys.** Suite **1693 → 1713**.
+- **2026-10-07 (latest, NOT deployed): mint claim + MCP keys.** Suite **1693 → 1714**.
   `/v5/x402/mint` claims each tx hash once in D1 `HALT_ARCHIVE` (`x402_mint_claims` /
   `x402_mint_outcomes`, auto-created); store down → 503, key-store failure after claim →
   500 `MINT_KEY_NOT_STORED` + revenue-pulse alert. Payer binding still open. `/mcp`
   reads an API key as Bearer or `X-Oracle-Key`; an HO-issued credential that is not
   accepted → JSON-RPC error; foreign Bearer values stay anonymous
   (`HO_ISSUED_CREDENTIAL_SHAPES`).
-- **2026-10-07 (later, NOT deployed): credits and x402 audit fixes.** Suite **1671 →
-  1693**. `/v5/credits/purchase` sizes the grant from the on-chain amount
-  (`verifyX402Payment` returns `amount_units`), never the caller's header, and refuses
-  any non-free plan with 409 `CREDITS_NOT_APPLICABLE` before payment. Balance and
-  usage reads spend no credit (`checkApiKey(..., {spendCredit:false})`); a pack-key
-  balance read with the store down is 503, not 403. MCP debits a credit-pack token one
-  credit per call (`spendPackCredit`). MCP auth text names the `/oauth/token` exchange
-  (a raw key in Bearer is anonymous). No SLA promised in beta. **Open**: `/v5/x402/mint`
-  does not bind a payment to its payer and its replay mark is not atomic — see
-  `docs/security/x402-mint-payment-binding.md` (founder decision).
+- **2026-10-07 (later): credits and x402 audit fixes.** Live **`a32322b5-41f5-43a4-93f4-d6aa4e8ef4e1`**
+  (20:04Z, from `f258e67`; B-115 exit 1, routes unchanged; smoke 11/11). Suite 1671 → 1693.
+  Credits grant sized from the on-chain amount; non-free plans 409 `CREDITS_NOT_APPLICABLE`;
+  balance/usage reads spend no credit; MCP pack tokens debited per call. **Signing
+  exception (founder-approved)**: the eight commits were re-signed with `--no-verify`
+  (signatures only, trees identical, `git diff` empty); the gate had passed on each tree
+  and CI Tests/CI passed on `f258e67`. **Since then**: the unit suite cannot reach the
+  network (`vitest.config.mts` `outboundService` → 503; it had been sending real Resend
+  calls), and `scripts/land.ps1` re-signs, gates once, pushes, deploys.
 - **2026-10-07: served text stops promising email and a fifth MCP tool.** Live
   **`2e68085f-a934-4869-9731-efc85b20f59b`** (08:34Z, from `c19824b`; B-115 exit 1,
   routes unchanged). Suite **1667 → 1671**. `/v5/pricing` sandbox ("returned in the
@@ -217,12 +216,12 @@ here is carried forward from an earlier stamp unverified.
     the witness has succeeded yet.
 - **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
   `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
-- **Tests**: 1713 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1714 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
 - **Worker**: see the 2026-10-07 entry above for the live version. Previous live
-  versions: `7b3bbfe5…` (10-05, H4a), `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
+  versions: `2e68085f…` (10-07 08:34Z), `7b3bbfe5…` (10-05, H4a), `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
   (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and all four of 10-04 each exited 1
   on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
