@@ -11013,7 +11013,7 @@ const OPENAPI_SPEC = {
 			get: {
 				tags:        ['Billing'],
 				summary:     'Check prepaid credit balance',
-				description: 'Returns the current credit balance for the authenticated key. Credits are consumed 1-per-request on /v5/status and /v5/batch when the free tier limit is reached.',
+				description: 'Returns the credit balance the authenticated key actually spends, and reading it spends none. For a credit-pack key (tier credits) it is the pack balance, consumed 1-per-call. For a free key it is the prepaid credits from /v5/credits/purchase, consumed 1-per-request on /v5/status and /v5/batch when the free tier limit is reached.',
 				security:    [{ ApiKeyAuth: [] }],
 				responses: {
 					'200': {
@@ -17599,11 +17599,28 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				if (!apiKey) {
 					return json({ error: 'API_KEY_REQUIRED', message: 'Include X-Oracle-Key header' }, 401);
 				}
-				const balanceAuth = await checkApiKey(apiKey, env);
+				// A balance read is not a capacity call: it must not spend the credit
+				// it is reporting on. Rejections (unknown, inactive, zero balance) are
+				// exactly checkApiKey's, as before.
+				const balanceAuth = await checkApiKey(apiKey, env, { spendCredit: false });
 				if (!balanceAuth.allowed) {
 					return json({ error: balanceAuth.error, message: balanceAuth.message }, balanceAuth.status);
 				}
 				const keyHash = await sha256Hex(apiKey);
+				if (balanceAuth.plan === 'credits') {
+					// A credit-pack key spends the balance on its ORACLE_API_KEYS record,
+					// not credits:{hash} (that is the free-plan overflow store).
+					const read = await readKeyRecord(keyHash, env);
+					if (read.state !== 'found' || typeof read.record.balance !== 'number') {
+						return json({ error: 'INVALID_API_KEY', message: 'Invalid API key' }, 403);
+					}
+					const packRecord = read.record as StoredKeyRecord & { created_at?: string };
+					return await withMigrationNotice(json({
+						balance:                      packRecord.balance,
+						estimated_requests_remaining: packRecord.balance,
+						last_purchased:               packRecord.created_at || null,
+					}));
+				}
 				const credits = await getCreditBalance(keyHash, env);
 				return await withMigrationNotice(json({
 					balance:                      credits.balance,
