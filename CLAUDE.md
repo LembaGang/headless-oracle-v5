@@ -82,12 +82,13 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-07 (committed, NOT deployed): served text stops promising email and a
-  fifth MCP tool.** Suite **1667 → 1671**. `/v5/pricing` sandbox ("returned in the
+- **2026-10-07: served text stops promising email and a fifth MCP tool.** Live
+  **`2e68085f-a934-4869-9731-efc85b20f59b`** (08:34Z, from `c19824b`; B-115 exit 1,
+  routes unchanged). Suite **1667 → 1671**. `/v5/pricing` sandbox ("returned in the
   response") and free ("email currently unreliable; `/v5/keys/instant`") descriptions,
   `/auth.md` §2, `buildUpgradePaths` `email_key`, and `/v5/errors/ACCOUNT_NOT_FOUND`
-  (now `/v5/claim`, else write to mike@). The H3a byte pin on the seven pricing tiers
-  now proves only those two descriptions moved. `verify_receipt` row below is closed.
+  (now `/v5/claim`, else write to mike@). The H3a pricing pin proves only those two
+  descriptions moved. `verify_receipt` row below is closed.
 - **2026-10-05: H4a, the agent front door.** Live **`7b3bbfe5-93a9-4466-a0a6-e2cf0d466dd0`** (10:21:06Z, from `f2078ca`; B-115 exit 1 after the upload, routes unchanged). Suite
   **1635 → 1667**. From the Lead's 7-day traffic analysis.
   - **`/.well-known/agent-card.json`** is still 404 and still no card; the body is
@@ -199,12 +200,12 @@ here is carried forward from an earlier stamp unverified.
     the witness has succeeded yet.
 - **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
   `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
-- **Tests**: 1667 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1671 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
-- **Worker**: see the 2026-10-05 H4a entry above for the live version. Previous live
-  versions: `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
+- **Worker**: see the 2026-10-07 entry above for the live version. Previous live
+  versions: `7b3bbfe5…` (10-05, H4a), `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
   (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and all four of 10-04 each exited 1
   on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
@@ -602,13 +603,13 @@ is where in the minute the burst starts. Proved it still fails for the right
 reason: with the two limit constants temporarily at 9999 both tests went red
 with "expected 200 to be 429".
 
-### `verify_receipt` is not an MCP tool — CLOSED 2026-10-07 (not deployed)
+### `verify_receipt` is not an MCP tool — CLOSED 2026-10-07 (live `2e68085f`)
 
 `tools/list` serves the four `MCP_TOOLS`. The `mcp-tool-catalog` and `verify-receipt`
-agent skills no longer list `verify_receipt` as one, and the skills index says "four";
-a test pins the catalog's `## Tools` list to `tools/list`. Verification is REST
+agent skills no longer list `verify_receipt`; the index says "four";
+a test pins its `## Tools` list to `tools/list`. Verification is REST
 (`POST /v5/verify`) or offline. Not swept: `packages/headless-oracle-mcp/README.md`,
-`docs/` (not served by the worker).
+`docs/` (not served).
 
 ### The placeholder guard (2026-09-07, T2b)
 
