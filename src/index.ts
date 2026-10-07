@@ -3738,7 +3738,7 @@ async function verifyX402Payment(
 	payment: X402Payment,
 	paymentAddress: string,
 	env: Env,
-): Promise<{ valid: boolean; detail?: string }> {
+): Promise<{ valid: boolean; detail?: string; amount_units?: string }> {
 	// Accept all common Base mainnet network identifiers: 'base-mainnet' (legacy),
 	// 'base' (x402 v1/v2 standard), 'eip155:8453' (CAIP-2). Agents construct payments
 	// using whatever network name the 402 response told them — we must accept all.
@@ -3849,7 +3849,10 @@ async function verifyX402Payment(
 		await env.ORACLE_TELEMETRY.put('x402_last_payment_tx', txHash).catch(() => {});
 	} catch { /* best-effort */ }
 	console.log(JSON.stringify({ event: 'X402_PAYMENT_VERIFIED', tx_hash: txHash, amount_units: amountPaid.toString() }));
-	return { valid: true };
+	// amount_units is the value of the USDC Transfer log read from the chain
+	// above, never the caller's header. A caller that sizes anything by the
+	// amount paid must use this, not payment.amount.
+	return { valid: true, amount_units: amountPaid.toString() };
 }
 
 // Generates a CDP API JWT for authenticating to api.cdp.coinbase.com.
@@ -17530,11 +17533,19 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						payment = parsed as X402Payment;
 					}
 				} catch { /* not raw JSON — fall through to facilitator */ }
+				// The amount the chain says was paid. payment.amount is written by
+				// the caller and is never used to size the grant.
+				let verifiedUnits: bigint | null = null;
 				if (payment) {
 					const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
 					if (!verify.valid) {
 						return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${verify.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
 					}
+					if (verify.amount_units === undefined) {
+						// Fail closed: a valid result with no verified amount grants nothing.
+						return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: 'Payment failed: verified amount unavailable' }, 402, X402_RESPONSE_HEADERS);
+					}
+					verifiedUnits = BigInt(verify.amount_units);
 				} else {
 					// Try base64 x402 facilitator
 					const resource = 'https://headlessoracle.com/v5/credits/purchase';
@@ -17543,11 +17554,13 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${facResult.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
 					}
 				}
-				// Determine credit grant: direct on-chain can pay variable amounts; facilitator = 1 credit
-				const amountPaid = payment ? BigInt(payment.amount || '0') : BigInt(1000);
+				// Determine credit grant: direct on-chain can pay variable amounts, sized
+				// from the on-chain Transfer amount only; facilitator = 1 credit.
 				let creditsToAdd = 1; // default: 1 credit per 0.001 USDC
-				if (amountPaid >= BigInt(800000)) creditsToAdd = 1000;       // 0.80 USDC → 1000 credits
-				else if (amountPaid >= BigInt(90000)) creditsToAdd = 100;    // 0.09 USDC → 100 credits
+				if (verifiedUnits !== null) {
+					if (verifiedUnits >= BigInt(800000)) creditsToAdd = 1000;       // 0.80 USDC → 1000 credits
+					else if (verifiedUnits >= BigInt(90000)) creditsToAdd = 100;    // 0.09 USDC → 100 credits
+				}
 				const keyHash = await sha256Hex(apiKey);
 				await addCredits(keyHash, creditsToAdd, env);
 				return await withMigrationNotice(json({ purchased: creditsToAdd, message: `${creditsToAdd} credits added to your account` }));
