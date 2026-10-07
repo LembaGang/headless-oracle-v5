@@ -9478,7 +9478,7 @@ Wire an MCP-capable agent (Claude Desktop, Cursor, Cline, Windsurf, or any MCP c
 ### Remote (Streamable HTTP)
 - Endpoint: POST https://headlessoracle.com/mcp
 - Protocol version: 2024-11-05
-- No auth required for tool calls (anonymous reads). For keyed limits, send your API key as Authorization: Bearer <api key> or X-Oracle-Key: <api key>; calls then count against that key's plan, as on REST. An OAuth access token from POST https://headlessoracle.com/oauth/token (form-encoded grant_type=client_credentials&client_id=<API key>) is also accepted as the Bearer value. A credential that is sent and not accepted (unknown, expired, out of quota) is answered with a JSON-RPC error, never served as anonymous.
+- No auth required for tool calls (anonymous reads). For keyed limits, send your API key as Authorization: Bearer <api key> or X-Oracle-Key: <api key>; calls then count against that key's plan, as on REST. An OAuth access token from POST https://headlessoracle.com/oauth/token (form-encoded grant_type=client_credentials&client_id=<API key>) is also accepted as the Bearer value. An API key or token issued by Headless Oracle that is not accepted (unknown, expired, out of quota) is answered with a JSON-RPC error; other Authorization values are ignored.
 
 ### Local (stdio)
 - Package: npx headless-oracle-mcp
@@ -10216,7 +10216,7 @@ const OPENAPI_SPEC = {
 				summary:     'MCP (Model Context Protocol) endpoint',
 				description: 'JSON-RPC 2.0 / MCP Streamable HTTP (protocol version 2024-11-05). ' +
 					'Tools: get_market_status, get_market_schedule, list_exchanges. No authentication required. ' +
-					'Optional: an API key as Authorization: Bearer <api key> or X-Oracle-Key, or an OAuth access token from /oauth/token, meters calls against that key\'s plan; a credential that is sent and not accepted is a JSON-RPC error, not anonymous.',
+					'Optional: an API key as Authorization: Bearer <api key> or X-Oracle-Key, or an OAuth access token from /oauth/token, meters calls against that key\'s plan; an API key or token issued by Headless Oracle that is not accepted is answered with a JSON-RPC error; other Authorization values are ignored.',
 				responses: {
 					'200': { description: 'JSON-RPC 2.0 response' },
 					'202': { description: 'Notification accepted (no body)' },
@@ -12071,6 +12071,13 @@ async function spendPackCredit(keyHash: string, env: Env): Promise<{ ok: true } 
 // as an API key. checkApiKey is called with spendCredit:false, because the
 // metering in handleMcpMessage debits a credit pack exactly once per call.
 // Nothing here logs or echoes the credential.
+//
+// Lead ruling (2026-10-07): only a credential Headless Oracle issues is
+// answered with an error when it is not accepted. Gateways, registries and
+// evaluators (Smithery, Glama, MCPScoreboard, YellowMCP) attach their own
+// Authorization header when they probe; a Bearer value we did not issue is
+// ignored and the call is served as anonymous, as it always was. X-Oracle-Key
+// is our own header, so whatever it carries is treated as ours, as on REST.
 type McpAuth =
 	| { kind: 'anonymous' }
 	| { kind: 'authenticated'; keyHash: string; plan: string }
@@ -12078,27 +12085,68 @@ type McpAuth =
 
 const MCP_INVALID_CREDENTIAL = 'INVALID_API_KEY: the credential sent in Authorization: Bearer or X-Oracle-Key is not a valid API key or an active OAuth access token, so this call was not served. Send a valid key, or send no credential to use the anonymous tier. No key yet? POST https://headlessoracle.com/v5/keys/instant with JSON {"agent_id":"<unique id>"} returns a free key in the response.';
 
+// The exact shapes this worker issues, read from every mint site: 'ho_live_'
+// + toHex(32 bytes) (POST /v5/x402/mint; Paddle plan and Evidence keys),
+// 'ho_free_' + toHex(32) (/v5/keys/request, /v5/keys/instant), 'ho_crd_' +
+// toHex(32) (Paddle credits, /v5/sandbox x402 path), 'sb_' + 16 bytes of hex
+// (/v5/sandbox email path), and the OAuth access token, toHex(32) with no
+// prefix (handleOAuthToken). toHex is lowercase. Keep this list in step with
+// any new mint site.
+const HO_ISSUED_CREDENTIAL_SHAPES: readonly RegExp[] = [
+	/^ho_live_[0-9a-f]{64}$/,
+	/^ho_free_[0-9a-f]{64}$/,
+	/^ho_crd_[0-9a-f]{64}$/,
+	/^sb_[0-9a-f]{32}$/,
+	/^[0-9a-f]{64}$/,
+];
+
+// Ours if it has an issued shape, or is exactly the master key or a beta key
+// (operator-issued, configured rather than minted).
+function isHoIssuedCredential(value: string, env: Env): boolean {
+	if (HO_ISSUED_CREDENTIAL_SHAPES.some((re) => re.test(value))) return true;
+	if (env.MASTER_API_KEY && value === env.MASTER_API_KEY) return true;
+	if (env.BETA_API_KEYS && env.BETA_API_KEYS.split(',').map((k) => k.trim()).filter(Boolean).includes(value)) return true;
+	return false;
+}
+
 async function resolveMcpCredential(request: Request, env: Env): Promise<McpAuth> {
 	const authHeader = request.headers.get('Authorization') ?? '';
 	const bearer     = /^Bearer\s+/i.test(authHeader) ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
 	const headerKey  = (request.headers.get('X-Oracle-Key') ?? '').trim();
 	if (!bearer && !headerKey) return { kind: 'anonymous' };
+	const bearerIsOurs = bearer !== '' && isHoIssuedCredential(bearer, env);
 	const unavailable: McpAuth = { kind: 'refused', code: -32000, message: 'AUTH_UNAVAILABLE: the credential could not be checked, so this call was not served. Retry shortly.' };
-	try {
-		if (bearer && env.ORACLE_API_KEYS) {
-			const cached = await env.ORACLE_API_KEYS.get(`oauth:${await sha256Hex(bearer)}`);
-			if (cached) {
+
+	// A token record proves we issued the value, whatever its shape.
+	if (bearer && env.ORACLE_API_KEYS) {
+		let cached: string | null = null;
+		try {
+			cached = await env.ORACLE_API_KEYS.get(`oauth:${await sha256Hex(bearer)}`);
+		} catch {
+			// Cannot tell. Fail closed for our own credentials; a foreign Bearer
+			// value falls through to X-Oracle-Key or anonymous below.
+			if (bearerIsOurs && !headerKey) return unavailable;
+		}
+		if (cached) {
+			try {
 				const parsed = JSON.parse(cached) as { keyHash: string; plan: string; status: string; expires_at?: number };
 				if (parsed.status === 'active' && !(parsed.expires_at && Math.floor(Date.now() / 1000) > parsed.expires_at)) {
 					return { kind: 'authenticated', keyHash: parsed.keyHash, plan: parsed.plan };
 				}
-				return {
-					kind: 'refused', code: -32001,
-					message: 'OAUTH_TOKEN_EXPIRED: this access token has expired or is no longer active, so this call was not served. Send your API key itself as Authorization: Bearer <api key> (or X-Oracle-Key), or get a new token at POST https://headlessoracle.com/oauth/token.',
-				};
+			} catch {
+				return unavailable;
 			}
+			return {
+				kind: 'refused', code: -32001,
+				message: 'OAUTH_TOKEN_EXPIRED: this access token has expired or is no longer active, so this call was not served. Send your API key itself as Authorization: Bearer <api key> (or X-Oracle-Key), or get a new token at POST https://headlessoracle.com/oauth/token.',
+			};
 		}
-		const key  = headerKey || bearer;
+	}
+
+	// X-Oracle-Key is always ours; a Bearer value only when it has our shape.
+	const key = headerKey || (bearerIsOurs ? bearer : '');
+	if (!key) return { kind: 'anonymous' };
+	try {
 		const auth = await checkApiKey(key, env, { spendCredit: false });
 		if (auth.allowed) {
 			return { kind: 'authenticated', keyHash: auth.keyHash ?? await sha256Hex(key), plan: auth.plan };
@@ -12277,12 +12325,12 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 		console.error('TELEMETRY_CTX_NO_WAITUNTIL');
 	}
 	// ── MCP auth: an OAuth access token, or the API key itself ───────────────
-	// No credential: anonymous, as always. A credential that is presented and
-	// accepted meters this call against that key's plan (below). One that is
-	// presented and NOT accepted is a JSON-RPC error, never a silent fall back
-	// to anonymous: the caller believes it is on its plan, and REST answers the
-	// same key with 403/402, not the trial. The handshake methods above never
-	// reach here, so a bad credential cannot break initialize or ping.
+	// No credential, or a Bearer value Headless Oracle did not issue: anonymous,
+	// as always. A credential of ours that is accepted meters this call against
+	// that key's plan (below). One of ours that is NOT accepted is a JSON-RPC
+	// error, never a silent fall back to anonymous: the caller believes it is on
+	// its plan, and REST answers the same key with 403/402, not the trial. The
+	// handshake methods above never reach here.
 	let _mcpKeyHash: string | null = null;
 	let _mcpPlan:    string | null = null;
 	const mcpAuth = await resolveMcpCredential(request, env);
@@ -14771,8 +14819,9 @@ export default {
 			// describes the MCP endpoint itself, which is what MCP clients derive from
 			// https://<host>/mcp, so its `resource` is that URL on the host asked (3.3).
 			// OAuth is additive: /mcp answers every method without a credential, reads
-			// an API key directly too, and answers a credential it cannot accept with a
-			// JSON-RPC error (HTTP 200); nothing answers 401.
+			// an API key directly too, answers a credential it issued and cannot accept
+			// with a JSON-RPC error (HTTP 200), and ignores any other Authorization
+			// value; nothing answers 401.
 			// bearer_methods_supported: ["header"]: token delivered via Authorization: Bearer.
 			if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {
 				const forMcp = url.pathname.endsWith('/mcp');

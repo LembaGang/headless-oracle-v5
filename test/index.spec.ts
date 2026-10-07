@@ -3641,6 +3641,10 @@ describe('Agent Skills discovery (agentskills.io 0.2.0)', () => {
 		expect(md).toContain('X-Oracle-Key: <api key>');
 		expect(md).toContain('POST https://headlessoracle.com/oauth/token');
 		expect(md).not.toContain('MCP reads neither');
+		// Lead ruling: only our own credentials are refused; foreign values are ignored.
+		expect(md).toContain('An API key or token issued by Headless Oracle that is not accepted (unknown, expired, out of quota) is answered with a JSON-RPC error; other Authorization values are ignored.');
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, { post: { description: string } }> };
+		expect(spec.paths['/mcp'].post.description).toContain('an API key or token issued by Headless Oracle that is not accepted is answered with a JSON-RPC error; other Authorization values are ignored.');
 	});
 
 	it('no agent skill describes verify_receipt as an MCP tool', async () => {
@@ -3952,18 +3956,28 @@ describe('POST /mcp — OAuth soft auth', () => {
 		expect(body).toHaveProperty('result');
 	});
 
-	// The handshake is unmetered and runs before auth, so a bad credential cannot
-	// break it. What a bad credential gets on a metered call is pinned in
+	// A foreign Bearer value (not a shape Headless Oracle issues) is ignored, as
+	// before. What an HO-shaped credential that is not accepted gets is pinned in
 	// 'POST /mcp — an API key in Bearer or X-Oracle-Key authenticates'.
-	it('an invalid Bearer value does not affect the handshake — initialize answers, never 401', async () => {
+	it('invalid Bearer token falls through as anonymous — does not return 401', async () => {
 		const res = await fetchWorker('/mcp', {
 			method:  'POST',
 			headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer this_is_not_a_valid_token_at_all' },
 			body:    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } }),
 		});
+		// Must not block — fall through to serve the request anonymously
 		expect(res.status).toBe(200);
 		const body = await res.json() as Record<string, unknown>;
 		expect(body).toHaveProperty('result');
+		// A metered method too, not only the handshake.
+		const list = await fetchWorker('/mcp', {
+			method:  'POST',
+			headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer this_is_not_a_valid_token_at_all' },
+			body:    JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+		});
+		const listBody = await list.json() as Record<string, unknown>;
+		expect(listBody).toHaveProperty('result');
+		expect(listBody).not.toHaveProperty('error');
 	});
 });
 
@@ -3995,7 +4009,7 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 	const balanceOf = async (keyHash: string) => (JSON.parse((await env.ORACLE_API_KEYS.get(keyHash)) ?? '{}') as { balance?: number }).balance;
 
 	it('a raw free key as Bearer is metered against that key, not the anonymous IP cap', async () => {
-		const key  = 'ho_free_' + 'k1'.repeat(32);
+		const key  = 'ho_free_' + 'a1'.repeat(32);
 		const hash = await setupFreeKey(key);
 		await env.ORACLE_TELEMETRY.put(await anonKey(), '10'); // anonymous cap already spent
 		const b = await mcpCall({ 'Authorization': `Bearer ${key}` });
@@ -4005,7 +4019,7 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 	});
 
 	it('X-Oracle-Key authenticates MCP the same way', async () => {
-		const key  = 'ho_free_' + 'k2'.repeat(32);
+		const key  = 'ho_free_' + 'a2'.repeat(32);
 		const hash = await setupFreeKey(key);
 		await env.ORACLE_TELEMETRY.put(await anonKey(), '10');
 		const b = await mcpCall({ 'X-Oracle-Key': key });
@@ -4014,7 +4028,7 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 	});
 
 	it('a credit-pack key as Bearer is debited exactly one credit per call and refused at zero', async () => {
-		const key  = 'ho_crd_' + 'k3'.repeat(32);
+		const key  = 'ho_crd_' + 'a3'.repeat(32);
 		const hash = await sha256Hex(key);
 		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 2 }));
 		expect(receiptOf(await mcpCall({ 'Authorization': `Bearer ${key}` })).mic).toBe('XNYS');
@@ -4028,7 +4042,7 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 	});
 
 	it('a credit-pack key in X-Oracle-Key is debited once per call, not twice', async () => {
-		const key  = 'ho_crd_' + 'k4'.repeat(32);
+		const key  = 'ho_crd_' + 'a4'.repeat(32);
 		const hash = await sha256Hex(key);
 		await env.ORACLE_API_KEYS.put(hash, JSON.stringify({ tier: 'credits', status: 'active', balance: 3 }));
 		expect(receiptOf(await mcpCall({ 'X-Oracle-Key': key })).mic).toBe('XNYS');
@@ -4036,7 +4050,7 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 	});
 
 	it('a recognised key at its daily limit is refused, and does not fall back to anonymous', async () => {
-		const key  = 'ho_free_' + 'k5'.repeat(32);
+		const key  = 'ho_free_' + 'a5'.repeat(32);
 		const hash = await setupFreeKey(key);
 		await env.ORACLE_TELEMETRY.put(`free_usage:${hash}:${today()}`, '500');
 		const b = await mcpCall({ 'Authorization': `Bearer ${key}` });
@@ -4047,17 +4061,48 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 		expect(await env.ORACLE_TELEMETRY.get(await anonKey())).toBeNull();
 	});
 
-	it('a garbage Bearer value is a JSON-RPC INVALID_API_KEY error, not anonymous; the handshake is unaffected', async () => {
-		const b = await mcpCall({ 'Authorization': 'Bearer this_is_neither_a_token_nor_a_key' });
+	// Lead ruling 2026-10-07: only a credential Headless Oracle itself issues is
+	// answered with an error. Gateways, registries and evaluators attach their
+	// own Authorization headers when they probe; a foreign value is ignored.
+	it('a foreign (JWT-looking) Bearer value is ignored: tools/list and tools/call are served as anonymous', async () => {
+		const jwt = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnYXRld2F5In0.c2lnbmF0dXJl';
+		const list = await mcpCall({ 'Authorization': jwt }, 'tools/list');
+		expect(list).not.toHaveProperty('error');
+		expect(((list.result as Record<string, unknown>).tools as unknown[]).length).toBeGreaterThan(0);
+		const call = await mcpCall({ 'Authorization': jwt });
+		expect(receiptOf(call).mic).toBe('XNYS');
+		// Metered as anonymous (the per-IP cap), against no key.
+		expect(await env.ORACLE_TELEMETRY.get(await anonKey())).toBe('1');
+	});
+
+	it('a foreign Bearer value is still anonymous when the key store cannot be read', async () => {
+		const kv = env.ORACLE_API_KEYS;
+		const broken = {
+			get: async () => { throw new Error('KV unavailable'); },
+			put: kv.put.bind(kv), delete: kv.delete.bind(kv), list: kv.list.bind(kv),
+		} as unknown as typeof env.ORACLE_API_KEYS;
+		const b = await mcpCall({ 'Authorization': 'Bearer gateway-session-7f3a' }, 'tools/call', { ...env, ORACLE_API_KEYS: broken } as typeof env);
+		expect(receiptOf(b).mic).toBe('XNYS');
+	});
+
+	it('an unknown key in a shape Headless Oracle issues (ho_live_ + 64 hex) is INVALID_API_KEY, not anonymous', async () => {
+		const key = 'ho_live_' + 'f0'.repeat(32);
+		const b = await mcpCall({ 'Authorization': `Bearer ${key}` });
 		expect(b).not.toHaveProperty('result');
 		const err = b.error as Record<string, unknown>;
 		expect(err.code).toBe(-32001);
 		expect(String(err.message)).toMatch(/^INVALID_API_KEY: /);
 		expect(String(err.message)).toContain('POST https://headlessoracle.com/v5/keys/instant');
-		expect(String(err.message)).not.toContain('this_is_neither');
+		expect(String(err.message)).not.toContain(key);
 		expect(await env.ORACLE_TELEMETRY.get(await anonKey())).toBeNull();
-		const init = await mcpCall({ 'Authorization': 'Bearer this_is_neither_a_token_nor_a_key' }, 'initialize');
-		expect(init).toHaveProperty('result');
+		// The handshake is unaffected.
+		expect(await mcpCall({ 'Authorization': `Bearer ${key}` }, 'initialize')).toHaveProperty('result');
+	});
+
+	it('a 64-hex value (the OAuth token shape) with no token record is INVALID_API_KEY', async () => {
+		const b = await mcpCall({ 'Authorization': `Bearer ${'0f'.repeat(32)}` });
+		expect((b.error as Record<string, unknown>).code).toBe(-32001);
+		expect(String((b.error as Record<string, unknown>).message)).toMatch(/^INVALID_API_KEY: /);
 	});
 
 	it('an unknown X-Oracle-Key is the same INVALID_API_KEY error', async () => {
@@ -4066,7 +4111,7 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 	});
 
 	it('a recognised but expired sandbox key is refused with its reason', async () => {
-		const key  = 'sb_' + 'k6'.repeat(16);
+		const key  = 'sb_' + 'a6'.repeat(16);
 		await env.ORACLE_API_KEYS.put(await sha256Hex(key), JSON.stringify({ tier: 'sandbox', plan: 'sandbox', status: 'active', expires_at: '2020-01-01T00:00:00Z' }));
 		const b = await mcpCall({ 'Authorization': `Bearer ${key}` });
 		const err = b.error as Record<string, unknown>;
@@ -4074,8 +4119,8 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 		expect(String(err.message)).toContain('SANDBOX_KEY_EXPIRED');
 	});
 
-	it('an OAuth token record that has expired is refused, with the way forward', async () => {
-		const token = 'expired_oauth_token_' + 'k7'.repeat(22);
+	it('an expired 64-hex OAuth token is refused with OAUTH_TOKEN_EXPIRED, with the way forward', async () => {
+		const token = 'e7'.repeat(32); // the exact shape handleOAuthToken issues
 		await env.ORACLE_API_KEYS.put(`oauth:${await sha256Hex(token)}`, JSON.stringify({ keyHash: 'x'.repeat(64), plan: 'free', status: 'active', expires_at: 1 }));
 		const b = await mcpCall({ 'Authorization': `Bearer ${token}` });
 		const err = b.error as Record<string, unknown>;
@@ -4084,20 +4129,20 @@ describe('POST /mcp — an API key in Bearer or X-Oracle-Key authenticates', () 
 		expect(String(err.message)).toContain('Authorization: Bearer <api key>');
 	});
 
-	it('a key store that cannot be read refuses the call (fail closed), not anonymous', async () => {
+	it('an HO-shaped key with a key store that cannot be read refuses the call (fail closed), not anonymous', async () => {
 		const kv = env.ORACLE_API_KEYS;
 		const broken = {
 			get: async () => { throw new Error('KV unavailable'); },
 			put: kv.put.bind(kv), delete: kv.delete.bind(kv), list: kv.list.bind(kv),
 		} as unknown as typeof env.ORACLE_API_KEYS;
-		const b = await mcpCall({ 'Authorization': `Bearer ho_free_${'k8'.repeat(32)}` }, 'tools/call', { ...env, ORACLE_API_KEYS: broken } as typeof env);
+		const b = await mcpCall({ 'Authorization': `Bearer ho_free_${'a8'.repeat(32)}` }, 'tools/call', { ...env, ORACLE_API_KEYS: broken } as typeof env);
 		const err = b.error as Record<string, unknown>;
 		expect(err.code).toBe(-32000);
 		expect(String(err.message)).toMatch(/^AUTH_UNAVAILABLE: /);
 	});
 
 	it('the OAuth token path is unchanged: a token for a free key meters that key', async () => {
-		const key  = 'ho_free_' + 'k9'.repeat(32);
+		const key  = 'ho_free_' + 'a9'.repeat(32);
 		const hash = await setupFreeKey(key);
 		const tokenRes = await fetchWorker('/oauth/token', {
 			method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
