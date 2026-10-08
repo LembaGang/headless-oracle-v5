@@ -12001,6 +12001,25 @@ describe('GET/POST /v5/verify — detailed receipt verification', () => {
 		expect(summary.mic).toBe('XNYS');
 	});
 
+	it('POST /v5/verify returns the documented fields (reason, expired, mic, status, expires_at) beside checks', async () => {
+		const receiptBody = await (await fetchWorker('/v5/demo?mic=XNYS')).json() as Record<string, unknown>;
+		const receipt     = (receiptBody.receipt ?? receiptBody) as Record<string, unknown>;
+		const post = (r: unknown) => fetchWorker('/v5/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ receipt: r }) });
+
+		const ok = await (await post(receipt)).json() as Record<string, unknown>;
+		expect(ok).toMatchObject({ valid: true, expired: false, reason: 'SIGNATURE_VALID', mic: 'XNYS', status: receipt.status, expires_at: receipt.expires_at });
+		expect(ok).toHaveProperty('checks');
+
+		const bad = await (await post({ ...receipt, status: 'OPEN_TAMPERED' })).json() as Record<string, unknown>;
+		expect(bad).toMatchObject({ valid: false, reason: 'INVALID_SIGNATURE' });
+
+		// Any failing check (here issuer, which is also signed) never reads SIGNATURE_VALID.
+		const noIssuer = { ...receipt, issuer: 'someone-else.example' };
+		const r3 = await (await post(noIssuer)).json() as Record<string, unknown>;
+		expect(r3.valid).toBe(false);
+		expect(r3.reason).not.toBe('SIGNATURE_VALID');
+	});
+
 	it('POST tampered receipt → signature check fails', async () => {
 		const receiptRes  = await fetchWorker('/v5/demo?mic=XNYS');
 		const receiptBody = await receiptRes.json() as Record<string, unknown>;

@@ -11272,10 +11272,12 @@ const OPENAPI_SPEC = {
 							properties: {
 								valid:      { type: 'boolean' },
 								expired:    { type: 'boolean' },
-								reason:     { type: 'string', enum: ['SIGNATURE_VALID', 'INVALID_SIGNATURE', 'MALFORMED_RECEIPT', 'ORACLE_NOT_CONFIGURED', 'RECEIPT_EXPIRED — re-fetch required'] },
+								reason:     { type: 'string', enum: ['SIGNATURE_VALID', 'INVALID_SIGNATURE', 'MALFORMED_RECEIPT', 'ORACLE_NOT_CONFIGURED', 'RECEIPT_EXPIRED — re-fetch required', 'CHECKS_FAILED'], description: 'Signature and expiry outcome. CHECKS_FAILED: the signature verifies and the receipt is unexpired, but another check in `checks` failed; `valid` is false.' },
 								mic:        { type: 'string', nullable: true },
 								status:     { type: 'string', nullable: true },
 								expires_at: { type: 'string', format: 'date-time', nullable: true },
+								checks:     { type: 'object', description: 'Per-check breakdown: each member is { passed, detail }.', additionalProperties: { type: 'object', properties: { passed: { type: 'boolean' }, detail: { type: 'string' } } } },
+								receipt_summary: { type: 'object', nullable: true },
 							},
 						} } },
 					},
@@ -17935,8 +17937,15 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				if (!receipt || typeof receipt !== 'object') {
 					return json({ error: 'MISSING_RECEIPT', message: 'Body must include a "receipt" object field' }, 400);
 				}
-				const result = await verifyReceiptDetailed(receipt, env.ED25519_PUBLIC_KEY);
-				return json(result);
+				// The documented contract (openapi: valid, expired, reason, mic, status,
+				// expires_at) plus the per-check breakdown. `valid` is the detailed verdict,
+				// which is the stricter one; `reason` never says SIGNATURE_VALID beside a
+				// false `valid` (2026-10-08: the route had silently dropped the documented
+				// fields when the breakdown was added).
+				const summary = await verifyReceiptLogic(receipt, env.ED25519_PUBLIC_KEY);
+				const result  = await verifyReceiptDetailed(receipt, env.ED25519_PUBLIC_KEY);
+				const reason  = result.valid === false && summary.reason === 'SIGNATURE_VALID' ? 'CHECKS_FAILED' : summary.reason;
+				return json({ ...summary, ...result, reason });
 			}
 
 			// -- GET /v5/stack -- deprecated alias for /v5/pre-trade-stack
