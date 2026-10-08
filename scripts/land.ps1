@@ -44,8 +44,14 @@ function Invoke-Git {
   & git @args
   if ($LASTEXITCODE -ne 0) { Fail "git $($args -join ' ') failed (exit $LASTEXITCODE). Nothing after this step ran." }
 }
+# npm.cmd, not npm: on Windows `npm` resolves to the npm.ps1 shim, which
+# re-reads its arguments from the text of the calling line, so `& npm @args`
+# reached npm as the literal word "@args" (2026-10-08: smoke never ran).
+$NpmExe = 'npm'
+$NpxExe = 'npx'
+if ($env:OS -eq 'Windows_NT') { $NpmExe = 'npm.cmd'; $NpxExe = 'npx.cmd' }
 function Invoke-Npm {
-  & npm @args
+  & $NpmExe @args
   if ($LASTEXITCODE -ne 0) { Fail "npm $($args -join ' ') failed (exit $LASTEXITCODE)." }
 }
 function GitBash {
@@ -129,9 +135,9 @@ if (-not $KeepBranch) {
 if ($Deploy) {
   if ((Test-Path wrangler.toml) -and (Test-Path src\index.ts)) {
     Step "Deploying the worker"
-    & npx wrangler whoami
+    & $NpxExe wrangler whoami
     $log = Join-Path $env:TEMP "land-deploy-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss')).log"
-    & npm run deploy 2>&1 | Tee-Object -FilePath $log
+    & $NpmExe run deploy 2>&1 | Tee-Object -FilePath $log
     $code = $LASTEXITCODE
     $text = Get-Content $log -Raw
     if ($code -ne 0) {
@@ -144,7 +150,7 @@ if ($Deploy) {
     Step "Production smoke tests"
     Invoke-Npm run test:smoke
     Step "Live version"
-    & npx wrangler deployments list | Select-Object -Last 6
+    & $NpxExe wrangler deployments list | Select-Object -Last 6
   } elseif (Test-Path package.json) {
     Step "Deploying the website"
     Invoke-Npm run deploy
@@ -160,11 +166,11 @@ if ($Publish) {
     & node scripts/release-gate.mjs
     if ($LASTEXITCODE -ne 0) { Fail "release gate failed; nothing published." }
   }
-  & npm whoami
+  & $NpmExe whoami
   if ($LASTEXITCODE -ne 0) { Fail "not logged in to npm (run npm login)." }
   Invoke-Npm publish
   $name = (Get-Content package.json -Raw | ConvertFrom-Json).name
-  & npm view $name version
+  & $NpmExe view $name version
 }
 
 Write-Host ""

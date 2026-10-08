@@ -82,7 +82,10 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-07 (latest, NOT deployed): mint claim + MCP keys.** Suite **1693 → 1714**.
+- **2026-10-08: mint claim + MCP keys.** Live **`5008e20f-4977-4ff2-8279-8c875df53bd9`**
+  (landed `bfd3891` via `scripts/land.ps1`). Suite **1693 → 1714**. **B-115 closed**: new token
+  `ho-worker-deploy-2026-10-07` (Edit Cloudflare Workers + D1 Edit, zone headlessoracle.com,
+  in `CLOUDFLARE_API_TOKEN`); the deploy listed every route and exited 0.
   `/v5/x402/mint` claims each tx hash once in D1 `HALT_ARCHIVE` (`x402_mint_claims` /
   `x402_mint_outcomes`, auto-created); store down → 503, key-store failure after claim →
   500 `MINT_KEY_NOT_STORED` + revenue-pulse alert. Payer binding still open. `/mcp`
@@ -220,8 +223,8 @@ here is carried forward from an earlier stamp unverified.
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
-- **Worker**: see the 2026-10-07 entry above for the live version. Previous live
-  versions: `2e68085f…` (10-07 08:34Z), `7b3bbfe5…` (10-05, H4a), `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
+- **Worker**: see the 2026-10-08 entry above for the live version. Previous live
+  versions: `a32322b5…` (10-07 20:04Z), `2e68085f…` (10-07 08:34Z), `7b3bbfe5…` (10-05, H4a), `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
   (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and all four of 10-04 each exited 1
   on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
