@@ -76,6 +76,14 @@ if ((Test-Path .git\rebase-merge) -or (Test-Path .git\rebase-apply)) {
 $dirty = & git status --porcelain --untracked-files=no
 if ($dirty) { Fail "tracked files have uncommitted changes. Commit or stash them first:`n$dirty" }
 
+if ($Publish) {
+  # Checked before anything is merged or pushed: a publish that fails after the
+  # push leaves the branch deleted and the package unpublished (2026-10-08,
+  # chirindo 0.5.0 landed on main, then stopped at `npm whoami`).
+  & $NpmExe whoami | Out-Null
+  if ($LASTEXITCODE -ne 0) { Fail "not logged in to npm. Run npm login, then this again. Nothing was changed." }
+}
+
 $repo = Split-Path -Leaf (Get-Location)
 Step "Landing $Branch onto $Base in $repo"
 
