@@ -88,7 +88,10 @@ here is carried forward from an earlier stamp unverified.
   in `CLOUDFLARE_API_TOKEN`); the deploy listed every route and exited 0.
   `/v5/x402/mint` claims each tx hash once in D1 `HALT_ARCHIVE` (`x402_mint_claims` /
   `x402_mint_outcomes`, auto-created); store down → 503, key-store failure after claim →
-  500 `MINT_KEY_NOT_STORED` + revenue-pulse alert. Payer binding still open. `/mcp`
+  500 `MINT_KEY_NOT_STORED` + revenue-pulse alert. Payer binding done (not deployed):
+  `signature` = personal_sign of `headlessoracle.com x402 mint <tx_hash lowercase>` by
+  the Transfer `from`, checked before the claim; else 400/403 `PAYER_MISMATCH`; EOA
+  only. Suite 1725. `/mcp`
   reads an API key as Bearer or `X-Oracle-Key`; an HO-issued credential that is not
   accepted → JSON-RPC error; foreign Bearer values stay anonymous
   (`HO_ISSUED_CREDENTIAL_SHAPES`).
@@ -217,7 +220,7 @@ here is carried forward from an earlier stamp unverified.
     the witness has succeeded yet.
 - **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
   `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
-- **Tests**: 1714 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1725 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.

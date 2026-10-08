@@ -1,14 +1,12 @@
-# `/v5/x402/mint`: a payment is not bound to its payer (B implemented 2026-10-07; A open)
+# `/v5/x402/mint`: binding a payment to its payer (B implemented 2026-10-07; A implemented 2026-10-08)
 
 Found 2026-10-07 by the revenue-path audit; verified against `src/index.ts` at `aec5715`.
 
-**Status (2026-10-07, founder ruling).** Option B is implemented on branch
-`claude/mint-claim-mcp-key` in the commit "x402 mint: claim each payment hash
-atomically in D1" (see `git log --grep "claim each payment hash"`). It closes
-failures B and C below. **Option A (payer binding) remains open**: until it ships,
-`/v5/x402/mint` is still first-come-first-served on a public transfer, and failure A
-stands. The sections "What the code does" and "Three failures" describe the code
-before B, as found.
+**Status (2026-10-08).** Both fixes are in source (A not yet deployed). Option B (the atomic D1 claim, 2026-10-07)
+closes failures B and C below. Option A (payer binding, 2026-10-08, see "What A
+shipped" at the end) closes failure A: a mint now needs a signature from the address
+that sent the payment, checked before the hash is claimed. The sections "What the code
+does" and "Three failures" describe the code before B, as found.
 
 ## What the code does
 
@@ -93,3 +91,48 @@ position is that `/v5/x402/mint` is first-come-first-served on a public transfer
   killed mid-mint) leaves a claim with no outcome: the hash is spent, no key, and no
   alert fires. A sweep of claims without an outcome older than a few minutes into the
   same alert path would close it; not built.
+
+## What A shipped (2026-10-08)
+
+Founder ruling: option A, without the nonce endpoint. The tx hash is already single-use
+in D1 and the signature travels over TLS, so a nonce buys nothing: a replayed signature
+can only re-present a hash that is already claimed.
+
+- **Request.** The body gains `signature`: an EIP-191 `personal_sign` signature by the
+  address that sent the USDC Transfer, over the exact ASCII message
+
+  ```
+  headlessoracle.com x402 mint <tx_hash>
+  ```
+
+  where `<tx_hash>` is the 0x-prefixed 32-byte hash in lowercase (the worker lowercases
+  whatever case was submitted). The message is built by one function,
+  `x402MintSigningMessage()` in `src/index.ts`, used by the route, the served docs and
+  the tests. Encoding: 65 bytes of 0x-prefixed hex, `r || s || v`, `v` = 27/28 or 0/1.
+- **Check.** The worker hashes `"\x19Ethereum Signed Message:\n" + len + message` with
+  keccak-256, recovers the secp256k1 public key (`@noble/curves`), derives the address
+  (last 20 bytes of keccak-256 of the uncompressed key) and requires it to equal the
+  Transfer's `from` that `verifyX402MintPayment` already extracts (case-insensitive).
+- **Order (load-bearing).** Parse body → signature present and recoverable → on-chain
+  verify (amount, recipient, age; returns `from`) → signer equals `from` → D1 claim →
+  mint. A missing, malformed or wrong signature never writes a claim row, so it cannot
+  spend a legitimate payer's claim. Every B behaviour stands: claim store down → 503,
+  key store failure after the claim → 500 `MINT_KEY_NOT_STORED` + alert, reused hash →
+  409.
+- **Errors.** Missing → 400 `PAYER_SIGNATURE_REQUIRED`. Not 65-byte hex, bad `v`, or no
+  point recovers → 400 `INVALID_PAYER_SIGNATURE`. Recovered address ≠ Transfer sender →
+  403 `PAYER_MISMATCH` with `recovered_address` and `payer_address`. Each carries
+  `message_to_sign` and `signature_format`, so an agent can recover without a follow-up
+  question. A mismatch logs `X402_MINT_PAYER_MISMATCH`.
+- **Limitation: EOA only.** A smart-contract wallet (ERC-1271) cannot `personal_sign`
+  with a recoverable key, so a payment from one cannot mint. The 403 says so. Supporting
+  it would need an `isValidSignature` RPC call against the payer contract; not built.
+- **Breaking change.** Mint clients must now send `signature`; there is no unsigned
+  grace path (fail closed). No mint client is on record (four lifetime x402
+  settlements, none a mint).
+- **Served docs.** openapi `/v5/x402/mint` (request schema, 400/402/403), `/.well-known/x402.json`
+  (input schema), `/llms-full.txt` Path D and its route table, `/auth.md` §4,
+  `/.well-known/agent.json` (`mint_payer_signature`). `/llms.txt`, `/SKILL.md` and
+  `/AGENTS.md` do not document the mint. Not changed, on purpose: the 402 builders
+  (`build402Payload`, `buildAgentActions`) still point at the mint with a body hint
+  that omits `signature`; a client following it gets the 400 that carries the message.

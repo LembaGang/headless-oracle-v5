@@ -5,6 +5,7 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, beforeEach } from 'vitest';
 import worker, { clearX402MintClaimSchemaCache } from '../src';
+import { MINT_PAYER, signMint } from './mint-payer';
 
 // The mint claims its hash in D1 (x402_mint_claims). Each test gets a fresh D1,
 // so the schema memo is cleared to have the table created again.
@@ -26,10 +27,10 @@ const VALID_STATUSES = ['OPEN', 'CLOSED', 'HALTED', 'UNKNOWN'];
 
 function mockMintRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number, payerAddress?: string): () => void {
 	const original = globalThis.fetch;
-	// Default payer matches the long-standing hardcoded value so existing tests
-	// continue to pass without modification. Pass payerAddress explicitly when a
-	// test wants to assert the payer field lands in the durable mint log.
-	const payer20 = (payerAddress ?? '0xabcdef1234567890abcdef1234567890abcdef12').slice(2).toLowerCase();
+	// The default payer is the test key that signMint() signs with: since
+	// 2026-10-08 the mint requires the Transfer sender's signature (payer
+	// binding), so a mocked payer nobody holds the key for could never mint.
+	const payer20 = (payerAddress ?? MINT_PAYER.address).slice(2).toLowerCase();
 	globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 		const url = typeof input === 'string' ? input : (input as Request).url;
 		if (url === 'https://mainnet.base.org') {
@@ -80,7 +81,7 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			const res = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder' }),
+				body:    JSON.stringify({ tx_hash: txHash, signature: signMint(txHash, MINT_PAYER), tier: 'builder' }),
 			});
 			expect(res.status).toBe(200);
 			const body = await res.json() as Record<string, unknown>;
@@ -110,14 +111,14 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 		// Unique tx so we can locate this test's entry even if earlier mint tests
 		// in the same file have already populated the x402_mint_log: keyspace.
 		const txHash = '0x' + 'bc'.repeat(32);
-		const payer  = '0x' + 'f'.repeat(40);
+		const payer  = MINT_PAYER.address;
 		const blockTs = Math.floor(Date.now() / 1000) - 45;
 		const restore = mockMintRpc(TEST_ADDR, '99000000', blockTs, payer);
 		try {
 			const res = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder', network: 'base-mainnet' }),
+				body:    JSON.stringify({ tx_hash: txHash, signature: signMint(txHash, MINT_PAYER), tier: 'builder', network: 'base-mainnet' }),
 			});
 			expect(res.status).toBe(200);
 
@@ -176,7 +177,7 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			const res = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHash, tier: 'pro' }),
+				body:    JSON.stringify({ tx_hash: txHash, signature: signMint(txHash, MINT_PAYER), tier: 'pro' }),
 			});
 			expect(res.status).toBe(200);
 			const body = await res.json() as Record<string, unknown>;
@@ -199,7 +200,7 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			const res1 = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHashFull, tier: 'builder' }),
+				body:    JSON.stringify({ tx_hash: txHashFull, signature: signMint(txHashFull, MINT_PAYER), tier: 'builder' }),
 			});
 			expect(res1.status).toBe(200);
 
@@ -207,7 +208,7 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			const res2 = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHashFull, tier: 'builder' }),
+				body:    JSON.stringify({ tx_hash: txHashFull, signature: signMint(txHashFull, MINT_PAYER), tier: 'builder' }),
 			});
 			expect(res2.status).toBe(409);
 			const body2 = await res2.json() as Record<string, unknown>;
@@ -225,7 +226,7 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			const res = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder' }),
+				body:    JSON.stringify({ tx_hash: txHash, signature: signMint(txHash, MINT_PAYER), tier: 'builder' }),
 			});
 			expect(res.status).toBe(402);
 			const body = await res.json() as Record<string, unknown>;
@@ -244,7 +245,7 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			const res = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder' }),
+				body:    JSON.stringify({ tx_hash: txHash, signature: signMint(txHash, MINT_PAYER), tier: 'builder' }),
 			});
 			expect(res.status).toBe(400);
 			const body = await res.json() as Record<string, unknown>;
@@ -274,7 +275,7 @@ describe('POST /v5/x402/mint — autonomous key minting', () => {
 			const mintRes = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder' }),
+				body:    JSON.stringify({ tx_hash: txHash, signature: signMint(txHash, MINT_PAYER), tier: 'builder' }),
 			});
 			expect(mintRes.status).toBe(200);
 			const { api_key } = await mintRes.json() as { api_key: string };
@@ -372,7 +373,7 @@ describe('verifyX402MintPayment — Base RPC fetches carry AbortSignal.timeout(5
 								address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
 								topics: [
 									'0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
-									'0x000000000000000000000000abcdef1234567890abcdef1234567890abcdef12',
+									'0x000000000000000000000000' + MINT_PAYER.address.slice(2),
 									'0x000000000000000000000000' + recipientAddress.slice(2).toLowerCase(),
 								],
 								data: '0x' + BigInt(amountUnits).toString(16).padStart(64, '0'),
@@ -401,7 +402,7 @@ describe('verifyX402MintPayment — Base RPC fetches carry AbortSignal.timeout(5
 			const res = await fetchW('/v5/x402/mint', {
 				method:  'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body:    JSON.stringify({ tx_hash: txHash, tier: 'builder' }),
+				body:    JSON.stringify({ tx_hash: txHash, signature: signMint(txHash, MINT_PAYER), tier: 'builder' }),
 			});
 			expect(res.status).toBe(200);
 		} finally {

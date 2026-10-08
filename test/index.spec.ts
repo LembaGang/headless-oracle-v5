@@ -19,7 +19,10 @@ import worker, {
 	mcpUseLogLines, openapiOperationId,
 	// x402 mint atomic claim (2026-10-07)
 	clearX402MintClaimSchemaCache,
+	// x402 mint payer binding (2026-10-08)
+	x402MintSigningMessage,
 } from '../src';
+import { MINT_PAYER, newMintSigner, signMint, personalSign } from './mint-payer';
 
 // H4a step 7: every 2xx and 402 response this suite receives is checked for a
 // non-ASCII header value. workerd sends a non-ASCII header as raw UTF-8 bytes,
@@ -6875,7 +6878,10 @@ async function exhaustDailyUsage(keyHash: string): Promise<void> {
 	await env.ORACLE_TELEMETRY.put(`free_usage:${keyHash}:${date}`, '500');
 }
 
-function mockBaseRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number): () => void {
+// payerAddress: the Transfer `from`. Defaults to an address nobody holds a key
+// for, which the per-request x402 tests use; a mint test passes the address of
+// the key it signs with (test/mint-payer.ts), because the mint is payer-bound.
+function mockBaseRpc(recipientAddress: string, amountUnits: string, blockTimestamp: number, payerAddress = '0xabcdef1234567890abcdef1234567890abcdef12'): () => void {
 	const original = globalThis.fetch;
 	globalThis.fetch = async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
 		const url = typeof input === 'string' ? input : (input as Request).url;
@@ -6891,7 +6897,7 @@ function mockBaseRpc(recipientAddress: string, amountUnits: string, blockTimesta
 							address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
 							topics: [
 								'0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
-								'0x000000000000000000000000abcdef1234567890abcdef1234567890abcdef12',
+								'0x000000000000000000000000' + payerAddress.slice(2).toLowerCase(),
 								'0x000000000000000000000000' + recipientAddress.slice(2).toLowerCase(),
 							],
 							data: '0x' + BigInt(amountUnits).toString(16).padStart(64, '0'),
@@ -20083,13 +20089,14 @@ describe('H4a: agent front door', () => {
 // x402_used_tx: is still written, but it is no longer what stops a second key.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('x402 mint — atomic claim: one payment hash, at most one key', () => {
-	const PAYER = '0xabcdef1234567890abcdef1234567890abcdef12';
+	// The mint is payer-bound (2026-10-08): the Transfer sender must sign.
+	const PAYER = MINT_PAYER.address;
 	beforeEach(() => { clearX402MintClaimSchemaCache(); });
 
 	async function mintOnce(txHash: string, e: typeof env = env): Promise<Response> {
 		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/v5/x402/mint', {
 			method: 'POST', headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ tx_hash: txHash, tier: 'builder', network: 'base' }),
+			body: JSON.stringify({ tx_hash: txHash, tier: 'builder', network: 'base', signature: signMint(txHash, MINT_PAYER) }),
 		});
 		const ctx = createExecutionContext();
 		const res = await worker.fetch(request, e, ctx);
@@ -20111,7 +20118,7 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 
 	it('N concurrent POSTs with one tx hash: exactly one 200 with a key, the rest 409', async () => {
 		const txHash  = '0x' + 'c1'.repeat(32);
-		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, PAYER);
 		let results: Response[];
 		try {
 			results = await Promise.all(Array.from({ length: 6 }, () => mintOnce(txHash)));
@@ -20131,7 +20138,7 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 
 	it('happy path: 200 with the key; the claim is recorded minted with the key hash, never the key', async () => {
 		const txHash  = '0x' + 'c2'.repeat(32);
-		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, PAYER);
 		let res: Response;
 		try { res = await mintOnce(txHash); } finally { restore(); }
 		expect(res.status).toBe(200);
@@ -20158,7 +20165,7 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 
 	it('a second request after a successful mint is 409, and no second key is stored', async () => {
 		const txHash  = '0x' + 'c3'.repeat(32);
-		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, PAYER);
 		try {
 			expect((await mintOnce(txHash)).status).toBe(200);
 			// Drop the KV mark: the claim alone must refuse the second mint.
@@ -20176,7 +20183,7 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 	it('claim store unavailable: 503 with Retry-After, no key stored, no KV mark (a retry can still mint)', async () => {
 		const txHash  = '0x' + 'c4'.repeat(32);
 		const brokenD1 = { prepare: () => { throw new Error('D1_ERROR: simulated outage'); } } as unknown as D1Database;
-		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, PAYER);
 		let res: Response;
 		try { res = await mintOnce(txHash, { ...env, HALT_ARCHIVE: brokenD1 } as typeof env); } finally { restore(); }
 		expect(res.status).toBe(503);
@@ -20188,7 +20195,7 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 		expect((await mintedKeyRecords()).length).toBe(0);
 		expect(await env.ORACLE_TELEMETRY.get(`x402_used_tx:${txHash}`)).toBeNull();
 		// The store comes back: the same payment mints.
-		const restore2 = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		const restore2 = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, PAYER);
 		try { expect((await mintOnce(txHash)).status).toBe(200); } finally { restore2(); }
 	});
 
@@ -20201,7 +20208,7 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 			delete: kv.delete.bind(kv),
 			list:   kv.list.bind(kv),
 		} as unknown as typeof env.ORACLE_API_KEYS;
-		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		const restore = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, PAYER);
 		let res: Response;
 		try { res = await mintOnce(txHash, { ...env, ORACLE_API_KEYS: brokenKeys } as typeof env); } finally { restore(); }
 		expect(res.status).toBe(500);
@@ -20225,7 +20232,7 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 		expect(evt?.plan).toBe('builder');
 		expect(evt?.currency).toBe('USDC');
 		// A retry is refused, and says why.
-		const restore2 = mockBaseRpc(payTo(), builderUnits, nowSec() - 10);
+		const restore2 = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, PAYER);
 		try {
 			const again = await mintOnce(txHash);
 			expect(again.status).toBe(409);
@@ -20233,6 +20240,232 @@ describe('x402 mint — atomic claim: one payment hash, at most one key', () => 
 			expect(b.claim_status).toBe('failed');
 			expect(String(b.message)).toContain('mike@headlessoracle.com');
 		} finally { restore2(); }
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// x402 mint: the payment is bound to its payer (option A of
+// docs/security/x402-mint-payment-binding.md, 2026-10-08)
+//
+// The body carries `signature`, an EIP-191 personal_sign by the Transfer's
+// `from` over x402MintSigningMessage(tx_hash). The signer is checked BEFORE the
+// D1 claim, so a front-runner holding only the public hash cannot spend the
+// payer's claim. Each test uses a real secp256k1 key (test/mint-payer.ts).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('x402 mint — payer binding: only the address that paid can mint', () => {
+	beforeEach(() => { clearX402MintClaimSchemaCache(); });
+	const builderUnits = String(BigInt(planPrices().builder) * 1_000_000n);
+	const payTo  = () => env.ORACLE_PAYMENT_ADDRESS as string;
+	const nowSec = () => Math.floor(Date.now() / 1000);
+
+	async function mint(body: Record<string, unknown>): Promise<Response> {
+		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/v5/x402/mint', {
+			method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+	// The claim row for a hash, or null. A D1 that never saw a claim has no
+	// table yet: that is "no row", and any other error is a real failure.
+	async function claimRow(txHash: string): Promise<Record<string, unknown> | null> {
+		try {
+			return await env.HALT_ARCHIVE!.prepare('SELECT * FROM x402_mint_claims WHERE tx_hash = ?').bind(txHash.toLowerCase()).first<Record<string, unknown>>();
+		} catch (err) {
+			if (/no such table/i.test(String(err))) return null;
+			throw err;
+		}
+	}
+	async function x402KeyCount(): Promise<number> {
+		const listed = await env.ORACLE_API_KEYS.list();
+		let n = 0;
+		for (const k of listed.keys) {
+			const raw = await env.ORACLE_API_KEYS.get(k.name);
+			if (raw && raw.includes('"x402_onchain"')) n++;
+		}
+		return n;
+	}
+	// mockBaseRpc plus a count of the Base RPC calls made through it.
+	function rpcFor(payer: string): { restore: () => void; calls: () => number } {
+		const restoreMock = mockBaseRpc(payTo(), builderUnits, nowSec() - 10, payer);
+		const mocked = globalThis.fetch;
+		let n = 0;
+		globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+			const url = typeof input === 'string' ? input : (input as Request).url;
+			if (url === 'https://mainnet.base.org') n++;
+			return mocked(input, init);
+		}) as typeof fetch;
+		return { restore: () => { globalThis.fetch = mocked; restoreMock(); }, calls: () => n };
+	}
+
+	it('the message is exactly "headlessoracle.com x402 mint <lowercase tx_hash>"', () => {
+		const h = '0x' + 'AB'.repeat(32);
+		expect(x402MintSigningMessage(h)).toBe('headlessoracle.com x402 mint 0x' + 'ab'.repeat(32));
+		expect(x402MintSigningMessage(' ' + h + ' ')).toBe('headlessoracle.com x402 mint 0x' + 'ab'.repeat(32));
+	});
+
+	it('a valid signature by the payer mints: 200 with the key, claim records the payer', async () => {
+		const txHash = '0x' + 'd1'.repeat(32);
+		const rpc = rpcFor(MINT_PAYER.address);
+		let res: Response;
+		try { res = await mint({ tx_hash: txHash, tier: 'builder', signature: signMint(txHash, MINT_PAYER) }); } finally { rpc.restore(); }
+		expect(res.status).toBe(200);
+		const body = await res.json() as Record<string, unknown>;
+		expect(String(body.api_key)).toMatch(/^ho_live_[0-9a-f]{64}$/);
+		expect((await claimRow(txHash))?.payer).toBe(MINT_PAYER.address);
+	});
+
+	it('v as 0/1 (not 27/28) is accepted too', async () => {
+		const txHash = '0x' + 'd2'.repeat(32);
+		const rpc = rpcFor(MINT_PAYER.address);
+		let res: Response;
+		try { res = await mint({ tx_hash: txHash, tier: 'builder', signature: signMint(txHash, MINT_PAYER, 0) }); } finally { rpc.restore(); }
+		expect(res.status).toBe(200);
+	});
+
+	it('a signature made by viem (an independent EIP-191 implementation) mints', async () => {
+		const { privateKeyToAccount } = await import('viem/accounts');
+		const signer  = newMintSigner();
+		const account = privateKeyToAccount(('0x' + Array.from(signer.secretKey, (b) => b.toString(16).padStart(2, '0')).join('')) as `0x${string}`);
+		expect(account.address.toLowerCase()).toBe(signer.address);
+		const txHash = '0x' + 'd3'.repeat(32);
+		const signature = await account.signMessage({ message: x402MintSigningMessage(txHash) });
+		expect(signature).toBe(signMint(txHash, signer));
+		const rpc = rpcFor(signer.address);
+		let res: Response;
+		try { res = await mint({ tx_hash: txHash, tier: 'builder', signature }); } finally { rpc.restore(); }
+		expect(res.status).toBe(200);
+	});
+
+	it('missing signature: 400 PAYER_SIGNATURE_REQUIRED with the message to sign; no RPC call, no claim row, no key', async () => {
+		const txHash = '0x' + 'd4'.repeat(32);
+		const rpc = rpcFor(MINT_PAYER.address);
+		let res: Response;
+		try { res = await mint({ tx_hash: txHash, tier: 'builder' }); } finally { rpc.restore(); }
+		expect(res.status).toBe(400);
+		const body = await res.json() as Record<string, unknown>;
+		expect(body.error).toBe('PAYER_SIGNATURE_REQUIRED');
+		expect(body.message_to_sign).toBe(x402MintSigningMessage(txHash));
+		expect(String(body.message)).toContain(x402MintSigningMessage(txHash));
+		expect(String(body.signature_format)).toContain('personal_sign');
+		expect(String(body.signature_format)).toContain('ERC-1271');
+		expect(body.api_key).toBeUndefined();
+		expect(rpc.calls()).toBe(0);
+		expect(await claimRow(txHash)).toBeNull();
+		expect(await env.ORACLE_TELEMETRY.get(`x402_used_tx:${txHash}`)).toBeNull();
+		expect(await x402KeyCount()).toBe(0);
+	});
+
+	it('malformed signatures: 400 INVALID_PAYER_SIGNATURE, no claim row', async () => {
+		const txHash = '0x' + 'd5'.repeat(32);
+		const good   = signMint(txHash, MINT_PAYER);
+		const bad: unknown[] = [
+			'0x1234',                                  // too short
+			good.slice(2),                             // no 0x prefix
+			good + '00',                               // 66 bytes
+			'0x' + 'zz'.repeat(65),                    // not hex
+			good.slice(0, -2) + '1d',                  // v = 29
+			'0x' + '00'.repeat(64) + '1b',             // r = s = 0: recovers nothing
+			42,                                        // not a string
+		];
+		const rpc = rpcFor(MINT_PAYER.address);
+		try {
+			for (const signature of bad) {
+				const res = await mint({ tx_hash: txHash, tier: 'builder', signature });
+				expect(res.status, String(signature)).toBe(400);
+				const body = await res.json() as Record<string, unknown>;
+				expect(body.error, String(signature)).toBe('INVALID_PAYER_SIGNATURE');
+				expect(body.message_to_sign).toBe(x402MintSigningMessage(txHash));
+			}
+			expect(rpc.calls()).toBe(0);
+		} finally { rpc.restore(); }
+		expect(await claimRow(txHash)).toBeNull();
+		expect(await x402KeyCount()).toBe(0);
+	});
+
+	it('front-run: a signature by another key is 403 PAYER_MISMATCH and writes no claim row; the real payer then mints the same hash', async () => {
+		const txHash   = '0x' + 'd6'.repeat(32);
+		const attacker = newMintSigner();
+		const rpc = rpcFor(MINT_PAYER.address);
+		try {
+			const res = await mint({ tx_hash: txHash, tier: 'builder', signature: signMint(txHash, attacker) });
+			expect(res.status).toBe(403);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.error).toBe('PAYER_MISMATCH');
+			expect(body.recovered_address).toBe(attacker.address);
+			expect(body.payer_address).toBe(MINT_PAYER.address);
+			expect(body.message_to_sign).toBe(x402MintSigningMessage(txHash));
+			expect(String(body.message)).toContain('ERC-1271');
+			expect(String(body.message)).toContain('EOA');
+			expect(body.api_key).toBeUndefined();
+			expect(await claimRow(txHash)).toBeNull();
+			expect(await env.ORACLE_TELEMETRY.get(`x402_used_tx:${txHash}`)).toBeNull();
+			expect(await x402KeyCount()).toBe(0);
+
+			const real = await mint({ tx_hash: txHash, tier: 'builder', signature: signMint(txHash, MINT_PAYER) });
+			expect(real.status).toBe(200);
+			expect(String((await real.json() as Record<string, unknown>).api_key)).toMatch(/^ho_live_/);
+		} finally { rpc.restore(); }
+		expect((await claimRow(txHash))?.payer).toBe(MINT_PAYER.address);
+		expect(await x402KeyCount()).toBe(1);
+	});
+
+	it('a payer signature over a different tx hash is 403 PAYER_MISMATCH, no claim row', async () => {
+		const txHash = '0x' + 'd7'.repeat(32);
+		const other  = '0x' + 'd8'.repeat(32);
+		const rpc = rpcFor(MINT_PAYER.address);
+		let res: Response;
+		try { res = await mint({ tx_hash: txHash, tier: 'builder', signature: signMint(other, MINT_PAYER) }); } finally { rpc.restore(); }
+		expect(res.status).toBe(403);
+		expect((await res.json() as Record<string, unknown>).error).toBe('PAYER_MISMATCH');
+		expect(await claimRow(txHash)).toBeNull();
+	});
+
+	it('a signature over a different message (no domain prefix) is 403 PAYER_MISMATCH', async () => {
+		const txHash = '0x' + 'd9'.repeat(32);
+		const rpc = rpcFor(MINT_PAYER.address);
+		let res: Response;
+		try { res = await mint({ tx_hash: txHash, tier: 'builder', signature: personalSign(txHash, MINT_PAYER.secretKey) }); } finally { rpc.restore(); }
+		expect(res.status).toBe(403);
+		expect(await claimRow(txHash)).toBeNull();
+	});
+
+	it('an uppercase tx hash in the body verifies against the lowercase message and claims the lowercase hash', async () => {
+		const lower = '0x' + 'da'.repeat(32);
+		const upper = '0x' + 'DA'.repeat(32);
+		const rpc = rpcFor(MINT_PAYER.address);
+		let res: Response;
+		try { res = await mint({ tx_hash: upper, tier: 'builder', signature: signMint(lower, MINT_PAYER) }); } finally { rpc.restore(); }
+		expect(res.status).toBe(200);
+		expect((await claimRow(lower))?.tx_hash).toBe(lower);
+	});
+
+	it('every served surface that documents the mint names signature and the message', async () => {
+		const msg = x402MintSigningMessage('<tx_hash>');
+		const openapi = await fetchJSON('/openapi.json') as { paths: Record<string, { post: Record<string, unknown> }> };
+		const op = openapi.paths['/v5/x402/mint'].post;
+		const schema = ((op.requestBody as Record<string, unknown>).content as Record<string, { schema: { required: string[]; properties: Record<string, unknown> } }>)['application/json'].schema;
+		expect(schema.required).toContain('signature');
+		expect(JSON.stringify(schema.properties.signature)).toContain(msg);
+		const responses = op.responses as Record<string, { description: string }>;
+		expect(responses['400'].description).toContain('PAYER_SIGNATURE_REQUIRED');
+		expect(responses['400'].description).toContain('INVALID_PAYER_SIGNATURE');
+		expect(responses['403'].description).toContain('PAYER_MISMATCH');
+
+		const x402 = await fetchJSON('/.well-known/x402.json') as { resources: Array<Record<string, unknown>> };
+		const res = x402.resources.find((r) => r.path === '/v5/x402/mint')!;
+		const input = res.input as { required: string[]; properties: Record<string, unknown> };
+		expect(input.required).toContain('signature');
+		expect(JSON.stringify(input.properties.signature)).toContain(msg);
+
+		for (const path of ['/llms-full.txt', '/auth.md']) {
+			const text = await (await fetchWorker(path)).text();
+			expect(text, path).toContain('"signature"');
+			expect(text, path).toContain(msg);
+		}
+		const agent = await fetchJSON('/.well-known/agent.json');
+		expect(JSON.stringify(agent)).toContain(msg);
 	});
 });
 

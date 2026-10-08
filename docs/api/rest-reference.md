@@ -74,6 +74,7 @@ Paddle webhook handler. Events: `transaction.completed`, `subscription.updated`,
 
 ### POST /v5/x402/mint
 Mint persistent API key via on-chain USDC payment. Builder: 99 USDC, Pro: 299 USDC.
+Body `{tx_hash, tier, signature}`: `signature` is an EIP-191 `personal_sign` by the address that sent the USDC (EOA only) over `headlessoracle.com x402 mint <tx_hash lowercase>`. Missing: 400 `PAYER_SIGNATURE_REQUIRED`; malformed: 400 `INVALID_PAYER_SIGNATURE`; other signer: 403 `PAYER_MISMATCH`. See `docs/security/x402-mint-payment-binding.md`.
 
 ### POST /v5/credits/purchase
 Buy credits via x402 micropayment.

@@ -1,5 +1,7 @@
 import * as ed from '@noble/ed25519';
 import { sha512 } from '@noble/hashes/sha2.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { createClient } from '@supabase/supabase-js';
 
 // ─── Integration guides served as text/markdown ──────────────────────────────
@@ -4410,6 +4412,66 @@ async function verifyX402MintPayment(
 	return { valid: true, amountPaid, from, blockTimestampSec };
 }
 
+// ─── x402 mint: the payment is bound to its payer (option A, 2026-10-08) ─────
+// Option A of docs/security/x402-mint-payment-binding.md. The tx hash of a
+// transfer to the public payment address is public, so the hash alone proves
+// nothing about who is asking: a watcher of the chain could POST it first and
+// take the key. The request must now carry an EIP-191 personal_sign signature,
+// by the address that sent the USDC Transfer, over x402MintSigningMessage().
+// The route recovers the signer and requires it to equal the Transfer's
+// `from` BEFORE the hash is claimed in D1, so a missing or wrong signature can
+// never spend a legitimate payer's claim. No nonce: the hash is single-use in
+// D1, so a replayed signature can only re-present a hash that is already
+// claimed. Only an EOA can sign: a smart-contract wallet (ERC-1271) cannot
+// mint, and there is no unsigned fallback (fail closed).
+
+// The exact ASCII message the payer signs. One definition, used by the route,
+// the served docs and the tests. The hash is lowercased, whatever case the
+// caller submitted it in.
+export function x402MintSigningMessage(txHash: string): string {
+	return `headlessoracle.com x402 mint ${txHash.trim().toLowerCase()}`;
+}
+
+const X402_MINT_SIGNATURE_FORMAT =
+	'EIP-191 personal_sign (keccak256("\\x19Ethereum Signed Message:\\n" + byte length + message)) by the address that sent the USDC Transfer, ' +
+	'as 65 bytes of 0x-prefixed hex (r || s || v, v = 27/28 or 0/1). The signer must be an EOA: smart-contract wallets (ERC-1271) are not supported.';
+
+// What an agent needs to produce the signature, in every refusal that asks for one.
+function x402MintSigningHelp(txHash: string): Record<string, string> {
+	return {
+		message_to_sign:  x402MintSigningMessage(txHash),
+		signature_format: X402_MINT_SIGNATURE_FORMAT,
+	};
+}
+
+// The lowercase 0x address that produced `signatureHex` over the mint message
+// for `txHash`, or null when the signature is not 65 bytes of 0x-prefixed hex,
+// carries a recovery byte other than 27/28/0/1, or recovers no point.
+function recoverX402MintSigner(txHash: string, signatureHex: string): string | null {
+	const m = /^0x([0-9a-fA-F]{130})$/.exec(signatureHex.trim());
+	if (!m) return null;
+	const sig = fromHex(m[1].toLowerCase());
+	const v = sig[64];
+	const recovery = v >= 27 ? v - 27 : v;
+	if (recovery !== 0 && recovery !== 1) return null;
+	try {
+		const enc     = new TextEncoder();
+		const message = enc.encode(x402MintSigningMessage(txHash));
+		const prefix  = enc.encode(`\x19Ethereum Signed Message:\n${message.length}`);
+		const prefixed = new Uint8Array(prefix.length + message.length);
+		prefixed.set(prefix, 0);
+		prefixed.set(message, prefix.length);
+		const digest = keccak_256(prefixed);
+		const point  = secp256k1.Signature.fromBytes(sig.slice(0, 64), 'compact')
+			.addRecoveryBit(recovery)
+			.recoverPublicKey(digest);
+		const uncompressed = point.toBytes(false);
+		return '0x' + toHex(keccak_256(uncompressed.slice(1)).slice(-20));
+	} catch {
+		return null;
+	}
+}
+
 // ─── x402 mint: one payment hash, at most one key (2026-10-07) ──────────────
 // Option B of docs/security/x402-mint-payment-binding.md. The KV mark
 // x402_used_tx: was check-then-set across two RPC round trips, eventually
@@ -4432,8 +4494,8 @@ async function verifyX402MintPayment(
 // another, and no row is ever rewritten. Mirrors
 // migrations/0002_x402_mint_claims.sql; keep them in step. Created on first
 // use, so no manual migration or new Cloudflare resource is needed.
-// Option A (binding the payment to its payer) is not done: a watcher of the
-// chain can still claim a public transfer first.
+// Option A (binding the payment to its payer) is above: the signer check runs
+// before claimX402MintTx.
 const X402_MINT_CLAIM_RETRY_AFTER_SECONDS = 30;
 
 let _x402MintClaimSchemaPromise: Promise<void> | null = null;
@@ -7326,7 +7388,8 @@ GET https://api.headlessoracle.com/v5/status?mic=XNYS + X-Payment header → 200
 
 # Path D — mint persistent key (${BUILDER_PRICE_USDC} builder / ${PRO_PRICE_USDC} pro):
 POST https://api.headlessoracle.com/v5/x402/mint
-Body: { "tx_hash": "0x...", "tier": "builder" }
+Body: { "tx_hash": "0x...", "tier": "builder", "signature": "0x..." }
+signature: EIP-191 personal_sign by the address that sent the USDC (an EOA; ERC-1271 smart-contract wallets are not supported) over the exact message "${x402MintSigningMessage('<tx_hash>')}", tx_hash in lowercase. Missing → 400 PAYER_SIGNATURE_REQUIRED; malformed → 400 INVALID_PAYER_SIGNATURE; signer is not the payer → 403 PAYER_MISMATCH.
 → Returns ho_live_ key (${BUILDER_CALLS_PER_DAY} calls/day, no expiry)
 
 # Demo (signed receipt, no key needed):
@@ -7373,7 +7436,7 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 | /v5/webhooks/test/:id | POST | Yes | Fire a synthetic test delivery to a webhook | { delivered, payload_sent, status_code } |
 | /v5/webhooks/health | GET | No | WebhookDispatcher DO health (last alarm cycle) | { status, next_alarm } |
 | /v5/card/:mic | GET | No | SVG terminal-style status card | image/svg+xml |
-| /v5/x402/mint | POST | No | Mint persistent API key via Base USDC tx | { api_key, tier, daily_limit } |
+| /v5/x402/mint | POST | No | Mint persistent API key via Base USDC tx, signed by its payer (\`signature\`) | { api_key, tier, daily_limit } |
 | /v5/credits/purchase | POST | Yes | Add prepaid credits via x402 USDC payment | { credits_added, new_balance } |
 | /v5/credits/balance | GET | Yes | Check prepaid credit balance | { balance, estimated_requests_remaining } |
 | /v5/verify | POST | No | Ed25519 receipt verification (REST) | { valid, expired, reason, mic, status, expires_at } |
@@ -8926,7 +8989,8 @@ API keys are presented in the \`X-Oracle-Key\` request header on every keyed end
 
 ## 4. POST /v5/x402/mint
 
-- Request: first send USDC on Base mainnet to the \`payTo\` address published at \`https://headlessoracle.com/.well-known/x402.json\`, then \`POST https://headlessoracle.com/v5/x402/mint\` with JSON body \`{"tx_hash": "<0x...>", "tier": "builder" | "pro", "network": "base"}\` and an optional \`email\`. The transaction must be no older than ${X402_MINT_MAX_AGE_SECONDS} seconds and each transaction hash mints at most one key.
+- Request: first send USDC on Base mainnet to the \`payTo\` address published at \`https://headlessoracle.com/.well-known/x402.json\`, then \`POST https://headlessoracle.com/v5/x402/mint\` with JSON body \`{"tx_hash": "<0x...>", "tier": "builder" | "pro", "network": "base", "signature": "<0x...>"}\` and an optional \`email\`. The transaction must be no older than ${X402_MINT_MAX_AGE_SECONDS} seconds and each transaction hash mints at most one key.
+- Payer signature: \`signature\` is an EIP-191 \`personal_sign\` signature by the address that sent the USDC Transfer over the exact ASCII message \`${x402MintSigningMessage('<tx_hash>')}\`, with the hash in lowercase: 65 bytes of 0x-prefixed hex, v = 27/28 or 0/1. Only an EOA can mint; smart-contract wallets (ERC-1271) are not supported. Missing: 400 \`PAYER_SIGNATURE_REQUIRED\`. Malformed: 400 \`INVALID_PAYER_SIGNATURE\`. Signed by another address: 403 \`PAYER_MISMATCH\`, and no claim is made. Every one of these refusals carries \`message_to_sign\`.
 - Price: ${PLAN_PRICES.builder} USDC for \`builder\`, ${PLAN_PRICES.pro} USDC for \`pro\`.
 - Response: a persistent key beginning \`ho_live_\` in \`api_key\`, shown once.
 - Present it as: \`X-Oracle-Key: <api_key>\`.
@@ -9147,6 +9211,7 @@ const AGENT_JSON = {
 		payment_endpoint:      X402_RESOURCE_SPECS.status.defaultResourceUrl, // returns 402 with x402 details
 		subscription_endpoint: 'https://headlessoracle.com/v5/checkout',     // Paddle — persistent key
 		mint_endpoint:         'https://headlessoracle.com/v5/x402/mint',    // autonomous key minting via on-chain USDC
+		mint_payer_signature:  { field: 'signature', message: x402MintSigningMessage('<tx_hash>'), format: X402_MINT_SIGNATURE_FORMAT },
 		discovery:             'https://headlessoracle.com/.well-known/x402.json',
 		free_tier_daily_limit: FREE_TIER_DAILY_LIMIT,
 	},
@@ -11057,15 +11122,17 @@ const OPENAPI_SPEC = {
 			post: {
 				tags:        ['Billing'],
 				summary:     'Mint a persistent API key via x402 USDC payment',
-				description: `Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: ${BUILDER_PRICE_USDC} = ${BUILDER_CALLS_COMPACT} calls/day. Pro tier: ${PRO_PRICE_USDC} = ${PRO_CALLS_COMPACT} calls/day. Each tx_hash mints at most one key: the hash is claimed atomically before the key is created.`,
+				description: `Agents submit a verified Base mainnet USDC transaction hash and receive a persistent ho_live_ API key. Builder tier: ${BUILDER_PRICE_USDC} = ${BUILDER_CALLS_COMPACT} calls/day. Pro tier: ${PRO_PRICE_USDC} = ${PRO_CALLS_COMPACT} calls/day. Each tx_hash mints at most one key: the hash is claimed atomically before the key is created. The request must carry \`signature\`, an EIP-191 personal_sign by the address that sent the USDC Transfer over the exact message "${x402MintSigningMessage('<tx_hash>')}" (tx_hash lowercase); it is checked before the hash is claimed, so a wrong signature cannot spend the payer's claim. Only an EOA can mint: smart-contract wallets (ERC-1271) are not supported.`,
 				requestBody: {
 					required: true,
 					content: { 'application/json': { schema: {
 						type: 'object',
-						required: ['tx_hash', 'tier'],
+						required: ['tx_hash', 'tier', 'signature'],
 						properties: {
-							tx_hash: { type: 'string', description: 'Base mainnet USDC transaction hash (0x-prefixed).' },
-							tier:    { type: 'string', enum: ['builder', 'pro'], description: 'Desired key tier.' },
+							tx_hash:   { type: 'string', description: 'Base mainnet USDC transaction hash (0x-prefixed).' },
+							tier:      { type: 'string', enum: ['builder', 'pro'], description: 'Desired key tier.' },
+							signature: { type: 'string', pattern: '^0x[0-9a-fA-F]{130}$', description: `Payer binding. ${X402_MINT_SIGNATURE_FORMAT} Message: "${x402MintSigningMessage('<tx_hash>')}", with tx_hash lowercase.` },
+							network:   { type: 'string', description: 'Optional. "base", "base-mainnet" or "eip155:8453".' },
 							email:   { type: 'string', format: 'email', description: 'Optional. The key is returned in the response as api_key.' },
 						},
 					} } },
@@ -11082,7 +11149,9 @@ const OPENAPI_SPEC = {
 							},
 						} } },
 					},
-					'400': { description: 'Invalid tx_hash or payment amount insufficient', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'400': { description: 'BAD_REQUEST (missing tx_hash, bad tier or network), PAYMENT_EXPIRED, PAYER_SIGNATURE_REQUIRED (no signature) or INVALID_PAYER_SIGNATURE (not 65-byte hex, or no signer recovers). The two signature refusals carry message_to_sign and signature_format.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'402': { description: 'PAYMENT_VERIFICATION_FAILED or PAYMENT_INSUFFICIENT: the on-chain USDC transfer could not be verified or is below the tier price.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
+					'403': { description: 'PAYER_MISMATCH: the signature recovers to recovered_address, which is not the Transfer sender (payer_address). No claim is made; the payer can still mint with the hash. Smart-contract wallets (ERC-1271) are not supported.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'409': { description: 'CONFLICT: the transaction hash is already claimed. A hash mints at most one key. claim_status says what became of it (minted, failed, or claimed and in flight); when failed, the body names the contact address.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'500': { description: 'MINT_KEY_NOT_STORED: the payment was received and claimed, but the key could not be stored, so none was issued. Do not pay again or retry; write to the contact address in the body with tx_hash. The operator is alerted.', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
 					'503': { description: 'SERVICE_UNAVAILABLE: minting is not configured, or the payment was verified but could not be claimed (detail MINT_CLAIM_STORE_UNAVAILABLE; no key minted, payment not spent; retry after Retry-After).', content: { 'application/json': { schema: { '$ref': '#/components/schemas/Error' } } } },
@@ -14909,7 +14978,7 @@ export default {
 				{
 					path:        '/v5/x402/mint',
 					method:      'POST',
-					description: `Mint a persistent ho_live_ API key by sending USDC on Base mainnet. Tier builder=${BUILDER_PRICE_USDC} (${BUILDER_CALLS_COMPACT} calls/day), pro=${PRO_PRICE_USDC} (${PRO_CALLS_COMPACT} calls/day). No signup required.`,
+					description: `Mint a persistent ho_live_ API key by sending USDC on Base mainnet. Tier builder=${BUILDER_PRICE_USDC} (${BUILDER_CALLS_COMPACT} calls/day), pro=${PRO_PRICE_USDC} (${PRO_CALLS_COMPACT} calls/day). No signup required. The payer signs "${x402MintSigningMessage('<tx_hash>')}" (EIP-191 personal_sign, EOA only) and sends it as signature.`,
 					input: {
 						type:       'object',
 						properties: {
@@ -14917,8 +14986,9 @@ export default {
 							network: { type: 'string', description: 'Base mainnet network identifier. Accepts: "base", "base-mainnet", or "eip155:8453"' },
 							tier:    { type: 'string', enum: ['builder', 'pro'], description: `builder=${BUILDER_PRICE_USDC}, pro=${PRO_PRICE_USDC}` },
 							email:   { type: 'string', description: 'Optional. The key is returned in the response as api_key.' },
+							signature: { type: 'string', description: `Required. ${X402_MINT_SIGNATURE_FORMAT} Message: "${x402MintSigningMessage('<tx_hash>')}", with tx_hash lowercase.` },
 						},
-						required: ['tx_hash', 'tier'],
+						required: ['tx_hash', 'tier', 'signature'],
 					},
 					tiers: {
 						builder: { usdc: PLAN_PRICES.builder, calls_per_day: BUILDER_TIER_DAILY_LIMIT, asset: X402_USDC_CONTRACT, payTo },
@@ -14959,7 +15029,7 @@ export default {
 			// Tiers: builder and pro, priced from PLAN_PRICES; allowances from BUILDER_TIER_DAILY_LIMIT / PRO_TIER_DAILY_LIMIT
 			if (url.pathname === '/v5/x402/mint') {
 				if (request.method !== 'POST') {
-					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST /v5/x402/mint with { tx_hash, network, tier }' }, 405);
+					return json({ error: 'METHOD_NOT_ALLOWED', message: 'Use POST /v5/x402/mint with { tx_hash, network, tier, signature }', ...x402MintSigningHelp('<tx_hash>') }, 405);
 				}
 				if (!env.ORACLE_PAYMENT_ADDRESS) {
 					return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 key minting is not configured on this instance' }, 503);
@@ -14972,7 +15042,7 @@ export default {
 				}
 				const mintClaimDb = env.HALT_ARCHIVE;
 
-				let mintBody: { tx_hash?: unknown; network?: unknown; tier?: unknown; email?: unknown };
+				let mintBody: { tx_hash?: unknown; network?: unknown; tier?: unknown; email?: unknown; signature?: unknown };
 				try { mintBody = await request.json() as typeof mintBody; }
 				catch { return json({ error: 'BAD_REQUEST', message: 'Invalid JSON body' }, 400); }
 
@@ -14997,10 +15067,41 @@ export default {
 					}, 400);
 				}
 
+				const txHashLower = txHash.toLowerCase();
+				// The same refusal verifyX402MintPayment gives a malformed hash,
+				// given here so the signing message below is always built over a
+				// real hash.
+				if (!/^0x[0-9a-f]{64}$/.test(txHashLower)) {
+					return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: 'On-chain payment could not be verified', detail: 'INVALID_TX_HASH' }, 402);
+				}
+
+				// Payer binding (option A). The signature is read and its signer
+				// recovered before anything else is spent on the request, and the
+				// signer is compared with the Transfer's `from` before the claim:
+				// a missing or wrong signature never writes a claim row.
+				if (mintBody.signature === undefined || mintBody.signature === null || mintBody.signature === '') {
+					return json({
+						error:   'PAYER_SIGNATURE_REQUIRED',
+						message: `signature is required: sign the exact message "${x402MintSigningMessage(txHashLower)}" with the key of the address that sent the USDC payment (EIP-191 personal_sign) and send it as "signature" with this request.`,
+						tx_hash: txHashLower,
+						...x402MintSigningHelp(txHashLower),
+					}, 400);
+				}
+				const mintSigner = typeof mintBody.signature === 'string'
+					? recoverX402MintSigner(txHashLower, mintBody.signature)
+					: null;
+				if (!mintSigner) {
+					return json({
+						error:   'INVALID_PAYER_SIGNATURE',
+						message: `signature must be 65 bytes of 0x-prefixed hex (r || s || v, v = 27/28 or 0/1) that recovers a signer over the exact message "${x402MintSigningMessage(txHashLower)}".`,
+						tx_hash: txHashLower,
+						...x402MintSigningHelp(txHashLower),
+					}, 400);
+				}
+
 				const minAmountUnits = tier === 'pro' ? X402_MINT_PRO_UNITS : X402_MINT_BUILDER_UNITS;
 				const verification   = await verifyX402MintPayment(txHash, env.ORACLE_PAYMENT_ADDRESS, minAmountUnits, env);
 
-				const txHashLower = txHash.toLowerCase();
 				// One 409 for every route to "this hash is taken", carrying what
 				// became of it when the claim store can say.
 				const mintConflict = async () => {
@@ -15040,7 +15141,25 @@ export default {
 					return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: 'On-chain payment could not be verified', detail: verification.detail }, 402);
 				}
 
-				// Payment verified. Claim the hash before any key exists: exactly
+				// Payment verified. Before the claim: the signer must be the payer.
+				// A Transfer log always carries `from`; if this one does not, the
+				// payer cannot be checked and nothing is minted.
+				if (!verification.from) {
+					return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: 'On-chain payment could not be verified: the USDC Transfer names no sender', detail: 'TRANSFER_FROM_MISSING' }, 402);
+				}
+				if (mintSigner !== verification.from.toLowerCase()) {
+					console.log(JSON.stringify({ event: 'X402_MINT_PAYER_MISMATCH', tx_hash: txHashLower, tier, signer: mintSigner, payer: verification.from }));
+					return json({
+						error:             'PAYER_MISMATCH',
+						message:           `The signature was made by ${mintSigner}, but the USDC Transfer in ${txHashLower} was sent by ${verification.from}. Only the address that sent the payment can mint with it: sign the exact message with that address's key. Smart-contract wallets (ERC-1271) are not supported; the payment must come from an EOA that can personal_sign. No claim was made, so the payer can still mint with this transaction hash.`,
+						recovered_address: mintSigner,
+						payer_address:     verification.from,
+						tx_hash:           txHashLower,
+						...x402MintSigningHelp(txHashLower),
+					}, 403);
+				}
+
+				// Signer is the payer. Claim the hash before any key exists: exactly
 				// one request per hash gets 'claimed'. A store that cannot answer
 				// refuses (fail closed); nothing is marked, so a retry can mint.
 				const mintAmountUnitsStr = (verification.amountPaid ?? 0n).toString();
