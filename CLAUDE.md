@@ -163,8 +163,8 @@ here is carried forward from an earlier stamp unverified.
     "via email", outside H3d: `/auth.md`, `/v5/pricing` sandbox/free descriptions,
     `buildUpgradePaths`.
   - **Open**: buyer email failing (Resend team mismatch, below); apex witness route; the
-    402 `Link rel="payment"` still points at `/v5/keys/instant` (founder decision); npm
-    chirindo 0.4.0 lacks the witness commands.
+    402 `Link rel="payment"` still points at `/v5/keys/instant` (founder decision). npm
+    chirindo 0.5.0 (witness commands) published 2026-10-08.
 - **2026-10-04 (later): the key on screen after payment.** Deployed as `63974cb5…`
   (13:13:02Z, from `afc1c80`): H2 `a0f3c75`, H2b `afc1c80`. Suite **1535 → 1589**.
   - Buyers of builder, pro, protocol, credits, custody_90d and custody_1y see their key
@@ -295,8 +295,8 @@ Production receipts carrying the T3 block were verified live on 2026-09-07 by bo
 SDKs. The npm `latest` is now `@headlessoracle/verify@1.1.0` (2026-06-14); its
 `dist/index.js` lines 1–75, which hold `verifyReceipt`, are byte-identical to
 1.0.2's (1.1.0 only appends `safeToExecute`), read from both registry tarballs on
-2026-10-02. The runs above were made with 1.0.2 and were not repeated. **Not closed**: `receipt-verify`'s `ho.receipt` adapter still does not exist
-(0.1.2 ships four formats, none of them HO's).
+2026-10-02. The runs above were made with 1.0.2 and were not repeated. `receipt-verify`'s `ho.receipt` adapter is on its master (`aed4320`,
+2026-10-08) but not yet in a published release (npm 0.1.2 has none).
 
 ### GAP-020 — x402 v2 served correctly beside v1: CLOSED 2026-09-07
 
@@ -707,9 +707,8 @@ symptom above as the whole diagnosis. Confirm with `whoami` before every deploy.
   still need the "proposed, open PR #9" language. Calibration lives on the
   `didit-7day-reframe` branch in the web repo and has not landed on the deployable
   branch.
-- **`ho.receipt` adapter** in `receipt-verify` does not exist — the coverage block's
-  "0 unaddressed coverage items" DoD line cannot be run until it is written, in a
-  repository this sprint does not own.
+- **`ho.receipt` adapter** in `receipt-verify`: on master `aed4320` (2026-10-08) with
+  the "0 unaddressed coverage items" test; not yet published to npm.
 - **Coverage-history endpoint** — not built.
 - **Rate-limit test flake** — see GAP-019 above; one-line fix, deliberately not taken
   here.
