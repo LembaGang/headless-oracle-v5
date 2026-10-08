@@ -23,6 +23,13 @@ set -euo pipefail
 
 fail() { echo "[start-smoke] FAIL: $*" >&2; exit 1; }
 
+# The port probe below treats "curl failed" as "port free". Without a working
+# curl every port looks free and every health probe fails, which reads as a
+# worker that will not boot (2026-10-08, a WSL bash). Say what is wrong instead.
+command -v curl >/dev/null 2>&1 || fail "curl not found in this shell (run the gate from Git for Windows' bash, or via git hook run pre-commit)"
+rc=0; curl -s -o /dev/null -m 2 "http://127.0.0.1:1/" 2>/dev/null || rc=$?
+[ "$rc" -eq 7 ] || [ "$rc" -eq 28 ] || fail "curl in this shell cannot make local connections (exit $rc on a closed port; expected 7)"
+
 # Pick a port nothing is listening on, so a stray dev server from another
 # window cannot make this pass (or fail) for the wrong reason.
 PORT=""

@@ -48,12 +48,17 @@ function Invoke-Npm {
   & npm @args
   if ($LASTEXITCODE -ne 0) { Fail "npm $($args -join ' ') failed (exit $LASTEXITCODE)." }
 }
-function FindBash {
-  $cmd = Get-Command bash -ErrorAction SilentlyContinue
-  if ($cmd) { return $cmd.Source }
-  foreach ($p in @("$env:ProgramFiles\Git\bin\bash.exe", "${env:ProgramFiles(x86)}\Git\bin\bash.exe", "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe")) {
-    if (Test-Path $p) { return $p }
-  }
+function GitBash {
+  # Git for Windows' own bash, located from git itself. Never `Get-Command bash`:
+  # on many Windows machines that is C:\Windows\System32\bash.exe (WSL), a
+  # different Linux environment with its own curl, node and terminal (found
+  # 2026-10-08: the smoke step could not reach the worker it had just started).
+  $exec = (& git --exec-path) 2>$null
+  if (-not $exec) { return $null }
+  $root = Resolve-Path (Join-Path $exec '..\..\..') -ErrorAction SilentlyContinue
+  if (-not $root) { return $null }
+  $b = Join-Path $root 'bin\bash.exe'
+  if (Test-Path $b) { return $b }
   return $null
 }
 
@@ -88,9 +93,17 @@ if ($bad.Count -gt 0) { Fail "$($bad.Count) commit(s) are not signed with your k
 # ---- 3. One gate on the final tree ------------------------------------------
 Step "Gate on the final tree"
 if (Test-Path .githooks\pre-commit) {
-  $bash = FindBash
-  if (-not $bash) { Fail "bash not found (Git for Windows provides it). The worker gate needs it." }
-  & $bash .githooks/pre-commit
+  # Run the hook the way `git commit` runs it (git's own shell, no terminal on
+  # stdin), so the gate behaves exactly as it does on a normal commit.
+  $ver = [regex]::Match((& git --version), '(\d+)\.(\d+)')
+  $hasHookRun = ([int]$ver.Groups[1].Value -gt 2) -or (([int]$ver.Groups[1].Value -eq 2) -and ([int]$ver.Groups[2].Value -ge 36))
+  if ($hasHookRun) {
+    & git -c core.hooksPath=.githooks hook run pre-commit
+  } else {
+    $bash = GitBash
+    if (-not $bash) { Fail "git is older than 2.36 and Git for Windows' bash was not found. Update Git for Windows." }
+    $null | & $bash .githooks/pre-commit
+  }
   if ($LASTEXITCODE -ne 0) { Fail "the gate failed on the final tree. Nothing was merged or pushed." }
 } else {
   $pkg = Get-Content package.json -Raw | ConvertFrom-Json

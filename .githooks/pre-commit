@@ -34,7 +34,9 @@ echo "[pre-commit] (1/4) TypeScript check..."
 npx tsc --noEmit
 
 echo "[pre-commit] (2/4) Test suite..."
-npm test --silent
+# vitest run, not `npm test` (= bare `vitest`): bare vitest enters watch mode
+# whenever stdin is a terminal and the gate would wait forever (2026-10-08).
+npx vitest run
 
 echo "[pre-commit] (3/4) Wrangler deploy --dry-run..."
 npx wrangler deploy --dry-run >/dev/null
