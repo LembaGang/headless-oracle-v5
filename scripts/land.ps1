@@ -106,6 +106,15 @@ if ($bad.Count -gt 0) { Fail "$($bad.Count) commit(s) are not signed with your k
 
 # ---- 3. One gate on the final tree ------------------------------------------
 Step "Gate on the final tree"
+# The hook gates against whatever node_modules holds. When the branch changes
+# the dependencies, install from its lockfile first, or the gate checks the new
+# code against the old packages (2026-10-08: @noble/curves 2.0.1 in the lockfile,
+# 1.9.1 installed, so tsc failed on an API the pinned version has).
+& git diff --quiet "origin/$Base" HEAD -- package.json package-lock.json
+if (($LASTEXITCODE -ne 0) -or -not (Test-Path node_modules)) {
+  Step "Dependencies changed: npm ci"
+  Invoke-Npm ci
+}
 if (Test-Path .githooks\pre-commit) {
   # Run the hook the way `git commit` runs it (git's own shell, no terminal on
   # stdin), so the gate behaves exactly as it does on a normal commit.
