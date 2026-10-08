@@ -1,0 +1,43 @@
+{
+  "_label": "TEST KEY, not a production receipt. Signed 2026-10-08 by this repository's own builder (buildSignedReceipt Tier 0 -> signPayload, src/index.ts at 6e52560) with a key generated for this one example; the private key was not kept. The public key below is not in https://headlessoracle.com/v5/keys, so a registry-driven verifier refuses it by key id.",
+  "field_set": "L12b override variant",
+  "provenance": {
+    "generated_by": "GET /v5/demo?mic=XNYS through worker.fetch in a vitest-pool-workers run, with an in-memory ORACLE_OVERRIDES entry for XNYS (status HALTED) and ED25519_PRIVATE_KEY / ED25519_PUBLIC_KEY / PUBLIC_KEY_ID replaced by the test key",
+    "source_commit": "6e52560",
+    "generated_at": "2026-10-08T13:02:30.588Z"
+  },
+  "public_key_id": "TEST_KEY_not_a_production_receipt",
+  "public_key": "2ae0906d7775c4c0be231b665302acae256e8b73a0ebde6f21781a056ea91878",
+  "public_key_source": "TEST KEY generated in the session that wrote this file; not a production key",
+  "signed_fields": [
+    "coverage",
+    "expires_at",
+    "halt_detection",
+    "issued_at",
+    "issuer",
+    "mic",
+    "public_key_id",
+    "reason",
+    "receipt_id",
+    "receipt_mode",
+    "schema_version",
+    "source",
+    "status"
+  ],
+  "receipt": {
+    "receipt_id": "c8c78a52-2c2f-4506-a50f-f178b00e6e9d",
+    "issued_at": "2026-10-08T13:02:30.588Z",
+    "expires_at": "2026-10-08T13:03:30.588Z",
+    "issuer": "headlessoracle.com",
+    "mic": "XNYS",
+    "status": "HALTED",
+    "source": "OVERRIDE",
+    "reason": "TEST KEY, not a production receipt: synthetic manual halt for docs/examples",
+    "halt_detection": "active",
+    "coverage": "{\"determination_tier\":0,\"consulted\":[\"manual_override_kv\"],\"not_consulted\":[\"realtime_halt_feed\",\"schedule\"],\"realtime_halt_feed_scope\":[\"XNAS\",\"XNYS\"],\"unknown_reason\":null,\"feed_state\":\"absent\",\"feed_last_run\":null}",
+    "receipt_mode": "demo",
+    "schema_version": "v5.0",
+    "public_key_id": "TEST_KEY_not_a_production_receipt",
+    "signature": "9eff620159e87c06bd70013ff8b8420f4473338fd19653b301f4ec467815ba8c828cfe4ddcffa9a83529e79376f288927685936b1c37a89f965766bd432ae90d"
+  }
+}

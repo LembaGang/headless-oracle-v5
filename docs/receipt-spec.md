@@ -101,7 +101,7 @@ Note: no `mic`, no `schema_version`, no `receipt_mode` — health is system-leve
 | `source` | enum | Yes | `SCHEDULE`, `OVERRIDE`, or `SYSTEM`. |
 | `reason` | string | Override only | Human-readable explanation of the override. |
 | `halt_detection` | enum | Market receipts | `active` or `schedule_only`: what intraday halt detection is configured for this MIC. It does not say whether a halt feed was live at this determination; `coverage` says that. |
-| `coverage` | string | Market receipts | A JSON-encoded string inside the signed bytes. Parse it with `JSON.parse` only after the signature verifies. Members, in this order: `determination_tier` (0 = manual override, 1 = schedule, 2 = fail-closed fallback), `consulted`, `not_consulted`, `realtime_halt_feed_scope`, `unknown_reason` (null unless the status is `UNKNOWN`), `feed_state` (`live`, `stale`, `failed`, `absent` or `not_covered`), `feed_last_run`. `/v5/keys` `canonical_payload_spec.coverage_note` is the authoritative description. |
+| `coverage` | string | Market receipts | A JSON-encoded string inside the signed bytes. Parse it with `JSON.parse` only after the signature verifies. Members, in this order: `determination_tier` (0 = manual override, 1 = schedule, 2 = fail-closed fallback), `consulted`, `not_consulted`, `realtime_halt_feed_scope`, `unknown_reason` (null unless the status is `UNKNOWN`), `feed_state` (`live`, `stale`, `failed`, `absent` or `not_covered`), `feed_last_run`. The first five members were added with `coverage` itself in `19ccb28`; `feed_state` and `feed_last_run` were appended in `9b37d9e` (see "Signed field sets of schema_version v5.0"). `/v5/keys` `canonical_payload_spec.coverage_note` is the authoritative description. |
 | `receipt_mode` | enum | Market receipts | One key signs every receipt type. `demo` is served by `/v5/demo`. `live` is served by `/v5/status` (keyed, x402-paid and the keyless trial alike), `/v5/batch`, MCP `get_market_status`, and the free, unauthenticated `/v1/status/{MIC}` and `/v1/safe-to-trade/sample`. `receipt_mode` therefore says which door issued the receipt; it is not an authentication signal. |
 | `schema_version` | string | Market receipts | Receipt schema version. Current: `v5.0`. |
 | `public_key_id` | string | Yes | Identifies which key in the key registry signed this receipt. |
@@ -279,6 +279,51 @@ A compliant oracle implementation MUST:
 
 ---
 
+## Signed field sets of schema_version v5.0
+
+`schema_version` has read `v5.0` since `cb914de`, while the set of signed fields has changed underneath it. A `v5.0` receipt therefore does not by itself say which fields were signed. This table lists every distinct set. Each list is the set of keys of the object literal passed to `signPayload` in `src/index.ts` at the named commit, written in signed order (`signPayload` sorts keys with JavaScript's default sort before `JSON.stringify` at every one of these commits). Dates are committer dates in UTC, not deploy dates. The same table is at [`docs/receipt-field-sets-v5.0.json`](receipt-field-sets-v5.0.json), and a test fails if the current rows stop matching the builder.
+
+### Market receipts (every receipt built by `buildSignedReceipt`: among others `/v5/demo`, `/v5/status`, `/v5/status/x402`, `/v1/status/{MIC}`, each receipt inside `/v5/batch`, MCP `get_market_status`)
+
+| Set | Commit | Committed (UTC) | Change | Signed fields | Override variant |
+|---|---|---|---|---|---|
+| L8 | `cb914de` | 2026-02-22 17:34:32 | `terms_hash` renamed `schema_version` | `expires_at`, `issued_at`, `mic`, `public_key_id`, `receipt_id`, `schema_version`, `source`, `status` | adds `reason` |
+| L9 | `53284b2` | 2026-03-01 08:34:52 | `receipt_mode` added | `expires_at`, `issued_at`, `mic`, `public_key_id`, `receipt_id`, `receipt_mode`, `schema_version`, `source`, `status` | adds `reason` |
+| L10 | `86b18f7` | 2026-03-02 11:45:14 | `issuer` added | `expires_at`, `issued_at`, `issuer`, `mic`, `public_key_id`, `receipt_id`, `receipt_mode`, `schema_version`, `source`, `status` | adds `reason` |
+| L11 | `fd13ec3` | 2026-03-23 12:44:35 | `halt_detection` added | `expires_at`, `halt_detection`, `issued_at`, `issuer`, `mic`, `public_key_id`, `receipt_id`, `receipt_mode`, `schema_version`, `source`, `status` | adds `reason` |
+| L12a | `19ccb28` | 2026-09-07 11:06:10 | `coverage` added, five members | `coverage`, `expires_at`, `halt_detection`, `issued_at`, `issuer`, `mic`, `public_key_id`, `receipt_id`, `receipt_mode`, `schema_version`, `source`, `status` | adds `reason` |
+| L12b (current) | `9b37d9e` | 2026-09-07 14:14:11 | `feed_state`, `feed_last_run` appended inside `coverage` | same as L12a | adds `reason` |
+
+The override variant is the Tier 0 receipt (`source: OVERRIDE`); it signs the same fields plus `reason`, at every row. The Tier 2 fail-closed receipt (`status: UNKNOWN`, `source: SYSTEM`) signs the same fields as the row's market receipt.
+
+L12a and L12b sign the same top-level fields. They differ inside `coverage`, whose value is a JSON-encoded string, so its member order is part of the signed bytes:
+
+| Set | `coverage` members, in signed order |
+|---|---|
+| L12a | `determination_tier`, `consulted`, `not_consulted`, `realtime_halt_feed_scope`, `unknown_reason` |
+| L12b | `determination_tier`, `consulted`, `not_consulted`, `realtime_halt_feed_scope`, `unknown_reason`, `feed_state`, `feed_last_run` |
+
+### Other receipts that sign `schema_version: v5.0`
+
+| Receipt | Commit | Committed (UTC) | Signed fields | Changed since |
+|---|---|---|---|---|
+| `/v5/batch` envelope (`batch_signature`, over the whole batch) | `1dc84e8` | 2026-04-08 13:57:53 | `all_open`, `batch_id`, `correlation_id`, `exchanges`, `expires_at`, `issued_at`, `issuer`, `public_key_id`, `schema_version` | no |
+| `/v1/safe-to-trade` | `d3a0193` | 2026-06-16 08:14:29 | `cross_venue`, `expires_at`, `instrument`, `issued_at`, `issuer`, `max_age`, `public_key_id`, `reasons`, `receipt_id`, `receipt_mode`, `safe`, `schema_version`, `venue`, `venue_source`, `venue_status` | no |
+| `/v5/conformance-vectors` (the four market vectors) | `b01d903` | 2026-03-25 19:38:58 | the L11 set | no |
+
+`/v5/conformance-vectors` signs with the production key through its own `ed.sign` call, not `signPayload`, and was not changed by `19ccb28` or `9b37d9e`: its market vectors still carry the L11 set, without `coverage`, while `/v5/keys` `receipt_fields` lists `coverage`. The batch envelope's field list is not published in `/v5/keys` `canonical_payload_spec`. Health receipts carry no `schema_version` and are not listed here.
+
+### Pinned examples
+
+Each verifies offline with one command (Node 20 or later, no dependencies). The script checks the signature only; every example is past its 60-second TTL and must not be acted on.
+
+| File | What it is | Verify |
+|---|---|---|
+| [`examples/receipt-L11-genuine-2026-06-05.json`](examples/receipt-L11-genuine-2026-06-05.json) | A genuine production receipt signed by `key_2026_v1`, set L11, issued 2026-06-05T16:03:15.257Z. Copied from `src/index.ts` line 4925 (`BAZAAR_EXAMPLE_RECEIPT_STATUS`, added in `21f5f08`) | `node docs/examples/verify-example.mjs docs/examples/receipt-L11-genuine-2026-06-05.json` |
+| [`examples/receipt-L12b-override-TEST-KEY.json`](examples/receipt-L12b-override-TEST-KEY.json) | **TEST KEY, not a production receipt.** An override receipt, set L12b, signed on 2026-10-08 by this repository's builder with a key made for this example (`public_key_id` `TEST_KEY_not_a_production_receipt`; the public key is in the file). No genuine override receipt was found in this repository | `node docs/examples/verify-example.mjs docs/examples/receipt-L12b-override-TEST-KEY.json` |
+
+---
+
 ## Changelog
 
 | Version | Date | Changes |
@@ -286,4 +331,5 @@ A compliant oracle implementation MUST:
 | v5.0 | 2026-02-22 | Initial open specification. Renamed `terms_hash` → `schema_version`. Added `expires_at`. |
 | v5.0 | 2026-03-01 | Added `receipt_mode`. Added `data_coverage_years` to schedule response. |
 | v5.0 | 2026-03-02 | Added `issuer` to all signed receipt types. |
-| v5.0 | 2026-10-01 | This document now lists `halt_detection` (signed since `fd13ec3`, 2026-03-23) and `coverage` (signed since `19ccb28`, 2026-09-07). `schema_version` remained `v5.0` across these changes. Signed-field changes made under `v5.0`, from `git log -S` and the `canonical_payload_spec` lists at each commit: `cb914de` (2026-02-22) `terms_hash` renamed `schema_version`; `53284b2` (2026-03-01) `receipt_mode` added to market and override receipts; `86b18f7` (2026-03-02) `issuer` added to market, override and health receipts; `fd13ec3` (2026-03-23) `halt_detection` added to market and override receipts; `d3a0193` (2026-06-16) a new `safe_to_trade_fields` list for the `/v1/safe-to-trade` receipt; `19ccb28` (2026-09-07) `coverage` added to market and override receipts. Also corrected: the canonical payload is built from the `canonical_payload_spec` field list, the sort is JavaScript's default, the Python example sets `ensure_ascii=False`, `receipt_mode` is described by the endpoint that issues it, and the expiry boundary is stated as found. No version bump. |
+| v5.0 | 2026-10-01 | This document now lists `halt_detection` (signed since `fd13ec3`, 2026-03-23) and `coverage` (signed since `19ccb28`, 2026-09-07). `schema_version` remained `v5.0` across these changes. Signed-field changes made under `v5.0`, from `git log -S` and the `canonical_payload_spec` lists at each commit: `cb914de` (2026-02-22) `terms_hash` renamed `schema_version`; `53284b2` (2026-03-01) `receipt_mode` added to market and override receipts; `86b18f7` (2026-03-02) `issuer` added to market, override and health receipts; `fd13ec3` (2026-03-23) `halt_detection` added to market and override receipts; `d3a0193` (2026-06-16) a new `safe_to_trade_fields` list for the `/v1/safe-to-trade` receipt; `19ccb28` (2026-09-07) `coverage` added to market and override receipts (with five members; the 2026-10-08 row separates the second 7 September commit, `9b37d9e`, which this row had merged into it). Also corrected: the canonical payload is built from the `canonical_payload_spec` field list, the sort is JavaScript's default, the Python example sets `ensure_ascii=False`, `receipt_mode` is described by the endpoint that issues it, and the expiry boundary is stated as found. No version bump. |
+| v5.0 | 2026-10-08 | Two commits of 2026-09-07 separated. `19ccb28` (committed 11:06:10Z) added `coverage` with five members: `determination_tier`, `consulted`, `not_consulted`, `realtime_halt_feed_scope`, `unknown_reason`. `9b37d9e` (committed 14:14:11Z) appended `feed_state` and `feed_last_run` inside `coverage`; it did not change the top-level signed fields. Added the section "Signed field sets of schema_version v5.0", its machine-readable copy `docs/receipt-field-sets-v5.0.json`, and two pinned examples under `docs/examples/`. No version bump. |

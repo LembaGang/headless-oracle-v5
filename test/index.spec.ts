@@ -23,6 +23,9 @@ import worker, {
 	x402MintSigningMessage,
 } from '../src';
 import { MINT_PAYER, newMintSigner, signMint, personalSign } from './mint-payer';
+import RECEIPT_FIELD_SETS from '../docs/receipt-field-sets-v5.0.json';
+import EXAMPLE_L11_GENUINE from '../docs/examples/receipt-L11-genuine-2026-06-05.json';
+import EXAMPLE_L12B_OVERRIDE_TEST_KEY from '../docs/examples/receipt-L12b-override-TEST-KEY.json';
 
 // H4a step 7: every 2xx and 402 response this suite receives is checked for a
 // non-ASCII header value. workerd sends a non-ASCII header as raw UTF-8 bytes,
@@ -20503,6 +20506,85 @@ describe('x402 mint — payer binding: only the address that paid can mint', () 
 		}
 		const agent = await fetchJSON('/.well-known/agent.json');
 		expect(JSON.stringify(agent)).toContain(msg);
+	});
+});
+
+// H5 (2026-10-08): docs/receipt-field-sets-v5.0.json is the published record of
+// what each v5.0 receipt signs. Its current market row is recomputed here from the
+// live builder, so a signer change that does not update the record fails the gate.
+describe('H5: receipt-field-sets-v5.0.json matches the live builder', () => {
+	type FieldSetRow = { id: string; signed_fields: string[]; override_signed_fields: string[] | null; coverage_members: string[] | null; current: boolean };
+	const rows = RECEIPT_FIELD_SETS.field_sets as FieldSetRow[];
+	const row = (id: string) => rows.find(r => r.id === id)!;
+	const hexBytes = (h: string) => Uint8Array.from(h.match(/../g)!.map(b => parseInt(b, 16)));
+	// Canonicalised over the RECORD's list, not the receipt's own keys, so a signed
+	// field the record does not name makes the signature fail as well as the key check.
+	async function verifiesOver(receipt: Record<string, unknown>, fields: string[], pubHex: string): Promise<boolean> {
+		const sorted: Record<string, unknown> = {};
+		for (const k of [...fields].sort()) sorted[k] = receipt[k];
+		const key = await crypto.subtle.importKey('raw', hexBytes(pubHex), { name: 'Ed25519' }, false, ['verify']);
+		return crypto.subtle.verify({ name: 'Ed25519' }, key, hexBytes(receipt.signature as string), new TextEncoder().encode(JSON.stringify(sorted)));
+	}
+	const signedKeys = (r: Record<string, unknown>) => Object.keys(r).filter(k => k !== 'signature').sort();
+
+	it('L12b is the only current market row', () => {
+		expect(rows.filter(r => r.current && r.id.startsWith('L')).map(r => r.id)).toEqual(['L12b']);
+	});
+
+	it('a schedule receipt signs exactly L12b, with L12b coverage members in order', async () => {
+		const body = await fetchJSON('/v5/demo?mic=XNYS');
+		const receipt = body.receipt as Record<string, unknown>;
+		expect(signedKeys(receipt)).toEqual(row('L12b').signed_fields);
+		expect(Object.keys(JSON.parse(receipt.coverage as string))).toEqual(row('L12b').coverage_members);
+		expect(await verifiesOver(receipt, row('L12b').signed_fields, env.ED25519_PUBLIC_KEY)).toBe(true);
+	});
+
+	it('an override receipt signs exactly the L12b override variant', async () => {
+		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({
+			status: 'HALTED', reason: 'H5 field-set check', expires: new Date(Date.now() + 3_600_000).toISOString(),
+		}));
+		try {
+			const body = await fetchJSON('/v5/demo?mic=XNYS');
+			const receipt = body.receipt as Record<string, unknown>;
+			expect(receipt.source).toBe('OVERRIDE');
+			expect(signedKeys(receipt)).toEqual(row('L12b').override_signed_fields);
+			expect(Object.keys(JSON.parse(receipt.coverage as string))).toEqual(row('L12b').coverage_members);
+			expect(await verifiesOver(receipt, row('L12b').override_signed_fields!, env.ED25519_PUBLIC_KEY)).toBe(true);
+		} finally {
+			await env.ORACLE_OVERRIDES.delete('XNYS');
+		}
+	});
+
+	it('/v5/keys publishes the same lists as L12b', async () => {
+		const spec = (await fetchJSON('/v5/keys')).canonical_payload_spec as Record<string, unknown>;
+		expect(spec.receipt_fields).toEqual(row('L12b').signed_fields);
+		expect(spec.override_fields).toEqual(row('L12b').override_signed_fields);
+		expect(spec.safe_to_trade_fields).toEqual(row('safe_to_trade').signed_fields);
+	});
+
+	it('both pinned examples verify, and a one-field tamper of each does not', async () => {
+		for (const ex of [EXAMPLE_L11_GENUINE, EXAMPLE_L12B_OVERRIDE_TEST_KEY] as Array<{ field_set: string; signed_fields: string[]; public_key: string; receipt: Record<string, unknown> }>) {
+			const set = row(ex.field_set.split(' ')[0]);
+			const expected = ex.field_set.includes('override') ? set.override_signed_fields : set.signed_fields;
+			expect(signedKeys(ex.receipt)).toEqual(expected);
+			expect(await verifiesOver(ex.receipt, ex.signed_fields, ex.public_key)).toBe(true);
+			expect(await verifiesOver({ ...ex.receipt, mic: 'XLON' }, ex.signed_fields, ex.public_key)).toBe(false);
+			// The worker's own verifier (POST /v5/verify), pointed at the example's key.
+			// Only the signature check is asserted: every example is past its TTL.
+			for (const [receipt, passed] of [[ex.receipt, true], [{ ...ex.receipt, mic: 'XLON' }, false]] as const) {
+				const ctx = createExecutionContext();
+				const res = await worker.fetch(new Request('http://example.com/v5/verify', {
+					method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ receipt }),
+				}), { ...env, ED25519_PUBLIC_KEY: ex.public_key }, ctx);
+				await waitOnExecutionContext(ctx);
+				const out = await res.json() as { checks: { signature: { passed: boolean }; ttl: { passed: boolean } } };
+				expect(out.checks.signature.passed).toBe(passed);
+				expect(out.checks.ttl.passed).toBe(false);
+			}
+		}
+		expect(EXAMPLE_L11_GENUINE.public_key_id).toBe('key_2026_v1');
+		expect(EXAMPLE_L12B_OVERRIDE_TEST_KEY.public_key_id).toContain('TEST_KEY');
+		expect(EXAMPLE_L12B_OVERRIDE_TEST_KEY._label).toMatch(/^TEST KEY, not a production receipt/);
 	});
 });
 
