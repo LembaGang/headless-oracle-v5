@@ -12305,6 +12305,20 @@ describe('402 responses include agent_actions (friction reduction)', () => {
 		expect(actions).toHaveProperty('payment_address');
 	});
 
+	it('the 402 mint hint names the payer signature and the message to sign; credits point at /v5/credits/purchase', async () => {
+		const key  = 'ho_free_' + 'w'.repeat(64);
+		const hash = await setupFreeKey(key);
+		await exhaustDailyUsage(hash);
+		const res  = await fetchWorker('/v5/status?mic=XNYS', { headers: { 'X-Oracle-Key': key } });
+		expect(res.status).toBe(402);
+		const body = await res.json() as Record<string, any>;
+		const mint = body.agent_actions.mint_persistent_key as Record<string, string>;
+		expect(mint.body).toContain('"signature"');
+		expect(mint.message_to_sign).toBe('headlessoracle.com x402 mint <tx_hash>');
+		expect(mint.signature_format).toContain('personal_sign');
+		expect(JSON.stringify(body)).not.toMatch(/"purchase":"POST \/v5\/x402\/mint"/);
+	});
+
 	it('build402Payload x402 object includes paymentHeaderName and paymentHeaderEncoding', async () => {
 		const key  = 'ho_free_' + 'y'.repeat(64);
 		const hash = await setupFreeKey(key);
@@ -19662,6 +19676,10 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 		// one feature moved; restored here, the seven still hash to the same pin.
 		before[6].description = 'Unlimited calls/day. Unlimited webhooks. Enterprise SLA.';
 		before[6].features    = ['Unlimited calls/day', 'Unlimited webhooks', '28 exchanges', 'Enterprise SLA', 'Paddle billing'];
+		// 2026-10-08: credits `provision` named /v5/x402/mint, which mints Builder/Pro
+		// keys, not credits; it now names /v5/credits/purchase. No price moved.
+		expect(before[3].provision).toBe('POST /v5/credits/purchase');
+		before[3].provision   = 'POST /v5/x402/mint';
 		expect(await sha256Hex(JSON.stringify(before))).toBe('0cc0e4765f5e2f6224ac98b610f43b9187183a62ea3a4bacf5b5328129530768');
 		const rest: Record<string, unknown> = { ...body };
 		delete rest.tiers;

@@ -4138,9 +4138,10 @@ function buildAgentActions(paymentAddress: string): Record<string, unknown> {
 			credits_issued:  10,
 		},
 		mint_persistent_key: {
-			description: 'POST /v5/x402/mint with tx_hash of Base mainnet USDC payment — get a persistent API key',
+			description: 'POST /v5/x402/mint with tx_hash of Base mainnet USDC payment, signed by the paying address — get a persistent API key',
 			endpoint:    'POST /v5/x402/mint',
-			body:        '{ "tx_hash": "0x...", "tier": "builder" }',
+			body:        '{ "tx_hash": "0x...", "tier": "builder", "network": "base", "signature": "0x..." }',
+			...x402MintSigningHelp('<tx_hash>'),
 			tiers:       { builder: `$${BUILDER_PRICE_USDC} → ${BUILDER_CALLS_COMPACT} req/day`, pro: `$${PRO_PRICE_USDC} → ${PRO_CALLS_COMPACT} req/day` },
 		},
 		buy_subscription: {
@@ -4590,7 +4591,7 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 		chain_id:           8453,
 		pricing: {
 			per_request:     { amount_usdc: PRICING.x402_per_request_usdc,       units: String(X402_MIN_AMOUNT_UNITS), scheme: 'x402' },
-			credit_pack:     { amount_usd:  PRICING.credit_pack_usd.toFixed(2),  calls: PRICING.credit_pack_calls, purchase: 'POST /v5/x402/mint' },
+			credit_pack:     { amount_usd:  PRICING.credit_pack_usd.toFixed(2),  calls: PRICING.credit_pack_calls, purchase: 'POST /v5/credits/purchase' },
 			builder_monthly: { amount_usd:  PRICING.builder_monthly_usd.toFixed(2), calls_per_day: BUILDER_TIER_DAILY_LIMIT, purchase: 'POST /v5/checkout' },
 			pro_monthly:     { amount_usd:  PRICING.pro_monthly_usd.toFixed(2),     calls_per_day: PRO_TIER_DAILY_LIMIT,     purchase: 'POST /v5/checkout' },
 		},
@@ -4620,7 +4621,7 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 		alternatives: {
 			monthly:        'https://headlessoracle.com/upgrade',
 			sandbox_x402:   'POST /v5/sandbox with X-Payment header — 10 credits, no email',
-			mint_key:       'POST /v5/x402/mint with tx_hash — get persistent API key',
+			mint_key:       'POST /v5/x402/mint with tx_hash and signature (personal_sign by the paying address) — get persistent API key',
 		},
 		agent_actions:  buildAgentActions(paymentAddress),
 		founder_note: "You're hitting our limits — that means you're building something real. Reply to hello@headlessoracle.com and I'll set you up with a proper production key. — Mike",
@@ -17636,7 +17637,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							price_label:  `$${PRICING.credit_pack_usd} one-time`,
 							calls:        PRICING.credit_pack_calls,
 							key_prefix:   'ho_crd_',
-							provision:    'POST /v5/x402/mint',
+							provision:    'POST /v5/credits/purchase',
 							description:  '1,000 prepaid calls. No expiry. Mint instantly with $5 USDC on Base mainnet.',
 							features:     ['1,000 calls', 'No expiry', 'No subscription', '28 exchanges', 'Instant provisioning'],
 						},
