@@ -140,12 +140,10 @@ here is carried forward from an earlier stamp unverified.
     operation has a derived `operationId` (`openapiOperationId`).
   - **Test guard**: the suite fails on a non-ASCII header in any 2xx or 402. None
     found; the em-dash warnings were Miniflare's `MF-Vitest-Source` header.
-  - **Open (B-115, route changes)**: the empty-UA monitor's `HEAD /mcp` 404s are
-    `https://headlessoracle.com/mcp?<query>` (zone analytics, 157 in 3h, HTML 404
-    from Pages): the route `headlessoracle.com/mcp` is exact-path, so any query
-    string misses the worker. It needs `headlessoracle.com/mcp*` in the zone routes;
-    so do apex `/health` and `POST /`. The 2 Oct flip from 200 to 404 was the web
-    repo's E4 real 404 page, not a worker change.
+  - **Routes (2026-10-08)**: `headlessoracle.com/mcp*` (was exact-path, so `HEAD
+    /mcp?<query>` monitor probes got Pages 404s) and apex `/health` added. `POST /` is
+    deliberately not routed: an apex `/` route would put every homepage load through the
+    worker (Workers FREE, 100k req/day).
 - **2026-10-04 (evening): H3a–H3d.** Live **`259a8bdb-d718-408a-88b9-7ccc3b3562bb`**
   (20:21:16Z, from `acaf3aa`, read from `npx wrangler deployments list`; B-115 exit 1
   after the upload, routes unchanged), replacing `306e1bfe…` (17:22:53Z: H3a `36788a2`,

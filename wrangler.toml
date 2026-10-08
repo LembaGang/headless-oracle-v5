@@ -15,7 +15,11 @@ routes = [
   { pattern = "api.headlessoracle.com/*", zone_name = "headlessoracle.com" },
   { pattern = "www.headlessoracle.com/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/v5/*", zone_name = "headlessoracle.com" },
-  { pattern = "headlessoracle.com/mcp", zone_name = "headlessoracle.com" },
+  # `mcp*`, not `mcp`: an exact-path route misses any query string, and monitors
+  # probe `HEAD /mcp?<query>` (157 such 404s from Pages in 3h, 2026-10-05).
+  { pattern = "headlessoracle.com/mcp*", zone_name = "headlessoracle.com" },
+  # /health: the path uptime monitors guess first; the worker serves it as /v5/health.
+  { pattern = "headlessoracle.com/health", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/webhooks/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/.well-known/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/openapi.json", zone_name = "headlessoracle.com" },

@@ -14228,8 +14228,8 @@ export default {
 				return new Response(null, { status: 204, headers: { 'Cache-Control': 'public, max-age=86400' } });
 			}
 			// /health is the path uptime monitors guess first; same body, same signature.
-			// It reaches the worker on api. only: www. redirects to the apex, and the apex
-			// has no /health route (adding one is a zone-route change, blocked by B-115).
+			// It reaches the worker on api. and, since 2026-10-08, on the apex
+			// (`headlessoracle.com/health` in wrangler.toml); www. redirects to the apex.
 			if (url.pathname === '/v5/health' || url.pathname === '/health') {
 				try {
 					const healthPayload = {
