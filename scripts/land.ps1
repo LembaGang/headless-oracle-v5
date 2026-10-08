@@ -113,6 +113,13 @@ Step "Gate on the final tree"
 & git diff --quiet "origin/$Base" HEAD -- package.json package-lock.json
 if (($LASTEXITCODE -ne 0) -or -not (Test-Path node_modules)) {
   Step "Dependencies changed: npm ci"
+  # A failed earlier gate can leave this repo's own esbuild/workerd running, and
+  # Windows refuses to delete a running .exe (EPERM on esbuild.exe, 2026-10-08).
+  # Stop only processes started from THIS repo's node_modules.
+  $nm = Join-Path (Get-Location) 'node_modules'
+  Get-Process esbuild, workerd -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($nm, [StringComparison]::OrdinalIgnoreCase) } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
   Invoke-Npm ci
 }
 if (Test-Path .githooks\pre-commit) {
