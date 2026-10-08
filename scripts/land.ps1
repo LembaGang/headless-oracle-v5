@@ -113,14 +113,31 @@ Step "Gate on the final tree"
 & git diff --quiet "origin/$Base" HEAD -- package.json package-lock.json
 if (($LASTEXITCODE -ne 0) -or -not (Test-Path node_modules)) {
   Step "Dependencies changed: npm ci"
-  # A failed earlier gate can leave this repo's own esbuild/workerd running, and
-  # Windows refuses to delete a running .exe (EPERM on esbuild.exe, 2026-10-08).
-  # Stop only processes started from THIS repo's node_modules.
+  # Windows refuses to delete a running .exe, and a failed earlier gate or a
+  # `wrangler dev` can leave this repo's esbuild.exe / workerd.exe running
+  # (EPERM on both, 2026-10-08). Stop every process whose binary lives under
+  # THIS repo's node_modules (nothing else), wait for it to exit, and retry
+  # npm ci a few times before giving up.
   $nm = Join-Path (Get-Location) 'node_modules'
-  Get-Process esbuild, workerd -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path.StartsWith($nm, [StringComparison]::OrdinalIgnoreCase) } |
-    Stop-Process -Force -ErrorAction SilentlyContinue
-  Invoke-Npm ci
+  function Get-RepoProcs {
+    Get-Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.Path -and $_.Path.StartsWith($nm, [StringComparison]::OrdinalIgnoreCase) }
+  }
+  $ok = $false
+  for ($try = 1; $try -le 3 -and -not $ok; $try++) {
+    $procs = @(Get-RepoProcs)
+    if ($procs.Count -gt 0) {
+      Write-Host "   stopping $($procs.Count) process(es) running from node_modules: $(($procs | ForEach-Object { $_.Name }) -join ', ')"
+      $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+      $procs | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+    }
+    & $NpmExe ci
+    if ($LASTEXITCODE -eq 0) { $ok = $true } else { Start-Sleep -Seconds 3 }
+  }
+  if (-not $ok) {
+    $left = @(Get-RepoProcs | ForEach-Object { "$($_.Name) (pid $($_.Id))" })
+    Fail "npm ci failed 3 times. Still running from node_modules: $(if ($left) { $left -join ', ' } else { 'none found' }). Close any terminal running wrangler dev or vitest in this repo, then run this again."
+  }
 }
 if (Test-Path .githooks\pre-commit) {
   # Run the hook the way `git commit` runs it (git's own shell, no terminal on
