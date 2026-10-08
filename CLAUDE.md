@@ -82,8 +82,9 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-08: mint claim + MCP keys, payer binding, routes.** Live **`eabfdde1-6311-4b6a-bba6-84b1102320f6`**
-  (10:03Z; smoke 11/11; apex `/mcp?q` and `/health` verified 200 JSON), after `5008e20f` (`bfd3891`). Suite **1693 → 1714**. **B-115 closed**: new token
+- **2026-10-08: mint claim + MCP keys, payer binding, routes.** Live **`e6eb5b04-5f85-488a-b895-8bbb77b8acbf`**
+  (10:22Z; smoke 11/11; deps 20 -> 3 dev-only, `/v5/verify` documented fields restored), after
+  `eabfdde1` (10:03Z; apex `/mcp?q`, `/health` verified 200 JSON) and `5008e20f` (`bfd3891`). Suite **1693 → 1714**. **B-115 closed**: new token
   `ho-worker-deploy-2026-10-07` (Edit Cloudflare Workers + D1 Edit, zone headlessoracle.com,
   in `CLOUDFLARE_API_TOKEN`); the deploy listed every route and exited 0.
   `/v5/x402/mint` claims each tx hash once in D1 `HALT_ARCHIVE` (`x402_mint_claims` /
