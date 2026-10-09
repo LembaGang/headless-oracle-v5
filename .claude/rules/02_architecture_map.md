@@ -55,6 +55,8 @@ Plus `public/docs/` integration guides (quickstart, LangGraph, Bun, Anthropic Cl
 | `POST /v5/x402/mint` | no | Mint API key via USDC |
 | `GET /v5/revenue-pulse` | master-key | Admin Paddle + x402 revenue feed (consumed by health-check.yml) |
 | `POST /mcp` | no | MCP Streamable HTTP (5 tools) |
+| `GET /record*` | no | H6 daily record: index, `.md`, `/<D>`, `/<D>/proofs`, `/<D>.ots` |
+| `POST /v5/admin/record/run` | master-key | Runs the record job now (no parameters) |
 
 Plus: discovery files (`/llms.txt`, `/AGENTS.md`, `/openapi.json`, `/.well-known/*`),
 OAuth endpoints, utility routes (redirects, changelog, etc.).

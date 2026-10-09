@@ -1,4 +1,11 @@
 # Active Priorities — Headless Oracle V5
+## 2026-10-09 — H6 daily record deployed; TEST_COUNT 1760
+
+`9fef167` H6 (record, witness, OpenTimestamps, MCP counters, `/record*`), `4872c72` H6b
+(health check owes days from 2026-10-09). Live `f554a775…`. **Pending**: the first record
+from the 2026-10-10 09:00Z cron (D = 2026-10-09) and its live checks; 2026-10-08 is not
+built. Report: `cc-output/RUNS_2026-10-08_hov5-H6.md`.
+
 ## 2026-10-05 — H3e, H3f, H4a deployed; TEST_COUNT 1667
 
 `e5f6c80` H3e smoke test; `196d8d0` H3f sitemap (deployed `dfdeb3b7`); `f2078ca` H4a

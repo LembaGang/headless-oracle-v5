@@ -82,6 +82,18 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
+- **2026-10-09: H6, HO's daily record** (`9fef167`, `4872c72`). Live **`f554a775-5615-43e7-aa40-2f5f4b967e01`**
+  (09:48:48Z; smoke 11/11; all routes listed incl. new `headlessoracle.com/record*`). The first upload,
+  `16ee944c`, exited 1 on routes: this shell carried a stale `CF_API_TOKEN`; redeployed with the
+  User-scope `CLOUDFLARE_API_TOKEN`. Suite **1732 → 1760**. `ho-record/v1` built in the
+  `0 9 * * *` branch for each missing day to yesterday (≤5/run, `late`), signed via
+  `signHaltArchivePayload`, stored once in HALT_ARCHIVE `ho_records`, witnessed through
+  `handleWitness` in-process (secret `HO_RECORD_WITNESS_KEY`, kid
+  `-0bMmxck6Lc9XLCOlRWl3pNU0bndJEthVc9itDfWrLU`), OpenTimestamps via `src/ots.ts`;
+  `ho_mcp_counts` one upsert per `POST /mcp`. Routes `/record`, `/record.md`, `/record/<D>`,
+  `/record/<D>/proofs`, `/record/<D>.ots`, `POST /v5/admin/record/run` (master key).
+  **No record yet**: first is built by the 2026-10-10 cron (D = 2026-10-09); 2026-10-08 is
+  not built (no master key to trigger). health-check owes days from 2026-10-09.
 - **2026-10-08: mint claim + MCP keys, payer binding, routes.** Live **`e6eb5b04-5f85-488a-b895-8bbb77b8acbf`**
   (10:22Z; smoke 11/11; deps 20 -> 3 dev-only, `/v5/verify` documented fields restored), after
   `eabfdde1` (10:03Z; apex `/mcp?q`, `/health` verified 200 JSON) and `5008e20f` (`bfd3891`). Suite **1693 → 1714**. **B-115 closed**: new token
@@ -167,66 +179,19 @@ here is carried forward from an earlier stamp unverified.
   - **Open**: buyer email failing (Resend team mismatch, below); apex witness route; the
     402 `Link rel="payment"` still points at `/v5/keys/instant` (founder decision). npm
     chirindo 0.5.0 (witness commands) published 2026-10-08.
-- **2026-10-04 (later): the key on screen after payment.** Deployed as `63974cb5…`
-  (13:13:02Z, from `afc1c80`): H2 `a0f3c75`, H2b `afc1c80`. Suite **1535 → 1589**.
-  - Buyers of builder, pro, protocol, credits, custody_90d and custody_1y see their key
-    on the pricing page after payment (web W2 `67865d3` + W2b `21036c9`, deployed after
-    this worker). `/v5/checkout` returns `claim_token`; Paddle carries
-    `custom_data.ho_claim` = sha256(token); the mint seals the key (AES-GCM, HKDF of
-    `PADDLE_WEBHOOK_SECRET`) into `claim_ready:<h>` (24h); `POST /v5/claim` answers
-    pending, ready, or 410 after 24h. ORACLE_API_KEYS: `claim:` (7d), `claim_ready:`,
-    `paddle_txn:` (credits dedupe, 30d). ORACLE_TELEMETRY: `claim_filled:`/`claim_seen:` (7d).
-  - **Email to buyers is failing**: the worker's `RESEND_API_KEY` belongs to the Resend
-    team where headlessoracle.com is not verified. Until that key is replaced, the claim
-    page is the delivery, and the alarm is a GitHub issue `Key not collected: <txn_id>
-    (<plan>)` opened by the health check from `/v5/revenue-pulse` `paddle.unclaimed_keys`
-    (filled over 2h ago, never fetched).
-  - **Do not rotate `PADDLE_WEBHOOK_SECRET`** while any `claim_ready` is under 24h old:
-    the seal is derived from it and those keys become unreadable.
-  - Log events `CLAIM_SETUP_FAILED`, `CLAIM_FILL_FAILED`, `CLAIM_FILLED_RECORD_FAILED`,
-    `CLAIM_UNSEAL_FAILED`, `CLAIM_SEEN_WRITE_FAILED`, `CLAIM_READ_FAILED`,
-    `CLAIM_RATE_LIMITER_FAILED` (the `/v5/claim` limit on `WITNESS_GET_RL` fails open),
-    `CREDITS_DEDUPE_READ_FAILED`, `CREDITS_DEDUPE_WRITE_FAILED`.
-  - **Open**: Paddle echoing `custom_data` into `transaction.completed` is unverified
-    against a real payload; no script recovers an uncollected key for the founder;
-    `monitors.md`, `04_telemetry_guide.md` not updated for the claim pipeline.
-- **2026-10-04: Witness and paid-plan delivery live**, deployed as `32f367e6…`
-  (08:02:06Z, from `3d4b723`). W1 `c43e17a`, W2 `96bbaee`, W3 `afa5338` (first deployed
-  3 Oct as `28f81845…`), H1a `ede783b`, H1b `826fa59` + `3d4b723`. Suite **1432 → 1535**.
-  - **Witness** on `api.headlessoracle.com/v1/witness/*`, spec `witness-spec/0.5`. The
-    apex route `headlessoracle.com/v1/witness/*` is NOT added (B-115). Storage is D1
-    `chirindo_witness`; `ensureWitnessSchema` applies `migrations-witness/0002` on first
-    use. Rate limits `WITNESS_POST_RL`/`WITNESS_GET_RL` 60/min, `WITNESS_ACCT_RL` 600/min,
-    per Cloudflare location, and **fail open** (the only fail-open path in the witness;
-    the spec says so; daily cap and store stay fail-closed). The limits are constants
-    in source mirrored in `wrangler.toml`: change both. `status_code:`/referrer KV
-    counters still write on every witness response.
-  - **Evidence plans.** `custody_90d` = `evidence_starter` (1,000 new checkpoints/UTC
-    day), `custody_1y` = `evidence` (3,000/day). A purchase delivers a Witness key
-    (`Authorization: Bearer ho_live_…` on POST checkpoints); `checkApiKey` maps them to
-    `free` for `/v5/*`. Every paid plan delivers its key; `subscription.activated` never
-    mints. Provisioning is KV-first (`paddle_sub:` in ORACLE_API_KEYS, no TTL) with
-    Supabase best effort. Fail-closed calls ratified: status event with a KV miss AND a
-    failed Supabase lookup → 503 (D2); lost `last_event_at` write → 503. New log events
-    `PADDLE_SUPABASE_WRITE_FAILED`, `PADDLE_KV_WRITE_FAILED`, `PADDLE_DEDUPE_UNAVAILABLE`,
-    `PADDLE_SUB_UNKNOWN`, `PADDLE_ACTIVATED_NO_MINT`, `PADDLE_EVENT_OUT_OF_ORDER`,
-    `SUPABASE_KEEPALIVE`; revenue tier `evidence:<plan>`.
-  - **Supabase** `sahqfuyneoeqczupmysu` was paused 3 Oct and restored; `supabaseKeepalive`
-    runs in the 09:00 cron. Production `api_keys` has a UNIQUE index on
-    `stripe_subscription_id` (applied 4 Oct, in no repo schema file).
-  - **Account on Workers FREE**: D1 500 MB, 100k rows written/day account-wide.
-  - **Open**: Paddle `origin` values unverified against a real payload; credits mint
-    has no founder line (D3; dedupe added by H2b); `/llms.txt`, `/AGENTS.md`, web `/pricing` and
-    the Paddle product names not checked against Witness v0.5; no production POST to
-    the witness has succeeded yet.
+- **2026-10-04 (H2/H2b key on screen; Witness W1-W3, H1a, H1b)**: moved verbatim to
+  `docs/history/claude-md-moved-2026-10-09.md` (memory-size gate). Rules that stand:
+  **do not rotate `PADDLE_WEBHOOK_SECRET`** while any `claim_ready` is under 24h old;
+  buyer email fails until `RESEND_API_KEY` is replaced (the claim page is the delivery);
+  witness rate-limit constants are mirrored in `wrangler.toml`: change both.
 - **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
   `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
-- **Tests**: 1727 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1760 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.
-- **Worker**: see the 2026-10-08 entry above for the live version. Previous live
-  versions: `5008e20f…` (10-08), `a32322b5…` (10-07 20:04Z), `2e68085f…` (10-07 08:34Z), `7b3bbfe5…` (10-05, H4a), `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
+- **Worker**: see the 2026-10-09 entry above for the live version. Previous live
+  versions: `e6eb5b04…` (10-08 10:22Z), `5008e20f…` (10-08), `a32322b5…` (10-07 20:04Z), `2e68085f…` (10-07 08:34Z), `7b3bbfe5…` (10-05, H4a), `dfdeb3b7…` (10-05 09:05Z, H3f), `259a8bdb…` (10-04 20:21Z), `306e1bfe…` (10-04 17:22Z), `63974cb5…` (10-04 13:13Z), `32f367e6…` (2026-10-04 08:02Z), `28f81845…` (2026-10-03, W1-W3), `04c3ff8b…`
   (2026-10-02), `f20ba28c…` (2026-09-24, B-224d/f). The deploys of 09-24, 10-03 and all four of 10-04 each exited 1
   on the B-115 route-listing step after a good upload; benign only while routes are unchanged.
 - **Local gate**: four steps, all enforced by `.githooks/pre-commit` — `npx tsc
