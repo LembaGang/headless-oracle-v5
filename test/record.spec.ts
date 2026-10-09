@@ -301,7 +301,7 @@ describe('H6 record: witness self-checkpoint', () => {
 		const idx = await (await call('/record', {}, noKey)).json() as Record<string, any>;
 		expect(idx.newest.date).toBe('2026-09-01');
 		expect(idx.failed_steps.map((f: { date: string; step: string }) => [f.date, f.step])).toEqual([['2026-09-01', 'witness']]);
-		expect(recordProblems(idx, AT('2026-09-02T10:15:00Z'))).toEqual([expect.stringContaining('failed step for 2026-09-01: witness')]);
+		expect(recordProblems(idx, AT('2026-09-02T10:15:00Z'), '2000-01-01')).toEqual([expect.stringContaining('failed step for 2026-09-01: witness')]);
 		// The next run with the key retries the witness and clears the step.
 		await runHoRecordJob(testEnv, { now: AT('2026-09-02T10:30:00Z'), fetch: fakeCalendars().fetchFn });
 		const after = await (await call('/record')).json() as Record<string, any>;
@@ -491,15 +491,18 @@ describe('H6 record: the cron and the health check', () => {
 	});
 
 	it('recordProblems passes a fresh record and fails a stale, missing or failed one', () => {
-		const now = AT('2026-10-09T10:15:00Z');
-		const good = { newest: { date: '2026-10-08' }, failed_steps: [] };
+		const now = AT('2026-10-11T10:15:00Z');
+		const good = { newest: { date: '2026-10-10' }, failed_steps: [] };
 		expect(recordProblems(good, now)).toEqual([]);
-		expect(recordProblems({ ...good, newest: { date: '2026-10-07' } }, now)).toEqual(['newest record is 2026-10-07, expected 2026-10-08']);
-		expect(recordProblems({ ...good, newest: null }, now)).toEqual(['newest record is none, expected 2026-10-08']);
-		expect(recordProblems({ ...good, failed_steps: [{ date: '2026-10-08', step: 'ots_submit', message: 'm' }] }, now)).toHaveLength(1);
+		expect(recordProblems({ ...good, newest: { date: '2026-10-09' } }, now)).toEqual(['newest record is 2026-10-09, expected 2026-10-10']);
+		expect(recordProblems({ ...good, newest: null }, now)).toEqual(['newest record is none, expected 2026-10-10']);
+		expect(recordProblems({ ...good, failed_steps: [{ date: '2026-10-10', step: 'ots_submit', message: 'm' }] }, now)).toHaveLength(1);
 		// An older day's failure does not fail today's check; before 10:00 nothing is required.
 		expect(recordProblems({ ...good, failed_steps: [{ date: '2026-10-01', step: 'ots_upgrade', message: 'm' }] }, now)).toEqual([]);
-		expect(recordProblems({ newest: null, failed_steps: [] }, AT('2026-10-09T09:59:00Z'))).toEqual([]);
+		expect(recordProblems({ newest: null, failed_steps: [] }, AT('2026-10-11T09:59:00Z'))).toEqual([]);
+		// No day before the first owed one (2026-10-09) is required; that day is.
+		expect(recordProblems({ newest: null, failed_steps: [] }, AT('2026-10-09T10:15:00Z'))).toEqual([]);
+		expect(recordProblems({ newest: null, failed_steps: [] }, AT('2026-10-10T10:15:00Z'))).toEqual(['newest record is none, expected 2026-10-09']);
 	});
 });
 

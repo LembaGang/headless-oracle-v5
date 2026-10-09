@@ -6,12 +6,18 @@
 // nothing is required. Returns the problems found; empty means healthy.
 
 export const RECORD_CHECK_FROM_UTC_HOUR = 10;
+// The first day a record is owed for. The job was deployed 2026-10-09 after
+// that day's cron, and no master key was available to trigger it, so the
+// 2026-10-10 cron builds the first record (D = 2026-10-09). Before that no
+// day is owed; from it on, every day is.
+export const RECORD_CHECK_FIRST_DAY = '2026-10-09';
 
-export function recordProblems(body, now = new Date()) {
+export function recordProblems(body, now = new Date(), firstDay = RECORD_CHECK_FIRST_DAY) {
 	if (now.getUTCHours() < RECORD_CHECK_FROM_UTC_HOUR) return [];
 	const y = new Date(now);
 	y.setUTCDate(y.getUTCDate() - 1);
 	const yesterday = y.toISOString().slice(0, 10);
+	if (yesterday < firstDay) return [];
 	if (typeof body !== 'object' || body === null) return ['GET /record did not return a JSON object'];
 	const problems = [];
 	const newest = body.newest && typeof body.newest === 'object' ? body.newest.date : null;
