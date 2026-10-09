@@ -5714,7 +5714,7 @@ const WITNESS_SPEC_DOC = {
 		'The witness attests only "at time T, I received this checkpoint, validly signed by the key with this thumbprint". ' +
 		'It does not attest who owns the key, nor that the records are true.',
 	base_url: 'https://api.headlessoracle.com',
-	base_url_note: 'https://headlessoracle.com serves the same paths once its route for /v1/witness/* is deployed.',
+	base_url_note: 'https://api.headlessoracle.com and https://headlessoracle.com serve the same /v1/witness/* paths.',
 	submit: {
 		method: 'POST',
 		path:   '/v1/witness/checkpoints',
@@ -8066,7 +8066,7 @@ const CHIRINDO_SECTIONS_MD = `## Chirindo Witness
 - [Witness spec (machine-readable)](${WITNESS_SPEC_URL}): wire contract, the checks in order, error codes, and honest limits.
 - [Submit a checkpoint (POST only)](${WITNESS_SUBMIT_URL}): body {"checkpoint":{"v","type","session_id","count","last_entry_hash","ts","kid","sig"},"public_key_jwk":{...}}, an Ed25519-signed checkpoint with its public key as a JWK; exact rules in the spec. No account is needed for the free pool.
 - Query the receipts, no setup: GET ${WITNESS_SUBMIT_URL}?kid=<thumbprint>&session_id=<id>. This is the check that does not depend on the operator.
-- Host: use ${WITNESS_SPEC_DOC.base_url} for /v1/witness/*. The same paths on https://headlessoracle.com are not served yet.
+- Host: ${WITNESS_SPEC_DOC.base_url_note}
 
 ## Pricing
 
@@ -10850,9 +10850,10 @@ const OPENAPI_SPEC = {
 		},
 		'/v1/witness/checkpoints': {
 			post: {
-				// H3a: the apex route for /v1/witness/* is not live (B-115), so
-				// servers[0] would send a client to a 404. Per-operation override.
-				servers:     [{ url: WITNESS_SPEC_DOC.base_url, description: 'Witness host (the headlessoracle.com route for /v1/witness/* is not live yet)' }],
+				// H3a added this override while the apex had no /v1/witness/* route
+				// (B-115). Both hosts serve the paths since 2026-10-07; the override
+				// stays so the witness operations name the spec base_url (Y-1b).
+				servers:     [{ url: WITNESS_SPEC_DOC.base_url, description: `Witness host; ${WITNESS_SPEC_DOC.base_url_note}` }],
 				tags:        ['Audit'],
 				summary:     'Submit a signed chain checkpoint to the witness',
 				description: 'Records an Ed25519-signed chain checkpoint and returns a receipt signed by Headless Oracle stating when it was received. ' +
@@ -10909,7 +10910,7 @@ const OPENAPI_SPEC = {
 				},
 			},
 			get: {
-				servers:     [{ url: WITNESS_SPEC_DOC.base_url, description: 'Witness host (the headlessoracle.com route for /v1/witness/* is not live yet)' }],
+				servers:     [{ url: WITNESS_SPEC_DOC.base_url, description: `Witness host; ${WITNESS_SPEC_DOC.base_url_note}` }],
 				tags:        ['Audit'],
 				summary:     'List witness receipts for a (kid, session_id)',
 				description: 'Returns at most 500 receipts ordered by count, then last_entry_hash, strictly after the pair in after. ' +
@@ -10938,7 +10939,7 @@ const OPENAPI_SPEC = {
 		},
 		'/v1/witness/spec': {
 			get: {
-				servers:     [{ url: WITNESS_SPEC_DOC.base_url, description: 'Witness host (the headlessoracle.com route for /v1/witness/* is not live yet)' }],
+				servers:     [{ url: WITNESS_SPEC_DOC.base_url, description: `Witness host; ${WITNESS_SPEC_DOC.base_url_note}` }],
 				tags:        ['Audit'],
 				summary:     'Witness wire contract (machine-readable)',
 				description: 'The submission checks and their order, the query and pagination rules, the witness receipt fields and signing rule, and the honest limits of what a witness receipt does and does not detect.',

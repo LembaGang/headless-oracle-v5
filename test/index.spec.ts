@@ -19766,13 +19766,34 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 		expect(body).not.toContain('ai-train=no');
 	});
 
-	it('(G2) the three witness operations name the api host as their server; the spec base_url_note is unchanged', async () => {
+	it('(G2) the three witness operations name the api host as their server; the spec base_url_note names both hosts', async () => {
 		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, Record<string, { servers?: Array<{ url: string }> }>> };
 		for (const [path, method] of [['/v1/witness/checkpoints', 'post'], ['/v1/witness/checkpoints', 'get'], ['/v1/witness/spec', 'get']] as const) {
 			expect(spec.paths[path][method].servers?.[0]?.url, `${method} ${path}`).toBe('https://api.headlessoracle.com');
 		}
 		const witnessSpec = await fetchJSON('/v1/witness/spec');
-		expect(witnessSpec.base_url_note).toBe('https://headlessoracle.com serves the same paths once its route for /v1/witness/* is deployed.');
+		expect(witnessSpec.base_url_note).toBe('https://api.headlessoracle.com and https://headlessoracle.com serve the same /v1/witness/* paths.');
+	});
+
+	// Y-1b: both hosts have served /v1/witness/* since 2026-10-07 (B-115), so no
+	// served surface may still say the apex does not.
+	it('(Y-1b) the witness host text names both hosts on every surface that carries it; no stale apex claim', async () => {
+		const note = 'https://api.headlessoracle.com and https://headlessoracle.com serve the same /v1/witness/* paths.';
+		const witnessSpec = await fetchJSON('/v1/witness/spec');
+		expect(witnessSpec.base_url_note).toBe(note);
+		const spec = await fetchJSON('/openapi.json') as { paths: Record<string, Record<string, { servers?: Array<{ description?: string }> }>> };
+		for (const [path, method] of [['/v1/witness/checkpoints', 'post'], ['/v1/witness/checkpoints', 'get'], ['/v1/witness/spec', 'get']] as const) {
+			expect(spec.paths[path][method].servers?.[0]?.description, `${method} ${path}`).toBe(`Witness host; ${note}`);
+		}
+		for (const p of ['/llms.txt', '/llms-full.txt']) {
+			expect(await (await fetchWorker(p)).text(), p).toContain(`- Host: ${note}`);
+		}
+		const stale = /not served yet|not live yet|once its route|is not live \(B-115\)/;
+		for (const p of ['/v1/witness/spec', '/openapi.json', '/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md', '/skill.md', '/.well-known/agent.json', '/record.md', '/auth.md']) {
+			const r = await fetchWorker(p);
+			expect(r.status, p).toBe(200);
+			expect(await r.text(), p).not.toMatch(stale);
+		}
 	});
 
 	it('(G13) ai-plugin URLs point at pages that exist; the contact is mike@', async () => {
