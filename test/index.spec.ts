@@ -820,6 +820,8 @@ describe('W5: no worker surface links a page that does not exist', () => {
 		'/v5/metrics/public', '/docs/integrations/tradingagents-risk', '/docs/specifications/pre-trade-stack',
 		'/docs/integrations/ampersend', '/docs/specifications/cpvr-1', '/standards', '/halt-gate',
 		'/witness', '/auditors', '/about', '/verify',
+		// H6: served by this worker (route headlessoracle.com/record*), not Pages.
+		'/record.md',
 	].map((p) => `https://headlessoracle.com${p}`);
 
 	// Pages served by headless-oracle-web at 9dee09c (each file confirmed tracked there).
@@ -840,7 +842,7 @@ describe('W5: no worker surface links a page that does not exist', () => {
 
 	const SURFACE_PATHS = ['/sitemap.xml', '/llms.txt', '/llms-full.txt', '/AGENTS.md'];
 
-	it('/sitemap.xml lists exactly the seventeen pages that exist', async () => {
+	it('/sitemap.xml lists exactly the eighteen pages that exist', async () => {
 		const xml = await (await fetchWorker('/sitemap.xml')).text();
 		const locs = Array.from(xml.matchAll(/<loc>([^<]+)<\/loc>/g), (m) => m[1]);
 		expect([...locs].sort()).toEqual([...SITEMAP_LOCS].sort());
@@ -18002,6 +18004,9 @@ describe('public text surfaces carry no uninterpolated placeholder', () => {
 		['/health',                              '/health'],
 		['/v5/checkout (PLAN_REQUIRED)',         '/v5/checkout',
 			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 400],
+		// H6: the daily record's served text.
+		['/record',                              '/record'],
+		['/record.md',                           '/record.md'],
 	];
 
 	// No served byte may carry a template placeholder the runtime never filled.

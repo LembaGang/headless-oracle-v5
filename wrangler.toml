@@ -20,6 +20,9 @@ routes = [
   { pattern = "headlessoracle.com/mcp*", zone_name = "headlessoracle.com" },
   # /health: the path uptime monitors guess first; the worker serves it as /v5/health.
   { pattern = "headlessoracle.com/health", zone_name = "headlessoracle.com" },
+  # /record, /record.md, /record/<date>[/proofs|.ots] (H6). headless-oracle-web
+  # serves no path starting /record (dist checked 2026-10-09), so nothing is shadowed.
+  { pattern = "headlessoracle.com/record*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/webhooks/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/.well-known/*", zone_name = "headlessoracle.com" },
   { pattern = "headlessoracle.com/openapi.json", zone_name = "headlessoracle.com" },
@@ -65,7 +68,7 @@ CURRENT_TERMS_VERSION = "v5.0-2026"
 # Launch date for /v5/traction days_live counter. Update if the worker is re-launched.
 LAUNCH_DATE = "2026-03-10T08:00:00Z"
 # Auto-updated by scripts/sync-test-count.sh after test runs.
-TEST_COUNT = "1732"
+TEST_COUNT = "1760"
 # Nasdaq Trader RSS is the CONSOLIDATED US halt feed: it carries NASDAQ-,
 # NYSE-, NYSE American-, NYSE Arca-listed halts, distinguished by the
 # <ndaq:Market> element on each <item>. Free, no auth, no API key.

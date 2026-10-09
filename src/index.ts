@@ -3,6 +3,7 @@ import { sha512 } from '@noble/hashes/sha2.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { createClient } from '@supabase/supabase-js';
+import { OTS_CALENDARS, submitDigest, proofFromSubmissions, upgradeProof, parseDetachedFile, bitcoinHeights, type OtsUpgradeResult } from './ots';
 
 // ─── Integration guides served as text/markdown ──────────────────────────────
 // Wildcard route handler at /docs/integrations/:slug serves these via the
@@ -169,6 +170,9 @@ export interface Env {
 	HALT_ARCHIVE_RAW?:    R2Bucket;
 	NASDAQ_HALTS_URL?:    string;
 	NYSE_HALTS_URL?:      string;
+	// H6: Ed25519 seed (64 hex) for HO's own record chain checkpoints. Not
+	// key_2026_v1: that key means market-state receipts and archive digests.
+	HO_RECORD_WITNESS_KEY?: string;
 }
 
 // ─── Hex Helpers ─────────────────────────────────────────────────────────────
@@ -5370,6 +5374,8 @@ let _haltSchemaEnsuredPromise: Promise<void> | null = null;
 // CREATE TABLE IF NOT EXISTS runs against the per-test Miniflare D1 instance.
 export function clearHaltArchiveSchemaCache(): void {
 	_haltSchemaEnsuredPromise = null;
+	clearHoRecordSchemaCache();
+	clearHoMcpTableCache();
 }
 
 export async function ensureHaltArchiveSchema(env: Env): Promise<void> {
@@ -6111,6 +6117,818 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		console.error(`WITNESS_WRITE_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
 		return unavailable();
 	}
+}
+
+// ─── HO's daily record, ho-record/v1 (H6, 2026-10-09) ───────────────────────
+// Once a UTC day the worker builds one public JSON record of its own previous
+// day (the halt digest bytes, the receipt-verify registry index, witness, MCP
+// and x402 counts), signs it with key_2026_v1 through signHaltArchivePayload,
+// links it to the previous record by hash, stores the bytes once, witnesses
+// it through the same code path an outside checkpoint takes, and timestamps
+// its sha256 with OpenTimestamps. Nothing about revenue or named customers.
+// Tables live in HALT_ARCHIVE; ho_records is insert-once (INSERT OR IGNORE).
+
+const HO_RECORD_SCHEMA         = 'ho-record/v1';
+const HO_RECORD_SESSION_ID     = 'ho-record';
+const HO_RECORD_CHAIN_V        = 'evidence.action/1';
+const HO_RECORD_BASE_URL       = 'https://headlessoracle.com/record';
+const HO_RECORD_REGISTRY_URL   = 'https://raw.githubusercontent.com/LembaGang/receipt-verify/master/registry/index.json';
+const HO_RECORD_DIGEST_URL     = 'https://headlessoracle.com/v1/halts/digest/';
+const HO_RECORD_WITNESS_SUBMIT = 'https://api.headlessoracle.com/v1/witness/checkpoints';
+// MCP counters were deployed during 2026-10-09; the first whole UTC day they
+// cover is the next one. Earlier days carry null with the reason.
+const HO_RECORD_MCP_FIRST_DAY  = '2026-10-10';
+// A run builds at most this many missing days; the rest wait for the next run.
+const HO_RECORD_MAX_DAYS_PER_RUN = 5;
+// External fetches the record job may make in one invocation. The 0 9 * * *
+// branch is held under 40 of the Free plan's 50: three fetches run after the
+// job (Supabase keepalive 1, npm counts 2), so the job gets 37. Each new day
+// costs 3 (calendar submissions), the run 1 (the registry index), and the
+// remainder goes to upgrades, oldest pending proof first.
+const HO_RECORD_BRANCH_CAP          = 40;
+const HO_RECORD_FETCHES_AFTER_JOB   = 3;
+const HO_RECORD_EXTERNAL_BUDGET     = HO_RECORD_BRANCH_CAP - HO_RECORD_FETCHES_AFTER_JOB;
+// A proof is not worth asking about until the calendars have had time to commit.
+const HO_RECORD_UPGRADE_MIN_AGE_MS  = 2 * 3600_000;
+
+const HO_RECORD_WITNESS_STATEMENT =
+	'A witness receipt is Headless Oracle\'s signed statement that it was shown the checkpoint at received_at; it is only as reliable as Headless Oracle and its signing key. ' +
+	'Here the operator and the witness are the same party, so this proves use of the product, not independence. Independence comes from the OpenTimestamps proof.';
+
+const HO_RECORD_LIMITS = [
+	'The record is signed by Headless Oracle with key_2026_v1 and says what Headless Oracle counted; the signature shows who published the bytes, not that the counts are true.',
+	'The chain shows that a published record was not changed or removed later without the change being visible; it says nothing about a record before it was first published.',
+	HO_RECORD_WITNESS_STATEMENT,
+	'A timestamp proof is pending until the calendars commit it to Bitcoin; a proof becomes a Bitcoin attestation once the calendars confirm it, usually within hours. A pending proof rests on the calendars\' word.',
+	`MCP counts begin on ${HO_RECORD_MCP_FIRST_DAY}. A client is counted by the name it sends on initialize, hashed; clients that never send initialize are not counted, and two clients sending one name count once.`,
+	'Revenue, purchases and anything about named customers are not in the record.',
+];
+
+type HoFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+// RFC 8785 (JCS) for the values a record holds: null, booleans, strings,
+// safe integers, arrays and objects. Keys sort by UTF-16 code units, which is
+// what Array.prototype.sort does; numbers and strings serialize as in ES.
+export function hoJcs(v: unknown): string {
+	if (v === null || typeof v === 'boolean' || typeof v === 'string') return JSON.stringify(v);
+	if (typeof v === 'number') {
+		if (!Number.isFinite(v)) throw new Error('hoJcs: non-finite number');
+		return JSON.stringify(v);
+	}
+	if (Array.isArray(v)) return `[${v.map(hoJcs).join(',')}]`;
+	if (typeof v === 'object') {
+		const o = v as Record<string, unknown>;
+		return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${hoJcs(o[k])}`).join(',')}}`;
+	}
+	throw new Error(`hoJcs: unsupported ${typeof v}`);
+}
+
+function hoNextDay(day: string): string {
+	const d = new Date(`${day}T00:00:00.000Z`);
+	d.setUTCDate(d.getUTCDate() + 1);
+	return d.toISOString().slice(0, 10);
+}
+
+function hoBytesToBase64(b: Uint8Array): string {
+	let s = '';
+	for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+	return btoa(s);
+}
+function hoBase64ToBytes(s: string): Uint8Array {
+	const bin = atob(s);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+async function hoSha256HexBytes(b: Uint8Array): Promise<string> {
+	return toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', b)));
+}
+
+let _hoRecordSchemaPromise: Promise<void> | null = null;
+
+export function clearHoRecordSchemaCache(): void {
+	_hoRecordSchemaPromise = null;
+}
+
+export async function ensureHoRecordSchema(env: Env): Promise<void> {
+	if (!env.HALT_ARCHIVE) throw new Error('HALT_ARCHIVE not bound');
+	if (_hoRecordSchemaPromise) return _hoRecordSchemaPromise;
+	const db = env.HALT_ARCHIVE;
+	_hoRecordSchemaPromise = (async () => {
+		await db.prepare(
+			`CREATE TABLE IF NOT EXISTS ho_records (
+				date          TEXT PRIMARY KEY,
+				sequence      INTEGER NOT NULL UNIQUE,
+				record_json   TEXT NOT NULL,
+				record_sha256 TEXT NOT NULL,
+				entry_hash    TEXT NOT NULL,
+				created_at    TEXT NOT NULL
+			)`,
+		).run();
+		await db.prepare(
+			`CREATE TABLE IF NOT EXISTS ho_record_proofs (
+				date          TEXT PRIMARY KEY,
+				witness_json  TEXT,
+				ots_json      TEXT,
+				ots_status    TEXT,
+				failed_steps  TEXT NOT NULL,
+				updated_at    TEXT NOT NULL
+			)`,
+		).run();
+		await db.prepare(HO_MCP_COUNTS_DDL).run();
+	})().catch((err) => {
+		_hoRecordSchemaPromise = null;
+		throw err;
+	});
+	return _hoRecordSchemaPromise;
+}
+
+// ── MCP use counters: one row per (UTC day, method, tool, client-name hash) ──
+// Never arguments, ids, tokens or IPs: only what mcpUseLogLines already logs,
+// with the client name replaced by its sha256.
+const HO_MCP_COUNTS_DDL =
+	`CREATE TABLE IF NOT EXISTS ho_mcp_counts (
+		day    TEXT NOT NULL,
+		method TEXT NOT NULL,
+		tool   TEXT NOT NULL,
+		client TEXT NOT NULL,
+		n      INTEGER NOT NULL,
+		PRIMARY KEY (day, method, tool, client)
+	)`;
+const HO_MCP_COUNT_UPSERT_SQL =
+	`INSERT INTO ho_mcp_counts (day, method, tool, client, n) VALUES (?, ?, ?, ?, 1) ON CONFLICT (day, method, tool, client) DO UPDATE SET n = n + 1`;
+
+let _hoMcpTableEnsured: Promise<void> | null = null;
+
+// The counter keys for one POST /mcp body, before hashing: method ('(none)' if
+// unreadable), tool on tools/call, client name on initialize. Exported for the
+// test that pins what may be stored.
+export function mcpCountKeys(message: unknown): { method: string; tool: string; clientName: string }[] {
+	return mcpUseLogLines(message, 'x', 0).map((line) => {
+		const o = JSON.parse(line) as { method: string | null; tool: string | null; client_name: string | null };
+		return { method: o.method || '(none)', tool: o.tool ?? '', clientName: o.client_name ?? '' };
+	});
+}
+
+export async function recordMcpCounts(message: unknown, env: Env, now: Date): Promise<void> {
+	if (!env.HALT_ARCHIVE) return;
+	const db = env.HALT_ARCHIVE;
+	try {
+		if (!_hoMcpTableEnsured) {
+			_hoMcpTableEnsured = db.prepare(HO_MCP_COUNTS_DDL).run().then(() => undefined);
+			_hoMcpTableEnsured.catch(() => { _hoMcpTableEnsured = null; });
+		}
+		await _hoMcpTableEnsured;
+		const day = now.toISOString().slice(0, 10);
+		const stmts = await Promise.all(mcpCountKeys(message).map(async (k) =>
+			db.prepare(HO_MCP_COUNT_UPSERT_SQL).bind(day, k.method, k.tool, k.clientName ? await sha256Hex(k.clientName) : ''),
+		));
+		// One D1 call per request: a single statement, or one batch for a
+		// JSON-RPC batch body.
+		if (stmts.length === 0) return;
+		const write = () => (stmts.length === 1 ? stmts[0].run() : db.batch(stmts));
+		try {
+			await write();
+		} catch (err: unknown) {
+			// The table can vanish under a cached memo (a reset local database):
+			// create it and try once more.
+			if (!(err instanceof Error && err.message.includes('no such table'))) throw err;
+			await db.prepare(HO_MCP_COUNTS_DDL).run();
+			await write();
+		}
+	} catch (err: unknown) {
+		console.error(`HO_MCP_COUNT_FAILED: ${err instanceof Error ? err.message : 'unknown'}`);
+	}
+}
+
+export function clearHoMcpTableCache(): void {
+	_hoMcpTableEnsured = null;
+}
+
+// ── inputs ───────────────────────────────────────────────────────────────────
+
+// The body GET /v1/halts/digest/{date} serves; the route and the record both
+// serialize this object with JSON.stringify, so the bytes are the same.
+export function haltDigestBody(digest: Record<string, unknown>): Record<string, unknown> {
+	return {
+		schema:    'halt_archive_digest/v1',
+		framing:   'observed-source — this digest attests what named feeds reported, not ground truth',
+		...digest,
+	};
+}
+
+type HoMember<T> = { value: T; reason: null } | { value: null; reason: string };
+
+async function hoHaltDigestInput(env: Env, day: string): Promise<HoMember<Record<string, unknown>>> {
+	try {
+		const digest = await buildHaltArchiveDigest(day, env);
+		if (!digest) return { value: null, reason: 'no halt digest exists for this date' };
+		const text = JSON.stringify(haltDigestBody(digest));
+		const bytes = new TextEncoder().encode(text);
+		return { value: { url: `${HO_RECORD_DIGEST_URL}${day}`, sha256: await hoSha256HexBytes(bytes), bytes: bytes.length }, reason: null };
+	} catch (err: unknown) {
+		return { value: null, reason: `halt digest unavailable: ${err instanceof Error ? err.message : 'unknown error'}` };
+	}
+}
+
+async function hoRegistryInput(fetchFn: HoFetch): Promise<HoMember<Record<string, unknown>>> {
+	try {
+		const res = await fetchFn(HO_RECORD_REGISTRY_URL, { signal: AbortSignal.timeout(10_000) });
+		if (res.status !== 200) return { value: null, reason: `registry index fetch returned HTTP ${res.status}` };
+		const bytes = new Uint8Array(await res.arrayBuffer());
+		const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { records?: unknown };
+		if (!Array.isArray(parsed.records)) return { value: null, reason: 'registry index has no records array' };
+		const byKind: Record<string, number> = {};
+		let unverified = 0;
+		for (const r of parsed.records as Record<string, unknown>[]) {
+			const kind = typeof r?.kind === 'string' ? r.kind : '(none)';
+			byKind[kind] = (byKind[kind] ?? 0) + 1;
+			if (r?.status_label === 'unverified') unverified++;
+		}
+		return {
+			value: { url: HO_RECORD_REGISTRY_URL, sha256: await hoSha256HexBytes(bytes), bytes: bytes.length, records: parsed.records.length, by_kind: byKind, unverified },
+			reason: null,
+		};
+	} catch (err: unknown) {
+		return { value: null, reason: `registry index unavailable: ${err instanceof Error ? err.message : 'unknown error'}` };
+	}
+}
+
+async function hoWitnessCounts(env: Env, day: string, hoKid: string | null): Promise<Record<string, unknown>> {
+	try {
+		if (!env.WITNESS_DB) throw new Error('WITNESS_DB not bound');
+		await ensureWitnessSchema(env);
+		const row = await env.WITNESS_DB.prepare(
+			`SELECT COUNT(*) AS n, COUNT(DISTINCT kid) AS k, COUNT(DISTINCT CASE WHEN kid != ? THEN kid END) AS kx
+			 FROM witness_checkpoints WHERE received_at >= ? AND received_at < ?`,
+		).bind(hoKid ?? '', `${day}T00:00:00.000Z`, `${hoNextDay(day)}T00:00:00.000Z`).first<{ n: number; k: number; kx: number }>();
+		const out: Record<string, unknown> = {
+			witness_checkpoints_accepted: row?.n ?? 0,
+			witness_distinct_keys:        row?.k ?? 0,
+			witness_distinct_keys_excluding_ho: hoKid ? (row?.kx ?? 0) : null,
+		};
+		if (!hoKid) out.witness_distinct_keys_excluding_ho_unavailable_reason = 'the record witness key is not configured, so its kid is unknown';
+		return out;
+	} catch (err: unknown) {
+		return {
+			witness_checkpoints_accepted: null, witness_distinct_keys: null, witness_distinct_keys_excluding_ho: null,
+			witness_unavailable_reason: `witness store unavailable: ${err instanceof Error ? err.message : 'unknown error'}`,
+		};
+	}
+}
+
+async function hoMcpCounts(env: Env, day: string): Promise<Record<string, unknown>> {
+	const none = (reason: string) => ({
+		mcp_requests_by_method: null, mcp_tools_call_by_tool: null, mcp_distinct_clients: null, mcp_unavailable_reason: reason,
+	});
+	if (day < HO_RECORD_MCP_FIRST_DAY) return none(`MCP counting began part-way through the day before ${HO_RECORD_MCP_FIRST_DAY}, the first whole UTC day counted`);
+	try {
+		const db = env.HALT_ARCHIVE!;
+		const { results } = await db.prepare(
+			`SELECT method, tool, SUM(n) AS n FROM ho_mcp_counts WHERE day = ? GROUP BY method, tool`,
+		).bind(day).all<{ method: string; tool: string; n: number }>();
+		const byMethod: Record<string, number> = {};
+		const byTool: Record<string, number> = {};
+		for (const r of results ?? []) {
+			byMethod[r.method] = (byMethod[r.method] ?? 0) + r.n;
+			if (r.method === 'tools/call') byTool[r.tool || '(none)'] = (byTool[r.tool || '(none)'] ?? 0) + r.n;
+		}
+		const clients = await db.prepare(
+			`SELECT COUNT(DISTINCT client) AS c FROM ho_mcp_counts WHERE day = ? AND client != ''`,
+		).bind(day).first<{ c: number }>();
+		return { mcp_requests_by_method: byMethod, mcp_tools_call_by_tool: byTool, mcp_distinct_clients: clients?.c ?? 0 };
+	} catch (err: unknown) {
+		return none(`MCP counters unavailable: ${err instanceof Error ? err.message : 'unknown error'}`);
+	}
+}
+
+// Settlements whose block time falls on `day`: the x402_payment: ledger rows
+// (keyed by block time, so one prefix list) plus the chain-verified constant.
+async function hoX402Settlements(env: Env, day: string): Promise<Record<string, unknown>> {
+	try {
+		const hashes = new Set<string>();
+		for (const s of X402_HISTORICAL_SETTLEMENTS) if (s.block_time.startsWith(day)) hashes.add(s.tx_hash.toLowerCase());
+		let cursor: string | undefined;
+		let pages = 0;
+		do {
+			const page = await env.ORACLE_TELEMETRY.list({ prefix: `${X402_LEDGER_PREFIX}${day}`, cursor });
+			for (const k of page.keys) hashes.add(k.name.slice(k.name.lastIndexOf(':') + 1).toLowerCase());
+			cursor = page.list_complete ? undefined : page.cursor;
+			if (++pages >= 10 && cursor) throw new Error('ledger listing did not complete in 10 pages');
+		} while (cursor);
+		return { x402_settlements: hashes.size };
+	} catch (err: unknown) {
+		return { x402_settlements: null, x402_settlements_unavailable_reason: `x402 ledger unavailable: ${err instanceof Error ? err.message : 'unknown error'}` };
+	}
+}
+
+// ── the HO record chain (entry hash rule as in Chirindo's recorder) ─────────
+// entry_hash = "sha256:" + hex(SHA-256(JCS(entry))); the first entry's
+// prev_hash is the genesis hash of JCS({v, session_id, marker:"genesis"}).
+export async function hoRecordGenesisHash(): Promise<string> {
+	return `sha256:${await sha256Hex(hoJcs({ v: HO_RECORD_CHAIN_V, session_id: HO_RECORD_SESSION_ID, marker: 'genesis' }))}`;
+}
+export function hoRecordEntry(sequence: number, recordSha256: string, prevHash: string): Record<string, unknown> {
+	return { v: HO_RECORD_CHAIN_V, seq: sequence - 1, session_id: HO_RECORD_SESSION_ID, record_sha256: `sha256:${recordSha256}`, prev_hash: prevHash };
+}
+
+// ── the record witness key (HO_RECORD_WITNESS_KEY: 64 hex, an Ed25519 seed) ──
+async function hoWitnessKey(env: Env): Promise<{ sk: Uint8Array; x: string; kid: string } | null> {
+	const raw = env.HO_RECORD_WITNESS_KEY;
+	if (!raw || !/^[0-9a-f]{64}$/.test(raw)) return null;
+	const sk = fromHex(raw);
+	const x = bytesToBase64Url(await ed.getPublicKeyAsync(sk));
+	return { sk, x, kid: await ed25519JwkThumbprint(x) };
+}
+
+// Hands a checkpoint to handleWitness as an in-process Request: the same
+// checks, the same anonymous daily cap, the same insert as an outside POST.
+export async function submitHoRecordCheckpoint(env: Env, checkpoint: unknown, publicKeyJwk: unknown, now: Date): Promise<{ status: number; body: Record<string, unknown> }> {
+	const request = new Request(HO_RECORD_WITNESS_SUBMIT, {
+		method:  'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body:    JSON.stringify({ checkpoint, public_key_jwk: publicKeyJwk }),
+	});
+	const plain: WitnessJson = (b, s = 200, h = {}) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json', ...h } });
+	const res = await handleWitness(request, env, new URL(request.url), now, plain);
+	if (!res) throw new Error('witness route did not answer');
+	return { status: res.status, body: await res.json() as Record<string, unknown> };
+}
+
+// ── proofs rows ─────────────────────────────────────────────────────────────
+
+interface HoFailedStep { step: string; message: string; at: string }
+interface HoOtsHistory { at: string; event: 'submitted' | 'upgraded'; sha256: string; bytes_base64: string }
+interface HoOtsState {
+	digest: string;
+	status: 'pending' | 'complete' | 'failed';
+	calendars: { calendar: string; submitted: boolean; error?: string }[];
+	current_base64: string | null;
+	bitcoin_heights: number[];
+	submitted_at: string;
+	history: HoOtsHistory[];
+	last_upgrade_at?: string;
+	last_upgrade_results?: OtsUpgradeResult[];
+}
+interface HoProofs { witness: Record<string, unknown> | null; ots: HoOtsState | null; failed: HoFailedStep[] }
+
+async function hoReadProofs(db: D1Database, date: string): Promise<HoProofs> {
+	const row = await db.prepare(`SELECT witness_json, ots_json, failed_steps FROM ho_record_proofs WHERE date = ?`).bind(date)
+		.first<{ witness_json: string | null; ots_json: string | null; failed_steps: string }>();
+	return {
+		witness: row?.witness_json ? JSON.parse(row.witness_json) : null,
+		ots:     row?.ots_json ? JSON.parse(row.ots_json) : null,
+		failed:  row ? JSON.parse(row.failed_steps) : [],
+	};
+}
+
+async function hoWriteProofs(db: D1Database, date: string, p: HoProofs, now: Date): Promise<void> {
+	await db.prepare(
+		`INSERT INTO ho_record_proofs (date, witness_json, ots_json, ots_status, failed_steps, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (date) DO UPDATE SET witness_json = excluded.witness_json, ots_json = excluded.ots_json,
+		 ots_status = excluded.ots_status, failed_steps = excluded.failed_steps, updated_at = excluded.updated_at`,
+	).bind(
+		date, p.witness ? JSON.stringify(p.witness) : null, p.ots ? JSON.stringify(p.ots) : null,
+		p.ots?.status ?? null, JSON.stringify(p.failed), now.toISOString(),
+	).run();
+}
+
+function hoSetFailed(p: HoProofs, date: string, step: string, message: string, now: Date): void {
+	console.error(`HO_RECORD_ERROR: ${step}: ${date}: ${message}`);
+	p.failed = p.failed.filter((f) => f.step !== step);
+	p.failed.push({ step, message, at: now.toISOString() });
+}
+function hoClearFailed(p: HoProofs, step: string): void {
+	p.failed = p.failed.filter((f) => f.step !== step);
+}
+
+// ── one day's record ────────────────────────────────────────────────────────
+
+interface HoRecordRow { date: string; sequence: number; record_json: string; record_sha256: string; entry_hash: string; created_at: string }
+
+export async function buildHoRecordObject(
+	env: Env, day: string, prev: { record_sha256: string } | null, sequence: number,
+	registry: HoMember<Record<string, unknown>>, now: Date, hoKid: string | null,
+): Promise<Record<string, unknown>> {
+	const generatedAt = now.toISOString();
+	const digest = await hoHaltDigestInput(env, day);
+	const inputs: Record<string, unknown> = { halt_digest: digest.value };
+	if (digest.reason) inputs.halt_digest_unavailable_reason = digest.reason;
+	inputs.registry_index = registry.value;
+	if (registry.reason) inputs.registry_index_unavailable_reason = registry.reason;
+	const counts = {
+		...(await hoWitnessCounts(env, day, hoKid)),
+		...(await hoMcpCounts(env, day)),
+		...(await hoX402Settlements(env, day)),
+	};
+	const body: Record<string, unknown> = {
+		schema:       HO_RECORD_SCHEMA,
+		date:         day,
+		generated_at: generatedAt,
+		// A record built later than the day after its date says so.
+		...(generatedAt.slice(0, 10) !== hoNextDay(day) ? { late: true } : {}),
+		sequence,
+		previous_record_sha256: prev?.record_sha256 ?? null,
+		inputs,
+		counts,
+	};
+	const signedPayload: Record<string, string> = {
+		schema:                 HO_RECORD_SCHEMA,
+		date:                   day,
+		sequence:               String(sequence),
+		previous_record_sha256: prev?.record_sha256 ?? '',
+		record_body_sha256:     await sha256Hex(hoJcs(body)),
+		generated_at:           generatedAt,
+	};
+	const signed = await signHaltArchivePayload(signedPayload, env);
+	return { ...body, signed_payload: signedPayload, canonical: signed.canonical, public_key_id: signed.key_id, signature: signed.signature };
+}
+
+async function hoStoreRecord(db: D1Database, day: string, sequence: number, json: string, prevEntryHash: string, now: Date): Promise<HoRecordRow> {
+	const sha = await sha256Hex(json);
+	const entryHash = `sha256:${await sha256Hex(hoJcs(hoRecordEntry(sequence, sha, prevEntryHash)))}`;
+	await db.prepare(
+		`INSERT OR IGNORE INTO ho_records (date, sequence, record_json, record_sha256, entry_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+	).bind(day, sequence, json, sha, entryHash, now.toISOString()).run();
+	// Whatever was stored first is the record: a racing or repeated run never
+	// replaces it.
+	const row = await db.prepare(`SELECT * FROM ho_records WHERE date = ?`).bind(day).first<HoRecordRow>();
+	if (!row) throw new Error('record row missing after insert (a sequence number was taken by another date)');
+	return row;
+}
+
+async function hoWitnessStep(env: Env, row: HoRecordRow, p: HoProofs, now: Date): Promise<void> {
+	if (p.witness) return;
+	try {
+		const key = await hoWitnessKey(env);
+		if (!key) throw new Error('HO_RECORD_WITNESS_KEY is not set or is not 64 lowercase hex characters');
+		const unsigned = {
+			v: HO_RECORD_CHAIN_V, type: 'checkpoint', session_id: HO_RECORD_SESSION_ID,
+			count: row.sequence, last_entry_hash: row.entry_hash, ts: now.toISOString(), kid: key.kid,
+		};
+		const sig = bytesToBase64Url(await ed.signAsync(new TextEncoder().encode(witnessJcs(unsigned)), key.sk));
+		const checkpoint = { ...unsigned, sig };
+		const jwk = { kty: 'OKP', crv: 'Ed25519', x: key.x };
+		const res = await submitHoRecordCheckpoint(env, checkpoint, jwk, now);
+		if (res.status !== 200 && res.status !== 201) throw new Error(`witness answered ${res.status} ${String(res.body.error ?? '')}`);
+		p.witness = { receipt: res.body, checkpoint, public_key_jwk: jwk };
+		hoClearFailed(p, 'witness');
+	} catch (err: unknown) {
+		hoSetFailed(p, row.date, 'witness', err instanceof Error ? err.message : 'unknown error', now);
+	}
+}
+
+async function hoOtsSubmitStep(row: HoRecordRow, p: HoProofs, now: Date, fetchFn: HoFetch): Promise<void> {
+	try {
+		const digest = fromHex(row.record_sha256);
+		const subs = await submitDigest(digest, OTS_CALENDARS, fetchFn);
+		const proof = proofFromSubmissions(digest, subs);
+		const calendars = subs.map((s) => (s.ok ? { calendar: s.calendar, submitted: true } : { calendar: s.calendar, submitted: false, error: s.error }));
+		if (!proof) {
+			p.ots = { digest: row.record_sha256, status: 'failed', calendars, current_base64: null, bitcoin_heights: [], submitted_at: now.toISOString(), history: [] };
+			throw new Error(`no calendar accepted the digest: ${subs.map((s) => `${s.calendar} ${s.error}`).join('; ')}`);
+		}
+		const b64 = hoBytesToBase64(proof);
+		p.ots = {
+			digest: row.record_sha256, status: 'pending', calendars, current_base64: b64, bitcoin_heights: [],
+			submitted_at: now.toISOString(),
+			history: [{ at: now.toISOString(), event: 'submitted', sha256: await hoSha256HexBytes(proof), bytes_base64: b64 }],
+		};
+		hoClearFailed(p, 'ots_submit');
+	} catch (err: unknown) {
+		hoSetFailed(p, row.date, 'ots_submit', err instanceof Error ? err.message : 'unknown error', now);
+	}
+}
+
+export interface HoRecordRunResult {
+	yesterday:             string;
+	built:                 { date: string; sequence: number; record_sha256: string; late: boolean }[];
+	not_built_reason:      string | null;
+	days_left_for_next_run: number;
+	upgrades:              { date: string; outcome: string }[];
+	external_subrequests:  number;
+	external_budget:       number;
+	failed_steps:          { date: string; step: string; message: string }[];
+}
+
+// The whole job: build every missing day up to yesterday (UTC), in order, then
+// retry missing witness receipts and failed submissions, then upgrade pending
+// proofs, oldest first, within the subrequest budget. Never builds today or
+// later, never rewrites a stored record. Throws only if the store is unusable.
+export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFetch } = {}): Promise<HoRecordRunResult> {
+	const now = opts.now ?? new Date();
+	const baseFetch: HoFetch = opts.fetch ?? ((u, i) => fetch(u, i));
+	let external = 0;
+	const counted: HoFetch = (u, i) => { external++; return baseFetch(u, i); };
+	await ensureHaltArchiveSchema(env);
+	await ensureHoRecordSchema(env);
+	const db = env.HALT_ARCHIVE!;
+
+	const yd = new Date(now);
+	yd.setUTCDate(yd.getUTCDate() - 1);
+	const yesterday = yd.toISOString().slice(0, 10);
+	const result: HoRecordRunResult = {
+		yesterday, built: [], not_built_reason: null, days_left_for_next_run: 0, upgrades: [],
+		external_subrequests: 0, external_budget: HO_RECORD_EXTERNAL_BUDGET, failed_steps: [],
+	};
+
+	let last = await db.prepare(`SELECT * FROM ho_records ORDER BY sequence DESC LIMIT 1`).first<HoRecordRow>();
+	const days: string[] = [];
+	if (!last) days.push(yesterday);
+	else for (let d = hoNextDay(last.date); d <= yesterday; d = hoNextDay(d)) days.push(d);
+	result.days_left_for_next_run = Math.max(0, days.length - HO_RECORD_MAX_DAYS_PER_RUN);
+	const todo = days.slice(0, HO_RECORD_MAX_DAYS_PER_RUN);
+	if (todo.length === 0) result.not_built_reason = `every day up to ${yesterday} is already recorded`;
+
+	const key = await hoWitnessKey(env);
+	const handled = new Set<string>();
+	if (todo.length > 0) {
+		const registry = await hoRegistryInput(counted);
+		for (const day of todo) {
+			handled.add(day);
+			const p = await hoReadProofs(db, day);
+			let row: HoRecordRow;
+			try {
+				const sequence = (last?.sequence ?? 0) + 1;
+				const record = await buildHoRecordObject(env, day, last, sequence, registry, now, key?.kid ?? null);
+				row = await hoStoreRecord(db, day, sequence, JSON.stringify(record), last?.entry_hash ?? await hoRecordGenesisHash(), now);
+				hoClearFailed(p, 'build');
+			} catch (err: unknown) {
+				// A day that cannot be built stops the run: the next day would have
+				// to chain past it. The next run starts again from this day.
+				hoSetFailed(p, day, 'build', err instanceof Error ? err.message : 'unknown error', now);
+				await hoWriteProofs(db, day, p, now).catch(() => {});
+				result.not_built_reason = `build failed for ${day}`;
+				break;
+			}
+			await hoWitnessStep(env, row, p, now);
+			if (!p.ots && external + OTS_CALENDARS.length <= HO_RECORD_EXTERNAL_BUDGET) {
+				await hoOtsSubmitStep(row, p, now, counted);
+			} else if (!p.ots) {
+				hoSetFailed(p, day, 'ots_submit', 'deferred: subrequest budget used up in this run', now);
+			}
+			await hoWriteProofs(db, day, p, now);
+			result.built.push({ date: day, sequence: row.sequence, record_sha256: row.record_sha256, late: JSON.parse(row.record_json).late === true });
+			last = row;
+		}
+	}
+
+	// Retries for records stored earlier: a missing witness receipt, or a
+	// submission no calendar took.
+	const { results: retry } = await db.prepare(
+		`SELECT r.* FROM ho_records r LEFT JOIN ho_record_proofs p ON p.date = r.date
+		 WHERE p.date IS NULL OR p.witness_json IS NULL OR p.ots_json IS NULL OR p.ots_status = 'failed'
+		 ORDER BY r.sequence ASC LIMIT 10`,
+	).all<HoRecordRow>();
+	for (const row of retry ?? []) {
+		if (handled.has(row.date)) continue;
+		handled.add(row.date);
+		const p = await hoReadProofs(db, row.date);
+		await hoWitnessStep(env, row, p, now);
+		if ((!p.ots || p.ots.status === 'failed') && external + OTS_CALENDARS.length <= HO_RECORD_EXTERNAL_BUDGET) {
+			await hoOtsSubmitStep(row, p, now, counted);
+		}
+		await hoWriteProofs(db, row.date, p, now);
+	}
+
+	// Upgrades, oldest pending proof first, with whatever budget is left.
+	const { results: pending } = await db.prepare(
+		`SELECT date FROM ho_record_proofs WHERE ots_status = 'pending' ORDER BY date ASC`,
+	).all<{ date: string }>();
+	for (const { date } of pending ?? []) {
+		const left = HO_RECORD_EXTERNAL_BUDGET - external;
+		if (left <= 0) break;
+		const p = await hoReadProofs(db, date);
+		const ots = p.ots;
+		if (!ots || !ots.current_base64) continue;
+		if (now.getTime() - Date.parse(ots.submitted_at) < HO_RECORD_UPGRADE_MIN_AGE_MS) continue;
+		try {
+			const up = await upgradeProof(hoBase64ToBytes(ots.current_base64), left, counted);
+			ots.last_upgrade_at = now.toISOString();
+			ots.last_upgrade_results = up.results;
+			if (up.complete) {
+				const b64 = hoBytesToBase64(up.proof);
+				// The pending proof's bytes stay in history; current moves on.
+				ots.history.push({ at: now.toISOString(), event: 'upgraded', sha256: await hoSha256HexBytes(up.proof), bytes_base64: b64 });
+				ots.current_base64 = b64;
+				ots.status = 'complete';
+				ots.bitcoin_heights = bitcoinHeights(parseDetachedFile(up.proof).node);
+			}
+			const errors = up.results.filter((r) => r.outcome === 'error');
+			if (errors.length > 0 && errors.length === up.results.length) {
+				hoSetFailed(p, date, 'ots_upgrade', errors.map((e) => `${e.uri} ${e.detail}`).join('; '), now);
+			} else {
+				hoClearFailed(p, 'ots_upgrade');
+			}
+			result.upgrades.push({ date, outcome: up.complete ? 'complete' : 'pending' });
+		} catch (err: unknown) {
+			hoSetFailed(p, date, 'ots_upgrade', err instanceof Error ? err.message : 'unknown error', now);
+			result.upgrades.push({ date, outcome: 'error' });
+		}
+		await hoWriteProofs(db, date, p, now);
+	}
+
+	const { results: failedRows } = await db.prepare(`SELECT date, failed_steps FROM ho_record_proofs WHERE failed_steps != '[]' ORDER BY date ASC`).all<{ date: string; failed_steps: string }>();
+	for (const r of failedRows ?? []) for (const f of JSON.parse(r.failed_steps) as HoFailedStep[]) result.failed_steps.push({ date: r.date, step: f.step, message: f.message });
+	result.external_subrequests = external;
+	return result;
+}
+
+// ── served surfaces ─────────────────────────────────────────────────────────
+
+const HO_RECORD_JSON_HEADERS = {
+	'Content-Type':                'application/json; charset=utf-8',
+	'Access-Control-Allow-Origin': '*',
+	'X-Oracle-Version':            'v5',
+};
+
+function hoRecordUrls(date: string) {
+	return { url: `${HO_RECORD_BASE_URL}/${date}`, proofs_url: `${HO_RECORD_BASE_URL}/${date}/proofs`, ots_url: `${HO_RECORD_BASE_URL}/${date}.ots` };
+}
+
+async function hoRecordIndex(env: Env, now: Date): Promise<Record<string, unknown>> {
+	const db = env.HALT_ARCHIVE!;
+	await ensureHoRecordSchema(env);
+	const newest = await db.prepare(`SELECT * FROM ho_records ORDER BY sequence DESC LIMIT 1`).first<HoRecordRow>();
+	const total = await db.prepare(`SELECT COUNT(*) AS n FROM ho_records`).first<{ n: number }>();
+	const proofs = await db.prepare(
+		`SELECT SUM(CASE WHEN witness_json IS NOT NULL THEN 1 ELSE 0 END) AS w,
+		        SUM(CASE WHEN ots_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+		        SUM(CASE WHEN ots_status = 'complete' THEN 1 ELSE 0 END) AS complete,
+		        SUM(CASE WHEN ots_status = 'failed' THEN 1 ELSE 0 END) AS failed
+		 FROM ho_record_proofs`,
+	).first<{ w: number | null; pending: number | null; complete: number | null; failed: number | null }>();
+	const { results: failedRows } = await db.prepare(`SELECT date, failed_steps FROM ho_record_proofs WHERE failed_steps != '[]' ORDER BY date ASC`).all<{ date: string; failed_steps: string }>();
+	const failedSteps = (failedRows ?? []).flatMap((r) => (JSON.parse(r.failed_steps) as HoFailedStep[]).map((f) => ({ date: r.date, ...f })));
+	const yd = new Date(now);
+	yd.setUTCDate(yd.getUTCDate() - 1);
+	const key = await hoWitnessKey(env);
+	const out: Record<string, unknown> = {
+		schema:      'ho-record-index/1',
+		description: 'Once a UTC day Headless Oracle publishes a signed, hash-chained record of its own previous day: the halt digest it served, the receipt-verify registry index, and counts of witness checkpoints, MCP use and x402 settlements. ' +
+			'Each record is witnessed by Chirindo Witness, which is HO itself, and timestamped with OpenTimestamps; a proof becomes a Bitcoin attestation once the calendars confirm it.',
+		expected_newest_date: yd.toISOString().slice(0, 10),
+		newest: newest ? {
+			date: newest.date, sequence: newest.sequence, record_sha256: newest.record_sha256,
+			late: JSON.parse(newest.record_json).late === true, ...hoRecordUrls(newest.date),
+		} : null,
+		chain_head: newest ? { sequence: newest.sequence, record_sha256: newest.record_sha256, entry_hash: newest.entry_hash, session_id: HO_RECORD_SESSION_ID } : null,
+		records:          total?.n ?? 0,
+		witness_receipts: proofs?.w ?? 0,
+		ots_proofs:       { pending: proofs?.pending ?? 0, complete: proofs?.complete ?? 0, failed: proofs?.failed ?? 0 },
+		failed_steps:     failedSteps,
+		signing_key:      { public_key_id: env.PUBLIC_KEY_ID, keys_url: 'https://headlessoracle.com/v5/keys' },
+		witness_key:      key ? {
+			kty: 'OKP', crv: 'Ed25519', x: key.x, kid: key.kid, kid_rule: 'RFC 7638 thumbprint, base64url without padding',
+			session_id: HO_RECORD_SESSION_ID,
+			query_url: `${HO_RECORD_WITNESS_SUBMIT}?kid=${key.kid}&session_id=${HO_RECORD_SESSION_ID}`,
+		} : null,
+		verify: HO_RECORD_VERIFY_STEPS,
+		links: {
+			markdown: `${HO_RECORD_BASE_URL}.md`,
+			record:   `${HO_RECORD_BASE_URL}/{date}`,
+			proofs:   `${HO_RECORD_BASE_URL}/{date}/proofs`,
+			ots:      `${HO_RECORD_BASE_URL}/{date}.ots`,
+			witness_spec: WITNESS_SPEC_URL,
+		},
+		honest_limits: HO_RECORD_LIMITS,
+	};
+	if (!key) out.witness_key_unavailable_reason = 'HO_RECORD_WITNESS_KEY is not configured on this deployment';
+	return out;
+}
+
+const HO_RECORD_VERIFY_STEPS = [
+	'GET https://headlessoracle.com/record/<date> and take SHA-256 of the exact response bytes: that is record_sha256.',
+	'Remove signed_payload, canonical, public_key_id and signature from the parsed record, serialize the rest with RFC 8785 (JCS), and check its SHA-256 equals signed_payload.record_body_sha256; check signed_payload.date, sequence and previous_record_sha256 match the record.',
+	'Sort the keys of signed_payload, JSON.stringify with no whitespace, check it equals canonical, and verify signature (hex Ed25519) over those UTF-8 bytes with the public_key of the keys[] entry in https://headlessoracle.com/v5/keys whose key_id is public_key_id.',
+	'Check previous_record_sha256 equals the SHA-256 of the bytes served at https://headlessoracle.com/record/<date - 1 day> (null on sequence 1).',
+	'Run `ots verify -d <record_sha256> <date>.ots` (or `ots info`) on https://headlessoracle.com/record/<date>.ots; it is pending until a calendar commits it to Bitcoin.',
+	'GET https://api.headlessoracle.com/v1/witness/checkpoints?kid=<witness_key.kid>&session_id=ho-record and find the receipt whose count is the sequence and whose last_entry_hash is the entry_hash in /record/<date>/proofs; recompute entry_hash from the chain_entry shown there.',
+];
+
+function hoRecordMarkdown(idx: Record<string, unknown>): string {
+	const n = idx.newest as Record<string, unknown> | null;
+	const wk = idx.witness_key as Record<string, unknown> | null;
+	const ots = idx.ots_proofs as Record<string, number>;
+	return [
+		'# Headless Oracle daily record',
+		'',
+		'Once a UTC day Headless Oracle publishes a signed, hash-chained record of its own previous day: the halt digest it served, the receipt-verify registry index, and counts of witness checkpoints, MCP use and x402 settlements. ' +
+		'Each record is witnessed by Chirindo Witness, which is HO itself, and timestamped with OpenTimestamps; a proof becomes a Bitcoin attestation once the calendars confirm it.',
+		'',
+		'## Now',
+		'',
+		n ? `- Newest record: ${n.date}, sequence ${n.sequence}, sha256 ${n.record_sha256}${n.late ? ' (built late)' : ''}` : '- No record yet.',
+		n ? `- Record: ${n.url}` : '',
+		n ? `- Proofs: ${n.proofs_url}` : '',
+		n ? `- OpenTimestamps proof: ${n.ots_url}` : '',
+		`- Records: ${idx.records}; witness receipts: ${idx.witness_receipts}; OpenTimestamps proofs pending ${ots.pending}, complete ${ots.complete}, failed ${ots.failed}`,
+		`- Failed steps: ${(idx.failed_steps as unknown[]).length === 0 ? 'none' : JSON.stringify(idx.failed_steps)}`,
+		`- Signing key: ${(idx.signing_key as Record<string, string>).public_key_id} at https://headlessoracle.com/v5/keys`,
+		wk ? `- Witness key (dedicated to this record): kid ${wk.kid}, JWK {"kty":"OKP","crv":"Ed25519","x":"${wk.x}"}, session_id ${HO_RECORD_SESSION_ID}` : '- Witness key: not configured on this deployment.',
+		'',
+		'## Check it without us',
+		'',
+		...HO_RECORD_VERIFY_STEPS.map((s, i) => `${i + 1}. ${s}`),
+		'',
+		'## Limits',
+		'',
+		...HO_RECORD_LIMITS.map((s) => `- ${s}`),
+		'',
+		'Machine-readable: https://headlessoracle.com/record',
+		'',
+	].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
+}
+
+// GET /record, /record.md, /record/<date>, /record/<date>/proofs, /record/<date>.ots.
+async function handleRecordRoutes(request: Request, env: Env, url: URL, json: WitnessJson): Promise<Response | null> {
+	try {
+		return await serveRecordRoutes(request, env, url, json);
+	} catch (err: unknown) {
+		// A cached schema memo can outlive its tables (a reset local database):
+		// ensure them again and answer once more.
+		if (!(err instanceof Error && err.message.includes('no such table'))) throw err;
+		clearHoRecordSchemaCache();
+		try {
+			return await serveRecordRoutes(request, env, url, json);
+		} catch (again: unknown) {
+			console.error(`HO_RECORD_READ_FAILED: ${again instanceof Error ? again.message : 'unknown'}`);
+			return json({ error: 'RECORD_UNAVAILABLE', message: 'Record store unavailable' }, 503);
+		}
+	}
+}
+
+async function serveRecordRoutes(request: Request, env: Env, url: URL, json: WitnessJson): Promise<Response | null> {
+	const p = url.pathname;
+	const m = /^\/record\/(\d{4}-\d{2}-\d{2})(\/proofs|\.ots)?$/.exec(p);
+	if (p !== '/record' && p !== '/record.md' && !m) return null;
+	if (request.method !== 'GET' && request.method !== 'HEAD') return json({ error: 'METHOD_NOT_ALLOWED' }, 405, { Allow: 'GET' });
+	if (!env.HALT_ARCHIVE) return json({ error: 'RECORD_UNAVAILABLE', message: 'Record store not configured' }, 503);
+	try {
+		if (p === '/record') return json(await hoRecordIndex(env, new Date()), 200, { 'Cache-Control': 'public, max-age=60' });
+		if (p === '/record.md') {
+			return new Response(hoRecordMarkdown(await hoRecordIndex(env, new Date())), {
+				headers: { ...HO_RECORD_JSON_HEADERS, 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'public, max-age=60' },
+			});
+		}
+		const date = m![1];
+		await ensureHoRecordSchema(env);
+		const row = await env.HALT_ARCHIVE.prepare(`SELECT * FROM ho_records WHERE date = ?`).bind(date).first<HoRecordRow>();
+		if (!m![2]) {
+			if (!row) return json({ error: 'RECORD_NOT_FOUND', message: 'No record for this date', date }, 404);
+			// The stored bytes, never a rebuild.
+			return new Response(row.record_json, { headers: { ...HO_RECORD_JSON_HEADERS, 'Cache-Control': 'public, max-age=86400, immutable' } });
+		}
+		const proofs = await hoReadProofs(env.HALT_ARCHIVE, date);
+		if (m![2] === '.ots') {
+			if (!proofs.ots?.current_base64) return json({ error: 'PROOF_NOT_FOUND', message: 'No OpenTimestamps proof for this date', date }, 404);
+			return new Response(hoBase64ToBytes(proofs.ots.current_base64), {
+				headers: { 'Content-Type': 'application/octet-stream', 'Access-Control-Allow-Origin': '*', 'Content-Disposition': `attachment; filename="ho-record-${date}.ots"`, 'Cache-Control': 'public, max-age=300' },
+			});
+		}
+		if (!row && proofs.failed.length === 0) return json({ error: 'RECORD_NOT_FOUND', message: 'No record for this date', date }, 404);
+		let chainEntry: Record<string, unknown> | null = null;
+		if (row) {
+			const prev = row.sequence > 1
+				? await env.HALT_ARCHIVE.prepare(`SELECT entry_hash FROM ho_records WHERE sequence = ?`).bind(row.sequence - 1).first<{ entry_hash: string }>()
+				: null;
+			const prevHash = row.sequence > 1 ? (prev?.entry_hash ?? null) : await hoRecordGenesisHash();
+			chainEntry = {
+				entry: prevHash ? hoRecordEntry(row.sequence, row.record_sha256, prevHash) : null,
+				entry_hash: row.entry_hash,
+				rule: 'entry_hash = "sha256:" + hex(SHA-256(JCS(entry))); the first entry\'s prev_hash is "sha256:" + hex(SHA-256(JCS({"v":"evidence.action/1","session_id":"ho-record","marker":"genesis"}))), as in Chirindo\'s recorder.',
+			};
+		}
+		const ots = proofs.ots ? {
+			status: proofs.ots.status, digest: proofs.ots.digest, calendars: proofs.ots.calendars,
+			bitcoin_heights: proofs.ots.bitcoin_heights, proof_url: hoRecordUrls(date).ots_url,
+			submitted_at: proofs.ots.submitted_at, last_upgrade_at: proofs.ots.last_upgrade_at ?? null,
+			last_upgrade_results: proofs.ots.last_upgrade_results ?? null, history: proofs.ots.history,
+		} : null;
+		return json({
+			schema:        'ho-record-proofs/1',
+			date,
+			sequence:      row?.sequence ?? null,
+			record_url:    hoRecordUrls(date).url,
+			record_sha256: row?.record_sha256 ?? null,
+			chain_entry:   chainEntry,
+			witness:       proofs.witness ? { ...proofs.witness, statement: HO_RECORD_WITNESS_STATEMENT } : null,
+			ots,
+			failed_steps:  proofs.failed,
+			honest_limits: HO_RECORD_LIMITS,
+		});
+	} catch (err: unknown) {
+		if (err instanceof Error && err.message.includes('no such table')) throw err;
+		console.error(`HO_RECORD_READ_FAILED: ${err instanceof Error ? err.message : 'unknown'}`);
+		return json({ error: 'RECORD_UNAVAILABLE', message: 'Record store unavailable' }, 503);
+	}
+}
+
+// POST /v5/admin/record/run, master key only: runs the cron's record job now.
+async function masterKeyMatches(presented: string | null, env: Env): Promise<boolean> {
+	if (!presented || !env.MASTER_API_KEY) return false;
+	const [a, b] = await Promise.all([sha256Hex(presented), sha256Hex(env.MASTER_API_KEY)]);
+	return timingSafeEqualHex(a, b);
 }
 
 // Insert a signed halt event. Production code uses INSERT only — never UPDATE
@@ -6963,6 +7781,12 @@ async function runWeeklyDigest(env: Env): Promise<void> {
 const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
+    <loc>https://headlessoracle.com/record.md</loc>
+    <lastmod>2026-10-09</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>https://headlessoracle.com/</loc>
     <lastmod>2026-10-05</lastmod>
     <changefreq>weekly</changefreq>
@@ -7290,6 +8114,10 @@ Headless Oracle also returns Ed25519-signed receipts saying whether an exchange 
 - [Daily Digest](https://headlessoracle.com/v5/audit/digest): Merkle root of all daily attestations
 - [Receipt Schema](https://headlessoracle.com/v5/keys): Full canonical payload specification
 - [Conformance Vectors](https://headlessoracle.com/v5/conformance-vectors): live-signed test vectors for SDK authors
+
+## HO's own daily record
+
+- [Daily record](https://headlessoracle.com/record) ([Markdown](https://headlessoracle.com/record.md)): once a UTC day, a signed, hash-chained record of Headless Oracle's own previous day (the halt digest it served, the receipt-verify registry index, witness, MCP and x402 counts), witnessed by Chirindo Witness, which is HO itself, and timestamped with OpenTimestamps; a timestamp becomes a Bitcoin attestation once the calendars confirm it. /record.md says how to check it without us.
 
 ## Standards
 
@@ -9291,6 +10119,9 @@ const AGENT_JSON = {
 			{ path: '/v5/usage',                    method: 'GET', auth: true,  description: 'Per-key usage stats — requests today/month, limits, credits, upgrade info' },
 			{ path: '/v5/changelog',                method: 'GET', auth: false, description: 'Versioned changelog — entries[], each with date, version, changes[]' },
 			{ path: '/badge/:mic',                  method: 'GET', auth: false, description: 'SVG status badge for README embedding (shields.io style)' },
+			{ path: '/record',                      method: 'GET', auth: false, description: 'HO daily record index: signed, hash-chained, witnessed by Chirindo Witness (which is HO itself), timestamped with OpenTimestamps' },
+			{ path: '/record/{date}',               method: 'GET', auth: false, description: 'One day\'s signed ho-record/v1 record, the exact stored bytes' },
+			{ path: '/record/{date}.ots',           method: 'GET', auth: false, description: 'OpenTimestamps file (.ots) for one record\'s sha256' },
 		],
 		auth: {
 			header:           'X-Oracle-Key',
@@ -11377,6 +12208,89 @@ const OPENAPI_SPEC = {
 				},
 			},
 		},
+		'/record': {
+			get: {
+				operationId: 'getRecordIndex',
+				tags:        ['Audit'],
+				summary:     'HO daily record: newest record, chain head, proof counts',
+				description: 'Public. Once a UTC day Headless Oracle publishes a signed, hash-chained record of its own previous day. This index names the newest record, the chain head, counts of records, witness receipts and OpenTimestamps proofs (pending, complete, failed), any failed job steps, the signing key id and the dedicated witness key (JWK and RFC 7638 kid), how to verify it, and its limits. Each record is witnessed by Chirindo Witness, which is HO itself, and timestamped with OpenTimestamps; a proof becomes a Bitcoin attestation once the calendars confirm it.',
+				responses: {
+					'200': { description: 'Record index', content: { 'application/json': { schema: { type: 'object', properties: {
+						schema: { type: 'string', enum: ['ho-record-index/1'] }, expected_newest_date: { type: 'string', format: 'date' },
+						newest: { type: 'object', nullable: true }, chain_head: { type: 'object', nullable: true }, records: { type: 'integer' },
+						witness_receipts: { type: 'integer' }, ots_proofs: { type: 'object' }, failed_steps: { type: 'array', items: { type: 'object' } },
+						signing_key: { type: 'object' }, witness_key: { type: 'object', nullable: true }, verify: { type: 'array', items: { type: 'string' } },
+						honest_limits: { type: 'array', items: { type: 'string' } },
+					} } } } },
+					'503': { description: 'Record store unavailable' },
+				},
+			},
+		},
+		'/record.md': {
+			get: {
+				operationId: 'getRecordMarkdown',
+				tags:        ['Audit'],
+				summary:     'HO daily record in Markdown, with how to check it and its limits',
+				responses: { '200': { description: 'Markdown', content: { 'text/markdown': { schema: { type: 'string' } } } } },
+			},
+		},
+		'/record/{date}': {
+			get: {
+				operationId: 'getRecordByDate',
+				tags:        ['Audit'],
+				summary:     'One day\'s ho-record/v1 record, the exact stored bytes',
+				description: 'The bytes never change after first publication; record_sha256 is the SHA-256 of these bytes. signed_payload is signed with Ed25519 key_2026_v1 (see /v5/keys); record_body_sha256 is the SHA-256 of the RFC 8785 bytes of the record without signed_payload, canonical, public_key_id and signature. An input that could not be read is null with a sibling <member>_unavailable_reason; late: true marks a day built after the day following it.',
+				parameters:  [{ name: 'date', in: 'path', required: true, schema: { type: 'string', format: 'date' } }],
+				responses: {
+					'200': { description: 'Record', content: { 'application/json': { schema: { type: 'object', required: ['schema', 'date', 'generated_at', 'sequence', 'previous_record_sha256', 'inputs', 'counts', 'signed_payload', 'canonical', 'public_key_id', 'signature'], properties: {
+						schema: { type: 'string', enum: ['ho-record/v1'] }, date: { type: 'string', format: 'date' }, generated_at: { type: 'string', format: 'date-time' },
+						late: { type: 'boolean' }, sequence: { type: 'integer' }, previous_record_sha256: { type: 'string', nullable: true },
+						inputs: { type: 'object' }, counts: { type: 'object' }, signed_payload: { type: 'object', additionalProperties: { type: 'string' } },
+						canonical: { type: 'string' }, public_key_id: { type: 'string' }, signature: { type: 'string' },
+					} } } } },
+					'400': { description: 'Malformed date' },
+					'404': { description: 'No record for this date' },
+				},
+			},
+		},
+		'/record/{date}/proofs': {
+			get: {
+				operationId: 'getRecordProofsByDate',
+				tags:        ['Audit'],
+				summary:     'Witness receipt, chain entry and OpenTimestamps status for one record',
+				parameters:  [{ name: 'date', in: 'path', required: true, schema: { type: 'string', format: 'date' } }],
+				responses: {
+					'200': { description: 'Proofs', content: { 'application/json': { schema: { type: 'object', properties: { schema: { type: 'string', enum: ['ho-record-proofs/1'] }, chain_entry: { type: 'object', nullable: true }, witness: { type: 'object', nullable: true }, ots: { type: 'object', nullable: true }, failed_steps: { type: 'array', items: { type: 'object' } } } } } } },
+					'404': { description: 'No record for this date' },
+				},
+			},
+		},
+		'/record/{date}.ots': {
+			get: {
+				operationId: 'getRecordOtsByDate',
+				tags:        ['Audit'],
+				summary:     'Current OpenTimestamps proof (detached .ots) for one record\'s sha256',
+				parameters:  [{ name: 'date', in: 'path', required: true, schema: { type: 'string', format: 'date' } }],
+				responses: {
+					'200': { description: 'Detached .ots proof', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
+					'404': { description: 'No proof for this date' },
+				},
+			},
+		},
+		'/v5/admin/record/run': {
+			post: {
+				operationId: 'postAdminRecordRun',
+				tags:        ['Operations'],
+				summary:     'Admin: run the daily record job now',
+				description: 'Admin only. Requires MASTER_API_KEY in X-Oracle-Key. Takes no parameters and runs exactly the job the 0 9 * * * cron runs: builds every missing day up to yesterday UTC, in order, never today or later, and never rebuilds a stored record. A call with nothing to build says so (result: nothing_built).',
+				parameters:  [{ name: 'X-Oracle-Key', in: 'header', required: true, schema: { type: 'string' }, description: 'Master API key' }],
+				responses: {
+					'200': { description: 'Run result', content: { 'application/json': { schema: { type: 'object', properties: { result: { type: 'string', enum: ['built', 'nothing_built'] }, built: { type: 'array', items: { type: 'object' } } } } } } },
+					'401': { description: 'Missing or invalid master key' },
+					'503': { description: 'Record store unavailable' },
+				},
+			},
+		},
 		'/v5/payment-proof': {
 			get: {
 				tags:        ['Payment'],
@@ -12103,14 +13017,17 @@ async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Pro
 		await logMcpUse(copy, host, 'unhandled_error');
 		throw err;
 	}
-	await logMcpUse(copy, host, res.status);
+	const message = await logMcpUse(copy, host, res.status);
+	// H6: the day's counters for the record, off the response path.
+	if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(recordMcpCounts(message, env, new Date()));
 	return res;
 }
 
-async function logMcpUse(copy: Request, host: string, status: number | string): Promise<void> {
+async function logMcpUse(copy: Request, host: string, status: number | string): Promise<unknown> {
 	let message: unknown = null;
 	try { message = await copy.json(); } catch { /* unparseable: logged with method null */ }
 	for (const line of mcpUseLogLines(message, host, status)) console.log(line);
+	return message;
 }
 
 // Debit one credit from a credit-pack key's ORACLE_API_KEYS record, under the
@@ -13311,6 +14228,33 @@ export default {
 		if (url.pathname.startsWith('/v1/witness/')) {
 			const witnessResponse = await handleWitness(request, env, url, now, json);
 			if (witnessResponse) return witnessResponse;
+		}
+
+		// ── /record* — HO's daily signed record (H6) ──
+		if (url.pathname === '/record' || url.pathname === '/record.md' || url.pathname.startsWith('/record/')) {
+			const recordResponse = await handleRecordRoutes(request, env, url, json);
+			if (recordResponse) return recordResponse;
+		}
+
+		// ── POST /v5/admin/record/run — run the record job now (master key) ──
+		// Takes no parameters: it does what the 0 9 * * * cron does, building
+		// only missing days up to yesterday UTC and never rewriting a record.
+		if (url.pathname === '/v5/admin/record/run') {
+			if (!(await masterKeyMatches(request.headers.get('X-Oracle-Key'), env))) {
+				return new Response(JSON.stringify({ error: 'UNAUTHORIZED' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' } });
+			}
+			if (request.method !== 'POST') return json({ error: 'METHOD_NOT_ALLOWED' }, 405, { Allow: 'POST' });
+			try {
+				const run = await runHoRecordJob(env);
+				return json({
+					result:  run.built.length > 0 ? 'built' : 'nothing_built',
+					message: run.built.length > 0 ? `built ${run.built.map((b) => b.date).join(', ')}` : (run.not_built_reason ?? 'nothing built'),
+					...run,
+				});
+			} catch (err: unknown) {
+				console.error(`HO_RECORD_ERROR: admin_run: ${err instanceof Error ? err.message : 'unknown'}`);
+				return json({ error: 'RECORD_JOB_FAILED', message: err instanceof Error ? err.message : 'unknown error' }, 503);
+			}
 		}
 
 		// ── POST /oauth/token — OAuth 2.0 Client Credentials token endpoint ──
@@ -19155,11 +20099,8 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				if (!digest) {
 					return json({ error: 'NOT_FOUND', message: 'No digest for this date', date }, 404);
 				}
-				return json({
-					schema:    'halt_archive_digest/v1',
-					framing:   'observed-source — this digest attests what named feeds reported, not ground truth',
-					...digest,
-				});
+				// haltDigestBody is shared with the daily record, which hashes these bytes.
+				return json(haltDigestBody(digest));
 			} catch (err: unknown) {
 				const message = err instanceof Error ? err.message : 'digest read failed';
 				return json({ error: 'DIGEST_ERROR', message }, 500);
@@ -19770,6 +20711,14 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				await buildHaltArchiveDigest(yDate, env);
 			} catch (err: unknown) {
 				console.error(`HALT_ARCHIVE_DIGEST_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+			}
+			// H6: HO's daily record of yesterday (and any missed days), after the
+			// digest it hashes. Its own try/catch: it can never stop what follows.
+			try {
+				const run = await runHoRecordJob(env);
+				console.log(JSON.stringify({ event: 'HO_RECORD_RUN', ...run }));
+			} catch (err: unknown) {
+				console.error(`HO_RECORD_ERROR: run: ${err instanceof Error ? err.message : String(err)}`);
 			}
 			// Supabase keepalive. The free tier pauses a project after about a week
 			// without activity, and on 2026-10-03 a paused project left the Paddle

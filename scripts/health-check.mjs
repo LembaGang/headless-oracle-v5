@@ -19,7 +19,9 @@
 //      Cloudflare zone route doesn't match the query-stringed form and the
 //      request falls through to Pages — unit tests can't catch this since
 //      they call the worker handler directly, bypassing the route table.
-//   6. New Paddle revenue events from /v5/revenue-pulse (if MASTER_API_KEY
+//   6. From 10:00 UTC, GET /record names yesterday's daily record and no
+//      failed step for it (H6; rule in scripts/record-check.mjs).
+//   7. New Paddle revenue events from /v5/revenue-pulse (if MASTER_API_KEY
 //      is provided via env). Each new event becomes a GitHub issue via the
 //      workflow. Sliding 20-min window matches the 15-min cron with
 //      overlap; deduplication is by txn_id, handled in the workflow.
@@ -30,6 +32,8 @@
 //
 // Output: structured JSON lines on stdout, human-readable failures on
 // stderr. The workflow grep's stdout for `"event":"REVENUE_NEW"` lines.
+
+import { recordProblems } from './record-check.mjs';
 
 const BASE = process.env.HEADLESS_ORACLE_BASE_URL ?? 'https://headlessoracle.com';
 const MASTER_KEY = process.env.MASTER_API_KEY ?? null;
@@ -361,11 +365,23 @@ async function checkRevenue() {
 	} catch (err) { fail('revenue.fetch', err.message); }
 }
 
+// H6: from 10:00 UTC, /record must name yesterday's record with no failed
+// step for it. A failure here exits 1, which opens the health-check issue.
+async function checkRecord() {
+	try {
+		const { body } = await fetchJson('/record');
+		const problems = recordProblems(body, new Date());
+		if (problems.length > 0) fail('record.daily', problems.join('; '));
+		else log('CHECK_OK', { endpoint: '/record', newest: body.newest?.date ?? null });
+	} catch (err) { fail('record.fetch', err.message); }
+}
+
 // ── main ────────────────────────────────────────────────────────────────────
 log('HEALTH_CHECK_START', { base: BASE });
 await checkWorkerEndpoints();
 await checkPaidV1Routes();
 await checkFrontend();
+await checkRecord();
 await checkRevenue();
 
 if (failures.length > 0) {
