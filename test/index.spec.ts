@@ -8444,6 +8444,12 @@ describe('H1a: paddle purchases deliver', () => {
 		insert?: 'ok' | 'throw' | '23505';
 		update?: 'ok' | 'throw';
 		resendCustomerOk?: boolean;
+		// B-328: false answers every mail to the founder with a 500.
+		resendFounderOk?: boolean;
+		// B-328: the body of a failed send (default: Resend's application_error).
+		resendFailBody?: (mail: Mail) => string;
+		// B-328: when set, POST api.paddle.com/transactions answers a checkout with this id.
+		paddleCheckoutTxnId?: string;
 		email?: string;
 	};
 
@@ -8480,6 +8486,9 @@ describe('H1a: paddle purchases deliver', () => {
 				if (opts.update === 'throw') throw new TypeError('fetch failed: supabase unreachable');
 				return new Response(null, { status: 204 });
 			}
+			if (opts.paddleCheckoutTxnId && url.includes('api.paddle.com/transactions') && method === 'POST') {
+				return new Response(JSON.stringify({ data: { id: opts.paddleCheckoutTxnId } }), { status: 200, headers: jsonHeaders });
+			}
 			if (url.includes('api.paddle.com/customers')) {
 				return new Response(JSON.stringify({ data: { email: opts.email ?? 'buyer@example.com' } }), { status: 200, headers: jsonHeaders });
 			}
@@ -8487,8 +8496,12 @@ describe('H1a: paddle purchases deliver', () => {
 				const m = JSON.parse(String(init?.body ?? '{}')) as { to?: string[]; subject?: string; html?: string; text?: string };
 				const mail = { to: m.to?.[0] ?? '', subject: m.subject ?? '', html: m.html ?? '', text: m.text ?? '' };
 				st.mails.push(mail);
+				const failBody = () => (opts.resendFailBody ? opts.resendFailBody(mail) : JSON.stringify({ name: 'application_error', message: 'Resend down' }));
 				if (mail.to !== FOUNDER && opts.resendCustomerOk === false) {
-					return new Response(JSON.stringify({ name: 'application_error', message: 'Resend down' }), { status: 500, headers: jsonHeaders });
+					return new Response(failBody(), { status: 500, headers: jsonHeaders });
+				}
+				if (mail.to === FOUNDER && opts.resendFounderOk === false) {
+					return new Response(failBody(), { status: 500, headers: jsonHeaders });
 				}
 				return new Response(JSON.stringify({ id: 'email_h1a' }), { status: 200, headers: jsonHeaders });
 			}
@@ -9242,6 +9255,118 @@ describe('H1a: paddle purchases deliver', () => {
 			expect(res.status).toBe(200);
 			expect(await revenueRow(subId)).toMatchObject({ tier: 'referee:conformance_entry', amount: refereePrices().amount('conformance_entry'), currency: 'USD', amount_source: 'list' });
 		} finally {
+			restore();
+		}
+	});
+
+	// ─── B-328: a Resend answer that is not 2xx is logged ────────────────────
+	// Four sends discarded the Response: the founder referee-purchase mail, the
+	// founder mint line, the credits buyer mail (not even awaited) and the
+	// founder intake mail, so a 4xx or 5xx from Resend left no trace. Each now
+	// logs a tagged error with the status and at most 200 redacted characters
+	// of the body, and the purchase or intake completes as before.
+	function loggedLines(spy: { mock: { calls: unknown[][] } }, tag: string): string[] {
+		return spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes(tag));
+	}
+
+	it('B-328: a founder mint line answered 500 logs PADDLE_FOUNDER_LINE_FAILED with the status, and the builder purchase still completes', async () => {
+		const { st, restore } = stubFetch({ resendFounderOk: false, email: 'b328-mint@builder.example' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(completed('sub_b328_founder_line', BUILDER_PRICE, { origin: 'web' }));
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get('paddle_sub:sub_b328_founder_line'))!)).toMatchObject({ plan: 'builder' });
+			expect(customerMails(st).length).toBe(1);
+			expect(st.mails.filter((m) => m.to === FOUNDER).length).toBe(1);
+			const lines = loggedLines(errSpy, 'PADDLE_FOUNDER_LINE_FAILED');
+			expect(lines.length).toBe(1);
+			expect(JSON.parse(lines[0])).toMatchObject({ event: 'PADDLE_FOUNDER_LINE_FAILED', txn_id: 'txn_sub_b328_founder_line', status: 500, detail: '{"name":"application_error","message":"Resend down"}' });
+			expect(lines[0]).not.toContain('b328-mint@');
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-328: a founder referee-purchase mail answered 500 logs REFEREE_PURCHASE_MAIL_FAILED with the status, and the purchase is still recorded', async () => {
+		const id = 'b328_referee';
+		const { st, restore } = stubFetch({ resendFounderOk: false, email: 'b328-referee@referee.example' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(completed(id, 'pri_01m22wcgvj15ktn5xnabf13a7p', { subscription_id: null, details: { totals: { grand_total: '250000', currency_code: 'USD' } } }));
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(JSON.parse((await env.ORACLE_TELEMETRY.get(`referee_purchase:txn_${id}`))!)).toMatchObject({ service: 'conformance_entry' });
+			expect(await revenueRow(`txn_${id}`)).toMatchObject({ tier: 'referee:conformance_entry', amount: '2500.00' });
+			expect(st.mails.filter((m) => m.to === FOUNDER).length).toBe(1);
+			const lines = loggedLines(errSpy, 'REFEREE_PURCHASE_MAIL_FAILED');
+			expect(lines.length).toBe(1);
+			expect(JSON.parse(lines[0])).toMatchObject({ event: 'REFEREE_PURCHASE_MAIL_FAILED', txn_id: `txn_${id}`, status: 500 });
+			expect(lines[0]).not.toContain('b328-referee@');
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-328: a credits buyer mail answered 500 logs CREDITS_KEY_EMAIL_FAILED with the status and the email domain only, and the key is still minted', async () => {
+		const id = 'txn_b328_credits';
+		// A provider that echoes the recipient and the key in its error answer:
+		// neither may reach the log line.
+		const echo = (m: Mail) => JSON.stringify({ name: 'validation_error', message: `rejected ${m.to} for ${m.html.match(/ho_crd_[0-9a-f]{64}/)?.[0] ?? ''}` });
+		const { st, restore } = stubFetch({ resendCustomerOk: false, resendFailBody: echo, email: 'b328-credits@credits.example' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle({
+				event_type: 'transaction.completed',
+				data: { id, customer_id: 'ctm_b328_credits', items: [{ price_id: 'pri_test_credits_placeholder' }], details: { totals: { grand_total: '500', currency_code: 'USD' } } },
+			});
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(await env.ORACLE_API_KEYS.get(`paddle_txn:${id}`)).not.toBeNull();
+			expect(await revenueRow(id)).toMatchObject({ tier: 'credits', amount: '5.00' });
+			const mails = customerMails(st);
+			expect(mails.length).toBe(1);
+			const key = mails[0].html.match(/ho_crd_[0-9a-f]{64}/)![0];
+			// Control: the stub's answer did carry the address and the key.
+			expect(echo(mails[0])).toContain('b328-credits@credits.example');
+			expect(echo(mails[0])).toContain(key);
+			const lines = loggedLines(errSpy, 'CREDITS_KEY_EMAIL_FAILED');
+			expect(lines.length).toBe(1);
+			expect(JSON.parse(lines[0])).toMatchObject({ event: 'CREDITS_KEY_EMAIL_FAILED', txn_id: id, email_domain: 'credits.example', status: 500 });
+			expect(String(JSON.parse(lines[0]).detail)).toContain('rejected *@credits.example for ho_crd_[removed]');
+			expect(lines[0]).not.toContain('b328-credits@');
+			expect(lines[0]).not.toContain(key.slice('ho_crd_'.length, 'ho_crd_'.length + 16));
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-328: a founder intake mail answered 500 logs REFEREE_INTAKE_MAIL_FAILED with the status, and the intake still answers with its checkout', async () => {
+		const { st, restore } = stubFetch({ resendFounderOk: false, paddleCheckoutTxnId: 'txn_b328_intake' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await fetchWorker('/v5/referee/intake', {
+				method:  'POST',
+				headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.88' },
+				body:    JSON.stringify({
+					implementation: 'b328-impl', repository_or_url: 'https://example.com/b328', format: 'acta.receipt/0', version: '1.0.0',
+					contact_email: 'b328-intake@intake.example', consent_to_be_named: false, methodology_version_read: 'v1.0.0',
+				}),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json() as Record<string, unknown>;
+			expect(body.checkout_url).toBe('https://buy.paddle.com/checkout/txn_b328_intake');
+			expect(await env.ORACLE_TELEMETRY.get(`referee_intake:${body.intake_id as string}`)).not.toBeNull();
+			expect(st.mails.filter((m) => m.to === FOUNDER).length).toBe(1);
+			const lines = loggedLines(errSpy, 'REFEREE_INTAKE_MAIL_FAILED');
+			expect(lines.length).toBe(1);
+			expect(JSON.parse(lines[0])).toMatchObject({ event: 'REFEREE_INTAKE_MAIL_FAILED', intake_id: body.intake_id, status: 500 });
+			expect(lines[0]).not.toContain('b328-intake@');
+		} finally {
+			errSpy.mockRestore();
 			restore();
 		}
 	});

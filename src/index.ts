@@ -2648,6 +2648,32 @@ function refereePricingBlock(): Record<string, unknown> {
 // second thing to get wrong.
 const FOUNDER_NOTIFICATION_EMAIL = 'mike@headlessoracle.com';
 
+// B-328: text from outside (a Resend answer, an exception) made fit for a log
+// line. Every email address is cut to its domain, and HO ho_<letters>_ and sb_
+// keys (16 or more hex characters after the prefix) and Resend re_ keys are
+// removed. Other secret shapes are not matched: an HO OAuth access token (64
+// hex characters, no prefix) passes through. A log is not a customer record,
+// and a key in a log is a key in another system.
+function redactForLog(s: string): string {
+	return s
+		.replace(/[^\s@"'<>(),;:[\]]+@([A-Za-z0-9.-]+)/g, '*@$1')
+		.replace(/\b(ho_[a-z]+_|sb_)[0-9a-f]{16,}/g, '$1[removed]')
+		.replace(/\bre_[A-Za-z0-9_]{8,}/g, 're_[removed]');
+}
+
+// B-328: what a non-2xx answer from Resend said, for the log line that reports
+// it: at most 200 characters, redacted as above. Four sends used to discard the
+// Response, so a rejected mail left no trace at all.
+async function resendFailureDetail(res: Response): Promise<string> {
+	let body: string;
+	try {
+		body = (await res.text()).slice(0, 2000);
+	} catch {
+		return '(body unreadable)';
+	}
+	return redactForLog(body).slice(0, 200);
+}
+
 // Record a referee purchase, durably, and tell the founder.
 //
 // The row is keyed by the Paddle transaction id and written with NO TTL. It is
@@ -2686,7 +2712,7 @@ async function recordRefereePurchase(
 	}
 	if (!env.RESEND_API_KEY) return;
 	try {
-		await fetch('https://api.resend.com/emails', {
+		const res = await fetch('https://api.resend.com/emails', {
 			method:  'POST',
 			headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -2705,6 +2731,9 @@ async function recordRefereePurchase(
 <p>A paid entry buys the run and the published record, never the verdict.</p>`,
 			}),
 		});
+		if (!res.ok) {
+			console.error(JSON.stringify({ event: 'REFEREE_PURCHASE_MAIL_FAILED', txn_id: safeIdent(String(args.transactionId), 80), status: res.status, detail: await resendFailureDetail(res) }));
+		}
 	} catch (err) {
 		console.error(`REFEREE_PURCHASE_MAIL_FAILED: ${args.transactionId} ${String(err)}`);
 	}
@@ -3285,7 +3314,7 @@ async function sendFounderMintLine(
 	if (!env.RESEND_API_KEY) return;
 	const domain = args.customerEmail?.includes('@') ? args.customerEmail.split('@').pop() : 'none';
 	try {
-		await fetch('https://api.resend.com/emails', {
+		const res = await fetch('https://api.resend.com/emails', {
 			method:  'POST',
 			headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -3295,6 +3324,11 @@ async function sendFounderMintLine(
 				text:    `plan=${args.plan} transaction=${args.transactionId} customer_domain=${domain} customer_email_sent=${args.customerEmailSent ? 'yes' : 'no'} supabase_stored=${args.supabaseStored ? 'yes' : 'no'} claim_filled=${args.claimFilled ? 'yes' : 'no'}`,
 			}),
 		});
+		// B-328: a non-2xx answer used to be discarded, so a founder line Resend
+		// refused was as silent as the failure it exists to report.
+		if (!res.ok) {
+			console.error(JSON.stringify({ event: 'PADDLE_FOUNDER_LINE_FAILED', txn_id: safeIdent(String(args.transactionId), 80), status: res.status, detail: await resendFailureDetail(res) }));
+		}
 	} catch (err) {
 		console.error(JSON.stringify({ event: 'PADDLE_FOUNDER_LINE_FAILED', txn_id: args.transactionId, detail: String(err).slice(0, 200) }));
 	}
@@ -16650,9 +16684,14 @@ export default {
 							source:     'paddle_credits',
 							issued_at:  new Date().toISOString(),
 						}, env).catch(() => {}));
-						// Send welcome email (fire-and-forget — key is already stored)
+						// The domain only, never the address: logs are not a customer record.
+						const creditsEmailDomain = creditsEmail?.includes('@') ? creditsEmail.split('@').pop() : 'none';
+						// Send welcome email. Not awaited (the key is already stored) but
+						// kept alive with waitUntil, and a non-2xx answer or a thrown fetch
+						// is logged (B-328): both used to be dropped unread.
 						if (env.RESEND_API_KEY && creditsEmail) {
-							fetch('https://api.resend.com/emails', {
+							const creditsMailTxnId = safeIdent(String(txn['id'] ?? 'unknown'), 80);
+							ctx.waitUntil(fetch('https://api.resend.com/emails', {
 								method:  'POST',
 								headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
 								body: JSON.stringify({
@@ -16666,10 +16705,14 @@ export default {
 <p>Credits do not expire — they last until used.</p>
 <p>Buy more or upgrade to a subscription: <a href="https://headlessoracle.com/upgrade">headlessoracle.com/upgrade</a></p>`,
 								}),
-							}).catch(() => {});
+							}).then(async (res) => {
+								if (!res.ok) {
+									console.error(JSON.stringify({ event: 'CREDITS_KEY_EMAIL_FAILED', txn_id: creditsMailTxnId, email_domain: creditsEmailDomain, status: res.status, detail: await resendFailureDetail(res) }));
+								}
+							}).catch((err: unknown) => {
+								console.error(JSON.stringify({ event: 'CREDITS_KEY_EMAIL_FAILED', txn_id: creditsMailTxnId, email_domain: creditsEmailDomain, status: null, detail: redactForLog(String(err)).slice(0, 200) }));
+							}));
 						}
-						// The domain only, never the address: logs are not a customer record.
-						const creditsEmailDomain = creditsEmail?.includes('@') ? creditsEmail.split('@').pop() : 'none';
 						console.log(JSON.stringify({ event: 'CREDITS_KEY_MINTED', email_domain: creditsEmailDomain, txn_id: txn['id'] ?? 'unknown' }));
 						// Revenue pulse — record this event so /v5/revenue-pulse and the
 						// scheduled health-check (.github/workflows/health-check.yml) can
@@ -18889,6 +18932,11 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 </ul>
 <p>The entry is not paid until that transaction completes; the webhook records it separately.</p>`,
 						}),
+					}).then(async (res) => {
+						// B-328: a non-2xx answer used to be discarded unread.
+						if (!res.ok) {
+							console.error(JSON.stringify({ event: 'REFEREE_INTAKE_MAIL_FAILED', intake_id: intakeId, status: res.status, detail: await resendFailureDetail(res) }));
+						}
 					}).catch((err: unknown) => { console.error(`REFEREE_INTAKE_MAIL_FAILED: ${intakeId} ${String(err)}`); });
 				}
 
