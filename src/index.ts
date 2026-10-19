@@ -2185,6 +2185,12 @@ type PaddleRevenueEvent = {
 	currency:    string;
 	txn_id:      string;
 	customer_id: string | null;
+	// B-327: where `amount` came from. 'grand_total': the signed transaction's
+	// data.details.totals.grand_total ('unknown' when that was missing or
+	// malformed; see paddlePaidAmount). 'list': this file's price constants,
+	// kept only where the event carries no paid total. Absent on the x402 and
+	// unmapped rows, whose amounts are neither.
+	amount_source?: 'grand_total' | 'list';
 };
 async function recordPaddleRevenueEvent(env: Env, evt: PaddleRevenueEvent): Promise<void> {
 	if (!env.ORACLE_TELEMETRY) return;
@@ -2203,10 +2209,64 @@ async function recordPaddleRevenueEvent(env: Env, evt: PaddleRevenueEvent): Prom
 			env.ORACLE_TELEMETRY.put('paddle_revenue_last_at',              ts),
 			env.ORACLE_TELEMETRY.put(`paddle_revenue_event:${ts}`, blob, { expirationTtl: 60 * 60 * 24 * 30 }),
 		]);
-		console.log(JSON.stringify({ event: 'PADDLE_REVENUE_EVENT', tier: evt.tier, plan: evt.plan, amount: evt.amount, currency: evt.currency, txn_id: evt.txn_id, ts }));
+		console.log(JSON.stringify({ event: 'PADDLE_REVENUE_EVENT', tier: evt.tier, plan: evt.plan, amount: evt.amount, currency: evt.currency, amount_source: evt.amount_source, txn_id: evt.txn_id, ts }));
 	} catch (err) {
 		console.error(`PADDLE_REVENUE_RECORD_FAILED: ${(err as Error).message}`);
 	}
+}
+
+// B-327: the amount a transaction.completed revenue row books is what the buyer
+// paid, read from the signed payload, never the list price. A $0 test purchase
+// (a 100 percent discount) used to be booked at the full price, and the
+// health-check workflow puts the amount in a GitHub issue title.
+//
+// Paddle Billing gives money as a string in the lowest denomination of the
+// currency (https://developer.paddle.com/api-reference/currencies, read
+// 2026-10-16): "4900" in USD is 49.00, "100" in JPY is 100.
+// data.details.totals.grand_total is Paddle's "Total due on a transaction after
+// credits but before any payments" (https://developer.paddle.com/webhooks/
+// transactions/transaction-completed, read 2026-10-16): discounts applied, tax
+// included and Paddle's fee not taken off, so a row books the gross the buyer
+// paid, not net revenue (Paddle's earnings field is the total minus its fee).
+// data.details.totals.currency_code is its currency.
+// Decimals per payment currency as Paddle's supported-currencies page lists them
+// (https://developer.paddle.com/concepts/sell/supported-currencies, read
+// 2026-10-16). A currency outside this table is not converted.
+const PADDLE_CURRENCY_DECIMALS: ReadonlyMap<string, number> = new Map([
+	['USD', 2], ['GBP', 2], ['EUR', 2], ['ARS', 2], ['AUD', 2], ['BRL', 2], ['CAD', 2], ['CHF', 2], ['CLP', 0], ['CNY', 2], ['COP', 2],
+	['CZK', 2], ['DKK', 2], ['HKD', 2], ['HUF', 2], ['ILS', 2], ['INR', 2], ['JPY', 0], ['KRW', 0], ['MXN', 2], ['NOK', 2], ['NZD', 2],
+	['PEN', 2], ['PLN', 2], ['RUB', 2], ['SEK', 2], ['SGD', 2], ['THB', 2], ['TRY', 2], ['TWD', 2], ['UAH', 2], ['VND', 0], ['ZAR', 2],
+]);
+
+// "4900", 2 -> "49.00"; "0", 2 -> "0.00"; "100", 0 -> "100". BigInt, so no
+// amount is ever rounded through a float.
+function paddleMinorToDecimal(digits: string, decimals: number): string {
+	const n = BigInt(digits);
+	if (decimals === 0) return n.toString();
+	const scale = 10n ** BigInt(decimals);
+	return `${n / scale}.${(n % scale).toString().padStart(decimals, '0')}`;
+}
+
+// The paid amount and currency of a transaction.completed payload. A grand_total
+// that is absent or not a string of digits, or a currency_code outside the table
+// above, books amount 'unknown' and logs PADDLE_TOTAL_MISSING with the
+// transaction id; the list price is never used in its place.
+function paddlePaidAmount(txn: Record<string, unknown>, txnId: string, tier: string): { amount: string; currency: string; amount_source: 'grand_total' } {
+	const details = txn['details'];
+	const totals  = details !== null && typeof details === 'object' ? (details as Record<string, unknown>)['totals'] : undefined;
+	const t       = totals !== null && typeof totals === 'object' ? totals as Record<string, unknown> : {};
+	const raw     = t['grand_total'];
+	const code    = t['currency_code'];
+	const currency = typeof code === 'string' && /^[A-Z]{3}$/.test(code) ? code : 'unknown';
+	const missing = (reason: string) => {
+		console.error(JSON.stringify({ event: 'PADDLE_TOTAL_MISSING', txn_id: safeIdent(String(txnId), 80), tier: safeIdent(tier, 80), reason }));
+		return { amount: 'unknown', currency, amount_source: 'grand_total' as const };
+	};
+	if (raw === undefined) return missing('data.details.totals.grand_total is absent');
+	if (typeof raw !== 'string' || !/^[0-9]+$/.test(raw)) return missing('data.details.totals.grand_total is not a string of digits');
+	const decimals = PADDLE_CURRENCY_DECIMALS.get(currency);
+	if (decimals === undefined) return missing(currency === 'unknown' ? 'data.details.totals.currency_code is absent or malformed' : 'data.details.totals.currency_code is not in PADDLE_CURRENCY_DECIMALS');
+	return { amount: paddleMinorToDecimal(raw, decimals), currency, amount_source: 'grand_total' };
 }
 
 // ─── Durable x402 mint audit log ─────────────────────────────────────────────
@@ -2463,19 +2523,6 @@ const ORACLE_PLANS_HEADER = `free=https://headlessoracle.com/v5/keys/request,bui
 // Test seam, matching planAllowances().
 export function planPrices(): { builder: number; pro: number } {
 	return { builder: PLAN_PRICES.builder, pro: PLAN_PRICES.pro };
-}
-
-// Paddle records revenue as a decimal string. Derived rather than written:
-// /v5/revenue-pulse reads these, and the health-check workflow opens a GitHub
-// issue per payment carrying the amount, so a drifted value here is a wrong
-// number in an operator's inbox rather than a cosmetic one.
-function planPriceAmount(plan: string): string {
-	switch (plan) {
-		case 'builder':  return `${PLAN_PRICES.builder}.00`;
-		case 'pro':      return `${PLAN_PRICES.pro}.00`;
-		case 'protocol': return `${PLAN_PRICES.protocol}.00`;
-		default:         return 'unknown';
-	}
 }
 
 
@@ -16627,12 +16674,13 @@ export default {
 						// Revenue pulse — record this event so /v5/revenue-pulse and the
 						// scheduled health-check (.github/workflows/health-check.yml) can
 						// detect and surface new payments. Best-effort, errors swallowed.
+						// B-327: the amount is what the buyer paid (paddlePaidAmount).
+						const creditsRevenueTxnId = (txn['id'] as string) ?? 'unknown';
 						await recordPaddleRevenueEvent(env, {
 							tier:       'credits',
 							plan:       'credits',
-							amount:     '5.00',
-							currency:   'USD',
-							txn_id:     (txn['id'] as string) ?? 'unknown',
+							...paddlePaidAmount(txn, creditsRevenueTxnId, 'credits'),
+							txn_id:     creditsRevenueTxnId,
 							customer_id: (txn['customer_id'] as string) ?? null,
 						});
 						return json({ received: true });
@@ -16651,8 +16699,10 @@ export default {
 					// It provisions no ho_live_ key, deliberately: a referee
 					// service is not API access. The two custody prices no longer
 					// come here: since H1a they resolve to 'evidence_plan' and are
-					// provisioned below as Witness keys. Amounts are DERIVED from
-					// REFEREE_PRICES, never restated.
+					// provisioned below as Witness keys. The purchase row and the
+					// founder mail state the list price, DERIVED from REFEREE_PRICES
+					// and never restated; the revenue row books what the buyer paid
+					// (B-327, paddlePaidAmount).
 					const refereeResolved = resolvePaddlePlan(txnPriceId, env);
 					if (refereeResolved?.kind === 'referee') {
 						const refereeTxnId = (txn['id'] as string) ?? 'unknown';
@@ -16680,8 +16730,7 @@ export default {
 						await recordPaddleRevenueEvent(env, {
 							tier:        `referee:${refereeResolved.service}`,
 							plan:        `referee:${refereeResolved.service}`,
-							amount:      refereePriceAmount(refereeResolved.service),
-							currency:    REFEREE_PRICES[refereeResolved.service].currency,
+							...paddlePaidAmount(txn, refereeTxnId, `referee:${refereeResolved.service}`),
 							txn_id:      refereeTxnId,
 							customer_id: (txn['customer_id'] as string) ?? null,
 						});
@@ -16883,13 +16932,13 @@ export default {
 					}
 
 					// Revenue pulse — see credits branch above for rationale. An
-					// evidence plan's amount is derived from its custody price.
+					// evidence plan, like an API plan, books what the buyer paid
+					// (B-327, paddlePaidAmount).
 					if (resolved.kind === 'evidence_plan') {
 						await recordPaddleRevenueEvent(env, {
 							tier:        `evidence:${resolved.plan}`,
 							plan:        resolved.plan,
-							amount:      refereePriceAmount(resolved.service),
-							currency:    REFEREE_PRICES[resolved.service].currency,
+							...paddlePaidAmount(txn, txnId, `evidence:${resolved.plan}`),
 							txn_id:      txnId,
 							customer_id: (txn['customer_id'] as string) ?? null,
 						});
@@ -16897,8 +16946,7 @@ export default {
 						await recordPaddleRevenueEvent(env, {
 							tier:        plan,
 							plan,
-							amount:      planPriceAmount(plan),
-							currency:    'USD',
+							...paddlePaidAmount(txn, txnId, plan),
 							txn_id:      txnId,
 							customer_id: (txn['customer_id'] as string) ?? null,
 						});
@@ -16994,11 +17042,16 @@ export default {
 						// The remaining referee prices are one-time; a subscription for
 						// one is unexpected. Recorded under its own name, mints nothing.
 						console.log(JSON.stringify({ event: 'PADDLE_REFEREE_PAYMENT', service: activResolved.service, subscription_id: subscriptionId }));
+						// B-327: a subscription.activated payload carries no paid total
+						// (no details.totals), so this row keeps the list price and says
+						// so. The transaction.completed for the same purchase books its
+						// own row, with the paid total, under the transaction id.
 						await recordPaddleRevenueEvent(env, {
 							tier:        `referee:${activResolved.service}`,
 							plan:        `referee:${activResolved.service}`,
 							amount:      refereePriceAmount(activResolved.service),
 							currency:    REFEREE_PRICES[activResolved.service].currency,
+							amount_source: 'list',
 							txn_id:      subscriptionId,
 							customer_id: (sub['customer_id'] as string) ?? null,
 						});

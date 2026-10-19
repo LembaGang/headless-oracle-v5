@@ -8569,13 +8569,14 @@ describe('H1a: paddle purchases deliver', () => {
 	});
 
 	it.each([
-		{ priceId: CUSTODY_90D_PRICE, plan: 'evidence_starter', amount: '49.00',  quota: '1,000', name: 'Evidence Starter (Witness account)' },
-		{ priceId: CUSTODY_1Y_PRICE,  plan: 'evidence',         amount: '199.00', quota: '3,000', name: 'Evidence (Witness account)' },
-	])('$plan completed: key minted with its stored plan, paddle_sub written, Witness email, founder line, revenue $amount, no referee_purchase row', async ({ priceId, plan, amount, quota, name }) => {
+		{ priceId: CUSTODY_90D_PRICE, plan: 'evidence_starter', amount: '49.00',  grandTotal: '4900',  quota: '1,000', name: 'Evidence Starter (Witness account)' },
+		{ priceId: CUSTODY_1Y_PRICE,  plan: 'evidence',         amount: '199.00', grandTotal: '19900', quota: '3,000', name: 'Evidence (Witness account)' },
+	])('$plan completed: key minted with its stored plan, paddle_sub written, Witness email, founder line, revenue $amount, no referee_purchase row', async ({ priceId, plan, amount, grandTotal, quota, name }) => {
 		const subId = `sub_h1a_${plan}_001`;
 		const { st, restore } = stubFetch({ email: 'witness-buyer@example.com' });
 		try {
-			const res = await postPaddle(completed(subId, priceId, { origin: 'web' }));
+			// B-327: the revenue row books the paid total, so the buyer here pays the full price.
+			const res = await postPaddle(completed(subId, priceId, { origin: 'web', details: { totals: { grand_total: grandTotal, currency_code: 'USD' } } }));
 			expect(res.status).toBe(200);
 			expect(st.inserts[0]).toMatchObject({ plan, status: 'active', stripe_subscription_id: subId });
 			const sub = JSON.parse((await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`))!) as { key_hash: string; plan: string };
@@ -9127,6 +9128,119 @@ describe('H1a: paddle purchases deliver', () => {
 			const founder = st.mails.filter((m) => m.to === FOUNDER);
 			expect(founder.length).toBe(1);
 			expect(founder[0].text).toContain(`supabase_stored=${stored}`);
+		} finally {
+			restore();
+		}
+	});
+
+	// ─── B-327: the revenue row books what the buyer paid ────────────────────
+	// The four transaction.completed paths booked a list price (the credits
+	// pack a literal '5.00') whatever the transaction said, so a $0 test
+	// purchase would have opened a "Revenue: builder 99.00 USD" issue. Each now
+	// reads data.details.totals.grand_total and currency_code from the signed
+	// payload; a missing or malformed total books 'unknown' and logs
+	// PADDLE_TOTAL_MISSING, never the list price.
+	const PAID_PATHS = [
+		{ label: 'credits pack',                 priceId: 'pri_test_credits_placeholder',  tier: 'credits',                   oneTime: true,  full: '500',    fullDecimal: '5.00' },
+		{ label: 'referee one-time',             priceId: 'pri_01m22wcgvj15ktn5xnabf13a7p', tier: 'referee:conformance_entry', oneTime: true,  full: '250000', fullDecimal: '2500.00' },
+		{ label: 'evidence plan',                priceId: CUSTODY_90D_PRICE,               tier: 'evidence:evidence_starter', oneTime: false, full: '4900',   fullDecimal: '49.00' },
+		{ label: 'API plan (builder)',           priceId: BUILDER_PRICE,                   tier: 'builder',                   oneTime: false, full: '9900',   fullDecimal: '99.00' },
+	];
+
+	function paidTxn(path: (typeof PAID_PATHS)[number], id: string, totals?: Record<string, unknown>) {
+		const extra: Record<string, unknown> = { origin: 'web' };
+		if (path.oneTime) extra.subscription_id = null;
+		if (totals) extra.details = { totals };
+		return completed(id, path.priceId, extra);
+	}
+
+	async function revenueRow(txnId: string): Promise<Record<string, unknown> | undefined> {
+		const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_event:' });
+		const rows = (await Promise.all(listed.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name))))
+			.map((r) => JSON.parse(r ?? '{}') as Record<string, unknown>);
+		return rows.find((r) => r.txn_id === txnId);
+	}
+
+	function slug(s: string): string {
+		return s.replace(/[^a-z0-9]+/gi, '_');
+	}
+
+	it.each(PAID_PATHS)('B-327 $label: grand_total "0" (a 100 percent discount) books 0.00, not the list price', async (path) => {
+		const id = `b327_zero_${slug(path.label)}`;
+		const { restore } = stubFetch();
+		try {
+			const res = await postPaddle(paidTxn(path, id, { grand_total: '0', currency_code: 'USD' }));
+			expect(res.status).toBe(200);
+			expect(await revenueRow(`txn_${id}`)).toMatchObject({ tier: path.tier, amount: '0.00', currency: 'USD', amount_source: 'grand_total' });
+		} finally {
+			restore();
+		}
+	});
+
+	it.each(PAID_PATHS)('B-327 $label: the full price books the full amount, read from the transaction', async (path) => {
+		const id = `b327_full_${slug(path.label)}`;
+		const { restore } = stubFetch();
+		try {
+			const res = await postPaddle(paidTxn(path, id, { grand_total: path.full, currency_code: 'USD' }));
+			expect(res.status).toBe(200);
+			expect(await revenueRow(`txn_${id}`)).toMatchObject({ tier: path.tier, amount: path.fullDecimal, currency: 'USD', amount_source: 'grand_total' });
+		} finally {
+			restore();
+		}
+	});
+
+	it.each(PAID_PATHS)('B-327 $label: a missing total books "unknown" and logs PADDLE_TOTAL_MISSING with the transaction id', async (path) => {
+		const id = `b327_missing_${slug(path.label)}`;
+		const { restore } = stubFetch();
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(paidTxn(path, id));
+			expect(res.status).toBe(200);
+			expect(await revenueRow(`txn_${id}`)).toMatchObject({ tier: path.tier, amount: 'unknown', amount_source: 'grand_total' });
+			const lines = errSpy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('PADDLE_TOTAL_MISSING'));
+			expect(lines.length).toBe(1);
+			expect(JSON.parse(lines[0])).toMatchObject({ event: 'PADDLE_TOTAL_MISSING', txn_id: `txn_${id}`, tier: path.tier });
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-327: a total that is not a string of digits, or in a currency outside the table, books "unknown"; JPY and EUR convert by their own decimals', async () => {
+		const { restore } = stubFetch();
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const cases = [
+				{ id: 'b327_number',  totals: { grand_total: 9900,    currency_code: 'USD' }, amount: 'unknown', currency: 'USD' },
+				{ id: 'b327_decimal', totals: { grand_total: '99.00', currency_code: 'USD' }, amount: 'unknown', currency: 'USD' },
+				{ id: 'b327_negative', totals: { grand_total: '-9900', currency_code: 'USD' }, amount: 'unknown', currency: 'USD' },
+				{ id: 'b327_xyz',     totals: { grand_total: '9900',  currency_code: 'XYZ' }, amount: 'unknown', currency: 'XYZ' },
+				{ id: 'b327_nocur',   totals: { grand_total: '9900' },                        amount: 'unknown', currency: 'unknown' },
+				{ id: 'b327_jpy',     totals: { grand_total: '15000', currency_code: 'JPY' }, amount: '15000',   currency: 'JPY' },
+				{ id: 'b327_eur',     totals: { grand_total: '9105',  currency_code: 'EUR' }, amount: '91.05',   currency: 'EUR' },
+			];
+			for (const c of cases) {
+				expect((await postPaddle(completed(c.id, BUILDER_PRICE, { origin: 'web', details: { totals: c.totals } }))).status, c.id).toBe(200);
+				expect(await revenueRow(`txn_${c.id}`), c.id).toMatchObject({ amount: c.amount, currency: c.currency, amount_source: 'grand_total' });
+			}
+			const missing = errSpy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('PADDLE_TOTAL_MISSING'));
+			expect(missing.map((l) => (JSON.parse(l) as { txn_id: string }).txn_id)).toEqual(['txn_b327_number', 'txn_b327_decimal', 'txn_b327_negative', 'txn_b327_xyz', 'txn_b327_nocur']);
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-327: subscription.activated for a referee price has no paid total to read, so it keeps the list price and says amount_source "list"', async () => {
+		const subId = 'sub_b327_activated_referee';
+		const { restore } = stubFetch();
+		try {
+			const res = await postPaddle({
+				event_type: 'subscription.activated',
+				data: { id: subId, customer_id: `ctm_${subId}`, status: 'active', items: [{ price: { id: 'pri_01m22wcgvj15ktn5xnabf13a7p' } }] },
+			});
+			expect(res.status).toBe(200);
+			expect(await revenueRow(subId)).toMatchObject({ tier: 'referee:conformance_entry', amount: refereePrices().amount('conformance_entry'), currency: 'USD', amount_source: 'list' });
 		} finally {
 			restore();
 		}
@@ -18501,7 +18615,9 @@ describe('referee prices are derived from one constant', () => {
 		// and provisions a key, and subscription.activated no longer records or
 		// mints for a subscription plan (transaction.completed is the one path).
 		// What this test exists for is unchanged: our own price must not land in
-		// the unmapped branch, and the amount on its row must be the derived one.
+		// the unmapped branch. CHANGED 2026-10-16 (B-327): the amount on its row
+		// is what the buyer paid, read from the transaction; the buyer here pays
+		// the full price, so it still equals the derived list price.
 		const service = 'custody_90d';
 		const tierKey = 'paddle_revenue_count:evidence:evidence_starter';
 		const before         = parseInt((await env.ORACLE_TELEMETRY.get(tierKey)) ?? '0', 10) || 0;
@@ -18516,6 +18632,7 @@ describe('referee prices are derived from one constant', () => {
 				subscription_id: 'sub_b145_custody_001',
 				origin:          'web',
 				items:           [{ price_id: R.prices[service].price_id, quantity: 1 }],
+				details:         { totals: { grand_total: String(R.prices[service].minor_units), currency_code: 'USD' } },
 			},
 		});
 		const sig = await makePaddleSignature(rawBody, 'pdl_ntfset_test_placeholder_for_local_tests');
@@ -18544,7 +18661,7 @@ describe('referee prices are derived from one constant', () => {
 			// ...and NOT as an unmapped price, nor as the old referee line.
 			expect(parseInt((await env.ORACLE_TELEMETRY.get('paddle_revenue_count:unmapped')) ?? '0', 10) || 0).toBe(unmappedBefore);
 			expect(parseInt((await env.ORACLE_TELEMETRY.get(`paddle_revenue_count:referee:${service}`)) ?? '0', 10) || 0).toBe(refereeBefore);
-			// And the amount on that row is the derived one, not a literal.
+			// And the amount on that row is what the buyer paid: the full price.
 			const listed = await env.ORACLE_TELEMETRY.list({ prefix: 'paddle_revenue_event:' });
 			const rows = await Promise.all(listed.keys.map((k) => env.ORACLE_TELEMETRY.get(k.name)));
 			const row = rows
