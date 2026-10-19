@@ -15,10 +15,10 @@ Auto-approved, no confirmation needed:
 - Documentation updates
 - Signed local commits that pass the pre-commit gate
 
+Claude Code deploys and pushes ratified work (founder ruling 3 Oct 2026); npm publish stays with the founder (passkey).
+
 The founder's alone; an agent never does these, even when tests pass
 (Orchestration Directive v2.0, 2026-07-15, in `~/.claude/CLAUDE.md`):
-- Deploys: `npm run deploy`, `wrangler deploy`, or any other write to Cloudflare
-- `git push`, of any kind
 - npm or PyPI publishes, payments, public posts
 
 Still requires explicit confirmation in the message:
