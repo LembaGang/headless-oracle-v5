@@ -6681,6 +6681,22 @@ async function hoOtsSubmitStep(row: HoRecordRow, p: HoProofs, now: Date, fetchFn
 	}
 }
 
+// B-320: how long each step of a run took, in milliseconds. These are WALL
+// times, waits included, not CPU per step: in Workers, Date.now() advances
+// only across I/O, so a step that does no I/O reads 0 however much CPU it
+// spends, and a step that waits on D1, KV or a calendar reads the whole wait.
+// They locate where a record run's wall time goes; they measure no CPU (for
+// CPU, read the invocation's cpuTimeMs in Workers Observability). A step that
+// did not run reads 0. total covers runHoRecordJob from start to end; the
+// 0 9 * * * invocation also runs other jobs, so its wall time is longer.
+export interface HoRecordStepMs {
+	total:    number;
+	registry: number;
+	days:     { date: string; build: number; store: number; witness: number; ots_submit: number; proofs_write: number }[];
+	retries:  number;
+	upgrades: number;
+}
+
 export interface HoRecordRunResult {
 	yesterday:             string;
 	built:                 { date: string; sequence: number; record_sha256: string; late: boolean }[];
@@ -6690,6 +6706,7 @@ export interface HoRecordRunResult {
 	external_subrequests:  number;
 	external_budget:       number;
 	failed_steps:          { date: string; step: string; message: string }[];
+	step_ms:               HoRecordStepMs;
 }
 
 // The whole job: build every missing day up to yesterday (UTC), in order, then
@@ -6697,6 +6714,9 @@ export interface HoRecordRunResult {
 // proofs, oldest first, within the subrequest budget. Never builds today or
 // later, never rewrites a stored record. Throws only if the store is unusable.
 export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFetch } = {}): Promise<HoRecordRunResult> {
+	// B-320: wall clock for step_ms (see HoRecordStepMs: waits included, not CPU).
+	const jobStartedMs = Date.now();
+	const msSince = (t: number) => Math.max(0, Date.now() - t);
 	const now = opts.now ?? new Date();
 	const baseFetch: HoFetch = opts.fetch ?? ((u, i) => fetch(u, i));
 	let external = 0;
@@ -6708,9 +6728,10 @@ export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFet
 	const yd = new Date(now);
 	yd.setUTCDate(yd.getUTCDate() - 1);
 	const yesterday = yd.toISOString().slice(0, 10);
+	const stepMs: HoRecordStepMs = { total: 0, registry: 0, days: [], retries: 0, upgrades: 0 };
 	const result: HoRecordRunResult = {
 		yesterday, built: [], not_built_reason: null, days_left_for_next_run: 0, upgrades: [],
-		external_subrequests: 0, external_budget: HO_RECORD_EXTERNAL_BUDGET, failed_steps: [],
+		external_subrequests: 0, external_budget: HO_RECORD_EXTERNAL_BUDGET, failed_steps: [], step_ms: stepMs,
 	};
 
 	let last = await db.prepare(`SELECT * FROM ho_records ORDER BY sequence DESC LIMIT 1`).first<HoRecordRow>();
@@ -6724,15 +6745,22 @@ export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFet
 	const key = await hoWitnessKey(env);
 	const handled = new Set<string>();
 	if (todo.length > 0) {
+		const registryStartedMs = Date.now();
 		const registry = await hoRegistryInput(counted);
+		stepMs.registry = msSince(registryStartedMs);
 		for (const day of todo) {
 			handled.add(day);
 			const p = await hoReadProofs(db, day);
 			let row: HoRecordRow;
+			const dayMs = { date: day, build: 0, store: 0, witness: 0, ots_submit: 0, proofs_write: 0 };
 			try {
 				const sequence = (last?.sequence ?? 0) + 1;
+				const buildStartedMs = Date.now();
 				const record = await buildHoRecordObject(env, day, last, sequence, registry, now, key?.kid ?? null);
+				dayMs.build = msSince(buildStartedMs);
+				const storeStartedMs = Date.now();
 				row = await hoStoreRecord(db, day, sequence, JSON.stringify(record), last?.entry_hash ?? await hoRecordGenesisHash(), now);
+				dayMs.store = msSince(storeStartedMs);
 				hoClearFailed(p, 'build');
 			} catch (err: unknown) {
 				// A day that cannot be built stops the run: the next day would have
@@ -6742,20 +6770,28 @@ export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFet
 				result.not_built_reason = `build failed for ${day}`;
 				break;
 			}
+			const witnessStartedMs = Date.now();
 			await hoWitnessStep(env, row, p, now);
+			dayMs.witness = msSince(witnessStartedMs);
+			const otsStartedMs = Date.now();
 			if (!p.ots && external + OTS_CALENDARS.length <= HO_RECORD_EXTERNAL_BUDGET) {
 				await hoOtsSubmitStep(row, p, now, counted);
 			} else if (!p.ots) {
 				hoSetFailed(p, day, 'ots_submit', 'deferred: subrequest budget used up in this run', now);
 			}
+			dayMs.ots_submit = msSince(otsStartedMs);
+			const proofsStartedMs = Date.now();
 			await hoWriteProofs(db, day, p, now);
+			dayMs.proofs_write = msSince(proofsStartedMs);
 			result.built.push({ date: day, sequence: row.sequence, record_sha256: row.record_sha256, late: JSON.parse(row.record_json).late === true });
+			stepMs.days.push(dayMs);
 			last = row;
 		}
 	}
 
 	// Retries for records stored earlier: a missing witness receipt, or a
 	// submission no calendar took.
+	const retriesStartedMs = Date.now();
 	const { results: retry } = await db.prepare(
 		`SELECT r.* FROM ho_records r LEFT JOIN ho_record_proofs p ON p.date = r.date
 		 WHERE p.date IS NULL OR p.witness_json IS NULL OR p.ots_json IS NULL OR p.ots_status = 'failed'
@@ -6771,8 +6807,10 @@ export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFet
 		}
 		await hoWriteProofs(db, row.date, p, now);
 	}
+	stepMs.retries = msSince(retriesStartedMs);
 
 	// Upgrades, oldest pending proof first, with whatever budget is left.
+	const upgradesStartedMs = Date.now();
 	const { results: pending } = await db.prepare(
 		`SELECT date FROM ho_record_proofs WHERE ots_status = 'pending' ORDER BY date ASC`,
 	).all<{ date: string }>();
@@ -6808,10 +6846,12 @@ export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFet
 		}
 		await hoWriteProofs(db, date, p, now);
 	}
+	stepMs.upgrades = msSince(upgradesStartedMs);
 
 	const { results: failedRows } = await db.prepare(`SELECT date, failed_steps FROM ho_record_proofs WHERE failed_steps != '[]' ORDER BY date ASC`).all<{ date: string; failed_steps: string }>();
 	for (const r of failedRows ?? []) for (const f of JSON.parse(r.failed_steps) as HoFailedStep[]) result.failed_steps.push({ date: r.date, step: f.step, message: f.message });
 	result.external_subrequests = external;
+	stepMs.total = msSince(jobStartedMs);
 	return result;
 }
 
@@ -12367,7 +12407,22 @@ const OPENAPI_SPEC = {
 				description: 'Admin only. Requires MASTER_API_KEY in X-Oracle-Key. Takes no parameters and runs exactly the job the 0 9 * * * cron runs: builds every missing day up to yesterday UTC, in order, never today or later, and never rebuilds a stored record. A call with nothing to build says so (result: nothing_built).',
 				parameters:  [{ name: 'X-Oracle-Key', in: 'header', required: true, schema: { type: 'string' }, description: 'Master API key' }],
 				responses: {
-					'200': { description: 'Run result', content: { 'application/json': { schema: { type: 'object', properties: { result: { type: 'string', enum: ['built', 'nothing_built'] }, built: { type: 'array', items: { type: 'object' } } } } } } },
+					'200': { description: 'Run result', content: { 'application/json': { schema: { type: 'object', properties: {
+						result: { type: 'string', enum: ['built', 'nothing_built'] }, built: { type: 'array', items: { type: 'object' } },
+						// B-320: the run's step_ms, as runHoRecordJob returns it.
+						step_ms: {
+							type: 'object',
+							description: 'Wall time of each step of this record run in milliseconds, waits included. Not CPU: the runtime clock advances only across I/O. A step that did not run reads 0; total covers the record job only.',
+							properties: {
+								total: { type: 'integer', minimum: 0 }, registry: { type: 'integer', minimum: 0 },
+								days: { type: 'array', items: { type: 'object', properties: {
+									date: { type: 'string', format: 'date' }, build: { type: 'integer', minimum: 0 }, store: { type: 'integer', minimum: 0 },
+									witness: { type: 'integer', minimum: 0 }, ots_submit: { type: 'integer', minimum: 0 }, proofs_write: { type: 'integer', minimum: 0 },
+								} } },
+								retries: { type: 'integer', minimum: 0 }, upgrades: { type: 'integer', minimum: 0 },
+							},
+						},
+					} } } } },
 					'401': { description: 'Missing or invalid master key' },
 					'503': { description: 'Record store unavailable' },
 				},

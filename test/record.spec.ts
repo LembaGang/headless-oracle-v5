@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as ed from '@noble/ed25519';
 import worker, {
 	runHoRecordJob, hoJcs, witnessJcs, submitHoRecordCheckpoint, mcpCountKeys,
@@ -391,6 +391,71 @@ describe('H6 record: OpenTimestamps', () => {
 		expect(big.built).toHaveLength(5);
 		expect(big.days_left_for_next_run).toBeGreaterThan(0);
 		expect(big.external_subrequests).toBeLessThanOrEqual(37);
+	});
+});
+
+describe('B-320 record: step_ms, wall time per step of a run', () => {
+	const isMs = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+
+	it('the run result carries step_ms: total, registry, the five steps of each built day, retries and upgrades, as non-negative integers', async () => {
+		await runHoRecordJob(testEnv, { now: AT('2026-09-02T09:30:00Z'), fetch: fakeCalendars().fetchFn });
+		const run = await runHoRecordJob(testEnv, { now: AT('2026-09-05T09:30:00Z'), fetch: fakeCalendars().fetchFn });
+		expect(run.built.map((b) => b.date)).toEqual(['2026-09-02', '2026-09-03', '2026-09-04']);
+		const s = (run as unknown as { step_ms?: Record<string, unknown> }).step_ms ?? {};
+		expect(Object.keys(s).sort()).toEqual(['days', 'registry', 'retries', 'total', 'upgrades']);
+		for (const k of ['total', 'registry', 'retries', 'upgrades']) expect(isMs(s[k]), k).toBe(true);
+		const days = s.days as Record<string, unknown>[];
+		expect(days.map((d) => d.date)).toEqual(['2026-09-02', '2026-09-03', '2026-09-04']);
+		for (const d of days) {
+			expect(Object.keys(d).sort()).toEqual(['build', 'date', 'ots_submit', 'proofs_write', 'store', 'witness']);
+			for (const k of ['build', 'store', 'witness', 'ots_submit', 'proofs_write']) expect(isMs(d[k]), `${d.date} ${k}`).toBe(true);
+		}
+		// A run with nothing to build has no days and spent nothing on the registry.
+		const idle = await runHoRecordJob(testEnv, { now: AT('2026-09-05T11:00:00Z'), fetch: fakeCalendars().fetchFn });
+		expect(idle.step_ms.days).toEqual([]);
+		expect(idle.step_ms.registry).toBe(0);
+		// Nothing built, signed or stored carries it: the record keeps its members.
+		const stored = await env.HALT_ARCHIVE!.prepare('SELECT record_json FROM ho_records WHERE date = ?').bind('2026-09-03').first<{ record_json: string }>();
+		expect(stored!.record_json).not.toContain('step_ms');
+		expect(Object.keys(JSON.parse(stored!.record_json))).toEqual(['schema', 'date', 'generated_at', 'late', 'sequence', 'previous_record_sha256', 'inputs', 'counts', 'signed_payload', 'canonical', 'public_key_id', 'signature']);
+		// Control: the check refuses what is not a non-negative integer.
+		for (const bad of [-1, 1.5, null, '3']) expect(isMs(bad)).toBe(false);
+	});
+
+	it('the 0 9 * * * cron logs HO_RECORD_RUN with step_ms', async () => {
+		const logSpy = vi.spyOn(console, 'log');
+		try {
+			const ctx = createExecutionContext();
+			await worker.scheduled({ cron: '0 9 * * *', scheduledTime: Date.now(), noRetry() {} } as unknown as ScheduledController, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			const line = logSpy.mock.calls.map((c) => String(c[0])).find((l) => l.includes('"event":"HO_RECORD_RUN"'));
+			expect(line).toBeDefined();
+			const run = JSON.parse(line!) as { built: unknown[]; step_ms?: { total: unknown; days: unknown[] } };
+			expect(run.built).toHaveLength(1);
+			expect(isMs(run.step_ms?.total)).toBe(true);
+			expect(run.step_ms?.days).toHaveLength(1);
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
+	it('POST /v5/admin/record/run returns step_ms, and its OpenAPI 200 schema names step_ms with the members a run returns', async () => {
+		const MASTER = (env as unknown as { MASTER_API_KEY: string }).MASTER_API_KEY;
+		const res = await call('/v5/admin/record/run', { method: 'POST', headers: { 'X-Oracle-Key': MASTER } });
+		expect(res.status).toBe(200);
+		const body = await res.json() as { built: unknown[]; step_ms?: Record<string, unknown> };
+		expect(body.built).toHaveLength(1);
+		const s = body.step_ms ?? {};
+		expect(Object.keys(s).sort()).toEqual(['days', 'registry', 'retries', 'total', 'upgrades']);
+		const day = (s.days as Record<string, unknown>[])[0];
+		const spec = await (await call('/openapi.json')).json() as Record<string, any>;
+		const schema = spec.paths['/v5/admin/record/run'].post.responses['200'].content['application/json'].schema.properties.step_ms;
+		expect(schema?.type).toBe('object');
+		expect(Object.keys(schema.properties).sort()).toEqual(Object.keys(s).sort());
+		expect(Object.keys(schema.properties.days.items.properties).sort()).toEqual(Object.keys(day).sort());
+		expect(schema.description).toContain('Not CPU');
+		// Control: a member the run does not return would not match.
+		expect(Object.keys(schema.properties).sort()).not.toEqual([...Object.keys(s), 'cpu_ms'].sort());
 	});
 });
 
