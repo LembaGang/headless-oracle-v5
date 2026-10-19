@@ -394,6 +394,110 @@ describe('H6 record: OpenTimestamps', () => {
 	});
 });
 
+describe('B-335 record: witness keys Headless Oracle runs itself', () => {
+	// The four kids HO_OPERATED_WITNESS_KEYS lists, in first_seen order (WITNESS_DB,
+	// read 2026-10-16 and 2026-10-17; the demo key from its public bundle's note).
+	const OPERATED = ['jz-7FYorYzzTy10kk3T1z8pWn2Ln8JBBhcdweor1xjo', '27BNS0qbBS8n5BkA-SljusB8GqsicoDARJ5iU4Rnvvw', 'D8WTDAY8BnSSusV5d-jWRKXEatX7-8iWQm4txYYYJ9U', '-0bMmxck6Lc9XLCOlRWl3pNU0bndJEthVc9itDfWrLU'];
+
+	async function checkpointRow(kid: string, sessionId: string, receivedAt: string): Promise<void> {
+		await env.WITNESS_DB!.prepare(
+			`INSERT INTO witness_checkpoints (kid, session_id, count, last_entry_hash, checkpoint_jcs, checkpoint_sha256, public_key_x, received_at, fork, receipt_json, created_at)
+			 VALUES (?, ?, 1, ?, '{}', ?, 'x', ?, 'false', '{}', ?)`,
+		).bind(kid, sessionId, `sha256:${'0'.repeat(64)}`, `sha256:${'1'.repeat(64)}`, receivedAt, receivedAt).run();
+	}
+
+	it('a listed kid\'s checkpoint is left out of witness_distinct_keys_outside_ho and still counted in witness_distinct_keys_excluding_ho', async () => {
+		const day = '2026-09-01';
+		const recordKid = 'R'.repeat(43);
+		const outsideKid = 'O'.repeat(43);
+		await checkpointRow(recordKid, 'ho-record', `${day}T09:00:00.000Z`);
+		await checkpointRow(OPERATED[0], 'y1-prod-test', `${day}T10:00:00.000Z`);
+		await checkpointRow(outsideKid, 'someone-else', `${day}T11:00:00.000Z`);
+		await checkpointRow(outsideKid, 'someone-else-2', `${hoNextDayOf(day)}T00:00:00.000Z`); // the next day: not counted
+		const record = await buildHoRecordObject(testEnv, day, null, 1, { value: null, reason: 'x' }, AT('2026-09-02T09:30:00Z'), recordKid);
+		const c = record.counts as Record<string, unknown>;
+		expect(c.witness_checkpoints_accepted).toBe(3);
+		expect(c.witness_distinct_keys).toBe(3);
+		expect(c.witness_distinct_keys_excluding_ho).toBe(2); // the listed kid and the outside kid: unchanged meaning
+		expect(c.witness_distinct_keys_outside_ho).toBe(1);   // the outside kid only
+		// Control: with no listed kid that day, the two counts agree.
+		const other = await buildHoRecordObject(testEnv, hoNextDayOf(day), null, 1, { value: null, reason: 'x' }, AT('2026-09-03T09:30:00Z'), recordKid);
+		const o = other.counts as Record<string, unknown>;
+		expect([o.witness_distinct_keys_excluding_ho, o.witness_distinct_keys_outside_ho]).toEqual([1, 1]);
+		// Without the record key the new count, like the old one, is null with a reason.
+		const noKey = (await buildHoRecordObject(testEnv, day, null, 1, { value: null, reason: 'x' }, AT('2026-09-02T09:30:00Z'), null)).counts as Record<string, unknown>;
+		expect(noKey.witness_distinct_keys_outside_ho).toBeNull();
+		expect(String(noKey.witness_distinct_keys_outside_ho_unavailable_reason)).toContain('not configured');
+	});
+
+	it('a checkpoint whose session_id begins with "ho-" is left out of witness_distinct_keys_outside_ho whoever sent it, and still counted in witness_distinct_keys_excluding_ho', async () => {
+		const day = '2026-09-01';
+		const recordKid = 'R'.repeat(43);
+		const unlistedHo = 'H'.repeat(43); // a key not in the list, in a session named ho-...
+		const mixed = 'M'.repeat(43);      // one ho- checkpoint and one other: counted, by the other
+		const near = ['N'.repeat(43), 'P'.repeat(43), 'Q'.repeat(43)]; // HO-, hox- and x-ho- do not begin with "ho-"
+		await checkpointRow(unlistedHo, 'ho-m1-test-1', `${day}T09:00:00.000Z`);
+		await checkpointRow(mixed, 'ho-m1-test-2', `${day}T09:10:00.000Z`);
+		await checkpointRow(mixed, 'mixed-outside-1', `${day}T09:20:00.000Z`);
+		await checkpointRow(near[0], 'HO-upper-1', `${day}T10:00:00.000Z`);
+		await checkpointRow(near[1], 'hox-1', `${day}T10:10:00.000Z`);
+		await checkpointRow(near[2], 'x-ho-1', `${day}T10:20:00.000Z`);
+		const c = (await buildHoRecordObject(testEnv, day, null, 1, { value: null, reason: 'x' }, AT('2026-09-02T09:30:00Z'), recordKid)).counts as Record<string, unknown>;
+		expect(c.witness_checkpoints_accepted).toBe(6);
+		expect(c.witness_distinct_keys).toBe(5);
+		expect(c.witness_distinct_keys_excluding_ho).toBe(5); // the record key sent nothing that day: all five, as before
+		expect(c.witness_distinct_keys_outside_ho).toBe(4);   // mixed, by its other checkpoint, and the three near misses
+		// Control: the same checkpoint under a session name without the prefix counts its key.
+		await env.WITNESS_DB!.prepare('UPDATE witness_checkpoints SET session_id = ? WHERE kid = ?').bind('m1-test-1', unlistedHo).run();
+		const after = (await buildHoRecordObject(testEnv, day, null, 1, { value: null, reason: 'x' }, AT('2026-09-02T09:30:00Z'), recordKid)).counts as Record<string, unknown>;
+		expect(after.witness_distinct_keys_outside_ho).toBe(5);
+		expect(after.witness_distinct_keys_excluding_ho).toBe(5);
+	});
+
+	it('/record serves ho_operated_witness_keys and the honest_limits line, which /record/<date>/proofs and /record.md carry too', async () => {
+		await runHoRecordJob(testEnv, { now: AT('2026-09-02T09:30:00Z'), fetch: fakeCalendars().fetchFn });
+		const idx = await (await call('/record')).json() as Record<string, any>;
+		const listed = idx.ho_operated_witness_keys as { kid: string; purpose: string; first_seen: string }[];
+		expect(Array.isArray(listed)).toBe(true);
+		expect(listed.map((k) => k.kid)).toEqual(OPERATED);
+		for (const k of listed) {
+			expect(Object.keys(k).sort()).toEqual(['first_seen', 'kid', 'purpose']);
+			expect(k.kid).toMatch(/^[A-Za-z0-9_-]{43}$/);
+			expect(k.first_seen).toMatch(/^2026-10-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+			expect(k.purpose.length).toBeGreaterThan(10);
+		}
+		const line = (idx.honest_limits as string[]).find((l) => l.includes('witness_distinct_keys_outside_ho'));
+		expect(line).toBeDefined();
+		for (const s of [
+			'witness_distinct_keys_excluding_ho leaves out only the record\'s own witness key',
+			'keys Headless Oracle runs for its own examples count in it',
+			'the record of 2026-10-09 counts two such keys',
+			'which records carry from the first record built after ho_operated_witness_keys was added to https://headlessoracle.com/record',
+			'leaves out the record\'s own witness key, every key in that list, and every checkpoint whose session_id begins with "ho-", whoever sent it',
+		]) expect(line, s).toContain(s);
+		// The OpenAPI schema of /record says the same two rules.
+		const spec = await (await call('/openapi.json')).json() as Record<string, any>;
+		const desc = String(spec.paths['/record'].get.responses['200'].content['application/json'].schema.properties.ho_operated_witness_keys.description);
+		expect(desc).toContain('which witness_distinct_keys_outside_ho leaves out');
+		expect(desc).toContain('every checkpoint whose session_id begins with "ho-"');
+		const proofs = await (await call('/record/2026-09-01/proofs')).json() as Record<string, any>;
+		expect(proofs.honest_limits).toContain(line);
+		expect(await (await call('/record.md')).text()).toContain(`- ${line}`);
+		// Served text: no em dash and none of the banned words in the list or the line.
+		const served = JSON.stringify(listed) + line!;
+		const banned = [/\u2014/, /\bproves?\b/i, /guarantee/i, /tamper-?proof/i, /immutable/i, /trustless/i, /on-chain/i];
+		for (const bad of banned) expect(served, String(bad)).not.toMatch(bad);
+		// Control: the scan finds a banned word when it is there.
+		expect(banned.some((bad) => bad.test(`${served} this proves it`))).toBe(true);
+	});
+});
+
+function hoNextDayOf(day: string): string {
+	const d = new Date(`${day}T00:00:00.000Z`);
+	d.setUTCDate(d.getUTCDate() + 1);
+	return d.toISOString().slice(0, 10);
+}
+
 describe('B-320 record: step_ms, wall time per step of a run', () => {
 	const isMs = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
 

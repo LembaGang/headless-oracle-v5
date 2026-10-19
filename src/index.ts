@@ -6242,10 +6242,37 @@ const HO_RECORD_WITNESS_STATEMENT =
 	'A witness receipt is Headless Oracle\'s signed statement that it was shown the checkpoint at received_at; it is only as reliable as Headless Oracle and its signing key. ' +
 	'Here the operator and the witness are the same party, so this shows use of the product, not independence. Independence comes from the OpenTimestamps proof.';
 
+// B-335: witness keys Headless Oracle runs itself, served on /record as
+// ho_operated_witness_keys. witness_distinct_keys_excluding_ho, in every record
+// since 2026-10-09 and so in signed bytes, leaves out only the record's own key
+// and keeps that meaning; witness_distinct_keys_outside_ho, in records built
+// after this list was added, leaves out the record key, every kid here, and
+// every checkpoint whose session_id begins with HO_OWN_SESSION_PREFIX. A kid is
+// listed when Headless Oracle's own runs or pages show it runs the key, and its
+// purpose says which; first_seen is its earliest received_at in WITNESS_DB
+// (read-only queries, 2026-10-16 and 2026-10-17). The homepage demo key is
+// known from https://headlessoracle.com/examples/witness-demo-bundle.json, whose
+// note says the operator key was made for that page (fetched
+// 2026-10-17T13:53:57Z, 9190 bytes, sha256
+// 82e665ab542806ac3dddb97706ebd9492053b3f5d4c6267f24ec1afe0b95fe6d).
+const HO_OPERATED_WITNESS_KEYS: readonly { kid: string; purpose: string; first_seen: string }[] = [
+	{ kid: 'jz-7FYorYzzTy10kk3T1z8pWn2Ln8JBBhcdweor1xjo', purpose: 'The operator key of the headlessoracle.com homepage Witness demo (session demo-purchasing-agent-76f75512-dfca-4385-8ad0-16117144c933); https://headlessoracle.com/examples/witness-demo-bundle.json says the key was made for that page', first_seen: '2026-10-04T14:01:07.785Z' },
+	{ kid: '27BNS0qbBS8n5BkA-SljusB8GqsicoDARJ5iU4Rnvvw', purpose: 'Headless Oracle\'s own test of Chirindo checkpoints against this witness (sessions y1-prod-2026-10-09 and y1-prod-2026-10-09-b)', first_seen: '2026-10-09T10:33:38.564Z' },
+	{ kid: 'D8WTDAY8BnSSusV5d-jWRKXEatX7-8iWQm4txYYYJ9U', purpose: 'The operator key of Headless Oracle\'s Chirindo ordering-evidence example, cases A and B (sessions ordering-evidence-case-a-1 and ordering-evidence-case-b-1)', first_seen: '2026-10-09T13:03:33.974Z' },
+	{ kid: '-0bMmxck6Lc9XLCOlRWl3pNU0bndJEthVc9itDfWrLU', purpose: 'The witness key of this daily record (session ho-record)', first_seen: '2026-10-10T09:00:14.391Z' },
+];
+
+// B-335: a checkpoint whose session_id begins with this prefix (case-sensitive)
+// is left out of witness_distinct_keys_outside_ho whoever sent it, so a Headless
+// Oracle session named this way, such as ho-record, is left out before its key
+// is listed above.
+const HO_OWN_SESSION_PREFIX = 'ho-';
+
 const HO_RECORD_LIMITS = [
 	'The record is signed by Headless Oracle with key_2026_v1 and says what Headless Oracle counted; the signature shows who published the bytes, not that the counts are true.',
 	'The chain shows that a published record was not changed or removed later without the change being visible; it says nothing about a record before it was first published.',
 	HO_RECORD_WITNESS_STATEMENT,
+	`witness_distinct_keys_excluding_ho leaves out only the record's own witness key, so keys Headless Oracle runs for its own examples count in it: the record of 2026-10-09 counts two such keys. witness_distinct_keys_outside_ho, which records carry from the first record built after ho_operated_witness_keys was added to https://headlessoracle.com/record, leaves out the record's own witness key, every key in that list, and every checkpoint whose session_id begins with "${HO_OWN_SESSION_PREFIX}", whoever sent it.`,
 	'A timestamp proof is pending until the calendars commit it to Bitcoin; a proof becomes a Bitcoin attestation once the calendars confirm it, usually within hours. A pending proof rests on the calendars\' word.',
 	`MCP counts begin on ${HO_RECORD_MCP_FIRST_DAY}. A client is counted by the name it sends on initialize, hashed; clients that never send initialize are not counted, and two clients sending one name count once.`,
 	'Revenue, purchases and anything about named customers are not in the record.',
@@ -6445,20 +6472,30 @@ async function hoWitnessCounts(env: Env, day: string, hoKid: string | null): Pro
 	try {
 		if (!env.WITNESS_DB) throw new Error('WITNESS_DB not bound');
 		await ensureWitnessSchema(env);
+		// kx leaves out the record key only (its meaning since 2026-10-09);
+		// ko also leaves out every kid in HO_OPERATED_WITNESS_KEYS and every
+		// checkpoint whose session_id begins with HO_OWN_SESSION_PREFIX (B-335).
+		const operated = HO_OPERATED_WITNESS_KEYS.map((k) => k.kid);
 		const row = await env.WITNESS_DB.prepare(
-			`SELECT COUNT(*) AS n, COUNT(DISTINCT kid) AS k, COUNT(DISTINCT CASE WHEN kid != ? THEN kid END) AS kx
+			`SELECT COUNT(*) AS n, COUNT(DISTINCT kid) AS k, COUNT(DISTINCT CASE WHEN kid != ? THEN kid END) AS kx,
+			        COUNT(DISTINCT CASE WHEN kid != ? AND kid NOT IN (${operated.map(() => '?').join(', ')})
+			                             AND substr(session_id, 1, ${HO_OWN_SESSION_PREFIX.length}) != ? THEN kid END) AS ko
 			 FROM witness_checkpoints WHERE received_at >= ? AND received_at < ?`,
-		).bind(hoKid ?? '', `${day}T00:00:00.000Z`, `${hoNextDay(day)}T00:00:00.000Z`).first<{ n: number; k: number; kx: number }>();
+		).bind(hoKid ?? '', hoKid ?? '', ...operated, HO_OWN_SESSION_PREFIX, `${day}T00:00:00.000Z`, `${hoNextDay(day)}T00:00:00.000Z`).first<{ n: number; k: number; kx: number; ko: number }>();
 		const out: Record<string, unknown> = {
 			witness_checkpoints_accepted: row?.n ?? 0,
 			witness_distinct_keys:        row?.k ?? 0,
 			witness_distinct_keys_excluding_ho: hoKid ? (row?.kx ?? 0) : null,
+			witness_distinct_keys_outside_ho:   hoKid ? (row?.ko ?? 0) : null,
 		};
-		if (!hoKid) out.witness_distinct_keys_excluding_ho_unavailable_reason = 'the record witness key is not configured, so its kid is unknown';
+		if (!hoKid) {
+			out.witness_distinct_keys_excluding_ho_unavailable_reason = 'the record witness key is not configured, so its kid is unknown';
+			out.witness_distinct_keys_outside_ho_unavailable_reason = 'the record witness key is not configured, so its kid is unknown';
+		}
 		return out;
 	} catch (err: unknown) {
 		return {
-			witness_checkpoints_accepted: null, witness_distinct_keys: null, witness_distinct_keys_excluding_ho: null,
+			witness_checkpoints_accepted: null, witness_distinct_keys: null, witness_distinct_keys_excluding_ho: null, witness_distinct_keys_outside_ho: null,
 			witness_unavailable_reason: `witness store unavailable: ${err instanceof Error ? err.message : 'unknown error'}`,
 		};
 	}
@@ -6910,6 +6947,8 @@ async function hoRecordIndex(env: Env, now: Date): Promise<Record<string, unknow
 			session_id: HO_RECORD_SESSION_ID,
 			query_url: `${HO_RECORD_WITNESS_SUBMIT}?kid=${key.kid}&session_id=${HO_RECORD_SESSION_ID}`,
 		} : null,
+		// B-335: the keys witness_distinct_keys_outside_ho leaves out.
+		ho_operated_witness_keys: HO_OPERATED_WITNESS_KEYS,
 		verify: HO_RECORD_VERIFY_STEPS,
 		links: {
 			markdown: `${HO_RECORD_BASE_URL}.md`,
@@ -12348,6 +12387,7 @@ const OPENAPI_SPEC = {
 						newest: { type: 'object', nullable: true }, chain_head: { type: 'object', nullable: true }, records: { type: 'integer' },
 						witness_receipts: { type: 'integer' }, ots_proofs: { type: 'object' }, failed_steps: { type: 'array', items: { type: 'object' } },
 						signing_key: { type: 'object' }, witness_key: { type: 'object', nullable: true }, verify: { type: 'array', items: { type: 'string' } },
+						ho_operated_witness_keys: { type: 'array', description: `Witness keys Headless Oracle runs itself, which witness_distinct_keys_outside_ho leaves out; that count also leaves out every checkpoint whose session_id begins with "${HO_OWN_SESSION_PREFIX}".`, items: { type: 'object', properties: { kid: { type: 'string' }, purpose: { type: 'string' }, first_seen: { type: 'string', format: 'date-time' } } } },
 						honest_limits: { type: 'array', items: { type: 'string' } },
 					} } } } },
 					'503': { description: 'Record store unavailable' },
