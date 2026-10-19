@@ -2661,6 +2661,12 @@ function redactForLog(s: string): string {
 		.replace(/\bre_[A-Za-z0-9_]{8,}/g, 're_[removed]');
 }
 
+// B-336: the domain of an address, for a log line; 'none' when there is no
+// address. A log is not a customer record.
+function emailDomainForLog(addr: unknown): string {
+	return typeof addr === 'string' && addr.includes('@') ? (addr.split('@').pop() ?? 'none') : 'none';
+}
+
 // B-328: what a non-2xx answer from Resend said, for the log line that reports
 // it: at most 200 characters, redacted as above. Four sends used to discard the
 // Response, so a rejected mail left no trace at all.
@@ -19685,7 +19691,8 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							}),
 						}).then(r => {
 							if (!r.ok) console.error(`SANDBOX_EMAIL_ERROR: resend status=${r.status}`);
-							else       console.log(JSON.stringify({ event: 'SANDBOX_EMAIL_SENT', email: emailParam }));
+							// B-336: the domain only, never the address.
+							else       console.log(JSON.stringify({ event: 'SANDBOX_EMAIL_SENT', email_domain: emailDomainForLog(emailParam) }));
 						}).catch(e => console.error(`SANDBOX_EMAIL_ERROR: ${e instanceof Error ? e.message : String(e)}`)),
 					);
 				}
@@ -21031,8 +21038,9 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 								}).catch(() => null);
 								rec.followed_up = true;
 								await env.ORACLE_TELEMETRY.put(k.name, JSON.stringify(rec), { expirationTtl: 86_400 }).catch(() => {});
-								if (emailRes?.ok) console.log(JSON.stringify({ event: 'SANDBOX_FOLLOWUP_SENT', email: rec.email }));
-								else console.error(`SANDBOX_FOLLOWUP_ERROR: email=${rec.email} status=${emailRes?.status}`);
+								// B-336: the domain only, never the address.
+								if (emailRes?.ok) console.log(JSON.stringify({ event: 'SANDBOX_FOLLOWUP_SENT', email_domain: emailDomainForLog(rec.email) }));
+								else console.error(JSON.stringify({ event: 'SANDBOX_FOLLOWUP_ERROR', email_domain: emailDomainForLog(rec.email), status: emailRes?.status ?? null }));
 							}
 						}
 					}

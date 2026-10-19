@@ -10449,6 +10449,69 @@ describe('Sandbox email capture (Task 1)', () => {
 		await env.ORACLE_TELEMETRY.delete(`sandbox_followup:${keyHash}`);
 		await clearFps(email);
 	});
+
+	// B-336: the sandbox mail logs wrote the full customer address. They now
+	// carry its domain only.
+	function stubResend(status: number): () => void {
+		const prev = globalThis.fetch;
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			if (url.includes('api.resend.com')) {
+				return new Response(JSON.stringify(status === 200 ? { id: 'email_b336' } : { name: 'application_error', message: 'Resend down' }), { status, headers: { 'Content-Type': 'application/json' } });
+			}
+			return prev(input as RequestInfo, init);
+		}) as typeof globalThis.fetch;
+		return () => { globalThis.fetch = prev; };
+	}
+
+	it('B-336: SANDBOX_EMAIL_SENT logs the email domain, never the address', async () => {
+		const email = 'b336-signup@sandbox.example';
+		await clearFps(email);
+		const restore = stubResend(200);
+		const logSpy = vi.spyOn(console, 'log');
+		try {
+			const res = await fetchSandbox(email);
+			expect(res.status).toBe(200);
+			const lines = logSpy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('SANDBOX_EMAIL_SENT'));
+			expect(lines.length).toBe(1);
+			expect(lines[0]).not.toContain('@');
+			expect(JSON.parse(lines[0])).toEqual({ event: 'SANDBOX_EMAIL_SENT', email_domain: 'sandbox.example' });
+		} finally {
+			logSpy.mockRestore();
+			restore();
+			await clearFps(email);
+		}
+	});
+
+	it.each([
+		{ resendStatus: 200, tag: 'SANDBOX_FOLLOWUP_SENT' },
+		{ resendStatus: 500, tag: 'SANDBOX_FOLLOWUP_ERROR' },
+	])('B-336: the 17:00 sandbox follow-up logs $tag with the email domain, never the address', async ({ resendStatus, tag }) => {
+		const key = `sandbox_followup:b336_${resendStatus}`;
+		await env.ORACLE_TELEMETRY.put(key, JSON.stringify({
+			email: `b336-followup-${resendStatus}@followup.example`, created_at: new Date().toISOString(),
+			key_expires_at: new Date(Date.now() + 3600_000).toISOString(), followed_up: false,
+		}));
+		const restore = stubResend(resendStatus);
+		const logSpy = vi.spyOn(console, 'log');
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const ctx = createExecutionContext();
+			await worker.scheduled(createScheduledController({ scheduledTime: Date.now(), cron: '0 17 * * *' }), env, ctx);
+			await waitOnExecutionContext(ctx);
+			const lines = [...logSpy.mock.calls, ...errSpy.mock.calls].map((c) => String(c[0])).filter((l) => l.includes(tag));
+			expect(lines.length).toBe(1);
+			expect(lines[0]).not.toContain('@');
+			expect(JSON.parse(lines[0])).toMatchObject({ event: tag, email_domain: 'followup.example' });
+			// The record is marked followed_up, as before.
+			expect((JSON.parse((await env.ORACLE_TELEMETRY.get(key))!) as { followed_up: boolean }).followed_up).toBe(true);
+		} finally {
+			logSpy.mockRestore();
+			errSpy.mockRestore();
+			restore();
+			await env.ORACLE_TELEMETRY.delete(key);
+		}
+	});
 });
 
 // ─── Task 2: SSE transport ──────────────────────────────────────────────────────────────────────────
