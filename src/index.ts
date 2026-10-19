@@ -6234,7 +6234,7 @@ const HO_RECORD_UPGRADE_MIN_AGE_MS  = 2 * 3600_000;
 
 const HO_RECORD_WITNESS_STATEMENT =
 	'A witness receipt is Headless Oracle\'s signed statement that it was shown the checkpoint at received_at; it is only as reliable as Headless Oracle and its signing key. ' +
-	'Here the operator and the witness are the same party, so this proves use of the product, not independence. Independence comes from the OpenTimestamps proof.';
+	'Here the operator and the witness are the same party, so this shows use of the product, not independence. Independence comes from the OpenTimestamps proof.';
 
 const HO_RECORD_LIMITS = [
 	'The record is signed by Headless Oracle with key_2026_v1 and says what Headless Oracle counted; the signature shows who published the bytes, not that the counts are true.',

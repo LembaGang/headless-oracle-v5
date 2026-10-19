@@ -537,6 +537,28 @@ describe('H6 record: served surfaces', () => {
 		expect(await (await call('/sitemap.xml')).text()).toContain('<loc>https://headlessoracle.com/record.md</loc>');
 	});
 
+	it('B-321: /record, /record/<date>/proofs and /record.md say the shared witness shows use of the product; none says "proves"', async () => {
+		await runHoRecordJob(testEnv, { now: AT('2026-09-02T09:30:00Z'), fetch: fakeCalendars().fetchFn });
+		const bodies: Record<string, string> = {};
+		for (const path of ['/record', '/record/2026-09-01/proofs', '/record.md']) {
+			const res = await call(path);
+			expect(res.status, path).toBe(200);
+			bodies[path] = await res.text();
+		}
+		for (const [path, body] of Object.entries(bodies)) {
+			expect(body, path).not.toContain('proves');
+			expect(body, path).toContain('not independence');
+			expect(body, path).toContain('so this shows use of the product, not independence');
+		}
+		// The sentence is served beside the receipt, never inside a signed object.
+		const proofs = JSON.parse(bodies['/record/2026-09-01/proofs']) as Record<string, any>;
+		expect(proofs.witness.statement).toContain('so this shows use of the product');
+		expect(JSON.stringify(proofs.witness.receipt)).not.toContain('use of the product');
+		expect(await (await call('/record/2026-09-01')).text()).not.toContain('use of the product');
+		// Control: the scan finds the word when it is there.
+		expect(`${bodies['/record.md']} proves`).toContain('proves');
+	});
+
 	it('unknown dates are 404, malformed paths fall through, and only GET is served', async () => {
 		expect((await call('/record/2026-01-01')).status).toBe(404);
 		expect((await call('/record/2026-01-01/proofs')).status).toBe(404);
