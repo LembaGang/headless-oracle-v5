@@ -26,6 +26,8 @@ import { MINT_PAYER, newMintSigner, signMint, personalSign } from './mint-payer'
 import RECEIPT_FIELD_SETS from '../docs/receipt-field-sets-v5.0.json';
 import EXAMPLE_L11_GENUINE from '../docs/examples/receipt-L11-genuine-2026-06-05.json';
 import EXAMPLE_L12B_OVERRIDE_TEST_KEY from '../docs/examples/receipt-L12b-override-TEST-KEY.json';
+// B-406: Paddle's transaction.completed delivery of D-46 (2026-10-22), de-identified.
+import B406_TXN_COMPLETED from './fixtures/paddle-transaction-completed-b406.json';
 
 // H4a step 7: every 2xx and 402 response this suite receives is checked for a
 // non-ASCII header value. workerd sends a non-ASCII header as raw UTF-8 bytes,
@@ -9367,6 +9369,146 @@ describe('H1a: paddle purchases deliver', () => {
 			expect(lines[0]).not.toContain('b328-intake@');
 		} finally {
 			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	// --- B-406: transaction.completed as Paddle sends it ----------------------
+	// Paddle's webhook carries the price as items[].price.id and has no
+	// item-level price_id; details.line_items[].price_id carries the same id.
+	// Both transaction.completed branches read items[0].price_id, the shape of
+	// the request this worker sends, so D-46's $0 purchase of 2026-10-22 logged
+	// "PADDLE_UNMAPPED_PRICE_ID: none" and minted no key. B406_TXN_COMPLETED is
+	// that delivery with every identifier, time stamp and payment detail
+	// replaced (test/fixtures/paddle-transaction-completed-b406.json).
+	function b406Event(edit: (data: Record<string, unknown>) => void = () => {}): { data: Record<string, unknown> } & Record<string, unknown> {
+		const evt = structuredClone(B406_TXN_COMPLETED) as unknown as { data: Record<string, unknown> } & Record<string, unknown>;
+		edit(evt.data);
+		return evt;
+	}
+
+	function b406Item(data: Record<string, unknown>): Record<string, unknown> {
+		return (data.items as Array<Record<string, unknown>>)[0];
+	}
+
+	function b406LineItem(data: Record<string, unknown>): Record<string, unknown> {
+		return ((data.details as Record<string, unknown>).line_items as Array<Record<string, unknown>>)[0];
+	}
+
+	it('B-406: transaction.completed in the shape Paddle sends (D-46, de-identified) mints an evidence_starter key', async () => {
+		const evt   = b406Event();
+		const subId = evt.data.subscription_id as string;
+		const txnId = evt.data.id as string;
+		const { st, restore } = stubFetch({ email: 'b406-buyer@example.com' });
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(evt);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(logged(errSpy, 'PADDLE_UNMAPPED_PRICE_ID')).toBe(false);
+			const subRaw = await env.ORACLE_API_KEYS.get(`paddle_sub:${subId}`);
+			expect(subRaw).not.toBeNull();
+			const sub = JSON.parse(subRaw!) as { key_hash: string; plan: string };
+			expect(sub.plan).toBe('evidence_starter');
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(sub.key_hash))!)).toMatchObject({ plan: 'evidence_starter', status: 'active', paddle_subscription_id: subId });
+			expect(st.inserts[0]).toMatchObject({ plan: 'evidence_starter', status: 'active', stripe_subscription_id: subId });
+			expect(customerMails(st).length).toBe(1);
+			expect(await revenueRow(txnId)).toMatchObject({ tier: 'evidence:evidence_starter', amount: '0.00', currency: 'USD', amount_source: 'grand_total' });
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-406: a transaction.completed whose price is only in details.line_items[0].price_id still mints evidence_starter', async () => {
+		const evt = b406Event((d) => {
+			d.id = 'txn_b406_line_items_only';
+			d.subscription_id = 'sub_b406_line_items_only';
+			delete b406Item(d).price;
+		});
+		const { restore } = stubFetch();
+		const errSpy = vi.spyOn(console, 'error');
+		try {
+			const res = await postPaddle(evt);
+			expect(res.status).toBe(200);
+			expect(logged(errSpy, 'PADDLE_UNMAPPED_PRICE_ID')).toBe(false);
+			const subRaw = await env.ORACLE_API_KEYS.get('paddle_sub:sub_b406_line_items_only');
+			expect(subRaw).not.toBeNull();
+			expect(JSON.parse(subRaw!)).toMatchObject({ plan: 'evidence_starter' });
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-406: a transaction.completed with no price anywhere logs PADDLE_UNMAPPED_PRICE_ID: none and mints nothing', async () => {
+		const evt = b406Event((d) => {
+			d.id = 'txn_b406_no_price';
+			d.subscription_id = 'sub_b406_no_price';
+			delete b406Item(d).price;
+			delete b406LineItem(d).price_id;
+		});
+		const { st, restore } = stubFetch();
+		const errSpy = vi.spyOn(console, 'error');
+		const before = await keyRecordNames();
+		try {
+			const res = await postPaddle(evt);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(errSpy.mock.calls.some((c) => String(c[0]) === 'PADDLE_UNMAPPED_PRICE_ID: none')).toBe(true);
+			expect(await env.ORACLE_API_KEYS.get('paddle_sub:sub_b406_no_price')).toBeNull();
+			expect(await keyRecordNames()).toEqual(before);
+			expect(st.inserts.length).toBe(0);
+			expect(customerMails(st).length).toBe(0);
+			expect(await revenueRow('txn_b406_no_price')).toMatchObject({ tier: 'unmapped', amount: 'unknown' });
+		} finally {
+			errSpy.mockRestore();
+			restore();
+		}
+	});
+
+	it('B-406: the same shape with the credits price mints a credits key (one-time, no subscription)', async () => {
+		const evt = b406Event((d) => {
+			d.id = 'txn_b406_credits';
+			d.subscription_id = null;
+			const item = b406Item(d);
+			item.price = { ...(item.price as Record<string, unknown>), id: 'pri_test_credits_placeholder', billing_cycle: null };
+			b406LineItem(d).price_id = 'pri_test_credits_placeholder';
+		});
+		const { st, restore } = stubFetch({ email: 'b406-credits@example.com' });
+		try {
+			const res = await postPaddle(evt);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			expect(await env.ORACLE_API_KEYS.get('paddle_txn:txn_b406_credits')).not.toBeNull();
+			const mails = customerMails(st);
+			expect(mails.length).toBe(1);
+			const key = mails[0].html.match(/ho_crd_[0-9a-f]{64}/)![0];
+			expect(JSON.parse((await env.ORACLE_API_KEYS.get(await sha256Hex(key)))!)).toMatchObject({ tier: 'credits', status: 'active', balance: 1000 });
+		} finally {
+			restore();
+		}
+	});
+
+	it('B-406: the same shape with a one-time referee price records the referee purchase and mints no key', async () => {
+		const evt = b406Event((d) => {
+			d.id = 'txn_b406_referee';
+			d.subscription_id = null;
+			const item = b406Item(d);
+			item.price = { ...(item.price as Record<string, unknown>), id: 'pri_01m22wcgvj15ktn5xnabf13a7p', billing_cycle: null };
+			b406LineItem(d).price_id = 'pri_01m22wcgvj15ktn5xnabf13a7p';
+		});
+		const { restore } = stubFetch();
+		const before = await keyRecordNames();
+		try {
+			const res = await postPaddle(evt);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toMatchObject({ received: true });
+			const row = await env.ORACLE_TELEMETRY.get('referee_purchase:txn_b406_referee');
+			expect(row).not.toBeNull();
+			expect(JSON.parse(row!)).toMatchObject({ service: 'conformance_entry', price_id: 'pri_01m22wcgvj15ktn5xnabf13a7p' });
+			expect(await keyRecordNames()).toEqual(before);
+		} finally {
 			restore();
 		}
 	});
@@ -19444,6 +19586,32 @@ describe('H2: claim tokens — the key on screen after payment', () => {
 			spec_url:               'https://api.headlessoracle.com/v1/witness/spec',
 		});
 		expect(JSON.stringify(body.instructions)).not.toContain('X-Oracle-Key');
+	});
+
+	it('B-406: after a checkout, transaction.completed in the shape Paddle sends (D-46, de-identified) fills the claim: ready as evidence_starter', async () => {
+		const txnId = 'txn_b406_claim';
+		const s = stub({ txnIds: [txnId] });
+		let token = '';
+		try {
+			const { body: co } = await checkout('custody_90d');
+			token = co.claim_token as string;
+			const evt = structuredClone(B406_TXN_COMPLETED) as unknown as { data: Record<string, unknown> };
+			evt.data.id = txnId;
+			evt.data.subscription_id = 'sub_b406_claim';
+			evt.data.customer_id = 'ctm_b406_claim';
+			evt.data.custom_data = { ho_claim: await sha256Hex(token) };
+			const rawBody = JSON.stringify(evt);
+			const sig = await makePaddleSignature(rawBody, env.PADDLE_WEBHOOK_SECRET as string);
+			const res = await call('/webhooks/paddle', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': sig }, body: rawBody });
+			expect(res.status).toBe(200);
+		} finally {
+			s.restore();
+		}
+		const { res, body } = await claim(token);
+		expect(res.status).toBe(200);
+		expect(body.state).toBe('ready');
+		expect(body.plan).toBe('evidence_starter');
+		expect(body.key).toMatch(/^ho_live_[0-9a-f]{64}$/);
 	});
 
 	it('credits: ready with the ho_crd_ key and its balance', async () => {

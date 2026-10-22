@@ -3111,6 +3111,29 @@ function resolvePaddlePlan(priceId: string | null, env: Env): PaddlePriceResolut
 	return null;
 }
 
+// --- Paddle transaction.completed: the price id (B-406) ---------------------
+// Paddle's webhook carries a transaction's price as items[].price.id and has
+// no item-level price_id; details.line_items[].price_id carries the same id.
+// Both transaction.completed branches used to read items[0].price_id, the
+// shape of the request this worker sends to Paddle (createPaddleCheckout), so
+// D-46's purchase of 2026-10-22 logged "PADDLE_UNMAPPED_PRICE_ID: none" and
+// minted no key. Read in this order, the first non-empty string wins:
+// items[0].price.id, items[0].price_id, details.line_items[0].price_id.
+// null still means "not recognised" and provisions nothing (resolvePaddlePlan).
+// subscription.activated reads items[0].price.id itself and is not changed.
+function paddleTxnPriceId(txn: Record<string, unknown>): string | null {
+	const asRecord = (v: unknown): Record<string, unknown> | null =>
+		v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+	const firstOf = (v: unknown): Record<string, unknown> | null =>
+		Array.isArray(v) ? asRecord(v[0]) : null;
+	const item     = firstOf(txn['items']);
+	const lineItem = firstOf(asRecord(txn['details'])?.['line_items']);
+	for (const candidate of [asRecord(item?.['price'])?.['id'], item?.['price_id'], lineItem?.['price_id']]) {
+		if (typeof candidate === 'string' && candidate !== '') return candidate;
+	}
+	return null;
+}
+
 // ─── Paddle subscriptions: which key a subscription owns ─────────────────────
 // KV first, Supabase second. The webhook used to depend on Supabase alone, and
 // a paused Supabase project (it happened on 2026-10-03) meant a buyer was
@@ -16725,8 +16748,8 @@ export default {
 					const txn = event.data;
 
 					// Credits pack: one-time payment — handle before subscription_id guard
-					const txnItems   = txn['items'] as Array<{ price_id?: string }> | undefined;
-					const txnPriceId = txnItems?.[0]?.price_id ?? null;
+					// B-406: the price as Paddle sends it (paddleTxnPriceId).
+					const txnPriceId = paddleTxnPriceId(txn);
 					if (env.PADDLE_PRICE_ID_CREDITS && txnPriceId === env.PADDLE_PRICE_ID_CREDITS) {
 						// H2b: Paddle retries deliveries, and every retry used to mint
 						// another 1,000-call key. A transaction already minted answers
@@ -16921,14 +16944,14 @@ export default {
 						}
 					}
 
-					// Determine plan from transaction items price_id. Fail-CLOSED: an
+					// Determine plan from the transaction's price id (paddleTxnPriceId,
+					// B-406: items[0].price.id as Paddle sends it). Fail-CLOSED: an
 					// unrecognised id provisions NOTHING — no key, no Supabase row, no
 					// email. The old comment here read "fail-safe to 'pro' if
 					// unrecognised", which was fail-open: it granted the second-highest
 					// plan to a price whose entitlement we could not know. See
 					// resolvePaddlePlan.
-					const items = txn['items'] as Array<{ price_id?: string }> | undefined;
-					const priceId = items?.[0]?.price_id ?? null;
+					const priceId = paddleTxnPriceId(txn);
 					const resolved = resolvePaddlePlan(priceId, env);
 					if (!resolved) {
 						console.error(`PADDLE_UNMAPPED_PRICE_ID: ${safeIdent(priceId ?? 'none')}`);
