@@ -2,7 +2,7 @@
 ## 2026-10-09 — H6 daily record deployed; TEST_COUNT 1760
 
 `9fef167` H6 (record, witness, OpenTimestamps, MCP counters, `/record*`), `4872c72` H6b
-(health check owes days from 2026-10-09). Live `f554a775…`. **Pending**: the first record
+(health check owes days from 2026-10-09). Live now `777006a4…` (deployed 2026-10-22 from `9d934a9e`); before it `c6af5814…` (Y-1b, `0a23780`); H6 went live as `f554a775…`. Suite 1795 deployed, after B-327, B-328, B-321, B-320, B-336, B-335 and B-406. **Pending**: the first record
 from the 2026-10-10 09:00Z cron (D = 2026-10-09) and its live checks; 2026-10-08 is not
 built. Report: `cc-output/RUNS_2026-10-08_hov5-H6.md`.
 
