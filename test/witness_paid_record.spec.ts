@@ -201,11 +201,15 @@ describe('B-445 T2: paid checkpoints are marked; free and keyed ones are not', (
 		const res = await post(cp.body, { ...V06, 'X-Payment': FAC_PAYMENT });
 		expect(res.status).toBe(201);
 		const body = await res.json() as Record<string, string> & { payment: Record<string, unknown> };
-		const want = { resource: 'checkpoint', amount_units: '1000', amount_usdc: '0.001', network: 'base', transaction: SETTLED_TX, path: 'cdp_facilitator', settlement: 'settled' };
+		// B-445 T3 added checkpoint_id to the record, and the stored row also holds
+		// the signed attestation (served as payment_attestation, not in payment).
+		const want = { resource: 'checkpoint', amount_units: '1000', amount_usdc: '0.001', network: 'base', transaction: SETTLED_TX, path: 'cdp_facilitator', settlement: 'settled', checkpoint_id: expect.stringMatching(/^[0-9a-f]{64}$/) };
 		expect(body.payment).toEqual(want);
-		expect(JSON.parse((await row(cp.kid))!.payment_json!)).toEqual(want);
+		const { attestation, ...stored } = JSON.parse((await row(cp.kid))!.payment_json!) as Record<string, unknown>;
+		expect(stored).toEqual(want);
+		expect(attestation).toEqual((body as Record<string, unknown>).payment_attestation);
 		// The signed bytes are the receipt fields only.
-		const { payment: _p, signature, ...signed } = body;
+		const { payment: _p, payment_attestation: _a, signature, ...signed } = body as Record<string, string>;
 		const keys = await (await worker.fetch(new Request('http://example.com/v5/keys'), env, createExecutionContext())).json() as { keys: { key_id: string; public_key: string }[] };
 		const pub = keys.keys.find((k) => k.key_id === signed.public_key_id)!.public_key;
 		const fromHex = (h: string) => new Uint8Array(h.match(/../g)!.map((b) => parseInt(b, 16)));

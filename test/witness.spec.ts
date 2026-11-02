@@ -784,7 +784,7 @@ describe('witness: GET /v1/witness/spec', () => {
 		]);
 		expect(doc.receipt.signing).toBe('All fields except signature, keys sorted, JSON.stringify with no whitespace, UTF-8, Ed25519, hex. For a flat object whose values are all strings these bytes are identical to RFC 8785 JCS, so a verifier may use either.');
 		expect(doc.honest_limits.does_not_detect.length).toBe(5);
-		expect(doc.version).toBe('witness-spec/0.6');
+		expect(doc.version).toBe('witness-spec/0.6.1');
 		expect(doc.submit.daily_cap).toMatch(/^Best effort: concurrent requests can exceed it slightly\. Once 2,000 \(a launch limit/);
 		expect(doc.query.query_sql).toContain('(count, last_entry_hash) > (?, ?)');
 		expect(doc.honest_limits.storage_ceiling).toBe('The witness store is a database with a fixed size ceiling and rows are never deleted. If it fills, new checkpoints are refused with 503 until capacity is added; checkpoints already stored stay readable.');

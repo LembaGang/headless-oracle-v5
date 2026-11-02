@@ -5639,6 +5639,12 @@ const WITNESS_KEY_HEADER          = /^Bearer ho_live_[0-9a-f]{64}$/;
 const WITNESS_DAILY_CAP           = 2_000;
 const WITNESS_PAGE_SIZE           = 500;
 const WITNESS_RECEIPT_TYPE        = 'witness.checkpoint/1';
+// B-445 T3: the payment attestation, a second signed object (see paid_lane.attestation).
+const WITNESS_PAYMENT_ATTESTATION_TYPE = 'witness-payment-attestation/0.1';
+const WITNESS_PAYMENT_ATTESTATION_FIELDS = [
+	'type', 'witness', 'checkpoint_id', 'receipt_sha256', 'resource', 'amount_units', 'asset', 'network',
+	'transaction', 'settlement', 'issued_at', 'public_key_id',
+];
 const WITNESS_NAME                = 'headlessoracle.com';
 const WITNESS_CHECKPOINT_MEMBERS  = ['count', 'kid', 'last_entry_hash', 'session_id', 'sig', 'ts', 'type', 'v'];
 const WITNESS_JWK_MEMBERS         = ['crv', 'kty', 'x'];
@@ -5744,6 +5750,15 @@ export async function ensureWitnessSchema(env: Env): Promise<void> {
 				if (!(err instanceof Error && err.message.includes('duplicate column name'))) throw err;
 			}
 		}
+		// 0004 (B-445 T3): partial indexes over paid rows only, for the payment
+		// route's lookup by checkpoint id and the sweep's pending scan. A query
+		// uses them only if it repeats `payment_json IS NOT NULL`.
+		await env.WITNESS_DB!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_witness_payment_id ON witness_checkpoints (json_extract(payment_json, '$.checkpoint_id')) WHERE payment_json IS NOT NULL`,
+		).run();
+		await env.WITNESS_DB!.prepare(
+			`CREATE INDEX IF NOT EXISTS idx_witness_payment_settlement ON witness_checkpoints (json_extract(payment_json, '$.settlement'), received_at) WHERE payment_json IS NOT NULL`,
+		).run();
 		await env.WITNESS_DB!.prepare(
 			`CREATE TABLE IF NOT EXISTS witness_usage (
 				day  TEXT NOT NULL,
@@ -5879,9 +5894,10 @@ async function verifyWitnessSubmission(body: Record<string, unknown>): Promise<W
 // Machine-readable copy of spec sections 2–4 and 6, served at /v1/witness/spec.
 const WITNESS_SPEC_DOC = {
 	name:    'Headless Oracle checkpoint witness',
-	version: 'witness-spec/0.6',
+	version: 'witness-spec/0.6.1',
 	changelog: [
 		'0.6: adds the opt-in paid lane (submit.paid_lane), declared by the request header Witness-Spec: 0.6. A client that does not send that header sees 0.5 behaviour unchanged.',
+		'0.6.1: additive. A paid checkpoint gets a signed payment attestation (submit.paid_lane.attestation), served beside the receipt and at GET /v1/witness/checkpoints/{checkpoint_id}/payment, and the witness publishes alarm counters for unsettled or unstored payments. The request header stays Witness-Spec: 0.6; receipts are unchanged.',
 	],
 	purpose: 'An operator sends signed chain checkpoints to the witness, which records each one and signs a receipt saying when it saw it. ' +
 		'The witness attests only "at time T, I received this checkpoint, validly signed by the key with this thumbprint". ' +
@@ -5926,7 +5942,32 @@ const WITNESS_SPEC_DOC = {
 				'With no payment and the anonymous pool used up: 402 payment_required carrying the x402 challenge (body x402Version 1 with accepts; headers Payment-Required for x402 v2 and X-Payment-Amount), plus upgrade, in place of the 503.',
 			],
 			repeat: 'A repeat POST of an already-stored checkpoint returns 200 with the stored receipt before any payment is verified, so it is never charged.',
-			payment_member: 'A 201 or 200 for a paid checkpoint, answered to a request that sent Witness-Spec: 0.6, carries an unsigned member payment beside the receipt fields: { resource, amount_units, amount_usdc, network, transaction, path ("cdp_facilitator" or "direct_onchain"), settlement ("settled", "failed" or "pending"), settlement_error? }. It is not one of receipt.fields and is not signed: verify over receipt.fields only. Free and keyed checkpoints, and any response to a request without the 0.6 header, carry no payment member. GET /v1/witness/checkpoints lists receipts without it.',
+			payment_member: 'A 201 or 200 for a paid checkpoint, answered to a request that sent Witness-Spec: 0.6, carries an unsigned member payment beside the receipt fields: { resource, amount_units, amount_usdc, network, transaction, path ("cdp_facilitator" or "direct_onchain"), settlement ("settled", "failed" or "pending"), checkpoint_id, settlement_error? }. Deprecated since 0.6.1 in favour of payment_attestation, which is signed; kept for this version as a convenience. It is not one of receipt.fields and is not signed: verify over receipt.fields only. Free and keyed checkpoints, and any response to a request without the 0.6 header, carry no payment member. GET /v1/witness/checkpoints lists receipts without it.',
+			attestation: {
+				what:  'A paid checkpoint whose settlement outcome is known gets a second signed object, the payment attestation: the witness\'s statement that this payment, with this outcome, was taken for the checkpoint whose receipt hashes to receipt_sha256. It is separate from the receipt; the receipt\'s bytes are unchanged.',
+				where: 'In the 201 or 200 to a 0.6 paid request, as the member payment_attestation beside the receipt fields; and at GET /v1/witness/checkpoints/{checkpoint_id}/payment (public, no auth): 200 { checkpoint_id, settlement, attestation }; 202 { checkpoint_id, settlement: "pending", attestation: null } with Retry-After while settlement is unresolved; 404 no_payment for an id with no paid checkpoint (every free or keyed checkpoint); 400 bad_request for an id that is not 64 lowercase hex.',
+				type:  WITNESS_PAYMENT_ATTESTATION_TYPE,
+				fields: WITNESS_PAYMENT_ATTESTATION_FIELDS,
+				field_notes: {
+					type:           '"witness-payment-attestation/0.1". Signed, and never "witness.checkpoint/1": a verifier checks type first, so an attestation is never read as a receipt nor a receipt as an attestation.',
+					checkpoint_id:  'Lowercase hex SHA-256 of the UTF-8 JCS bytes of { "count", "kid", "last_entry_hash", "session_id" } taken from the receipt, all four as strings. Anyone holding the receipt can compute it.',
+					receipt_sha256: 'sha256:<lowercase hex SHA-256 of the UTF-8 JCS bytes of the full signed receipt, signature included, exactly as served>.',
+					resource:       '"checkpoint", the x402 resource id at /v5/pricing.',
+					amount_units:   'The price in atomic units of the asset.',
+					asset:          'The USDC contract address on Base.',
+					network:        'The network the payment was made on, as the client\'s x402 version names it ("base" for v1, "eip155:8453" for v2).',
+					transaction:    'The settlement transaction hash, or "" when settlement failed without one. Check it on Base: a "settled" attestation names a transfer of amount_units of asset to the payTo of the 402 challenge.',
+					settlement:     '"settled" or "failed". A failed settlement still stored the checkpoint; it was not charged.',
+					issued_at:      'ISO-8601 UTC: when the witness signed the attestation.',
+					public_key_id:  'The id of the Headless Oracle signing key, as in the receipt.',
+					signature:      'Lowercase hex, 128 chars.',
+				},
+				all_values_are_strings: true,
+				signing: 'The receipt rule: all fields except signature, keys sorted, JSON.stringify with no whitespace, UTF-8, Ed25519, hex.',
+				verify:  'Take public_key (hex) of the keys[] entry in GET https://api.headlessoracle.com/v5/keys whose key_id equals public_key_id; check type, then the signature; then check receipt_sha256 against your copy of the receipt and checkpoint_id against its four identity members.',
+				once:    'An attestation is issued once per paid checkpoint, when its outcome is known: at once for a direct on-chain payment, after settlement for the facilitator path. A row left pending is completed by the witness\'s hourly payment sweep from the settlement outcome recorded when settlement answered, with the attestation already issued for it.',
+			},
+			alarms: 'GET https://headlessoracle.com/v5/metrics/public carries witness_payments: { pending_over_1h, unstored_unconsumed, computed_at }, counted by the hourly payment sweep (null before its first run). pending_over_1h counts paid checkpoints still pending after an hour; unstored_unconsumed counts direct on-chain payments whose checkpoint was not stored and has not been stored by a retry. While either is above 0 the newest daily record at https://api.headlessoracle.com/record names the failed step witness_payments.',
 			checks: 'The checks above run first: a request that fails one is refused with its 4xx and no payment is verified.',
 		},
 		upgrade: 'Sent with 503 witness_unavailable when the anonymous daily cap is reached, and with 429 quota_exceeded: { plans: [{ plan, name, amount_usd, currency, billing, checkpoints_per_utc_day }] for custody_90d and custody_1y, checkout: { method, url, headers, body, then }, pricing }. checkout is the exact request that starts a purchase; nothing is bought without a person paying at the returned url.',
@@ -6068,10 +6109,135 @@ async function recordUnstoredPayment(env: Env, identity: string, payment: Record
 	const tx = String(payment.transaction ?? '');
 	console.error(`WITNESS_PAID_UNSTORED reason=${reason} identity=${identity} tx=${tx}`);
 	try {
-		await env.ORACLE_TELEMETRY.put(`witness_unstored_payment:${tx}`, JSON.stringify({ identity, payment, reason, recorded_at: new Date().toISOString() }));
+		// B-445 T3: the metadata lets the payment sweep count unconsumed records
+		// from one list call, without reading each value.
+		await env.ORACLE_TELEMETRY.put(`witness_unstored_payment:${tx}`, JSON.stringify({ identity, payment, reason, recorded_at: new Date().toISOString() }), { metadata: { consumed: false } });
 	} catch (err: unknown) {
 		console.error(`WITNESS_PAID_UNSTORED_RECORD_FAILED tx=${tx} err=${err instanceof Error ? err.message : 'unknown'}`);
 	}
+}
+
+// ─── B-445 T3: the signed payment attestation ───────────────────────────────
+// A paid checkpoint's payment, signed with the witness key as its own object.
+// Its type is inside the signed bytes and differs from WITNESS_RECEIPT_TYPE, so
+// neither can be presented as the other. The checkpoint receipt is unchanged.
+const WITNESS_CHECKPOINT_ID = /^[0-9a-f]{64}$/;
+// A paid row whose settlement is still pending this long is an alarm.
+const WITNESS_PAYMENT_PENDING_ALARM_MS = 60 * 60 * 1000;
+// The sweep leaves a row this young alone: its request may still be settling.
+const WITNESS_PAYMENT_SWEEP_MIN_AGE_MS = 5 * 60 * 1000;
+
+// The checkpoint id: lowercase hex SHA-256 of the JCS bytes of the checkpoint's
+// identity, its four identity members as strings. Anyone holding the receipt
+// can compute it from receipt.kid, session_id, count and last_entry_hash.
+export async function witnessCheckpointId(kid: string, sessionId: string, count: string, lastEntryHash: string): Promise<string> {
+	return sha256Hex(witnessJcs({ kid, session_id: sessionId, count, last_entry_hash: lastEntryHash }));
+}
+
+// Signed over every field but signature, keys sorted (signPayload, the same
+// rule as the receipt). receipt_sha256 is over the receipt's JCS bytes,
+// signature included, exactly as served.
+async function signWitnessPaymentAttestation(env: Env, receipt: Record<string, unknown>, checkpointId: string, payment: Record<string, unknown>, issuedAt: string): Promise<Record<string, string>> {
+	const att: Record<string, string> = {
+		type:           WITNESS_PAYMENT_ATTESTATION_TYPE,
+		witness:        WITNESS_NAME,
+		checkpoint_id:  checkpointId,
+		receipt_sha256: `sha256:${await sha256Hex(witnessJcs(receipt))}`,
+		resource:       String(payment.resource ?? 'checkpoint'),
+		amount_units:   String(payment.amount_units ?? ''),
+		asset:          X402_USDC_CONTRACT,
+		network:        String(payment.network ?? ''),
+		transaction:    payment.transaction ? String(payment.transaction) : '',
+		settlement:     String(payment.settlement ?? ''),
+		issued_at:      issuedAt,
+		public_key_id:  env.PUBLIC_KEY_ID,
+	};
+	att.signature = await signPayload(att, env.ED25519_PRIVATE_KEY);
+	return att;
+}
+
+// Adds the attestation to a payment record once its outcome is known.
+async function withAttestation(env: Env, receipt: Record<string, unknown>, payment: Record<string, unknown>): Promise<Record<string, unknown>> {
+	if (payment.settlement !== 'settled' && payment.settlement !== 'failed') return payment;
+	const attestation = await signWitnessPaymentAttestation(env, receipt, String(payment.checkpoint_id), payment, new Date().toISOString());
+	return { ...payment, attestation };
+}
+
+export interface WitnessPaymentHealth {
+	pending_over_1h:     number;
+	unstored_unconsumed: number;
+	completed:           number;
+	computed_at:         string;
+}
+
+// The payment sweep, run hourly from the minute cron and by the daily record
+// job. It completes paid rows left pending when their settlement outcome was
+// recorded (witness_settlement:<checkpoint_id>, written the moment /settle
+// answered) and issues their attestations; then counts paid rows pending for
+// over an hour and unconsumed witness_unstored_payment records, stores the
+// counts for /v5/metrics/public, and names a failed step on the newest daily
+// record while either is above zero, so the record and the radar go red.
+export async function runWitnessPaymentSweep(env: Env, now: Date = new Date()): Promise<WitnessPaymentHealth | null> {
+	if (!env.WITNESS_DB) return null;
+	await ensureWitnessSchema(env);
+	const db = env.WITNESS_DB;
+	let completed = 0;
+	const cutoff = new Date(now.getTime() - WITNESS_PAYMENT_SWEEP_MIN_AGE_MS).toISOString();
+	const { results: pending } = await db.prepare(
+		`SELECT kid, session_id, count, last_entry_hash, receipt_json, payment_json, received_at FROM witness_checkpoints
+		 WHERE payment_json IS NOT NULL AND json_extract(payment_json, '$.settlement') = 'pending' AND received_at < ?
+		 ORDER BY received_at ASC LIMIT 100`,
+	).bind(cutoff).all<{ kid: string; session_id: string; count: number; last_entry_hash: string; receipt_json: string; payment_json: string; received_at: string }>();
+	for (const r of pending ?? []) {
+		const payment = JSON.parse(r.payment_json) as Record<string, unknown>;
+		const outcomeRaw = await env.ORACLE_TELEMETRY.get(`witness_settlement:${String(payment.checkpoint_id)}`).catch(() => null);
+		if (outcomeRaw === null) continue;
+		const { recorded_at: _at, ...outcome } = JSON.parse(outcomeRaw) as Record<string, unknown>;
+		// The attestation already returned to the client is reused; one is signed
+		// here only if the record has none.
+		const merged: Record<string, unknown> = { ...payment, ...outcome, completed_by: 'sweep' };
+		const done = merged.attestation ? merged : await withAttestation(env, JSON.parse(r.receipt_json), merged);
+		const upd = await db.prepare(
+			`UPDATE witness_checkpoints SET payment_json = ? WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash = ?
+			 AND json_extract(payment_json, '$.settlement') = 'pending'`,
+		).bind(JSON.stringify(done), r.kid, r.session_id, r.count, r.last_entry_hash).run();
+		if ((upd.meta?.changes ?? 0) === 1) completed++;
+	}
+	const alarmCutoff = new Date(now.getTime() - WITNESS_PAYMENT_PENDING_ALARM_MS).toISOString();
+	const stuck = await db.prepare(
+		`SELECT COUNT(*) AS n FROM witness_checkpoints
+		 WHERE payment_json IS NOT NULL AND json_extract(payment_json, '$.settlement') = 'pending' AND received_at < ?`,
+	).bind(alarmCutoff).first<{ n: number }>();
+	let unstored = 0;
+	let cursor: string | undefined;
+	for (let page = 0; page < 20; page++) {
+		const list = await env.ORACLE_TELEMETRY.list<{ consumed?: boolean }>({ prefix: 'witness_unstored_payment:', cursor });
+		for (const k of list.keys) if (k.metadata?.consumed !== true) unstored++;
+		if (list.list_complete) break;
+		cursor = list.cursor;
+	}
+	const health: WitnessPaymentHealth = { pending_over_1h: stuck?.n ?? 0, unstored_unconsumed: unstored, completed, computed_at: now.toISOString() };
+	await env.ORACLE_TELEMETRY.put('witness_payment_health', JSON.stringify(health)).catch(() => {});
+	if (env.HALT_ARCHIVE) {
+		await ensureHoRecordSchema(env);
+		const hdb = env.HALT_ARCHIVE;
+		// One live alarm: cleared from every day it was left on, set on the newest.
+		const { results: flagged } = await hdb.prepare(
+			`SELECT date FROM ho_record_proofs WHERE failed_steps LIKE '%"step":"witness_payments"%'`,
+		).all<{ date: string }>();
+		for (const { date } of flagged ?? []) {
+			const p = await hoReadProofs(hdb, date);
+			hoClearFailed(p, 'witness_payments');
+			await hoWriteProofs(hdb, date, p, now);
+		}
+		const newest = await hdb.prepare(`SELECT date FROM ho_records ORDER BY sequence DESC LIMIT 1`).first<{ date: string }>();
+		if (newest && (health.pending_over_1h > 0 || health.unstored_unconsumed > 0)) {
+			const p = await hoReadProofs(hdb, newest.date);
+			hoSetFailed(p, newest.date, 'witness_payments', `pending_over_1h=${health.pending_over_1h} unstored_unconsumed=${health.unstored_unconsumed}: paid checkpoints whose payment is unsettled or unstored (see /v5/metrics/public witness_payments)`, now);
+			await hoWriteProofs(hdb, newest.date, p, now);
+		}
+	}
+	return health;
 }
 
 // POST/GET /v1/witness/checkpoints and GET /v1/witness/spec. Returns null for
@@ -6116,6 +6282,31 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	if (url.pathname === '/v1/witness/spec') {
 		if (request.method !== 'GET') return wj({ error: 'method_not_allowed' }, 405, { Allow: 'GET' });
 		return wj(WITNESS_SPEC_DOC);
+	}
+	// B-445 T3: the stored payment attestation of a paid checkpoint, public.
+	const payMatch = /^\/v1\/witness\/checkpoints\/([^/]+)\/payment$/.exec(url.pathname);
+	if (payMatch) {
+		if (request.method !== 'GET') return wj({ error: 'method_not_allowed' }, 405, { Allow: 'GET' });
+		const limited = await rateLimited(env.WITNESS_GET_RL, 'WITNESS_GET_RL', clientKey);
+		if (limited) return limited;
+		const id = payMatch[1];
+		if (!WITNESS_CHECKPOINT_ID.test(id)) return wj({ error: 'bad_request', message: 'The checkpoint id is 64 lowercase hex characters (see paid_lane.attestation.checkpoint_id).' }, 400);
+		if (!env.WITNESS_DB) return unavailable();
+		try {
+			await ensureWitnessSchema(env);
+			const row = await env.WITNESS_DB.prepare(
+				`SELECT payment_json FROM witness_checkpoints WHERE payment_json IS NOT NULL AND json_extract(payment_json, '$.checkpoint_id') = ? LIMIT 1`,
+			).bind(id).first<{ payment_json: string }>();
+			if (!row) return wj({ error: 'no_payment', message: 'No paid checkpoint has this id. Free and keyed checkpoints have no payment attestation.' }, 404);
+			const p = JSON.parse(row.payment_json) as Record<string, unknown>;
+			if (!p.attestation) {
+				return wj({ checkpoint_id: id, settlement: 'pending', attestation: null, message: 'Settlement is not resolved yet; the attestation is issued when it is.', retry_after_seconds: 3600 }, 202, { 'Retry-After': '3600' });
+			}
+			return wj({ checkpoint_id: id, settlement: p.settlement, attestation: p.attestation });
+		} catch (err: unknown) {
+			console.error(`WITNESS_PAYMENT_READ_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
+			return unavailable();
+		}
 	}
 	if (url.pathname !== '/v1/witness/checkpoints') return null;
 
@@ -6256,9 +6447,15 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	};
 	// The unsigned payment member goes only to a 0.6 request, beside the signed
 	// fields and never inside them, so a 0.5 verifier never sees it.
-	const withPayment = (receipt: Record<string, unknown>, payment: Record<string, unknown> | null) =>
-		(paidLane && payment) ? { ...receipt, payment } : receipt;
+	// B-445 T3: the signed attestation goes beside it as payment_attestation;
+	// payment stays for 0.6.1 as a deprecated, unsigned convenience.
+	const withPayment = (receipt: Record<string, unknown>, payment: Record<string, unknown> | null) => {
+		if (!paidLane || !payment) return receipt;
+		const { attestation, ...unsigned } = payment;
+		return attestation ? { ...receipt, payment: unsigned, payment_attestation: attestation } : { ...receipt, payment: unsigned };
+	};
 	const identity = `${kid}|${sessionId}|${checked.count}|${lastEntryHash}`;
+	const checkpointId = await witnessCheckpointId(kid, sessionId, String(checked.count), lastEntryHash);
 	// Set once a payment that is already settled (on chain) is accepted, and
 	// cleared once its row is stored: if anything in between fails, the catch
 	// below writes the transaction where a reconciliation finds it.
@@ -6278,6 +6475,7 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		// ORACLE_TELEMETRY, and a retry of the same checkpoint with the same
 		// transaction is accepted from that record without a second charge.
 		let payment: Record<string, unknown> | null = null;
+		let consumeUnstored: { key: string; value: string } | null = null;
 		let settleLater: (() => Promise<FacilitatorResult>) | undefined;
 		let paidVersion: 1 | 2 = 1;
 		if (paymentHeader !== null) {
@@ -6293,7 +6491,8 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 				if (rec.identity !== identity || !rec.payment) {
 					return paymentChallenge('This transaction paid for a different checkpoint; nothing was stored.', 'TRANSACTION_ALREADY_USED');
 				}
-				payment = { ...rec.payment, retried_from_unstored: 'true' };
+				payment = { ...rec.payment, checkpoint_id: checkpointId, retried_from_unstored: 'true' };
+				consumeUnstored = { key: `witness_unstored_payment:${onchainTx}`, value: prior };
 			} else {
 				const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS as string, env, spec.defaultResourceUrl, 'checkpoint', true);
 				if (!verified.valid) {
@@ -6308,6 +6507,7 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 					transaction:  verified.onchain ? (onchainTx ?? verified.txHash ?? null) : null,
 					path:         verified.onchain ? 'direct_onchain' : 'cdp_facilitator',
 					settlement:   verified.onchain ? 'settled' : 'pending',
+					checkpoint_id: checkpointId,
 				};
 				settleLater = verified.settle;
 			}
@@ -6373,6 +6573,9 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		};
 		receipt.signature = await signPayload(receipt, env.ED25519_PRIVATE_KEY);
 		const receiptJson = JSON.stringify(receipt);
+		// An on-chain payment's outcome is known now: its attestation is stored
+		// with the row.
+		if (payment && payment.settlement === 'settled') payment = await withAttestation(env, receipt, payment);
 
 		const ins = await db.prepare(
 			`INSERT OR IGNORE INTO witness_checkpoints
@@ -6395,15 +6598,27 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 			return unavailable();
 		}
 		unstoredPayment = null;
+		if (consumeUnstored) {
+			// The record stays (nothing is deleted); it is marked consumed so the
+			// sweep stops counting it.
+			const rec = { ...(JSON.parse(consumeUnstored.value) as Record<string, unknown>), consumed_at: new Date().toISOString() };
+			await env.ORACLE_TELEMETRY.put(consumeUnstored.key, JSON.stringify(rec), { metadata: { consumed: true } }).catch(() => {});
+		}
 
 		let settlementHeaders: Record<string, string> = {};
 		if (payment && settleLater) {
 			// The row exists, so the settlement result is written onto it. A failed
 			// settlement keeps the row and the receipt: the $0.001 is absorbed.
 			const settled = await settleLater();
-			payment = settled.valid
-				? { ...payment, settlement: 'settled', transaction: settled.txHash ?? null }
-				: { ...payment, settlement: 'failed', settlement_error: settled.detail ?? 'unknown' };
+			const outcome: Record<string, unknown> = settled.valid
+				? { settlement: 'settled', transaction: settled.txHash ?? null }
+				: { settlement: 'failed', settlement_error: settled.detail ?? 'unknown' };
+			payment = await withAttestation(env, receipt, { ...payment, ...outcome });
+			// Written before the row: if the row update below fails, the sweep
+			// completes the row from this record, with this same attestation.
+			await env.ORACLE_TELEMETRY.put(`witness_settlement:${checkpointId}`, JSON.stringify({ ...outcome, attestation: payment.attestation, recorded_at: new Date().toISOString() })).catch((err: unknown) => {
+				console.error(`WITNESS_SETTLEMENT_RECORD_FAILED checkpoint_id=${checkpointId} err=${err instanceof Error ? err.message : 'unknown'}`);
+			});
 			if (settled.valid) settlementHeaders = x402SettlementHeaders(paidVersion, settled.settlement ?? { success: true, transaction: settled.txHash ?? '', network: payment.network });
 			try {
 				await db.prepare(
@@ -7109,6 +7324,21 @@ export async function runHoRecordJob(env: Env, opts: { now?: Date; fetch?: HoFet
 		await hoWriteProofs(db, date, p, now);
 	}
 	stepMs.upgrades = msSince(upgradesStartedMs);
+
+	// B-445 T3: the witness payment alarm, fresh for this record. A failure of
+	// the sweep itself is a named step too.
+	if (env.WITNESS_DB) {
+		try {
+			await runWitnessPaymentSweep(env, now);
+		} catch (err: unknown) {
+			const newest = await db.prepare(`SELECT date FROM ho_records ORDER BY sequence DESC LIMIT 1`).first<{ date: string }>();
+			if (newest) {
+				const p = await hoReadProofs(db, newest.date);
+				hoSetFailed(p, newest.date, 'witness_payments', `the payment sweep failed: ${err instanceof Error ? err.message : 'unknown error'}`, now);
+				await hoWriteProofs(db, newest.date, p, now);
+			}
+		}
+	}
 
 	const { results: failedRows } = await db.prepare(`SELECT date, failed_steps FROM ho_record_proofs WHERE failed_steps != '[]' ORDER BY date ASC`).all<{ date: string; failed_steps: string }>();
 	for (const r of failedRows ?? []) for (const f of JSON.parse(r.failed_steps) as HoFailedStep[]) result.failed_steps.push({ date: r.date, step: f.step, message: f.message });
@@ -18012,6 +18242,10 @@ export default {
 				const today = now.toISOString().slice(0, 10);
 
 				const FUNNEL_KEYS = ['free_tier_gate', 'payment_failed', 'facilitator_rejected', 'keyless_no_payment', 'direct_payment_failed'] as const;
+				// B-445 T3: the payment sweep's last counts. Before its first run the
+				// counts are null, never a reassuring 0.
+				const witnessHealthRaw = await env.ORACLE_TELEMETRY.get('witness_payment_health').catch(() => null);
+				const witnessHealth = witnessHealthRaw ? JSON.parse(witnessHealthRaw) as WitnessPaymentHealth : null;
 				const [[paymentCountRaw, lastPaymentAtRaw], mcpUsage, scRaws, funnelRaws] = await Promise.all([
 					Promise.all([
 						env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
@@ -18053,6 +18287,12 @@ export default {
 					x402_network:            'base',
 					x402_payment_count:      x402PaymentCount,
 					last_payment_at:         lastPaymentAt,
+					witness_payments: {
+						pending_over_1h:     witnessHealth ? witnessHealth.pending_over_1h : null,
+						unstored_unconsumed: witnessHealth ? witnessHealth.unstored_unconsumed : null,
+						computed_at:         witnessHealth ? witnessHealth.computed_at : null,
+						rule:                'Counted by the hourly witness payment sweep. Either above 0 names the failed step witness_payments on /record.',
+					},
 					mcp_protocol_version:    MCP_PROTOCOL_VERSION,
 					mcpscoreboard_preflight: 100,
 					fail_closed:             true,
@@ -21144,6 +21384,15 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 			ctx.waitUntil(
 				fetch('https://headlessoracle.com/mcp', { method: 'HEAD' }).catch(() => {}),
 			);
+			// B-445 T3: the witness payment sweep, hourly at minute 7 (no new cron
+			// trigger). The daily record job runs it too.
+			if (new Date().getUTCMinutes() === 7) {
+				ctx.waitUntil(
+					runWitnessPaymentSweep(env).catch((err) => {
+						console.error(`WITNESS_PAYMENT_SWEEP_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+					}),
+				);
+			}
 		} else if (event.cron === '0 9 * * *') {
 			// Build the signed halt-archive digest for yesterday (UTC). Yesterday is
 			// complete by 09:00 UTC, so this is the earliest safe time to anchor it.
