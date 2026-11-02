@@ -3456,7 +3456,7 @@ export function x402AtomicToUsdc(atomic: string): string {
 	return frac ? `${whole}.${frac}` : String(whole);
 }
 
-type X402ResourceId = 'status' | 'batch';
+type X402ResourceId = 'status' | 'batch' | 'checkpoint';
 
 // One entry per paid resource. amountAtomic is the ONLY place a price is written.
 const X402_RESOURCE_SPECS: Record<X402ResourceId, {
@@ -3488,6 +3488,32 @@ const X402_RESOURCE_SPECS: Record<X402ResourceId, {
 			required:   ['mics'],
 		},
 	},
+	// B-445: one Chirindo Witness checkpoint, paid only by a client that sends
+	// Witness-Spec: 0.6 (witness-spec/0.6). The literal host: WITNESS_SPEC_DOC is
+	// declared later in the module and cannot be read here.
+	checkpoint: {
+		amountAtomic:       '1000',
+		defaultResourceUrl: 'https://api.headlessoracle.com/v1/witness/checkpoints',
+		description:        'One Chirindo Witness checkpoint: the witness stores a signed chain checkpoint and returns its signed receipt. Sent with Witness-Spec: 0.6; contract at https://api.headlessoracle.com/v1/witness/spec.',
+		mimeType:           'application/json',
+		input: {
+			type:       'object',
+			properties: {
+				checkpoint:     { type: 'object', description: 'The SignedCheckpoint, as /v1/witness/spec defines it' },
+				public_key_jwk: { type: 'object', description: '{ "kty":"OKP", "crv":"Ed25519", "x":"<base64url raw 32-byte key>" }' },
+			},
+			required:   ['checkpoint', 'public_key_jwk'],
+		},
+	},
+};
+
+// The routes that charge each resource's price. /v5/pricing serves it, and the
+// 402 price guard builds its cases from it, so a new resource id cannot ship
+// without the guard seeing its routes (the Record type requires an entry).
+const X402_RESOURCE_ROUTES: Record<X402ResourceId, readonly string[]> = {
+	status:     ['GET /v5/status', 'GET /v5/status/x402', 'GET /v1/halts', 'GET /v1/safe-to-trade', 'POST /v5/credits/purchase', 'POST /v5/sandbox'],
+	batch:      ['GET /v5/batch'],
+	checkpoint: ['POST /v1/witness/checkpoints'],
 };
 
 // The dollar figures every served surface quotes, derived from the same atomic
@@ -3653,6 +3679,9 @@ const X402_EMAIL_PRICE_LINE = `You can pay per-request with ${x402AtomicToUsdc(X
 // building the T3 SDK check. Module constants therefore reach the test suite
 // through accessors, never as bare exports. The guard test
 // "every named export of the worker module is a function" pins this.
+export function x402ResourceRoutes(): typeof X402_RESOURCE_ROUTES {
+	return X402_RESOURCE_ROUTES;
+}
 export function x402ResourceSpecs(): typeof X402_RESOURCE_SPECS {
 	return X402_RESOURCE_SPECS;
 }
@@ -5826,7 +5855,10 @@ async function verifyWitnessSubmission(body: Record<string, unknown>): Promise<W
 // Machine-readable copy of spec sections 2–4 and 6, served at /v1/witness/spec.
 const WITNESS_SPEC_DOC = {
 	name:    'Headless Oracle checkpoint witness',
-	version: 'witness-spec/0.5',
+	version: 'witness-spec/0.6',
+	changelog: [
+		'0.6: adds the opt-in paid lane (submit.paid_lane), declared by the request header Witness-Spec: 0.6. A client that does not send that header sees 0.5 behaviour unchanged.',
+	],
 	purpose: 'An operator sends signed chain checkpoints to the witness, which records each one and signs a receipt saying when it saw it. ' +
 		'The witness attests only "at time T, I received this checkpoint, validly signed by the key with this thumbprint". ' +
 		'It does not attest who owns the key, nor that the records are true.',
@@ -5855,10 +5887,21 @@ const WITNESS_SPEC_DOC = {
 			'200': 'The identity was already stored; the body is the stored receipt. Its checkpoint_ts and checkpoint_sha256 may differ from the request when the same head was checkpointed twice.',
 			'400': 'A check failed; error names it.',
 			'401': '{ "error": "invalid_key" }: an Authorization header was sent and is malformed or names no key.',
-			'402': '{ "error": "payment_required" }: the key is not active (for example, its subscription was cancelled).',
+			'402': '{ "error": "payment_required" }: the key is not active (for example, its subscription was cancelled). Under the paid lane only (see paid_lane), also an x402 challenge: the anonymous pool is used up, or the payment sent was not accepted.',
 			'403': '{ "error": "witness_plan_required" }: the key is not an Evidence plan key.',
 			'429': '{ "error": "RATE_LIMITED" } with Retry-After, or, for an account, { "error": "quota_exceeded", "upgrade": {...} } with Retry-After set to the seconds until 00:00 UTC.',
 			'503': '{ "error": "witness_unavailable" }: the store or key store is unavailable, or the anonymous daily cap is reached. When the cap is the reason, the body also carries upgrade (see upgrade). No receipt is ever returned for a checkpoint that was not stored.',
+		},
+		paid_lane: {
+			opt_in: 'Send the request header Witness-Spec: 0.6 on an anonymous POST (no Authorization header). Without that header, or with an Authorization header, the POST behaves exactly as under witness-spec/0.5 and is never asked to pay.',
+			price:  'Per checkpoint, in USDC on Base: the checkpoint resource in x402.resources at https://headlessoracle.com/v5/pricing. Every 402 challenge carries the same amount.',
+			cases: [
+				'With an x402 payment (Payment-Signature for x402 v2, X-Payment for v1): the payment is verified and settled at the checkpoint price before the checkpoint is stored, whatever the state of the anonymous pool, and the row is not counted in that pool. The 201 carries Payment-Response (v2) or X-Payment-Response (v1). A payment that is not accepted gets 402 payment_required with x402_error and the challenge, and nothing is stored.',
+				'With no payment and the anonymous pool available: stored free, exactly as under 0.5.',
+				'With no payment and the anonymous pool used up: 402 payment_required carrying the x402 challenge (body x402Version 1 with accepts; headers Payment-Required for x402 v2 and X-Payment-Amount), plus upgrade, in place of the 503.',
+			],
+			repeat: 'A repeat POST of an already-stored checkpoint returns 200 with the stored receipt before any payment is verified, so it is never charged.',
+			checks: 'The checks above run first: a request that fails one is refused with its 4xx and no payment is verified.',
 		},
 		upgrade: 'Sent with 503 witness_unavailable when the anonymous daily cap is reached, and with 429 quota_exceeded: { plans: [{ plan, name, amount_usd, currency, billing, checkpoints_per_utc_day }] for custody_90d and custody_1y, checkout: { method, url, headers, body, then }, pricing }. checkout is the exact request that starts a purchase; nothing is bought without a person paying at the returned url.',
 		fork: 'fork is "true" when, at insert time, a row with the same (kid, session_id, count) and a different last_entry_hash already exists. Two concurrent first submissions with different hashes can both get "false", so verifiers detect forks from the receipts, not from the flag.',
@@ -6092,6 +6135,23 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 	if (limited) return limited;
 	const reply = (body: unknown, status: number, headers: Record<string, string> = {}) => wj(body, status, headers);
 
+	// B-445, witness-spec/0.6: only an anonymous request that declares 0.6 can
+	// pay, or be asked to. Any other request behaves exactly as under 0.5, so a
+	// keyed caller (HO's own record job among them) is never charged, and a 0.5
+	// client is never sent a 402 in place of the 503.
+	const paidLane = authHeader === null
+		&& (request.headers.get('Witness-Spec') ?? '').trim() === '0.6'
+		&& !!env.ORACLE_PAYMENT_ADDRESS;
+	const paymentHeader = paidLane ? getPaymentHeader(request) : null;
+	const paymentChallenge = (message: string, x402Error?: string): Response => {
+		const c = x402Canonical('checkpoint', env.ORACLE_PAYMENT_ADDRESS as string);
+		return reply(
+			{ error: 'payment_required', message, x402Version: 1, accepts: [x402AcceptsV1(c)], ...(x402Error ? { x402_error: x402Error } : {}), upgrade: witnessUpgrade() },
+			402,
+			{ ...x402ResponseHeaders('checkpoint'), ...x402HeadersV2(c, 'Payment Required') },
+		);
+	};
+
 	// Check 1. A declared length over the limit is refused unread; otherwise the
 	// size is measured on the bytes as they arrive, whatever Content-Length says.
 	const contentType = (request.headers.get('Content-Type') ?? '').toLowerCase();
@@ -6161,6 +6221,19 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		const existing = await storedReceipt();
 		if (existing) return reply(existing, 200);
 
+		// A paid checkpoint is verified and settled at the checkpoint price before
+		// anything is stored, and never touches a pool: a paying client is not
+		// held up by the free pool and does not use it up for others.
+		let settlementHeaders: Record<string, string> = {};
+		if (paymentHeader !== null) {
+			const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS as string, env, X402_RESOURCE_SPECS.checkpoint.defaultResourceUrl, 'checkpoint');
+			if (!verified.valid) {
+				return paymentChallenge('The payment was not accepted; nothing was stored. Retry with a valid x402 payment.', verified.detail ?? 'payment rejected');
+			}
+			const version = verified.version ?? 1;
+			settlementHeaders = x402SettlementHeaders(version, verified.settlement ?? { success: true, transaction: verified.txHash ?? '', network: version === 2 ? X402_NETWORK_V2 : X402_NETWORK_V1 });
+		}
+
 		// One clock read, after the body is read and the repeat is answered: a
 		// client holding its body open cannot store an old received_at, and the
 		// day the row is counted under is the day its receipt carries.
@@ -6172,6 +6245,9 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 		const refuse = (): Response => {
 			if (!account) {
 				console.error(`WITNESS_DAILY_CAP_REACHED day=${day}`);
+				if (paidLane) {
+					return paymentChallenge(`The anonymous pool of ${formatCallsGrouped(WITNESS_DAILY_CAP)} new checkpoints is used up for this UTC day. Retry with an x402 payment of ${x402AtomicToUsdc(X402_RESOURCE_SPECS.checkpoint.amountAtomic)} USDC, or use an Evidence plan key.`);
+				}
 				// Status unchanged (spec: 503 witness_unavailable); the body adds the
 				// way out, so an agent does not have to wait for 00:00 UTC.
 				return wj({ error: 'witness_unavailable', upgrade: witnessUpgrade() }, 503);
@@ -6184,15 +6260,17 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 				{ 'Retry-After': String(retryAfter) },
 			);
 		};
-		if (_witnessOverLimitDay !== day) {
-			_witnessOverLimit = new Set<string>();
-			_witnessOverLimitDay = day;
-		}
-		if (_witnessOverLimit.has(`${day}|${pool}`)) return refuse();
-		const used = await db.prepare(WITNESS_USAGE_UPSERT_SQL).bind(day, pool).first<{ n: number }>();
-		if ((used?.n ?? 0) > limit) {
-			_witnessOverLimit.add(`${day}|${pool}`);
-			return refuse();
+		if (paymentHeader === null) {
+			if (_witnessOverLimitDay !== day) {
+				_witnessOverLimit = new Set<string>();
+				_witnessOverLimitDay = day;
+			}
+			if (_witnessOverLimit.has(`${day}|${pool}`)) return refuse();
+			const used = await db.prepare(WITNESS_USAGE_UPSERT_SQL).bind(day, pool).first<{ n: number }>();
+			if ((used?.n ?? 0) > limit) {
+				_witnessOverLimit.add(`${day}|${pool}`);
+				return refuse();
+			}
 		}
 
 		const sibling = await db.prepare(
@@ -6224,11 +6302,11 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 			kid, sessionId, checked.count, lastEntryHash, checkpointJcs, receipt.checkpoint_sha256,
 			checked.x, receipt.received_at, receipt.fork, receiptJson, new Date().toISOString(), account ? account.id : null,
 		).run();
-		if ((ins.meta?.changes ?? 0) === 1) return reply(receipt, 201);
+		if ((ins.meta?.changes ?? 0) === 1) return reply(receipt, 201, settlementHeaders);
 
 		// Lost a race with an identical submission: answer with the row that won.
 		const winner = await storedReceipt();
-		if (winner) return reply(winner, 200);
+		if (winner) return reply(winner, 200, settlementHeaders);
 		return unavailable();
 	} catch (err: unknown) {
 		console.error(`WITNESS_WRITE_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
@@ -9008,7 +9086,7 @@ metadata:
 
 > ${CHIRINDO_LEAD}
 
-Chirindo Witness is a REST API, not the x402 resource below: POST ${WITNESS_SUBMIT_URL}, contract and every limit at ${WITNESS_SPEC_URL}, free pool and Evidence plans at https://headlessoracle.com/v5/pricing.
+Chirindo Witness is a REST API: POST ${WITNESS_SUBMIT_URL}, contract and every limit at ${WITNESS_SPEC_URL}, free pool and Evidence plans at https://headlessoracle.com/v5/pricing. It is a separate x402 resource from the receipts below, and only for a client that opts in: an anonymous POST that sends \`Witness-Spec: 0.6\` may pay $${x402AtomicToUsdc(X402_RESOURCE_SPECS.checkpoint.amountAtomic)} USDC per checkpoint, and is sent a 402 challenge instead of a 503 once the free pool is used up. A POST without that header, or with an Evidence plan key, is never asked to pay.
 
 ## Market-state receipts (the x402 resource)
 
@@ -18863,6 +18941,20 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							provision:           `POST ${WITNESS_SUBMIT_URL} with no key`,
 							introductory_until:  null,
 						},
+						// B-445: the opt-in paid lane, priced from X402_RESOURCE_SPECS.
+						{
+							id:                  'witness_x402',
+							name:                'Chirindo Witness, x402 per checkpoint',
+							plan:                null,
+							price_usdc:          x402AtomicToUsdc(X402_RESOURCE_SPECS.checkpoint.amountAtomic),
+							price_label:         `$${x402AtomicToUsdc(X402_RESOURCE_SPECS.checkpoint.amountAtomic)} USDC / checkpoint`,
+							usdc_amount_units:   X402_RESOURCE_SPECS.checkpoint.amountAtomic,
+							interval:            null,
+							checkpoints_per_day: null,
+							provision:           `POST ${WITNESS_SUBMIT_URL} with no key, the header Witness-Spec: 0.6 and an x402 payment`,
+							description:         'Opt-in only: a request without Witness-Spec: 0.6, or with a key, is never charged. Paid checkpoints do not use the free pool.',
+							introductory_until:  null,
+						},
 						{
 							id:                  'evidence_starter',
 							name:                'Evidence Starter',
@@ -18910,6 +19002,14 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						usdc_contract:     X402_USDC_CONTRACT,
 						resource:          X402_RESOURCE_SPECS.status.defaultResourceUrl,
 						payment_discovery: '/.well-known/x402.json',
+						// Every priced resource and the routes that charge it.
+						resources: (Object.keys(X402_RESOURCE_SPECS) as X402ResourceId[]).map((id) => ({
+							id,
+							amount_units: X402_RESOURCE_SPECS[id].amountAtomic,
+							amount_usdc:  x402AtomicToUsdc(X402_RESOURCE_SPECS[id].amountAtomic),
+							resource:     X402_RESOURCE_SPECS[id].defaultResourceUrl,
+							routes:       X402_RESOURCE_ROUTES[id],
+						})),
 					},
 					// The six referee services. They are not `tiers`: a tier is an
 					// API allowance ladder and these are conformance work, bought

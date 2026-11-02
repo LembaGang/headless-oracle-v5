@@ -20183,6 +20183,13 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 		expect(await sha256Hex(JSON.stringify(before))).toBe('0cc0e4765f5e2f6224ac98b610f43b9187183a62ea3a4bacf5b5328129530768');
 		const rest: Record<string, unknown> = { ...body };
 		delete rest.tiers;
+		// 2026-11-02 (B-445): x402 gained `resources`, every priced resource with
+		// its routes. Only that member was added; without it the rest hashes to
+		// the same pin.
+		const x402 = { ...(rest.x402 as Record<string, unknown>) };
+		expect(Array.isArray(x402.resources)).toBe(true);
+		delete x402.resources;
+		rest.x402 = x402;
 		expect(await sha256Hex(JSON.stringify(rest))).toBe('03c9cd531c91d5a72419c58c98da2c9f39a61a11f82bef12b7396803377777ce');
 	});
 
