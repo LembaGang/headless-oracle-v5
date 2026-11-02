@@ -75,7 +75,8 @@ Still requires explicit confirmation in the message:
 **ORACLE_OVERRIDES must never contain telemetry data.** Operators scan it for active circuit breakers.
 
 ## Current State (update this section after every significant session)
-<!-- Last updated: 2026-10-22 (B-292, deploy of 9d934a9e): live 777006a4; suite 1795 deployed -->
+<!-- Last updated: 2026-11-02 (B-445 T2, deploy of 72fc43f): live 11372a7c; suite 1830 deployed -->
+<!-- Before: 2026-10-22 (B-292, deploy of 9d934a9e): live 777006a4; suite 1795 deployed -->
 <!-- Before: 2026-10-05 — H4a agent front door; TEST_COUNT 1667 -->
 <!-- Before: 2026-10-04T13Z — H2/H2b key on screen deployed (63974cb5) and pushed (afc1c80); TEST_COUNT 1589 -->
 <!-- Previous: 2026-10-04 — Witness W1-W3, H1a, H1b deployed (32f367e6) and pushed (3d4b723); TEST_COUNT 1535 -->
@@ -83,7 +84,7 @@ Still requires explicit confirmation in the message:
 Every version, count and transaction below cites the run that produced it. Nothing
 here is carried forward from an earlier stamp unverified.
 
-- **2026-10-09: H6, HO's daily record** (`9fef167`, `4872c72`). Live now **`777006a4-d487-4b51-9606-4d475a447b23`** (deployed 2026-10-22 from `9d934a9e`, read with `npx wrangler deployments list` after the deploy); suite **1795**, after B-327, B-328, B-321, B-320, B-336, B-335 and B-406, deployed; before it `c6af5814-6936-45d0-9803-74c0a70a2b7b` (Y-1b, `0a23780`, read with `npx wrangler deployments list` before the deploy). H6 itself went live as **`f554a775-5615-43e7-aa40-2f5f4b967e01`**
+- **2026-10-09: H6, HO's daily record** (`9fef167`, `4872c72`). Live now **`11372a7c-aedc-4275-8cf2-12417150a942`** (deployed 2026-11-02 from `72fc43f`: B-445, witness-spec/0.6 opt-in x402 lane, paid rows in `payment_json`; read with `npx wrangler deployments list`); suite **1830**; before it `7d172021…` (B-460, `267a7ea`), and `777006a4…` (2026-10-22 from `9d934a9e`, suite 1795, after B-327, B-328, B-321, B-320, B-336, B-335 and B-406); before it `c6af5814-6936-45d0-9803-74c0a70a2b7b` (Y-1b, `0a23780`, read with `npx wrangler deployments list` before the deploy). H6 itself went live as **`f554a775-5615-43e7-aa40-2f5f4b967e01`**
   (09:48:48Z; smoke 11/11; all routes listed incl. new `headlessoracle.com/record*`). The first upload,
   `16ee944c`, exited 1 on routes: this shell carried a stale `CF_API_TOKEN`; redeployed with the
   User-scope `CLOUDFLARE_API_TOKEN`. Suite **1732 → 1760**. `ho-record/v1` built in the
@@ -187,7 +188,7 @@ here is carried forward from an earlier stamp unverified.
   witness rate-limit constants are mirrored in `wrangler.toml`: change both.
 - **2026-10-02 (A2A claims removed) and 2026-10-01 (agent readiness)**: moved verbatim to
   `docs/history/claude-md-moved-2026-10-05.md` on 2026-10-05 (memory-size gate).
-- **Tests**: 1760 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
+- **Tests**: 1830 main suite (authoritative — `wrangler.toml` `TEST_COUNT`, kept in
   step by `scripts/vitest-count.sh`) + 11 smoke + 24 SDK + 26 LangGraph + 17
   ai-hedge-fund. Earlier steps (1264 → 1369, 2026-09-07 to 09-24) are in the commit
   subjects; each count was read from `npm run test:sync-count` and the hook.

@@ -57,6 +57,7 @@ Plus `public/docs/` integration guides (quickstart, LangGraph, Bun, Anthropic Cl
 | `POST /mcp` | no | MCP Streamable HTTP (5 tools) |
 | `GET /record*` | no | H6 daily record: index, `.md`, `/<D>`, `/<D>/proofs`, `/<D>.ots` |
 | `POST /v5/admin/record/run` | master-key | Runs the record job now (no parameters) |
+| `POST /v1/witness/checkpoints` | none / Evidence key / x402 with `Witness-Spec: 0.6` | Chirindo Witness (contract at `/v1/witness/spec`); paid rows carry `payment_json` |
 
 Plus: discovery files (`/llms.txt`, `/AGENTS.md`, `/openapi.json`, `/.well-known/*`),
 OAuth endpoints, utility routes (redirects, changelog, etc.).
