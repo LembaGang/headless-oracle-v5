@@ -4086,8 +4086,18 @@ function logBazaarExtensionResponse(res: Response, phase: 'verify' | 'settle'): 
 	}
 }
 
+type FacilitatorResult = {
+	valid: boolean; txHash?: string; detail?: string;
+	status: 'payment-accepted' | 'payment-verified' | 'payment-rejected' | 'facilitator-error';
+	version?: 1 | 2; settlement?: Record<string, unknown>;
+	// Only with deferSettle: runs /settle. The caller stores its record first.
+	settle?: () => Promise<FacilitatorResult>;
+};
+
 // Verifies an x402 payment via the CDP mainnet facilitator (JWT-authenticated).
 // Calls /verify first to validate the signature, then /settle to finalize.
+// deferSettle (B-445 T2) returns after /verify with a settle() the caller runs
+// once its own record of the payment is written.
 // Does NOT perform direct on-chain RPC calls — the facilitator handles EVM verification.
 async function verifyX402ViaFacilitator(
 	paymentHeader: string,
@@ -4095,7 +4105,8 @@ async function verifyX402ViaFacilitator(
 	env: Env,
 	resourceId: X402ResourceId,
 	resource?: string,
-): Promise<{ valid: boolean; txHash?: string; detail?: string; status: 'payment-accepted' | 'payment-rejected' | 'facilitator-error'; version?: 1 | 2; settlement?: Record<string, unknown> }> {
+	deferSettle = false,
+): Promise<FacilitatorResult> {
 	// Decode base64 payment header to get the PaymentPayload object.
 	// The facilitator expects: { x402Version, paymentPayload, paymentRequirements }.
 	let decodedPaymentPayload: Record<string, unknown>;
@@ -4161,7 +4172,7 @@ async function verifyX402ViaFacilitator(
 	}
 
 	// Step 2: settle
-	try {
+	const settle = async (): Promise<FacilitatorResult> => { try {
 		const settleHeaders = await buildAuthHeaders('/platform/v2/x402/settle');
 		const settleRes = await fetch(`${X402_FACILITATOR_URL}/settle`, {
 			method:  'POST',
@@ -4222,7 +4233,9 @@ async function verifyX402ViaFacilitator(
 		const msg = err instanceof Error ? err.message : 'unknown';
 		console.error('x402 facilitator /settle error:', msg);
 		return { valid: false, status: 'facilitator-error', detail: `FACILITATOR_SETTLE_FETCH_FAILED: ${msg}`, version: x402Version };
-	}
+	} };
+	if (deferSettle) return { valid: true, status: 'payment-verified', version: x402Version, settle };
+	return settle();
 }
 
 // Smart payment header parser — accepts both formats so agents never get stuck:
@@ -4235,7 +4248,8 @@ async function verifyPaymentAnyFormat(
 	env: Env,
 	resourceUrl: string,
 	resourceId: X402ResourceId,
-): Promise<{ valid: boolean; detail?: string; txHash?: string; version?: 1 | 2; settlement?: Record<string, unknown> }> {
+	deferSettle = false,
+): Promise<{ valid: boolean; detail?: string; txHash?: string; version?: 1 | 2; settlement?: Record<string, unknown>; onchain?: boolean; settle?: FacilitatorResult['settle'] }> {
 	// Path 1: try raw JSON (direct on-chain)
 	try {
 		const parsed = JSON.parse(header);
@@ -4249,6 +4263,8 @@ async function verifyPaymentAnyFormat(
 				...result,
 				txHash:  parsed.txHash,
 				version: 1,
+				// Already on chain when it arrives: there is no settlement to defer.
+				onchain: true,
 				settlement: result.valid
 					? { success: true, transaction: parsed.txHash, network: X402_NETWORK_V1 }
 					: undefined,
@@ -4264,8 +4280,8 @@ async function verifyPaymentAnyFormat(
 	} catch {
 		return { valid: false, detail: 'X-Payment must be JSON (direct on-chain) or base64-encoded JSON (x402 standard)' };
 	}
-	const result = await verifyX402ViaFacilitator(header, paymentAddress, env, resourceId, resourceUrl);
-	return { valid: result.valid, detail: result.detail, txHash: result.txHash, version: result.version, settlement: result.settlement };
+	const result = await verifyX402ViaFacilitator(header, paymentAddress, env, resourceId, resourceUrl, deferSettle);
+	return { valid: result.valid, detail: result.detail, txHash: result.txHash, version: result.version, settlement: result.settlement, settle: result.settle };
 }
 
 // Unified agent action guide — included in every 402 response so any agent knows
@@ -5720,6 +5736,14 @@ export async function ensureWitnessSchema(env: Env): Promise<void> {
 		await env.WITNESS_DB!.prepare(
 			`CREATE INDEX IF NOT EXISTS idx_witness_account ON witness_checkpoints (account_id, received_at)`,
 		).run();
+		// 0003 (B-445 T2): the payment a paid checkpoint carries, NULL otherwise.
+		if (!columns.some((c) => c.name === 'payment_json')) {
+			try {
+				await env.WITNESS_DB!.prepare(`ALTER TABLE witness_checkpoints ADD COLUMN payment_json TEXT`).run();
+			} catch (err: unknown) {
+				if (!(err instanceof Error && err.message.includes('duplicate column name'))) throw err;
+			}
+		}
 		await env.WITNESS_DB!.prepare(
 			`CREATE TABLE IF NOT EXISTS witness_usage (
 				day  TEXT NOT NULL,
@@ -5896,16 +5920,18 @@ const WITNESS_SPEC_DOC = {
 			opt_in: 'Send the request header Witness-Spec: 0.6 on an anonymous POST (no Authorization header). Without that header, or with an Authorization header, the POST behaves exactly as under witness-spec/0.5 and is never asked to pay.',
 			price:  'Per checkpoint, in USDC on Base: the checkpoint resource in x402.resources at https://headlessoracle.com/v5/pricing. Every 402 challenge carries the same amount.',
 			cases: [
-				'With an x402 payment (Payment-Signature for x402 v2, X-Payment for v1): the payment is verified and settled at the checkpoint price before the checkpoint is stored, whatever the state of the anonymous pool, and the row is not counted in that pool. The 201 carries Payment-Response (v2) or X-Payment-Response (v1). A payment that is not accepted gets 402 payment_required with x402_error and the challenge, and nothing is stored.',
+				'With an x402 payment (Payment-Signature for x402 v2, X-Payment for v1): the payment is verified at the checkpoint price, the checkpoint is stored with its payment, and only then is the payment settled, whatever the state of the anonymous pool; the row is not counted in that pool. The 201 carries Payment-Response (v2) or X-Payment-Response (v1) when the settlement succeeded. If the settlement fails after the row is stored, the receipt is still returned and payment.settlement is "failed": the checkpoint is not charged. A payment that is not accepted gets 402 payment_required with x402_error and the challenge, and nothing is stored.',
+				'A direct on-chain payment (X-Payment as JSON with txHash) is already settled when it arrives. If its checkpoint cannot then be stored, the 503 leaves a record of the transaction for reconciliation, and a retry of the same checkpoint with the same transaction is accepted without a second payment; the same transaction is refused for any other checkpoint.',
 				'With no payment and the anonymous pool available: stored free, exactly as under 0.5.',
 				'With no payment and the anonymous pool used up: 402 payment_required carrying the x402 challenge (body x402Version 1 with accepts; headers Payment-Required for x402 v2 and X-Payment-Amount), plus upgrade, in place of the 503.',
 			],
 			repeat: 'A repeat POST of an already-stored checkpoint returns 200 with the stored receipt before any payment is verified, so it is never charged.',
+			payment_member: 'A 201 or 200 for a paid checkpoint, answered to a request that sent Witness-Spec: 0.6, carries an unsigned member payment beside the receipt fields: { resource, amount_units, amount_usdc, network, transaction, path ("cdp_facilitator" or "direct_onchain"), settlement ("settled", "failed" or "pending"), settlement_error? }. It is not one of receipt.fields and is not signed: verify over receipt.fields only. Free and keyed checkpoints, and any response to a request without the 0.6 header, carry no payment member. GET /v1/witness/checkpoints lists receipts without it.',
 			checks: 'The checks above run first: a request that fails one is refused with its 4xx and no payment is verified.',
 		},
 		upgrade: 'Sent with 503 witness_unavailable when the anonymous daily cap is reached, and with 429 quota_exceeded: { plans: [{ plan, name, amount_usd, currency, billing, checkpoints_per_utc_day }] for custody_90d and custody_1y, checkout: { method, url, headers, body, then }, pricing }. checkout is the exact request that starts a purchase; nothing is bought without a person paying at the returned url.',
 		fork: 'fork is "true" when, at insert time, a row with the same (kid, session_id, count) and a different last_entry_hash already exists. Two concurrent first submissions with different hashes can both get "false", so verifiers detect forks from the receipts, not from the flag.',
-		append_only: 'Rows are never updated or deleted.',
+		append_only: 'Rows are never deleted, and no checkpoint or receipt field is ever updated. The one exception is a paid row\'s unsigned payment record, written once more when its settlement finishes (from "pending" to "settled" or "failed").',
 		rate_limit: `Best effort (counted per Cloudflare location, so it can over-admit): about 60 requests per minute per client address, applied separately to POST and to GET of checkpoints, taken from CF-Connecting-IP only (not X-Original-IP): an IPv4 address as is, an IPv6 address by its /64 prefix. A request without CF-Connecting-IP is counted under the single key "none". Requests with an Authorization header are limited instead at about ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} per minute per address (counted before the body is read) and about ${WITNESS_ACCT_RATE_LIMIT_PER_MIN} per minute per account (after the key is checked), and carry X-RateLimit-Limit: ${WITNESS_ACCT_RATE_LIMIT_PER_MIN}. Fails open on a limiter error.`,
 		daily_cap: `Best effort: concurrent requests can exceed it slightly. Once ${formatCallsGrouped(WITNESS_DAILY_CAP)} (a launch limit; raised later) new anonymous witness rows have been stored in the current UTC day, an anonymous POST that would store a new row returns 503 witness_unavailable for the rest of that day. A POST with an Evidence plan key counts against that key's own quota instead (see accounts). The cap counts and blocks new rows only: a repeat POST of an already-stored checkpoint still returns 200 with the stored receipt.`,
 		accounts: {
@@ -6031,6 +6057,21 @@ function witnessUpgrade() {
 		},
 		pricing: 'https://headlessoracle.com/v5/pricing',
 	};
+}
+
+// B-445 T2: a payment already settled on chain whose checkpoint row was not
+// stored. Durable (no TTL), keyed by transaction, so a reconciliation can list
+// witness_unstored_payment: and a retry of the same checkpoint is accepted
+// without a second charge. If even this write fails, the log line carries the
+// transaction, and the x402 ledger row written at verification has it too.
+async function recordUnstoredPayment(env: Env, identity: string, payment: Record<string, unknown>, reason: 'write_failed' | 'lost_race'): Promise<void> {
+	const tx = String(payment.transaction ?? '');
+	console.error(`WITNESS_PAID_UNSTORED reason=${reason} identity=${identity} tx=${tx}`);
+	try {
+		await env.ORACLE_TELEMETRY.put(`witness_unstored_payment:${tx}`, JSON.stringify({ identity, payment, reason, recorded_at: new Date().toISOString() }));
+	} catch (err: unknown) {
+		console.error(`WITNESS_PAID_UNSTORED_RECORD_FAILED tx=${tx} err=${err instanceof Error ? err.message : 'unknown'}`);
+	}
 }
 
 // POST/GET /v1/witness/checkpoints and GET /v1/witness/spec. Returns null for
@@ -6207,31 +6248,70 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 
 	if (!env.WITNESS_DB) return unavailable();
 	const db = env.WITNESS_DB;
-	const storedReceipt = async (): Promise<unknown | null> => {
+	const storedRow = async (): Promise<{ receipt: Record<string, unknown>; payment: Record<string, unknown> | null } | null> => {
 		const row = await db.prepare(
-			`SELECT receipt_json FROM witness_checkpoints WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash = ?`,
-		).bind(kid, sessionId, checked.count, lastEntryHash).first<{ receipt_json: string }>();
-		return row ? JSON.parse(row.receipt_json) : null;
+			`SELECT receipt_json, payment_json FROM witness_checkpoints WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash = ?`,
+		).bind(kid, sessionId, checked.count, lastEntryHash).first<{ receipt_json: string; payment_json: string | null }>();
+		return row ? { receipt: JSON.parse(row.receipt_json), payment: row.payment_json ? JSON.parse(row.payment_json) : null } : null;
 	};
+	// The unsigned payment member goes only to a 0.6 request, beside the signed
+	// fields and never inside them, so a 0.5 verifier never sees it.
+	const withPayment = (receipt: Record<string, unknown>, payment: Record<string, unknown> | null) =>
+		(paidLane && payment) ? { ...receipt, payment } : receipt;
+	const identity = `${kid}|${sessionId}|${checked.count}|${lastEntryHash}`;
+	// Set once a payment that is already settled (on chain) is accepted, and
+	// cleared once its row is stored: if anything in between fails, the catch
+	// below writes the transaction where a reconciliation finds it.
+	let unstoredPayment: Record<string, unknown> | null = null;
 
 	try {
 		await ensureWitnessSchema(env);
 
 		// A repeat is answered before any counting: only new rows count.
-		const existing = await storedReceipt();
-		if (existing) return reply(existing, 200);
+		const existing = await storedRow();
+		if (existing) return reply(withPayment(existing.receipt, existing.payment), 200);
 
-		// A paid checkpoint is verified and settled at the checkpoint price before
-		// anything is stored, and never touches a pool: a paying client is not
-		// held up by the free pool and does not use it up for others.
-		let settlementHeaders: Record<string, string> = {};
+		// B-445 T2: a paid checkpoint never touches a pool, and no settled payment
+		// is left without a record. The facilitator path is verified, then the
+		// row is stored, then settled. The on-chain path arrives settled: a row
+		// that cannot be stored leaves witness_unstored_payment:<tx> in
+		// ORACLE_TELEMETRY, and a retry of the same checkpoint with the same
+		// transaction is accepted from that record without a second charge.
+		let payment: Record<string, unknown> | null = null;
+		let settleLater: (() => Promise<FacilitatorResult>) | undefined;
+		let paidVersion: 1 | 2 = 1;
 		if (paymentHeader !== null) {
-			const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS as string, env, X402_RESOURCE_SPECS.checkpoint.defaultResourceUrl, 'checkpoint');
-			if (!verified.valid) {
-				return paymentChallenge('The payment was not accepted; nothing was stored. Retry with a valid x402 payment.', verified.detail ?? 'payment rejected');
+			const spec = X402_RESOURCE_SPECS.checkpoint;
+			let onchainTx: string | null = null;
+			try {
+				const raw = JSON.parse(paymentHeader) as Record<string, unknown>;
+				if (raw && typeof raw.txHash === 'string' && raw.network) onchainTx = raw.txHash.toLowerCase();
+			} catch { /* base64: the facilitator path */ }
+			const prior = onchainTx ? await env.ORACLE_TELEMETRY.get(`witness_unstored_payment:${onchainTx}`).catch(() => null) : null;
+			if (prior !== null) {
+				const rec = JSON.parse(prior) as { identity?: string; payment?: Record<string, unknown> };
+				if (rec.identity !== identity || !rec.payment) {
+					return paymentChallenge('This transaction paid for a different checkpoint; nothing was stored.', 'TRANSACTION_ALREADY_USED');
+				}
+				payment = { ...rec.payment, retried_from_unstored: 'true' };
+			} else {
+				const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS as string, env, spec.defaultResourceUrl, 'checkpoint', true);
+				if (!verified.valid) {
+					return paymentChallenge('The payment was not accepted; nothing was stored. Retry with a valid x402 payment.', verified.detail ?? 'payment rejected');
+				}
+				paidVersion = verified.version ?? 1;
+				payment = {
+					resource:     'checkpoint',
+					amount_units: spec.amountAtomic,
+					amount_usdc:  x402AtomicToUsdc(spec.amountAtomic),
+					network:      paidVersion === 2 ? X402_NETWORK_V2 : X402_NETWORK_V1,
+					transaction:  verified.onchain ? (onchainTx ?? verified.txHash ?? null) : null,
+					path:         verified.onchain ? 'direct_onchain' : 'cdp_facilitator',
+					settlement:   verified.onchain ? 'settled' : 'pending',
+				};
+				settleLater = verified.settle;
 			}
-			const version = verified.version ?? 1;
-			settlementHeaders = x402SettlementHeaders(version, verified.settlement ?? { success: true, transaction: verified.txHash ?? '', network: version === 2 ? X402_NETWORK_V2 : X402_NETWORK_V1 });
+			if (payment.settlement === 'settled') unstoredPayment = payment;
 		}
 
 		// One clock read, after the body is read and the repeat is answered: a
@@ -6260,7 +6340,7 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 				{ 'Retry-After': String(retryAfter) },
 			);
 		};
-		if (paymentHeader === null) {
+		if (payment === null) {
 			if (_witnessOverLimitDay !== day) {
 				_witnessOverLimit = new Set<string>();
 				_witnessOverLimitDay = day;
@@ -6296,20 +6376,51 @@ async function handleWitness(request: Request, env: Env, url: URL, now: Date, js
 
 		const ins = await db.prepare(
 			`INSERT OR IGNORE INTO witness_checkpoints
-			 (kid, session_id, count, last_entry_hash, checkpoint_jcs, checkpoint_sha256, public_key_x, received_at, fork, receipt_json, created_at, account_id)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 (kid, session_id, count, last_entry_hash, checkpoint_jcs, checkpoint_sha256, public_key_x, received_at, fork, receipt_json, created_at, account_id, payment_json)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).bind(
 			kid, sessionId, checked.count, lastEntryHash, checkpointJcs, receipt.checkpoint_sha256,
 			checked.x, receipt.received_at, receipt.fork, receiptJson, new Date().toISOString(), account ? account.id : null,
+			payment ? JSON.stringify(payment) : null,
 		).run();
-		if ((ins.meta?.changes ?? 0) === 1) return reply(receipt, 201, settlementHeaders);
+		if ((ins.meta?.changes ?? 0) !== 1) {
+			// Lost a race with an identical submission: answer with the row that
+			// won. A deferred payment is never settled for a row this request did
+			// not store; an on-chain one is recorded as unstored, since the row
+			// that exists is the winner's, not this payment's.
+			const winner = await storedRow();
+			if (unstoredPayment) await recordUnstoredPayment(env, identity, unstoredPayment, 'lost_race');
+			unstoredPayment = null;
+			if (winner) return reply(withPayment(winner.receipt, winner.payment), 200);
+			return unavailable();
+		}
+		unstoredPayment = null;
 
-		// Lost a race with an identical submission: answer with the row that won.
-		const winner = await storedReceipt();
-		if (winner) return reply(winner, 200, settlementHeaders);
-		return unavailable();
+		let settlementHeaders: Record<string, string> = {};
+		if (payment && settleLater) {
+			// The row exists, so the settlement result is written onto it. A failed
+			// settlement keeps the row and the receipt: the $0.001 is absorbed.
+			const settled = await settleLater();
+			payment = settled.valid
+				? { ...payment, settlement: 'settled', transaction: settled.txHash ?? null }
+				: { ...payment, settlement: 'failed', settlement_error: settled.detail ?? 'unknown' };
+			if (settled.valid) settlementHeaders = x402SettlementHeaders(paidVersion, settled.settlement ?? { success: true, transaction: settled.txHash ?? '', network: payment.network });
+			try {
+				await db.prepare(
+					`UPDATE witness_checkpoints SET payment_json = ? WHERE kid = ? AND session_id = ? AND count = ? AND last_entry_hash = ?`,
+				).bind(JSON.stringify(payment), kid, sessionId, checked.count, lastEntryHash).run();
+			} catch (err: unknown) {
+				// The row still says pending; a settled transaction is also in the
+				// x402 ledger (recordX402Settlement). This line names both.
+				console.error(`WITNESS_PAYMENT_UPDATE_FAILED identity=${identity} tx=${String(payment.transaction)} settlement=${String(payment.settlement)} err=${err instanceof Error ? err.message : 'unknown'}`);
+			}
+		} else if (payment && payment.settlement === 'settled') {
+			settlementHeaders = x402SettlementHeaders(paidVersion, { success: true, transaction: String(payment.transaction ?? ''), network: payment.network });
+		}
+		return reply(withPayment(receipt, payment), 201, settlementHeaders);
 	} catch (err: unknown) {
 		console.error(`WITNESS_WRITE_FAILED err=${err instanceof Error ? err.message : 'unknown'}`);
+		if (unstoredPayment) await recordUnstoredPayment(env, identity, unstoredPayment, 'write_failed');
 		return unavailable();
 	}
 }

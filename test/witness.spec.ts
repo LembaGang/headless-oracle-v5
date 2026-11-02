@@ -1176,6 +1176,9 @@ describe('witness: ensureWitnessSchema migrates a v0.4 table', () => {
 		await ensureWitnessSchema(env as never);
 		expect(await tables()).toEqual(after);
 		expect((await columns()).filter((c) => c === 'account_id').length).toBe(1);
+		// 0003 (B-445 T2): payment_json, added once, NULL on the existing row.
+		expect((await columns()).filter((c) => c === 'payment_json').length).toBe(1);
+		expect(await env.WITNESS_DB!.prepare('SELECT payment_json FROM witness_checkpoints').first()).toEqual({ payment_json: null });
 	});
 
 	it('a "duplicate column name" error from a concurrent isolate is treated as success', async () => {
@@ -1196,7 +1199,8 @@ describe('witness: ensureWitnessSchema migrates a v0.4 table', () => {
 		};
 		clearWitnessSchemaCache();
 		await expect(ensureWitnessSchema({ ...(env as object), WITNESS_DB: racing } as never)).resolves.toBeUndefined();
-		expect(alters).toBe(1);
+		// One per added column: account_id (0002) and payment_json (0003, B-445 T2).
+		expect(alters).toBe(2);
 		// Control: any other ALTER error still fails.
 		const broken = {
 			prepare(sql: string) {
