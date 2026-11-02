@@ -3812,13 +3812,16 @@ async function computeHmacSignature(secret: string, payload: string): Promise<st
 // Legacy X-Payment-* hints only — the protocol headers (Payment-Required /
 // Payment-Required-Json) come from x402HeadersV2, which needs the per-request
 // resource URL. Every value here is derived from the canonical object.
-const X402_RESPONSE_HEADERS: Record<string, string> = {
-	'X-Payment-Required': 'true',
-	'X-Payment-Scheme':   'x402',
-	'X-Payment-Network':  X402_NETWORK_V1,
-	'X-Payment-Chain-ID': String(X402_CHAIN_ID),
-	'X-Payment-Amount':   `${x402AtomicToUsdc(X402_RESOURCE_SPECS.status.amountAtomic)} USDC`,
-};
+function x402ResponseHeaders(id: X402ResourceId): Record<string, string> {
+	return {
+		'X-Payment-Required': 'true',
+		'X-Payment-Scheme':   'x402',
+		'X-Payment-Network':  X402_NETWORK_V1,
+		'X-Payment-Chain-ID': String(X402_CHAIN_ID),
+		'X-Payment-Amount':   `${x402AtomicToUsdc(X402_RESOURCE_SPECS[id].amountAtomic)} USDC`,
+	};
+}
+const X402_RESPONSE_HEADERS: Record<string, string> = x402ResponseHeaders('status');
 
 // Read the payment header from the request, checking both x402 v2 (Payment-Signature)
 // and v1 (X-Payment) header names. HTTP headers are case-insensitive, but we check
@@ -3859,6 +3862,7 @@ async function verifyX402Payment(
 	payment: X402Payment,
 	paymentAddress: string,
 	env: Env,
+	resourceId: X402ResourceId,
 ): Promise<{ valid: boolean; detail?: string; amount_units?: string }> {
 	// Accept all common Base mainnet network identifiers: 'base-mainnet' (legacy),
 	// 'base' (x402 v1/v2 standard), 'eip155:8453' (CAIP-2). Agents construct payments
@@ -3912,8 +3916,9 @@ async function verifyX402Payment(
 		return { valid: false, detail: 'NO_USDC_TRANSFER_TO_PAYMENT_ADDRESS' };
 	}
 	const amountPaid = BigInt(transferLog.data);
-	if (amountPaid < X402_MIN_AMOUNT_UNITS) {
-		return { valid: false, detail: `INSUFFICIENT_AMOUNT: paid ${amountPaid}, required ${X402_MIN_AMOUNT_UNITS}` };
+	const amountRequired = BigInt(X402_RESOURCE_SPECS[resourceId].amountAtomic);
+	if (amountPaid < amountRequired) {
+		return { valid: false, detail: `INSUFFICIENT_AMOUNT: paid ${amountPaid}, required ${amountRequired}` };
 	}
 
 	// Fetch block to verify transaction age (max 300 seconds)
@@ -4059,6 +4064,7 @@ async function verifyX402ViaFacilitator(
 	paymentHeader: string,
 	paymentAddress: string,
 	env: Env,
+	resourceId: X402ResourceId,
 	resource?: string,
 ): Promise<{ valid: boolean; txHash?: string; detail?: string; status: 'payment-accepted' | 'payment-rejected' | 'facilitator-error'; version?: 1 | 2; settlement?: Record<string, unknown> }> {
 	// Decode base64 payment header to get the PaymentPayload object.
@@ -4077,7 +4083,7 @@ async function verifyX402ViaFacilitator(
 	// no `amount` field. Sending one shape under the other version is exactly
 	// the invalid_network failure of 2026-06-07 (GAP-020), in reverse.
 	const x402Version = x402PayloadVersion(decodedPaymentPayload);
-	const canonical   = x402Canonical('status', paymentAddress, resource);
+	const canonical   = x402Canonical(resourceId, paymentAddress, resource);
 	// paymentRequirements must be a single object (not an array).
 	const paymentRequirements = x402FacilitatorRequirements(canonical, x402Version);
 	const payload = JSON.stringify({ x402Version, paymentPayload: decodedPaymentPayload, paymentRequirements });
@@ -4199,12 +4205,13 @@ async function verifyPaymentAnyFormat(
 	paymentAddress: string,
 	env: Env,
 	resourceUrl: string,
+	resourceId: X402ResourceId,
 ): Promise<{ valid: boolean; detail?: string; txHash?: string; version?: 1 | 2; settlement?: Record<string, unknown> }> {
 	// Path 1: try raw JSON (direct on-chain)
 	try {
 		const parsed = JSON.parse(header);
 		if (parsed && typeof parsed === 'object' && parsed.txHash && parsed.network) {
-			const result = await verifyX402Payment(parsed as X402Payment, paymentAddress, env);
+			const result = await verifyX402Payment(parsed as X402Payment, paymentAddress, env, resourceId);
 			// Direct on-chain is an HO-only convenience, outside both x402
 			// versions. It is reported as v1 so the caller emits the legacy
 			// X-PAYMENT-RESPONSE name rather than a v2 header the payer's
@@ -4228,7 +4235,7 @@ async function verifyPaymentAnyFormat(
 	} catch {
 		return { valid: false, detail: 'X-Payment must be JSON (direct on-chain) or base64-encoded JSON (x402 standard)' };
 	}
-	const result = await verifyX402ViaFacilitator(header, paymentAddress, env, resourceUrl);
+	const result = await verifyX402ViaFacilitator(header, paymentAddress, env, resourceId, resourceUrl);
 	return { valid: result.valid, detail: result.detail, txHash: result.txHash, version: result.version, settlement: result.settlement };
 }
 
@@ -4689,7 +4696,7 @@ async function readX402MintClaimStatus(db: D1Database, txHash: string): Promise<
 }
 
 // Build the x402 payment payload for a 402 response.
-function build402Payload(paymentAddress: string, keyHash: string): Record<string, unknown> {
+function build402Payload(paymentAddress: string, keyHash: string, resourceId: X402ResourceId): Record<string, unknown> {
 	const resetMidnight = new Date();
 	resetMidnight.setUTCDate(resetMidnight.getUTCDate() + 1);
 	resetMidnight.setUTCHours(0, 0, 0, 0);
@@ -4720,7 +4727,7 @@ function build402Payload(paymentAddress: string, keyHash: string): Record<string
 			scheme:              'exact',
 			network:             'base',
 			chainId:             8453,
-			amount:              '1000',
+			amount:              X402_RESOURCE_SPECS[resourceId].amountAtomic,
 			currency:            'USDC',
 			decimals:            6,
 			paymentAddress,
@@ -14618,7 +14625,7 @@ export default {
 						alternative:     'POST /v5/status?mic=<MIC> with X-Payment: <raw-JSON> works on the main endpoint',
 					}, 402, X402_RESPONSE_HEADERS);
 				}
-				const verify = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, x402Resource);
+				const verify = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, 'status', x402Resource);
 				if (!verify.valid) {
 					return json({
 						error:   'PAYMENT_VERIFICATION_FAILED',
@@ -14708,13 +14715,13 @@ export default {
 							if (paymentHeader) incrementKvCounter(`funnel_x402:attempted:${now.toISOString().slice(0, 10)}`, env, ctx);
 							if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 								const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-								const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
+								const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource, 'status');
 								if (!verify.valid) {
 									incrementKvCounter(`funnel_402:payment_failed:${now.toISOString().slice(0, 10)}`, env, ctx);
 									return json({
 										error:   'PAYMENT_VERIFICATION_FAILED',
 										message: `Payment verification failed: ${verify.detail ?? 'unknown'}`,
-										x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash).x402,
+										x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash, 'status').x402,
 									}, 402, X402_RESPONSE_HEADERS);
 								}
 								// Valid x402 payment — proceed without counting against daily usage
@@ -14727,7 +14734,7 @@ export default {
 								} else if (env.ORACLE_PAYMENT_ADDRESS) {
 									incrementKvCounter(`funnel_402:free_tier_gate:${now.toISOString().slice(0, 10)}`, env, ctx);
 									incrementKvCounter(`funnel_402:saw_upgrade_paths:${now.toISOString().slice(0, 10)}`, env, ctx);
-									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash), 402, { ...X402_RESPONSE_HEADERS, 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
+									return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, keyHash, 'status'), 402, { ...X402_RESPONSE_HEADERS, 'Link': '</v5/keys/instant>; rel="payment"; method="POST"' });
 								} else {
 									const resetMn = new Date(now);
 									resetMn.setUTCDate(resetMn.getUTCDate() + 1);
@@ -14802,7 +14809,7 @@ export default {
 					// ── x402 payment takes priority if header is present ─────────────
 					if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 						const resource = `https://headlessoracle.com${url.pathname}${url.search}`;
-						const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
+						const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource, 'status');
 						if (!verified.valid) {
 							incrementKvCounter(`funnel_402:facilitator_rejected:${now.toISOString().slice(0, 10)}`, env, ctx);
 							const errPayload = { ...buildMainnetFacilitatorPayload(env.ORACLE_PAYMENT_ADDRESS, resource), x402_error: verified.detail ?? 'payment rejected' };
@@ -15219,20 +15226,20 @@ export default {
 						const paymentHeader = getPaymentHeader(request);
 						if (paymentHeader && env.ORACLE_PAYMENT_ADDRESS) {
 							const batchResource = 'https://headlessoracle.com/v5/batch';
-							const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, batchResource);
+							const verify = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, batchResource, 'batch');
 							if (!verify.valid) {
 								return json({
 									error:   'PAYMENT_VERIFICATION_FAILED',
 									message: `Payment verification failed: ${verify.detail ?? 'unknown'}`,
-									x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, batchKeyHash).x402,
-								}, 402, X402_RESPONSE_HEADERS);
+									x402:    build402Payload(env.ORACLE_PAYMENT_ADDRESS, batchKeyHash, 'batch').x402,
+								}, 402, x402ResponseHeaders('batch'));
 							}
 						} else {
 							const credits = await getCreditBalance(batchKeyHash, env);
 							if (credits.balance > 0) {
 								consumeCredit(batchKeyHash, credits, env, ctx);
 							} else if (env.ORACLE_PAYMENT_ADDRESS) {
-								return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, batchKeyHash), 402, X402_RESPONSE_HEADERS);
+								return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, batchKeyHash, 'batch'), 402, x402ResponseHeaders('batch'));
 							} else {
 								return json({ error: 'RATE_LIMITED', message: 'Free tier daily limit reached. Upgrade at headlessoracle.com/upgrade' }, 429, { 'Retry-After': String(computeRetryAfterSeconds(now)) });
 							}
@@ -19179,7 +19186,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				}
 				const paymentHeader = getPaymentHeader(request);
 				if (!paymentHeader) {
-					return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, await sha256Hex(apiKey)), 402, X402_RESPONSE_HEADERS);
+					return json(build402Payload(env.ORACLE_PAYMENT_ADDRESS, await sha256Hex(apiKey), 'status'), 402, X402_RESPONSE_HEADERS);
 				}
 				// Accept both raw JSON (direct on-chain) and base64 (x402 facilitator)
 				let payment: X402Payment | null = null;
@@ -19193,7 +19200,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				// the caller and is never used to size the grant.
 				let verifiedUnits: bigint | null = null;
 				if (payment) {
-					const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env);
+					const verify = await verifyX402Payment(payment, env.ORACLE_PAYMENT_ADDRESS, env, 'status');
 					if (!verify.valid) {
 						return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${verify.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
 					}
@@ -19205,7 +19212,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 				} else {
 					// Try base64 x402 facilitator
 					const resource = 'https://headlessoracle.com/v5/credits/purchase';
-					const facResult = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, resource);
+					const facResult = await verifyX402ViaFacilitator(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, 'status', resource);
 					if (!facResult.valid) {
 						return json({ error: 'PAYMENT_VERIFICATION_FAILED', message: `Payment failed: ${facResult.detail ?? 'unknown'}` }, 402, X402_RESPONSE_HEADERS);
 					}
@@ -19597,7 +19604,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 						return json({ error: 'SERVICE_UNAVAILABLE', message: 'x402 payments are not configured on this instance. Use email-based provisioning.' }, 503);
 					}
 					const sbResource = 'https://headlessoracle.com/v5/sandbox';
-					const sbVerify = await verifyPaymentAnyFormat(sandboxPaymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, sbResource);
+					const sbVerify = await verifyPaymentAnyFormat(sandboxPaymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, sbResource, 'status');
 					if (!sbVerify.valid) {
 						return json({ error: 'INVALID_PAYMENT', message: sbVerify.detail ?? 'Payment verification failed' }, 402, X402_RESPONSE_HEADERS);
 					}
@@ -20373,7 +20380,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 					);
 				}
 				const haltsResource = `https://headlessoracle.com${url.pathname}${url.search}`;
-				const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, haltsResource);
+				const verified = await verifyPaymentAnyFormat(paymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, haltsResource, 'status');
 				if (!verified.valid) {
 					return json({
 						error:        'PAYMENT_VERIFICATION_FAILED',
@@ -20688,7 +20695,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 						} : {},
 					);
 				}
-				const safeVerified = await verifyPaymentAnyFormat(safePaymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, safeResource);
+				const safeVerified = await verifyPaymentAnyFormat(safePaymentHeader, env.ORACLE_PAYMENT_ADDRESS, env, safeResource, 'status');
 				if (!safeVerified.valid) {
 					return json({
 						error:   'PAYMENT_VERIFICATION_FAILED',
