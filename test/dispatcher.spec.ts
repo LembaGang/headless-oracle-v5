@@ -84,6 +84,21 @@ describe('B-437 T4: the GitHub dispatcher', () => {
 		expect(calls[0]!.url).toContain('/LembaGang/ho-mailwatch/actions/workflows/poll.yml/dispatches');
 	});
 
+	it('a failed dispatch is retried on the next minute within the slot window; a success ends the retries', async () => {
+		const { runDispatcher } = await mod();
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const seen: string[] = [];
+		const answers = [500, 204];
+		const f: Fetch = async (url) => { seen.push(url); return new Response(null, { status: answers.shift() ?? 204 }); };
+		for (const t of ['2026-11-03T15:17:00Z', '2026-11-03T15:18:00Z', '2026-11-03T15:19:00Z']) await runDispatcher(withToken(), { now: new Date(t), fetch: f });
+		expect(seen, 'failed at :17, retried and succeeded at :18, nothing at :19').toHaveLength(2);
+		const always500: Fetch = async (url) => { seen.push(url); return new Response('x', { status: 500 }); };
+		seen.length = 0;
+		for (const t of ['2026-11-03T15:47:00Z', '2026-11-03T15:48:00Z', '2026-11-03T15:49:00Z', '2026-11-03T15:50:00Z']) await runDispatcher(withToken(), { now: new Date(t), fetch: always500 });
+		err.mockRestore();
+		expect(seen, 'three tries in the window (:47, :48, :49), none after it').toHaveLength(3);
+	});
+
 	it('a cron minute missed at the slot is caught up within two minutes', async () => {
 		const { runDispatcher } = await mod();
 		const { f, calls } = recorder();

@@ -6451,8 +6451,8 @@ export async function runDispatcher(env: Env, opts: { now?: Date; fetch?: HoFetc
 	for (const s of due) {
 		const slotKey = `dispatch_slot:${s.name}:${s.slot}`;
 		if ((await env.ORACLE_TELEMETRY.get(slotKey).catch(() => null)) !== null) continue;
-		// Marked before the call: a slot is tried once, and a failure waits for the next slot.
-		await env.ORACLE_TELEMETRY.put(slotKey, now.toISOString(), { expirationTtl: 24 * 60 * 60 }).catch(() => {});
+		// B-437 T4b: the slot is marked used only once GitHub answers 204, so a failure is tried again on
+		// the next minute, inside the slot's DISPATCH_LATE_MINUTES window: at most three tries a slot.
 		attempted = true;
 		let error: string | null = null;
 		try {
@@ -6473,6 +6473,7 @@ export async function runDispatcher(env: Env, opts: { now?: Date; fetch?: HoFetc
 			error = `${s.repo} ${s.workflow}: ${err instanceof Error ? err.message : 'unknown error'}`;
 		}
 		if (error === null) {
+			await env.ORACLE_TELEMETRY.put(slotKey, now.toISOString(), { expirationTtl: 24 * 60 * 60 }).catch(() => {});
 			result.dispatched.push(`${s.name}@${s.slot}`);
 			health.last_ok_at = now.toISOString();
 			health.failing_since = null;
