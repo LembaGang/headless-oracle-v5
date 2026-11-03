@@ -6310,7 +6310,9 @@ export async function runWatchdog(env: Env, opts: { now?: Date; fetch?: HoFetch 
 		const url = watchdogRadarUrl(radarDate);
 		let why: string;
 		try {
-			const res = await doFetch(url, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+			// Workers refuses redirect 'error'; with 'manual' a redirect answers 3xx,
+			// which is not 200, so it still counts as missing.
+			const res = await doFetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
 			radarOk = res.status === 200;
 			why = `HTTP ${res.status}`;
 		} catch (err: unknown) {

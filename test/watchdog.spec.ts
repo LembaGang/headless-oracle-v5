@@ -167,7 +167,11 @@ describe('B-438 T2: the watchdog', () => {
 		const h = JSON.parse((await env.ORACLE_TELEMETRY.get('watchdog_health'))!) as Record<string, unknown>;
 		expect(h.computed_at).toBe('2026-11-03T10:07:00.000Z');
 		// The suite has no network (the radar answers 503) and no M-1 checkpoint: both steps are named.
-		expect((await failedSteps()).map((s) => s.step).sort()).toEqual(['watchdog_m1', 'watchdog_radar']);
+		const steps = await failedSteps();
+		expect(steps.map((s) => s.step).sort()).toEqual(['watchdog_m1', 'watchdog_radar']);
+		// The radar request must reach the network (the suite's 503 stub): a request the
+		// runtime itself refuses would name the step for the wrong reason, on every run.
+		expect(steps.find((s) => s.step === 'watchdog_radar')!.message).toContain(`GET ${RADAR_URL}: HTTP 503`);
 	});
 
 	it('mails the founder once when a step turns failed, not on the next run while it stays failed', async () => {
