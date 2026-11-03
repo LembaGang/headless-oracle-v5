@@ -6240,6 +6240,152 @@ export async function runWitnessPaymentSweep(env: Env, now: Date = new Date()): 
 	return health;
 }
 
+// B-438 T2: the watchdog. Nothing else notices if GitHub stops running the M-1
+// snapshot job or the ho-radar monitors, so the worker checks both from what it
+// can already see: the newest checkpoint our own witness received for each
+// watched key, and whether ho-radar published yesterday's summary. A stale one
+// names a failed step on the newest daily record (the witness_payments
+// mechanism), so /record and the radar go red with nobody watching.
+// The kid is the M-1 GitHub Actions operator key, copied from
+// m1-xagent-card identity-public/2026-11-actions.json.
+const WATCHDOG_WITNESS_WATCHES: readonly { name: string; step: string; kid: string; max_age_hours: number }[] = [
+	{ name: 'm1', step: 'watchdog_m1', kid: 'JgXFlLtC88UAIK811_ptXkq5Lb_k6E1rCe0Auahg7G4', max_age_hours: 5 },
+];
+const WATCHDOG_RADAR_STEP = 'watchdog_radar';
+// Yesterday's radar summary is due by 06:00Z; before that the check stays on
+// the day before.
+const WATCHDOG_RADAR_DUE_HOUR_UTC = 6;
+const watchdogRadarUrl = (date: string) => `https://raw.githubusercontent.com/LembaGang/ho-radar/main/data/${date}/summary.json`;
+
+export interface WatchdogHealth {
+	m1_newest_checkpoint_age_hours: number | null;
+	m1_newest_checkpoint_at:        string | null;
+	radar_date:                     string;
+	radar_yesterday_summary:        boolean;
+	computed_at:                    string;
+}
+
+// The date whose radar summary must exist at `now`: yesterday from 06:00Z on,
+// the day before yesterday until then.
+export function watchdogRadarDate(now: Date): string {
+	const d = new Date(now.getTime() - WATCHDOG_RADAR_DUE_HOUR_UTC * 60 * 60 * 1000);
+	d.setUTCDate(d.getUTCDate() - 1);
+	return d.toISOString().slice(0, 10);
+}
+
+// Run hourly from the minute cron. Unknown is stale: a missing store, a failed
+// query or a failed fetch names the step, never a quiet pass. A summary seen
+// once is remembered for its date (watchdog_radar_seen:<date>), so the fetch
+// stops once it has answered 200. Mail goes to the founder only when a step
+// turns failed, not on every run while it stays failed.
+export async function runWatchdog(env: Env, opts: { now?: Date; fetch?: HoFetch } = {}): Promise<WatchdogHealth> {
+	const now = opts.now ?? new Date();
+	const doFetch: HoFetch = opts.fetch ?? ((u, i) => fetch(u, i));
+	const failures: { step: string; message: string }[] = [];
+
+	const watch = WATCHDOG_WITNESS_WATCHES[0];
+	let newestAt: string | null = null;
+	let ageHours: number | null = null;
+	try {
+		if (!env.WITNESS_DB) throw new Error('no witness store bound');
+		await ensureWitnessSchema(env);
+		const row = await env.WITNESS_DB.prepare(`SELECT MAX(received_at) AS t FROM witness_checkpoints WHERE kid = ?`).bind(watch.kid).first<{ t: string | null }>();
+		newestAt = row?.t ?? null;
+		if (newestAt === null) {
+			failures.push({ step: watch.step, message: `no witness checkpoint for kid ${watch.kid} (${watch.name}); limit ${watch.max_age_hours}h (see /v5/metrics/public watchdog)` });
+		} else {
+			ageHours = Math.round(((now.getTime() - Date.parse(newestAt)) / 3_600_000) * 100) / 100;
+			if (!(ageHours <= watch.max_age_hours)) {
+				failures.push({ step: watch.step, message: `newest witness checkpoint for kid ${watch.kid} (${watch.name}) received ${newestAt}, ${ageHours}h ago; limit ${watch.max_age_hours}h (see /v5/metrics/public watchdog)` });
+			}
+		}
+	} catch (err: unknown) {
+		failures.push({ step: watch.step, message: `the ${watch.name} checkpoint age could not be read: ${err instanceof Error ? err.message : 'unknown error'}` });
+	}
+
+	const radarDate = watchdogRadarDate(now);
+	const seenKey = `watchdog_radar_seen:${radarDate}`;
+	let radarOk = (await env.ORACLE_TELEMETRY.get(seenKey).catch(() => null)) !== null;
+	if (!radarOk) {
+		const url = watchdogRadarUrl(radarDate);
+		let why: string;
+		try {
+			const res = await doFetch(url, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+			radarOk = res.status === 200;
+			why = `HTTP ${res.status}`;
+		} catch (err: unknown) {
+			why = err instanceof Error ? err.message : 'unknown error';
+		}
+		if (radarOk) {
+			await env.ORACLE_TELEMETRY.put(seenKey, now.toISOString(), { expirationTtl: 3 * 24 * 60 * 60 }).catch(() => {});
+		} else {
+			failures.push({ step: WATCHDOG_RADAR_STEP, message: `the ho-radar summary for ${radarDate} is missing: GET ${url}: ${why} (see /v5/metrics/public watchdog)` });
+		}
+	}
+
+	const health: WatchdogHealth = {
+		m1_newest_checkpoint_age_hours: ageHours,
+		m1_newest_checkpoint_at:        newestAt,
+		radar_date:                     radarDate,
+		radar_yesterday_summary:        radarOk,
+		computed_at:                    now.toISOString(),
+	};
+	await env.ORACLE_TELEMETRY.put('watchdog_health', JSON.stringify(health)).catch(() => {});
+
+	const steps = [watch.step, WATCHDOG_RADAR_STEP];
+	const newlyFailed: { step: string; message: string }[] = [];
+	if (env.HALT_ARCHIVE) {
+		await ensureHoRecordSchema(env);
+		const hdb = env.HALT_ARCHIVE;
+		// One live alarm per step: cleared from every day it was left on, set on
+		// the newest record.
+		const wasFailed = new Set<string>();
+		for (const step of steps) {
+			const { results: flagged } = await hdb.prepare(
+				`SELECT date FROM ho_record_proofs WHERE failed_steps LIKE ?`,
+			).bind(`%"step":"${step}"%`).all<{ date: string }>();
+			for (const { date } of flagged ?? []) {
+				wasFailed.add(step);
+				const p = await hoReadProofs(hdb, date);
+				hoClearFailed(p, step);
+				await hoWriteProofs(hdb, date, p, now);
+			}
+		}
+		const newest = await hdb.prepare(`SELECT date FROM ho_records ORDER BY sequence DESC LIMIT 1`).first<{ date: string }>();
+		if (newest && failures.length > 0) {
+			const p = await hoReadProofs(hdb, newest.date);
+			for (const f of failures) {
+				hoSetFailed(p, newest.date, f.step, f.message, now);
+				if (!wasFailed.has(f.step)) newlyFailed.push(f);
+			}
+			await hoWriteProofs(hdb, newest.date, p, now);
+		}
+	}
+
+	if (env.RESEND_API_KEY) {
+		for (const f of newlyFailed) {
+			try {
+				const res = await doFetch('https://api.resend.com/emails', {
+					method:  'POST',
+					headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						from:    'Headless Oracle <hello@headlessoracle.com>',
+						to:      [FOUNDER_NOTIFICATION_EMAIL],
+						subject: `Headless Oracle watchdog: ${f.step} failed`,
+						text:    `${f.message}\n\nNamed as a failed step on https://headlessoracle.com/record. It clears by itself on the first hourly run that finds it fresh. This mail is sent once when the step turns failed, not on every run.`,
+					}),
+				});
+				if (!res.ok) {
+					console.error(JSON.stringify({ event: 'WATCHDOG_MAIL_FAILED', step: f.step, status: res.status, detail: await resendFailureDetail(res) }));
+				}
+			} catch (err) {
+				console.error(`WATCHDOG_MAIL_FAILED: ${f.step} ${redactForLog(String(err))}`);
+			}
+		}
+	}
+	return health;
+}
+
 // POST/GET /v1/witness/checkpoints and GET /v1/witness/spec. Returns null for
 // any other path so the caller's 404 handling applies.
 async function handleWitness(request: Request, env: Env, url: URL, now: Date, json: WitnessJson): Promise<Response | null> {
@@ -18246,6 +18392,9 @@ export default {
 				// counts are null, never a reassuring 0.
 				const witnessHealthRaw = await env.ORACLE_TELEMETRY.get('witness_payment_health').catch(() => null);
 				const witnessHealth = witnessHealthRaw ? JSON.parse(witnessHealthRaw) as WitnessPaymentHealth : null;
+				// B-438 T2: the watchdog's last run; null before its first, never a reassuring value.
+				const watchdogRaw = await env.ORACLE_TELEMETRY.get('watchdog_health').catch(() => null);
+				const watchdog = watchdogRaw ? JSON.parse(watchdogRaw) as WatchdogHealth : null;
 				const [[paymentCountRaw, lastPaymentAtRaw], mcpUsage, scRaws, funnelRaws] = await Promise.all([
 					Promise.all([
 						env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
@@ -18292,6 +18441,14 @@ export default {
 						unstored_unconsumed: witnessHealth ? witnessHealth.unstored_unconsumed : null,
 						computed_at:         witnessHealth ? witnessHealth.computed_at : null,
 						rule:                'Counted by the hourly witness payment sweep. Either above 0 names the failed step witness_payments on /record.',
+					},
+					watchdog: {
+						m1_newest_checkpoint_age_hours: watchdog ? watchdog.m1_newest_checkpoint_age_hours : null,
+						m1_newest_checkpoint_at:        watchdog ? watchdog.m1_newest_checkpoint_at : null,
+						radar_date:                     watchdog ? watchdog.radar_date : null,
+						radar_yesterday_summary:        watchdog ? watchdog.radar_yesterday_summary : null,
+						computed_at:                    watchdog ? watchdog.computed_at : null,
+						rule:                           `Computed hourly (minute 7, UTC). m1: the newest checkpoint our witness received for kid ${WATCHDOG_WITNESS_WATCHES[0].kid}; over ${WATCHDOG_WITNESS_WATCHES[0].max_age_hours} hours, or none, names the failed step watchdog_m1 on /record. radar: whether ho-radar published data/<radar_date>/summary.json (yesterday, from 06:00Z); missing names watchdog_radar.`,
 					},
 					mcp_protocol_version:    MCP_PROTOCOL_VERSION,
 					mcpscoreboard_preflight: 100,
@@ -21390,6 +21547,12 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 				ctx.waitUntil(
 					runWitnessPaymentSweep(env).catch((err) => {
 						console.error(`WITNESS_PAYMENT_SWEEP_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+					}),
+				);
+				// B-438 T2: the watchdog, on the same hourly slot.
+				ctx.waitUntil(
+					runWatchdog(env).catch((err) => {
+						console.error(`WATCHDOG_ERROR: ${err instanceof Error ? err.message : String(err)}`);
 					}),
 				);
 			}
