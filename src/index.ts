@@ -138,6 +138,8 @@ export interface Env {
 	SUPABASE_URL?:               string;
 	SUPABASE_SERVICE_ROLE_KEY?:  string;
 	RESEND_API_KEY?:             string;
+	// B-437 T4: fine-grained GitHub token, Actions read and write on the two dispatched repositories only.
+	GITHUB_DISPATCH_TOKEN?:      string;
 	// x402 micropayments — set via `wrangler secret put ORACLE_PAYMENT_ADDRESS`
 	ORACLE_PAYMENT_ADDRESS?:     string;  // Base mainnet wallet for USDC micropayments
 	// x402 testnet prototype — Base Sepolia testnet, facilitator-based verification
@@ -6386,6 +6388,130 @@ export async function runWatchdog(env: Env, opts: { now?: Date; fetch?: HoFetch 
 		}
 	}
 	return health;
+}
+
+// B-437 T4: GitHub's scheduler has started this account's jobs hours late, or
+// not at all, while this Worker's minute cron fires on time. So the minute cron
+// starts the GitHub workflows itself, through workflow_dispatch; each workflow
+// keeps its own schedule as a backup. A slot is dispatched once (KV
+// dispatch_slot:<name>:<slot>), and up to DISPATCH_LATE_MINUTES late, so one
+// missed cron minute does not lose it.
+const GITHUB_DISPATCHES: readonly { name: string; repo: string; workflow: string; minutes: readonly number[]; everyHours: number }[] = [
+	{ name: 'm1', repo: 'LembaGang/m1-xagent-card', workflow: 'snapshot.yml', minutes: [23], everyHours: 2 },
+	{ name: 'mailwatch', repo: 'LembaGang/ho-mailwatch', workflow: 'poll.yml', minutes: [17, 47], everyHours: 1 },
+];
+const DISPATCH_LATE_MINUTES = 2;
+const DISPATCH_FAILING_ALARM_MS = 2 * 60 * 60 * 1000;
+const DISPATCHER_STEP = 'dispatcher';
+
+export interface DispatcherHealth {
+	last_ok_at:    string | null;
+	failing_since: string | null;
+	failures:      string[]; // timestamps of failed dispatches, the last 24 hours
+	last_error:    string | null;
+}
+
+// The slots due at `now`: a slot is due from its minute until DISPATCH_LATE_MINUTES after.
+export function dispatchSlotsDue(now: Date): { name: string; repo: string; workflow: string; slot: string }[] {
+	const out: { name: string; repo: string; workflow: string; slot: string }[] = [];
+	for (const d of GITHUB_DISPATCHES) {
+		for (const m of d.minutes) {
+			for (let late = 0; late <= DISPATCH_LATE_MINUTES; late++) {
+				const t = new Date(now.getTime() - late * 60_000);
+				if (t.getUTCMinutes() !== m || t.getUTCHours() % d.everyHours !== 0) continue;
+				out.push({ name: d.name, repo: d.repo, workflow: d.workflow, slot: t.toISOString().slice(0, 16) });
+			}
+		}
+	}
+	return out;
+}
+
+async function readDispatcherHealth(env: Env): Promise<DispatcherHealth> {
+	const raw = await env.ORACLE_TELEMETRY.get('dispatcher_health').catch(() => null);
+	return raw ? JSON.parse(raw) as DispatcherHealth : { last_ok_at: null, failing_since: null, failures: [], last_error: null };
+}
+
+// Run every minute. Without the token it does nothing but log that once a day.
+export async function runDispatcher(env: Env, opts: { now?: Date; fetch?: HoFetch } = {}): Promise<{ dispatched: string[]; failed: string[] }> {
+	const now = opts.now ?? new Date();
+	const doFetch: HoFetch = opts.fetch ?? ((u, i) => fetch(u, i));
+	const result = { dispatched: [] as string[], failed: [] as string[] };
+	const due = dispatchSlotsDue(now);
+	if (due.length === 0) return result;
+	if (!env.GITHUB_DISPATCH_TOKEN) {
+		const k = `dispatcher_no_token_logged:${now.toISOString().slice(0, 10)}`;
+		if ((await env.ORACLE_TELEMETRY.get(k).catch(() => null)) === null) {
+			console.log(JSON.stringify({ event: 'DISPATCHER_NO_TOKEN', detail: 'GITHUB_DISPATCH_TOKEN is not set; GitHub workflows are left to their own schedules' }));
+			await env.ORACLE_TELEMETRY.put(k, '1', { expirationTtl: 2 * 24 * 60 * 60 }).catch(() => {});
+		}
+		return result;
+	}
+	const health = await readDispatcherHealth(env);
+	let attempted = false;
+	for (const s of due) {
+		const slotKey = `dispatch_slot:${s.name}:${s.slot}`;
+		if ((await env.ORACLE_TELEMETRY.get(slotKey).catch(() => null)) !== null) continue;
+		// Marked before the call: a slot is tried once, and a failure waits for the next slot.
+		await env.ORACLE_TELEMETRY.put(slotKey, now.toISOString(), { expirationTtl: 24 * 60 * 60 }).catch(() => {});
+		attempted = true;
+		let error: string | null = null;
+		try {
+			const res = await doFetch(`https://api.github.com/repos/${s.repo}/actions/workflows/${s.workflow}/dispatches`, {
+				method:  'POST',
+				headers: {
+					'Authorization':        `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
+					'Accept':               'application/vnd.github+json',
+					'X-GitHub-Api-Version': '2022-11-28',
+					'User-Agent':           'headless-oracle-dispatcher',
+					'Content-Type':         'application/json',
+				},
+				body: JSON.stringify({ ref: 'main' }),
+				signal: AbortSignal.timeout(10_000),
+			});
+			if (res.status !== 204) error = `${s.repo} ${s.workflow}: HTTP ${res.status} ${redactForLog((await res.text().catch(() => '')).slice(0, 200))}`;
+		} catch (err: unknown) {
+			error = `${s.repo} ${s.workflow}: ${err instanceof Error ? err.message : 'unknown error'}`;
+		}
+		if (error === null) {
+			result.dispatched.push(`${s.name}@${s.slot}`);
+			health.last_ok_at = now.toISOString();
+			health.failing_since = null;
+		} else {
+			result.failed.push(`${s.name}@${s.slot}`);
+			console.error(JSON.stringify({ event: 'DISPATCH_FAILED', slot: `${s.name}@${s.slot}`, error }));
+			health.failures.push(now.toISOString());
+			health.failing_since = health.failing_since ?? now.toISOString();
+			health.last_error = error;
+		}
+	}
+	if (!attempted) return result;
+	const dayAgo = now.getTime() - 24 * 60 * 60 * 1000;
+	health.failures = health.failures.filter((t) => Date.parse(t) > dayAgo);
+	await env.ORACLE_TELEMETRY.put('dispatcher_health', JSON.stringify(health)).catch(() => {});
+
+	// Failing for two hours or more names the failed step on the newest record; a success clears it.
+	if (env.HALT_ARCHIVE) {
+		await ensureHoRecordSchema(env);
+		const hdb = env.HALT_ARCHIVE;
+		const { results: flagged } = await hdb.prepare(
+			`SELECT date FROM ho_record_proofs WHERE failed_steps LIKE '%"step":"dispatcher"%'`,
+		).all<{ date: string }>();
+		for (const { date } of flagged ?? []) {
+			const p = await hoReadProofs(hdb, date);
+			hoClearFailed(p, DISPATCHER_STEP);
+			await hoWriteProofs(hdb, date, p, now);
+		}
+		const failingMs = health.failing_since ? now.getTime() - Date.parse(health.failing_since) : 0;
+		if (failingMs >= DISPATCH_FAILING_ALARM_MS) {
+			const newest = await hdb.prepare(`SELECT date FROM ho_records ORDER BY sequence DESC LIMIT 1`).first<{ date: string }>();
+			if (newest) {
+				const p = await hoReadProofs(hdb, newest.date);
+				hoSetFailed(p, newest.date, DISPATCHER_STEP, `GitHub workflow dispatches failing since ${health.failing_since}: ${health.last_error ?? 'unknown error'} (see /v5/metrics/public dispatcher)`, now);
+				await hoWriteProofs(hdb, newest.date, p, now);
+			}
+		}
+	}
+	return result;
 }
 
 // POST/GET /v1/witness/checkpoints and GET /v1/witness/spec. Returns null for
@@ -18397,6 +18523,9 @@ export default {
 				// B-438 T2: the watchdog's last run; null before its first, never a reassuring value.
 				const watchdogRaw = await env.ORACLE_TELEMETRY.get('watchdog_health').catch(() => null);
 				const watchdog = watchdogRaw ? JSON.parse(watchdogRaw) as WatchdogHealth : null;
+				// B-437 T4: the dispatcher's health; nothing until its first attempted dispatch.
+				const dispatcherRaw = await env.ORACLE_TELEMETRY.get('dispatcher_health').catch(() => null);
+				const dispatcher = dispatcherRaw ? JSON.parse(dispatcherRaw) as DispatcherHealth : null;
 				const [[paymentCountRaw, lastPaymentAtRaw], mcpUsage, scRaws, funnelRaws] = await Promise.all([
 					Promise.all([
 						env.ORACLE_TELEMETRY.get('x402_payment_count').catch(() => null),
@@ -18451,6 +18580,13 @@ export default {
 						radar_yesterday_summary:        watchdog ? watchdog.radar_yesterday_summary : null,
 						computed_at:                    watchdog ? watchdog.computed_at : null,
 						rule:                           `Computed hourly (minute 7, UTC). m1: the newest checkpoint our witness received for kid ${WATCHDOG_WITNESS_WATCHES[0].kid}; over ${WATCHDOG_WITNESS_WATCHES[0].max_age_hours} hours, or none, names the failed step watchdog_m1 on /record. radar: whether ho-radar published data/<radar_date>/summary.json (yesterday, from 06:00Z); missing names watchdog_radar.`,
+					},
+					dispatcher: {
+						token_configured: !!env.GITHUB_DISPATCH_TOKEN,
+						last_ok_at:       dispatcher ? dispatcher.last_ok_at : null,
+						failures_24h:     dispatcher ? dispatcher.failures.filter((t) => Date.parse(t) > Date.now() - 24 * 60 * 60 * 1000).length : 0,
+						failing_since:    dispatcher ? dispatcher.failing_since : null,
+						rule:             'The minute cron starts GitHub workflows by workflow_dispatch: LembaGang/m1-xagent-card snapshot.yml at minute 23 of even hours, LembaGang/ho-mailwatch poll.yml at minutes 17 and 47. Dispatches failing for 2 hours name the failed step dispatcher on /record.',
 					},
 					mcp_protocol_version:    MCP_PROTOCOL_VERSION,
 					mcpscoreboard_preflight: 100,
@@ -21558,6 +21694,12 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 					}),
 				);
 			}
+			// B-437 T4: start the GitHub workflows on time (each minute checks for a due slot).
+			ctx.waitUntil(
+				runDispatcher(env).catch((err) => {
+					console.error(`DISPATCHER_ERROR: ${err instanceof Error ? err.message : String(err)}`);
+				}),
+			);
 		} else if (event.cron === '0 9 * * *') {
 			// Build the signed halt-archive digest for yesterday (UTC). Yesterday is
 			// complete by 09:00 UTC, so this is the earliest safe time to anchor it.
