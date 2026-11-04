@@ -6258,8 +6258,19 @@ const WATCHDOG_RADAR_STEP = 'watchdog_radar';
 // the day before.
 const WATCHDOG_RADAR_DUE_HOUR_UTC = 6;
 const watchdogRadarUrl = (date: string) => `https://raw.githubusercontent.com/LembaGang/ho-radar/main/data/${date}/summary.json`;
+// B-470 T5: nothing else notices if the mail poller stops. Its newest successful
+// run is read from GitHub's runs API, which the dispatch token's Actions permission
+// already covers (the state branch would need Contents). The poller runs at minutes
+// 17 and 47, so 3 hours is about six missed runs.
+const WATCHDOG_MAILPOLLER_STEP = 'watchdog_mailpoller';
+const WATCHDOG_MAILPOLLER_REPO = 'LembaGang/ho-mailwatch';
+const WATCHDOG_MAILPOLLER_WORKFLOW = 'poll.yml';
+const WATCHDOG_MAILPOLLER_MAX_AGE_HOURS = 3;
+const WATCHDOG_MAILPOLLER_URL = `https://api.github.com/repos/${WATCHDOG_MAILPOLLER_REPO}/actions/workflows/${WATCHDOG_MAILPOLLER_WORKFLOW}/runs?status=success&per_page=1`;
 
 export interface WatchdogHealth {
+	mailpoller_last_success_age_hours: number | null;
+	mailpoller_last_success_at:        string | null;
 	m1_newest_checkpoint_age_hours: number | null;
 	m1_newest_checkpoint_at:        string | null;
 	radar_date:                     string;
@@ -6327,7 +6338,52 @@ export async function runWatchdog(env: Env, opts: { now?: Date; fetch?: HoFetch 
 		}
 	}
 
+	// The poller's age: the finish time (updated_at) of its newest successful run.
+	// No token, a non-200, a throw, no run or an unreadable time all name the step.
+	let pollerAt: string | null = null;
+	let pollerAge: number | null = null;
+	{
+		const name = `${WATCHDOG_MAILPOLLER_REPO} ${WATCHDOG_MAILPOLLER_WORKFLOW}`;
+		let why: string | null = null;
+		if (!env.GITHUB_DISPATCH_TOKEN) {
+			why = 'GITHUB_DISPATCH_TOKEN is not set, so the newest successful run cannot be read';
+		} else {
+			try {
+				const res = await doFetch(WATCHDOG_MAILPOLLER_URL, {
+					headers: {
+						'Authorization':        `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
+						'Accept':               'application/vnd.github+json',
+						'X-GitHub-Api-Version': '2022-11-28',
+						'User-Agent':           'headless-oracle-watchdog',
+					},
+					signal: AbortSignal.timeout(10_000),
+				});
+				if (res.status !== 200) {
+					why = `GET ${WATCHDOG_MAILPOLLER_URL}: HTTP ${res.status}`;
+				} else {
+					const body = await res.json() as { workflow_runs?: Array<{ updated_at?: unknown }> };
+					const at = body.workflow_runs?.[0]?.updated_at;
+					if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) {
+						why = `GitHub lists no successful run with a readable finish time (GET ${WATCHDOG_MAILPOLLER_URL})`;
+					} else {
+						pollerAt = at;
+						pollerAge = Math.round(((now.getTime() - Date.parse(at)) / 3_600_000) * 100) / 100;
+					}
+				}
+			} catch (err: unknown) {
+				why = `GET ${WATCHDOG_MAILPOLLER_URL}: ${err instanceof Error ? err.message : 'unknown error'}`;
+			}
+		}
+		if (why !== null) {
+			failures.push({ step: WATCHDOG_MAILPOLLER_STEP, message: `the mail poller's newest successful run (${name}) could not be read: ${why}; limit ${WATCHDOG_MAILPOLLER_MAX_AGE_HOURS}h (see /v5/metrics/public watchdog)` });
+		} else if (!(pollerAge! <= WATCHDOG_MAILPOLLER_MAX_AGE_HOURS)) {
+			failures.push({ step: WATCHDOG_MAILPOLLER_STEP, message: `the mail poller's newest successful run (${name}) finished ${pollerAt}, ${pollerAge}h ago; limit ${WATCHDOG_MAILPOLLER_MAX_AGE_HOURS}h (see /v5/metrics/public watchdog)` });
+		}
+	}
+
 	const health: WatchdogHealth = {
+		mailpoller_last_success_age_hours: pollerAge,
+		mailpoller_last_success_at:        pollerAt,
 		m1_newest_checkpoint_age_hours: ageHours,
 		m1_newest_checkpoint_at:        newestAt,
 		radar_date:                     radarDate,
@@ -6336,7 +6392,7 @@ export async function runWatchdog(env: Env, opts: { now?: Date; fetch?: HoFetch 
 	};
 	await env.ORACLE_TELEMETRY.put('watchdog_health', JSON.stringify(health)).catch(() => {});
 
-	const steps = [watch.step, WATCHDOG_RADAR_STEP];
+	const steps = [watch.step, WATCHDOG_RADAR_STEP, WATCHDOG_MAILPOLLER_STEP];
 	const newlyFailed: { step: string; message: string }[] = [];
 	if (env.HALT_ARCHIVE) {
 		await ensureHoRecordSchema(env);
@@ -18575,12 +18631,15 @@ export default {
 						rule:                'Counted by the hourly witness payment sweep. Either above 0 names the failed step witness_payments on /record.',
 					},
 					watchdog: {
+						// `?? null`: a record written before B-470 T5 has no poller fields.
+						mailpoller_last_success_age_hours: watchdog ? (watchdog.mailpoller_last_success_age_hours ?? null) : null,
+						mailpoller_last_success_at:        watchdog ? (watchdog.mailpoller_last_success_at ?? null) : null,
 						m1_newest_checkpoint_age_hours: watchdog ? watchdog.m1_newest_checkpoint_age_hours : null,
 						m1_newest_checkpoint_at:        watchdog ? watchdog.m1_newest_checkpoint_at : null,
 						radar_date:                     watchdog ? watchdog.radar_date : null,
 						radar_yesterday_summary:        watchdog ? watchdog.radar_yesterday_summary : null,
 						computed_at:                    watchdog ? watchdog.computed_at : null,
-						rule:                           `Computed hourly (minute 7, UTC). m1: the newest checkpoint our witness received for kid ${WATCHDOG_WITNESS_WATCHES[0].kid}; over ${WATCHDOG_WITNESS_WATCHES[0].max_age_hours} hours, or none, names the failed step watchdog_m1 on /record. radar: whether ho-radar published data/<radar_date>/summary.json (yesterday, from 06:00Z); missing names watchdog_radar.`,
+						rule:                           `Computed hourly (minute 7, UTC). m1: the newest checkpoint our witness received for kid ${WATCHDOG_WITNESS_WATCHES[0].kid}; over ${WATCHDOG_WITNESS_WATCHES[0].max_age_hours} hours, or none, names the failed step watchdog_m1 on /record. radar: whether ho-radar published data/<radar_date>/summary.json (yesterday, from 06:00Z); missing names watchdog_radar. mailpoller: the finish time of the newest successful run of ${WATCHDOG_MAILPOLLER_REPO} ${WATCHDOG_MAILPOLLER_WORKFLOW} on GitHub Actions; over ${WATCHDOG_MAILPOLLER_MAX_AGE_HOURS} hours, or unreadable, names ${WATCHDOG_MAILPOLLER_STEP}. It shows the poller ran and succeeded, not that state was saved or mail relayed (a failed run already emails the founder).`,
 					},
 					dispatcher: {
 						token_configured: !!env.GITHUB_DISPATCH_TOKEN,
