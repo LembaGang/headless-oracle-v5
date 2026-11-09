@@ -632,9 +632,9 @@ rather than smuggled into a timeout fix.
 
 ### Deploy procedure (amended 2026-09-07, B-115)
 
-1. Open a new shell. Confirm the identity the deploy will use: `npx wrangler whoami`.
+1. Open a new shell. Confirm the identity the deploy will use: `npm run wrangler:guarded -- whoami`.
    It must show the account and the Workers Routes permission before you deploy.
-2. `npm run deploy` (`npx wrangler deploy`). Expect an uploaded version id and the
+2. `npm run deploy` (guarded `wrangler deploy`). Expect an uploaded version id and the
    trigger list, with no red.
 3. Live-verify the changed endpoints by fetching them; record the version id.
 4. Run `npm run test:smoke` (the eleven production checks in
@@ -656,6 +656,17 @@ changes a route will fail at that step and the route will not exist. The root ca
 (which token the deploy ran on, and which permissions it carries) is tracked
 separately as B-115 and is being corrected outside this commit; do not treat the
 symptom above as the whole diagnosis. Confirm with `whoami` before every deploy.
+
+### Cloudflare tokens on this laptop (2026-11-09)
+Two tokens sit in the User environment. `CLOUDFLARE_API_TOKEN` is HO's
+(`ho-worker-deploy-2026-10-07`, id in `package.json` `config.cloudflareTokenId`).
+`CF_API_TOKEN` belongs to ADW, not HO. On 2026-11-09 an ADW session deleted HO's
+token as stale and wrangler fell back silently to ADW's. So every deploy or D1 call
+goes through `scripts/wrangler-guarded.mjs` (`npm run deploy`,
+`npm run wrangler:guarded -- d1 ...`). It drops `CF_API_TOKEN` and refuses (exit 2)
+unless the token verifies to HO's id. **Rule:** never delete, revoke or "clean up"
+either variable from one project's view. Before any credential change on this
+laptop, check every project that reads it.
 
 ### Steady state (unchanged, last confirmed 2026-06)
 - **Daily operational rhythm**: 308–365 signed receipts/day, 6–16 authenticated
