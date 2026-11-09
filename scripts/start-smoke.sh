@@ -46,18 +46,36 @@ LOG=$(mktemp -t start-smoke.XXXXXX.log)
 DEV_PID=""
 
 cleanup() {
+	# Stop the whole tree on every way out: pass, fail, the 60s timeout, and
+	# Ctrl-C (INT/TERM/HUP are routed through exit below, so EXIT runs this).
+	#
+	# On Windows the tree is: MSYS sh (the npx shim) -> node (npx) -> cmd.exe
+	# -> node (wrangler) -> node (wrangler-dist) -> workerd.exe. `kill` on the
+	# bash PID ends only the MSYS shim and leaves every native process running;
+	# that leaked three workerd trees in two days and caused the 0xC0000142
+	# process-start failures of 2026-11-09. taskkill /T walks Windows parent
+	# links, so it must run while the root is still alive: before `kill`.
 	if [ -n "$DEV_PID" ]; then
+		if [ -r "/proc/$DEV_PID/winpid" ] && command -v taskkill.exe >/dev/null 2>&1; then
+			WINPID=$(cat "/proc/$DEV_PID/winpid" 2>/dev/null || true)
+			if [ -n "$WINPID" ]; then
+				taskkill.exe //PID "$WINPID" //T //F >/dev/null 2>&1 || true
+			fi
+		fi
 		kill "$DEV_PID" 2>/dev/null || true
 		wait "$DEV_PID" 2>/dev/null || true
 	fi
-	# wrangler spawns workerd as a child; on Windows the kill above may not
-	# reach it, so close the port explicitly.
-	if command -v powershell.exe >/dev/null 2>&1; then
-		powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort $PORT -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
+	# Second net: if the root died early, its children are orphaned and /T
+	# cannot find them, so close whatever still holds our two ports.
+	if [ -n "$PORT" ] && command -v powershell.exe >/dev/null 2>&1; then
+		powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort $PORT,$INSPECTOR -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
 	fi
 	rm -f "$LOG"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 START=$(date +%s)
 echo "[start-smoke] starting worker on port ${PORT}..."
