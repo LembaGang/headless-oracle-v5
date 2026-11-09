@@ -824,6 +824,11 @@ describe('W5: no worker surface links a page that does not exist', () => {
 		'/witness', '/auditors', '/about', '/verify',
 		// H6: served by this worker (route headlessoracle.com/record*), not Pages.
 		'/record.md',
+		// 2026-11-10: the 15 public Pages pages headless-oracle-web's drift check found missing
+		// (built, no noindex); its check now fails on any missing public page.
+		'/blog', '/dashboard', '/docs/quickstart', '/docs/integrations/anthropic-claude', '/docs/integrations/bun',
+		'/docs/integrations/langgraph', '/evidence', '/evidence/cases/hotel-booking', '/evidence/cases/physical-order',
+		'/evidence/datapoints', '/evidence/integration', '/privacy', '/refund', '/terms', '/traction',
 	].map((p) => `https://headlessoracle.com${p}`);
 
 	// Pages served by headless-oracle-web at 9dee09c (each file confirmed tracked there).
@@ -837,6 +842,15 @@ describe('W5: no worker surface links a page that does not exist', () => {
 		'/docs/x402-payments',                   // public/docs/x402-payments/index.html
 		'/docs/integrations/datacamp-workspace', // public/docs/integrations/datacamp-workspace/index.html
 		'/upgrade',                              // no file; redirect to /pricing via headless-oracle-web public/_redirects, web session E1
+		// 2026-11-10, sources confirmed tracked in headless-oracle-web at b60e2e0 (robots index, follow):
+		'/docs/integrations/anthropic-claude',   // public/docs/integrations/anthropic-claude/index.html
+		'/docs/integrations/langgraph',          // public/docs/integrations/langgraph/index.html
+		'/docs/integrations/bun',                // public/docs/integrations/bun/index.html
+		'/blog',                                 // blog.html
+		'/traction',                             // traction.html
+		'/terms',                                // terms.html
+		'/privacy',                              // privacy.html
+		'/refund',                               // refund.html
 	]);
 
 	// The worker's Pages passthrough list (src/index.ts, "Pages passthrough").
@@ -844,7 +858,7 @@ describe('W5: no worker surface links a page that does not exist', () => {
 
 	const SURFACE_PATHS = ['/sitemap.xml', '/llms.txt', '/llms-full.txt', '/AGENTS.md'];
 
-	it('/sitemap.xml lists exactly the eighteen pages that exist', async () => {
+	it('/sitemap.xml lists exactly the thirty-three pages that exist', async () => {
 		const xml = await (await fetchWorker('/sitemap.xml')).text();
 		const locs = Array.from(xml.matchAll(/<loc>([^<]+)<\/loc>/g), (m) => m[1]);
 		expect([...locs].sort()).toEqual([...SITEMAP_LOCS].sort());
