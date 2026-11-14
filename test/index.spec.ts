@@ -23,6 +23,7 @@ import worker, {
 	x402MintSigningMessage,
 } from '../src';
 import { MINT_PAYER, newMintSigner, signMint, personalSign } from './mint-payer';
+import { CHIRINDO_NPM_VERSION } from '../src/chirindo-npm-version';
 import RECEIPT_FIELD_SETS from '../docs/receipt-field-sets-v5.0.json';
 import EXAMPLE_L11_GENUINE from '../docs/examples/receipt-L11-genuine-2026-06-05.json';
 import EXAMPLE_L12B_OVERRIDE_TEST_KEY from '../docs/examples/receipt-L12b-override-TEST-KEY.json';
@@ -20318,7 +20319,9 @@ describe('H3b: corrected Chirindo summary and npm caveat', () => {
 	const SUMMARY = 'Chirindo signs each agent action into a hash-chained log. Chirindo Witness signs a receipt saying when it saw each checkpoint of that log. ' +
 		'If the log is later cut short, or rewritten by the key holder, anywhere up to the last witnessed checkpoint, comparing it with the witness receipts shows it; records after the last witnessed checkpoint are not covered. ' +
 		'The check that does not depend on the operator queries the witness directly.';
-	const NPM_CAVEAT = 'Witness support (chirindo checkpoint, --witness) is on GitHub main and not yet in the npm release (0.4.0).';
+	// B-482: the sentence is written out here; only the version comes from the
+	// registry-generated module, which is the authority for it.
+	const NPM_CAVEAT = `The current npm release is ${CHIRINDO_NPM_VERSION} and includes Witness support (chirindo checkpoint, --witness).`;
 	const SIDECAR    = 'Verifying against a sidecar file trusts the operator who supplied it. Only querying the witness is independent of the operator.';
 
 	async function initializeInstructions(): Promise<string> {
@@ -20371,6 +20374,17 @@ describe('H3b: corrected Chirindo summary and npm caveat', () => {
 		if (ins.includes('@headlessoracle/chirindo')) expect(ins).toContain(NPM_CAVEAT);
 		// Not vacuous: the four Chirindo-first documents list the gate.
 		expect(listing).toEqual(expect.arrayContaining(['/llms.txt', '/llms-full.txt', '/AGENTS.md', '/SKILL.md']));
+	});
+
+	// B-482 (2026-11-13): /llms.txt said the npm release was 0.4.0 and lacked the
+	// witness commands; the registry's latest was 0.7.0 and its tarball has them.
+	it('B-482: no agent file names the 0.4.0 release or says Witness support is not yet on npm', async () => {
+		expect(CHIRINDO_NPM_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+		for (const path of AGENT_FILES) {
+			const text = await (await fetchWorker(path)).text();
+			expect(text, path).not.toContain('not yet in the npm release');
+			expect(text, path).not.toContain('npm release (0.4.0)');
+		}
 	});
 
 	it('llms.txt gives the POST body shape, labels submit POST-only, and names the operator-independent query', async () => {

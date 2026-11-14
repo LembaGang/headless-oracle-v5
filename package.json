@@ -7,7 +7,7 @@
 		"cloudflareTokenId": "4bfa83d2a7477d4bb9aa65ea12b0cc61"
 	},
 	"scripts": {
-		"deploy": "npx vitest run -t \"served text surfaces make no regulatory-alignment claim\" && node scripts/wrangler-guarded.mjs deploy",
+		"deploy": "node scripts/sync-chirindo-npm-version.mjs --check && npx vitest run -t \"served text surfaces make no regulatory-alignment claim\" && node scripts/wrangler-guarded.mjs deploy",
 		"wrangler:guarded": "node scripts/wrangler-guarded.mjs",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",

@@ -4,6 +4,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { createClient } from '@supabase/supabase-js';
 import { OTS_CALENDARS, submitDigest, proofFromSubmissions, upgradeProof, parseDetachedFile, bitcoinHeights, type OtsUpgradeResult } from './ots';
+import { CHIRINDO_NPM_VERSION } from './chirindo-npm-version';
 
 // ─── Integration guides served as text/markdown ──────────────────────────────
 // Wildcard route handler at /docs/integrations/:slug serves these via the
@@ -9071,10 +9072,11 @@ const CHIRINDO_SUMMARY =
 	'If the log is later cut short, or rewritten by the key holder, anywhere up to the last witnessed checkpoint, comparing it with the witness receipts shows it; records after the last witnessed checkpoint are not covered. ' +
 	'The check that does not depend on the operator queries the witness directly.';
 
-// npm @headlessoracle/chirindo 0.4.0 ships init, export-jwks, proxy and verify
-// only (read from the 0.4.0 tarball, 2026-10-04); the witness commands are on
-// GitHub main. Said wherever the npm gate is listed.
-const CHIRINDO_NPM_CAVEAT = 'Witness support (chirindo checkpoint, --witness) is on GitHub main and not yet in the npm release (0.4.0).';
+// B-482: the version is the registry's, written into src/chirindo-npm-version.ts
+// by scripts/sync-chirindo-npm-version.mjs and checked again before every deploy;
+// it is never typed. The 0.7.0 tarball's dist/cli.js carries `chirindo checkpoint`
+// and --witness (read 2026-11-13). Said wherever the npm gate is listed.
+const CHIRINDO_NPM_CAVEAT = `The current npm release is ${CHIRINDO_NPM_VERSION} and includes Witness support (chirindo checkpoint, --witness).`;
 
 const CHIRINDO_LIMITS = `${WITNESS_SPEC_DOC.purpose} ${WITNESS_SPEC_DOC.honest_limits.sidecar}`;
 
