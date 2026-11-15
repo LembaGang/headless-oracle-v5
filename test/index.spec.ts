@@ -2550,11 +2550,12 @@ describe('GET /v5/pricing', () => {
 		{ plan: 'custody_1y',        name: 'Evidence (Witness account)',              minor_units:  19900, cycle: { interval: 'month', frequency: 1 } },
 	] as const;
 
-	// Byte-for-byte from LEAD_PLAN_2026-09-07_M5-prices-live.md section 5. 434
-	// characters, sha256 576fa9366bdb3ab438229ada26a0e3758fedda6a9a16518f796e0f4041de793b.
+	// From LEAD_PLAN_2026-09-07_M5-prices-live.md section 5, with the interests
+	// clause replaced on the founder's ruling of 14 Nov 2026 (B-482 T2, D5). 498
+	// characters, sha256 89823c5f951ca202aee629df6618e3ab7b7b74dc48ddce1d1f54fe8d22690df0.
 	// It is written out here rather than imported so that a change to the served
 	// string is a diff against the plan, not a diff against itself.
-	const NEUTRALITY_RULE = 'A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: the referee is the author of a competing format; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.';
+	const NEUTRALITY_RULE = 'A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: Headless Oracle wrote the test, makes Chirindo, one of the tools that can be tested, and runs a witness service; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.';
 
 	it('B-149: /v5/pricing serves a referee block with the six services', async () => {
 		const res  = await fetchWorker('/v5/pricing');
@@ -2566,7 +2567,7 @@ describe('GET /v5/pricing', () => {
 		expect(referee.introductory).toBe(true);
 		expect(referee.introductory_until).toBe(refereePrices().introductory_until);
 		expect(referee.intake_url).toBe('https://headlessoracle.com/v5/referee/intake');
-		expect(referee.programmes).toBe('by invoice after a conversation; use the intake');
+		expect(referee.programmes).toBe('by invoice after a conversation; write to mike@headlessoracle.com with the subject Programme');
 
 		const services = referee.services as Array<Record<string, unknown>>;
 		expect(services).toHaveLength(6);
@@ -2578,14 +2579,25 @@ describe('GET /v5/pricing', () => {
 		}
 	});
 
-	it('B-149: the neutrality rule is served verbatim, and is 434 characters', async () => {
+	it('B-149: the neutrality rule is served verbatim, and is 498 characters', async () => {
 		const res  = await fetchWorker('/v5/pricing');
 		const body = await res.json() as Record<string, unknown>;
 		const referee = body.referee as Record<string, unknown>;
 		expect(referee.neutrality).toBe(NEUTRALITY_RULE);
 		// The length is asserted separately so a whitespace-only edit -- the one
 		// change toBe() reports least legibly -- names itself.
-		expect(String(referee.neutrality)).toHaveLength(434);
+		expect(String(referee.neutrality)).toHaveLength(498);
+	});
+
+	// B-482 T2 (2026-11-14): the rule names who wrote the test and what else Headless
+	// Oracle makes and runs, and the programme route is the mail /pricing prints.
+	it('B-482 T2: /v5/pricing names Headless Oracle\'s interests in the rule and the programme mail route', async () => {
+		const res  = await fetchWorker('/v5/pricing');
+		const referee = (await res.json() as Record<string, unknown>).referee as Record<string, unknown>;
+		expect(String(referee.neutrality)).toContain('Every entry carries an Interests section: Headless Oracle wrote the test, makes Chirindo, one of the tools that can be tested, and runs a witness service;');
+		expect(String(referee.neutrality)).not.toContain('the referee is the author of a competing format');
+		expect(String(referee.programmes)).toContain('write to mike@headlessoracle.com with the subject Programme');
+		expect(String(referee.programmes)).not.toContain('use the intake');
 	});
 
 	it('B-149: every served referee usd is DERIVED from REFEREE_PRICES, and the constant matches Paddle', async () => {
@@ -20205,6 +20217,15 @@ describe('H3a: agent-facing surfaces lead with Chirindo', () => {
 		expect(Array.isArray(x402.resources)).toBe(true);
 		delete x402.resources;
 		rest.x402 = x402;
+		// 2026-11-14 (B-482 T2): on the founder's ruling of 14 Nov the rule's interests
+		// clause changed, and the programme route became the mail /pricing prints. Only
+		// those two strings moved; with the earlier text put back, the rest hashes to the same pin.
+		const referee = { ...(rest.referee as Record<string, unknown>) };
+		expect(referee.neutrality).toBe('A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: Headless Oracle wrote the test, makes Chirindo, one of the tools that can be tested, and runs a witness service; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.');
+		expect(referee.programmes).toBe('by invoice after a conversation; write to mike@headlessoracle.com with the subject Programme');
+		referee.neutrality = 'A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: the referee is the author of a competing format; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.';
+		referee.programmes = 'by invoice after a conversation; use the intake';
+		rest.referee = referee;
 		expect(await sha256Hex(JSON.stringify(rest))).toBe('03c9cd531c91d5a72419c58c98da2c9f39a61a11f82bef12b7396803377777ce');
 	});
 

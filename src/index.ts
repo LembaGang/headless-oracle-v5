@@ -2614,14 +2614,15 @@ type EvidenceService = keyof typeof EVIDENCE_PLAN_BY_SERVICE;
 // upsert writes roughly 6-7 rows (an estimate; H1b measures rows_written).
 const EVIDENCE_PLAN_QUOTA: Record<EvidencePlan, number> = { evidence_starter: 1000, evidence: 3000 };
 
-// Verbatim from LEAD_PLAN_2026-09-07_M5-prices-live.md section 5. 434
+// From LEAD_PLAN_2026-09-07_M5-prices-live.md section 5, with the interests
+// clause replaced on the founder's ruling of 14 Nov 2026 (B-482 T2, D5). 498
 // characters, sha256
-// 576fa9366bdb3ab438229ada26a0e3758fedda6a9a16518f796e0f4041de793b.
+// 89823c5f951ca202aee629df6618e3ab7b7b74dc48ddce1d1f54fe8d22690df0.
 //
 // It is a plain string literal and must stay one: it is a commitment about
 // what money does and does not buy, printed beside the prices, and it is
 // quoted identically on the web surface. Nothing in it is interpolated.
-const REFEREE_NEUTRALITY_RULE = 'A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: the referee is the author of a competing format; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.';
+const REFEREE_NEUTRALITY_RULE = 'A paid entry buys the run and the published record, never the verdict. Every entry carries an Interests section: Headless Oracle wrote the test, makes Chirindo, one of the tools that can be tested, and runs a witness service; independence is not claimed; recomputability from pinned bytes is claimed; the text and the implementation are scored separately; a finding stands until its author corrects the record, and the correction is published beside it. Verification of any receipt is free, always.';
 
 const REFEREE_INTAKE_URL = 'https://headlessoracle.com/v5/referee/intake';
 
@@ -2636,7 +2637,7 @@ function refereePricingBlock(): Record<string, unknown> {
 		introductory_until: REFEREE_INTRODUCTORY_UNTIL,
 		neutrality:         REFEREE_NEUTRALITY_RULE,
 		intake_url:         REFEREE_INTAKE_URL,
-		programmes:         'by invoice after a conversation; use the intake',
+		programmes:         'by invoice after a conversation; write to mike@headlessoracle.com with the subject Programme',
 		services: (Object.keys(REFEREE_PRICES) as RefereeService[]).map(service => ({
 			plan:  service,
 			name:  REFEREE_SERVICE_NAMES[service],

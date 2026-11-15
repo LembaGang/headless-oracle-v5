@@ -533,9 +533,11 @@ names with 400 `UNKNOWN_PLAN`, and `/v5/pricing` did not mention them.
   expires in 30 days, which is right for "alert a human this week" and useless
   for "what did this customer buy".
 - **`/v5/pricing` carries a `referee` object**, every figure a projection of
-  `REFEREE_PRICES`. The neutrality rule is verbatim from
-  `LEAD_PLAN_2026-09-07_M5-prices-live.md` §5 — 434 characters, sha256
-  `576fa9366bdb3ab438229ada26a0e3758fedda6a9a16518f796e0f4041de793b`. It is a
+  `REFEREE_PRICES`. The neutrality rule is
+  `LEAD_PLAN_2026-09-07_M5-prices-live.md` §5 with its interests clause replaced
+  on the founder's ruling of 14 Nov 2026 ("happy with ypur decisions", answering
+  the Lead's question A; B-482 T2, D5): 498 characters, sha256
+  `89823c5f951ca202aee629df6618e3ab7b7b74dc48ddce1d1f54fe8d22690df0`. It is a
   commitment about what money does and does not buy; **do not paraphrase it**,
   and the web surface must quote the same bytes.
 - **`POST /v5/referee/intake`** takes `{implementation, repository_or_url,
