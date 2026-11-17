@@ -1,0 +1,10 @@
+# Keys allowed to sign commits ONLY after the authority floor of ruling 3A
+# (B-484), in ssh-keygen(1) allowed_signers format: <principal> <keytype> <base64 key>.
+#
+# tools/verify-history.sh reads this file only when AUTHORITY_FLOOR is set, and
+# only for commits that strictly descend from it. Every commit at or before the
+# floor is checked against SIGNING_KEYS alone, exactly as before ruling 3A.
+#
+# The line for Claude Code's machine account goes here, under that account's
+# committer email, in a reviewed pull request after the account exists. Until
+# then this file lists no key.

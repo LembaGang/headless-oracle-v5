@@ -1,0 +1,26 @@
+tree 2165c24a4b28f61a4362050f2619579ff5901963
+parent a4740adb616b26a7018ae452cd1c7c31c5ab4c41
+parent a7f92a83e68d32da06c1243b8019ca6b7da7c0f3
+author LembaGang <127877551+LembaGang@users.noreply.github.com> 1781705551 +0000
+committer GitHub <noreply@github.com> 1781705551 +0000
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJqMqtPCRC1aQ7uu5UhlAAA5toQACIcLVgsr8mWByc/Tg5yhhet
+ ZK+pttwKpJCbtb+Jk06vnN6WKwN5w6VwLQHREyi8Bji9SUrWKFRKgvAIfYe1n5rf
+ WZ0ghdDnPNMGghs4WZydxlyqZNYLq/bwXo+FHfxPmBbexcWtqCP6ppKzquKnFXS9
+ A9ZArsxbYMDJ4xjOwa9m8HCcZybwKrsSKkGguIYE5uTdWlWSOif19QRkUji+WFIw
+ +X9a5fJSztkpdzn02wpNhUq1YvxBQLdGsleWjGSeqgBbz//M0jzQdLHqqppGSl0K
+ LncJn/6PUIYBx87t0tc0oCitLaqF1pG/yy2E4PTd2ZrnzwiPPlpV0y5BsWwY6WU9
+ Dpmbdr3ymxLoD6DU+6OtLf5qfO28sXqDaSqpQP5SWh1Ghk6iRCo1CO0TziMlsPFA
+ Z752nDrSurF3o4Wt8bE1ecQ86Ziv5TzLok/qv+X9Yhj2GGoqWYDSazTk3mouSsV8
+ prXkpmKHOfRSWjdYEsiEhyCjEeqhynJDgXWUbWb2XRpR52lrhVr/JFcLq0N7RmYD
+ QfBq0J2GH2vGSuqxjSQYi92iKHxWO1015t6/CvSebmWpHXYqBIaJlyCM+F3/IihV
+ 39yXUki64bpOHKCNZ4TBI8NdlUoKy9vO+msK4XTFqWrFM4XOaUGYx5hDiwoeHeT/
+ BwYWnketbQ+oHG/asWxL
+ =VLyj
+ -----END PGP SIGNATURE-----
+ 
+
+Merge pull request #31 from LembaGang/fix/v1-safe-to-trade-scan-fail-closed
+
+fix(/v1/safe-to-trade): CROSS_VENUE_SCAN_UNAVAILABLE trips safe=false + scan-failure counter
