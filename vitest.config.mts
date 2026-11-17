@@ -3,6 +3,11 @@ import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
 export default defineWorkersConfig({
 	test: {
 		exclude: ['test/integration/**', 'test/property/**', 'node_modules/**'],
+		// B-488: vitest's defaults (5 s per test, 10 s per hook) timed out on the
+		// laptop under memory pressure (2026-11-16). A longer limit only waits longer
+		// for a slow test; a failing assertion still fails.
+		testTimeout: 20_000,
+		hookTimeout: 20_000,
 		poolOptions: {
 			workers: {
 				wrangler: { configPath: './wrangler.toml' },
