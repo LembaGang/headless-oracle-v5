@@ -1,0 +1,100 @@
+{
+  "schema_version": "v5.1",
+  "description": "The signed field sets of schema_version v5.1. v5.1 is served on request only (query parameter schema_version=v5.1; MCP get_market_status argument schema_version); every route serves v5.0 by default, unchanged. v5.1 adds two signed string fields to market receipts, session_phase and closure_reason, and two members to each entry of the /v5/batch exchanges map.",
+  "canonicalization": "Keep exactly signed_fields; sort keys (JavaScript default sort); JSON.stringify with no whitespace; UTF-8; Ed25519. Every value is a string.",
+  "introduced_by": "B-490 (4)",
+  "session_phase_values": [
+    "pre_open",
+    "regular",
+    "lunch_break",
+    "post_close",
+    "maintenance",
+    "non_trading_day",
+    "unknown"
+  ],
+  "closure_reason_values": [
+    "none",
+    "weekend",
+    "holiday",
+    "outside_hours",
+    "early_close",
+    "scheduled_break",
+    "operator_override",
+    "feed_reported_not_open",
+    "calendar_unavailable",
+    "determination_error"
+  ],
+  "field_sets": [
+    {
+      "id": "M1",
+      "receipt_kind": "market",
+      "change": "session_phase and closure_reason added (v5.1 begins)",
+      "signed_fields": [
+        "closure_reason",
+        "coverage",
+        "expires_at",
+        "halt_detection",
+        "issued_at",
+        "issuer",
+        "mic",
+        "public_key_id",
+        "receipt_id",
+        "receipt_mode",
+        "schema_version",
+        "session_phase",
+        "source",
+        "status"
+      ],
+      "override_signed_fields": [
+        "closure_reason",
+        "coverage",
+        "expires_at",
+        "halt_detection",
+        "issued_at",
+        "issuer",
+        "mic",
+        "public_key_id",
+        "reason",
+        "receipt_id",
+        "receipt_mode",
+        "schema_version",
+        "session_phase",
+        "source",
+        "status"
+      ],
+      "coverage_members": [
+        "determination_tier",
+        "consulted",
+        "not_consulted",
+        "realtime_halt_feed_scope",
+        "unknown_reason",
+        "feed_state",
+        "feed_last_run"
+      ],
+      "current": true
+    },
+    {
+      "id": "B1",
+      "receipt_kind": "batch_envelope",
+      "change": "same top-level fields as the v5.0 envelope; each exchanges entry gains session_phase and closure_reason, and an entry the override re-check found signs source OVERRIDE",
+      "signed_fields": [
+        "all_open",
+        "batch_id",
+        "correlation_id",
+        "exchanges",
+        "expires_at",
+        "issued_at",
+        "issuer",
+        "public_key_id",
+        "schema_version"
+      ],
+      "exchange_members": [
+        "status",
+        "source",
+        "session_phase",
+        "closure_reason"
+      ],
+      "current": true
+    }
+  ]
+}

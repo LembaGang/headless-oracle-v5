@@ -29,6 +29,12 @@ export interface SignedReceipt {
   halt_detection: 'active' | 'schedule_only';
   receipt_mode: ReceiptMode;
   schema_version: string;
+  /** Signed since 2026-09-07 (a JSON-encoded string; JSON.parse it after verifying). */
+  coverage?: string;
+  /** schema_version v5.1 only (ask with schema_version=v5.1): where the clock sits against the schedule. */
+  session_phase?: 'pre_open' | 'regular' | 'lunch_break' | 'post_close' | 'maintenance' | 'non_trading_day' | 'unknown';
+  /** schema_version v5.1 only: why the status is what it is; 'none' exactly when OPEN by schedule. */
+  closure_reason?: 'none' | 'weekend' | 'holiday' | 'outside_hours' | 'early_close' | 'scheduled_break' | 'operator_override' | 'feed_reported_not_open' | 'calendar_unavailable' | 'determination_error';
   public_key_id: string;
   signature: string;
 }

@@ -45,6 +45,9 @@ class SignedReceipt(BaseModel):
     source: StatusSource
     reason: str | None = None
     halt_detection: str = Field(description="'active' or 'schedule_only'")
+    coverage: str | None = Field(default=None, description="Signed JSON-encoded string; json.loads it after verifying")
+    session_phase: str | None = Field(default=None, description="schema_version v5.1 only (ask with schema_version=v5.1)")
+    closure_reason: str | None = Field(default=None, description="schema_version v5.1 only; 'none' exactly when OPEN by schedule")
     receipt_mode: ReceiptMode
     schema_version: str
     public_key_id: str

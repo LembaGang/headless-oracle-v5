@@ -1769,31 +1769,51 @@ function isInSession(
 	return true;
 }
 
-export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
+// B-490 (4): where the clock sits against the published schedule, and why the
+// status is what it is. Signed only in schema_version v5.1 receipts (see
+// docs/receipt-spec.md, "schema_version v5.1"); v5.0 receipts are unchanged.
+// No value claims an unscheduled halt: a halt the feed reported is
+// feed_reported_not_open, which says only what the feed said.
+export type SessionPhase = 'pre_open' | 'regular' | 'lunch_break' | 'post_close' | 'maintenance' | 'non_trading_day' | 'unknown';
+export type ClosureReason =
+	| 'none' | 'weekend' | 'holiday' | 'outside_hours' | 'early_close' | 'scheduled_break'
+	| 'operator_override' | 'feed_reported_not_open' | 'calendar_unavailable' | 'determination_error';
+const SESSION_PHASES: readonly SessionPhase[] = ['pre_open', 'regular', 'lunch_break', 'post_close', 'maintenance', 'non_trading_day', 'unknown'];
+const CLOSURE_REASONS: readonly ClosureReason[] = ['none', 'weekend', 'holiday', 'outside_hours', 'early_close', 'scheduled_break', 'operator_override', 'feed_reported_not_open', 'calendar_unavailable', 'determination_error'];
+// Functions, because the Workers runtime rejects non-function exports.
+export function sessionPhases(): SessionPhase[] { return [...SESSION_PHASES]; }
+export function closureReasons(): ClosureReason[] { return [...CLOSURE_REASONS]; }
+
+type ScheduleDetail = MarketStatusResult & { phase: SessionPhase; closure: ClosureReason };
+
+// The schedule engine. Every branch returns exactly one (status, phase,
+// closure) triple; getScheduleStatus below is the same answer without the
+// two new members, for every caller that predates them.
+export function getScheduleDetail(mic: string, now: Date): ScheduleDetail {
 	const config = MARKET_CONFIGS[mic];
-	if (!config) return { status: 'UNKNOWN', source: 'SCHEDULE', reason: 'UNSUPPORTED_MIC' };
+	if (!config) return { status: 'UNKNOWN', source: 'SCHEDULE', reason: 'UNSUPPORTED_MIC', phase: 'unknown', closure: 'calendar_unavailable' };
 
 	// B-490 (1): around-the-clock venues are OPEN at every instant (no calendar).
-	if (config.alwaysOpen) return { status: 'OPEN', source: 'SCHEDULE' };
+	if (config.alwaysOpen) return { status: 'OPEN', source: 'SCHEDULE', phase: 'regular', closure: 'none' };
 
 	const { weekday, year, dateStr, hour, minute } = getLocalTimeParts(config.timezone, now);
 
 	// Weekend — Middle Eastern exchanges use ['Fri', 'Sat']; default is ['Sat', 'Sun']
 	const weekends = config.weekends ?? ['Sat', 'Sun'];
 	if (weekends.includes(weekday)) {
-		return { status: 'CLOSED', source: 'SCHEDULE' };
+		return { status: 'CLOSED', source: 'SCHEDULE', phase: 'non_trading_day', closure: 'weekend' };
 	}
 
 	// Fail-closed guard: if this year has no holiday data, returning OPEN would be wrong.
 	// An agent cannot safely distinguish "no holidays" from "we forgot to update the list".
 	const yearHolidays = config.holidays[year];
 	if (!yearHolidays) {
-		return { status: 'UNKNOWN', source: 'SYSTEM', reason: 'NO_HOLIDAY_DATA_FOR_YEAR' };
+		return { status: 'UNKNOWN', source: 'SYSTEM', reason: 'NO_HOLIDAY_DATA_FOR_YEAR', phase: 'unknown', closure: 'calendar_unavailable' };
 	}
 
 	// Full holiday
 	if (yearHolidays.includes(dateStr)) {
-		return { status: 'CLOSED', source: 'SCHEDULE' };
+		return { status: 'CLOSED', source: 'SCHEDULE', phase: 'non_trading_day', closure: 'holiday' };
 	}
 
 	const timeMinutes = hour * 60 + minute;
@@ -1804,8 +1824,9 @@ export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 		const halfDay = config.halfDays.find((h) => h.date === dateStr);
 		if (halfDay) {
 			const halfCloseMinutes = halfDay.closeHour * 60 + halfDay.closeMinute;
-			const open = timeMinutes >= openMinutes && timeMinutes < halfCloseMinutes;
-			return { status: open ? 'OPEN' : 'CLOSED', source: 'SCHEDULE' };
+			if (timeMinutes < openMinutes) return { status: 'CLOSED', source: 'SCHEDULE', phase: 'pre_open', closure: 'outside_hours' };
+			if (timeMinutes < halfCloseMinutes) return { status: 'OPEN', source: 'SCHEDULE', phase: 'regular', closure: 'none' };
+			return { status: 'CLOSED', source: 'SCHEDULE', phase: 'post_close', closure: 'early_close' };
 		}
 	}
 
@@ -1817,7 +1838,7 @@ export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 		const closeMinutes = config.closeHour * 60 + config.closeMinute;
 		// Maintenance window: always CLOSED
 		if (timeMinutes >= closeMinutes && timeMinutes < openMinutes) {
-			return { status: 'CLOSED', source: 'SCHEDULE' };
+			return { status: 'CLOSED', source: 'SCHEDULE', phase: 'maintenance', closure: 'scheduled_break' };
 		}
 		// B-490 (2): the evening part (from today's open hour) begins the NEXT
 		// day's session, so it exists only when tomorrow is not a rest day. The
@@ -1827,7 +1848,7 @@ export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 			const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 			const { weekday: nextWeekday } = getLocalTimeParts(config.timezone, tomorrow);
 			if (weekends.includes(nextWeekday)) {
-				return { status: 'CLOSED', source: 'SCHEDULE' };
+				return { status: 'CLOSED', source: 'SCHEDULE', phase: 'post_close', closure: 'outside_hours' };
 			}
 		}
 		// In the overnight tail (before today's open hour): confirm yesterday was a trading day.
@@ -1837,20 +1858,32 @@ export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 			const { weekday: prevWeekday, dateStr: prevDateStr, year: prevYear } = getLocalTimeParts(config.timezone, yesterday);
 			const prevWeekendsArr = config.weekends ?? ['Sat', 'Sun'];
 			if (prevWeekendsArr.includes(prevWeekday)) {
-				return { status: 'CLOSED', source: 'SCHEDULE' };
+				return { status: 'CLOSED', source: 'SCHEDULE', phase: 'pre_open', closure: 'outside_hours' };
 			}
 			const prevHolidays = config.holidays[prevYear];
 			if (prevHolidays && prevHolidays.includes(prevDateStr)) {
-				return { status: 'CLOSED', source: 'SCHEDULE' };
+				return { status: 'CLOSED', source: 'SCHEDULE', phase: 'pre_open', closure: 'outside_hours' };
 			}
 		}
-		return { status: 'OPEN', source: 'SCHEDULE' };
+		return { status: 'OPEN', source: 'SCHEDULE', phase: 'regular', closure: 'none' };
 	}
 
-	// Normal session (with optional lunch break)
+	// Normal session (with optional lunch break). The same answer as isInSession,
+	// with the three ways of being outside it told apart.
 	const closeMinutes = config.closeHour * 60 + config.closeMinute;
-	const open = isInSession(timeMinutes, openMinutes, closeMinutes, config.lunchBreak);
-	return { status: open ? 'OPEN' : 'CLOSED', source: 'SCHEDULE' };
+	if (timeMinutes < openMinutes) return { status: 'CLOSED', source: 'SCHEDULE', phase: 'pre_open', closure: 'outside_hours' };
+	if (timeMinutes >= closeMinutes) return { status: 'CLOSED', source: 'SCHEDULE', phase: 'post_close', closure: 'outside_hours' };
+	if (!isInSession(timeMinutes, openMinutes, closeMinutes, config.lunchBreak)) {
+		return { status: 'CLOSED', source: 'SCHEDULE', phase: 'lunch_break', closure: 'scheduled_break' };
+	}
+	return { status: 'OPEN', source: 'SCHEDULE', phase: 'regular', closure: 'none' };
+}
+
+export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
+	const d = getScheduleDetail(mic, now);
+	return d.status === 'UNKNOWN'
+		? { status: 'UNKNOWN', source: d.source, reason: d.reason }
+		: { status: d.status, source: d.source };
 }
 
 // B-490: read-only views of the calendar data, for tests that walk every
@@ -9429,6 +9462,12 @@ GET https://api.headlessoracle.com/v5/demo?mic=XNYS
 }
 \`\`\`
 
+### schema_version v5.1 (on request)
+Add \`schema_version=v5.1\` to the query of /v5/status, /v5/demo, /v5/status/x402, /v5/status/realtime, /v1/status/{MIC} or /v5/batch (MCP get_market_status: the argument \`schema_version\`). Without it every route serves v5.0, unchanged; any other value is refused with 400 UNSUPPORTED_SCHEMA_VERSION. A v5.1 receipt also signs two strings:
+- \`session_phase\`: \`pre_open\`, \`regular\`, \`lunch_break\`, \`post_close\`, \`maintenance\`, \`non_trading_day\` or \`unknown\` (where the clock sits against the published schedule).
+- \`closure_reason\`: \`none\` (exactly when OPEN by schedule), \`weekend\`, \`holiday\`, \`outside_hours\`, \`early_close\`, \`scheduled_break\`, \`operator_override\`, \`feed_reported_not_open\` (the halt monitor's feed said the venue was not open; no claim about why), \`calendar_unavailable\` or \`determination_error\`.
+No value claims an unscheduled halt. The signed field list of each version is at /v5/keys \`canonical_payload_spec.versions\`.
+
 ## Verification
 Ed25519 signature verification steps:
 1. Receive receipt JSON
@@ -9783,6 +9822,11 @@ X-Oracle-Key: your_api_key
 **halt_detection field:**
 - \`"active"\` — real-time intraday halt detection via Polygon.io + Alpaca. XNYS and XNAS only. Unscheduled circuit breaker halts will be detected within ~1 minute.
 - \`"schedule_only"\` — calendar hours and holidays are authoritative, but intraday circuit breaker halts are NOT detected. All 21 non-US exchanges. Agents relying on halt detection for execution safety should note this limitation.
+
+**schema_version v5.1 (on request):** add \`schema_version=v5.1\` to the query of /v5/status, /v5/demo, /v5/status/x402, /v5/status/realtime, /v1/status/{MIC} or /v5/batch (MCP get_market_status: the argument \`schema_version\`). Without it every route serves v5.0, unchanged. A v5.1 receipt signs two more strings:
+- \`session_phase\`: where the clock sits against the published schedule: \`pre_open\`, \`regular\`, \`lunch_break\`, \`post_close\`, \`maintenance\`, \`non_trading_day\` or \`unknown\`.
+- \`closure_reason\`: why the status is what it is: \`none\` (exactly when OPEN by schedule), \`weekend\`, \`holiday\`, \`outside_hours\`, \`early_close\`, \`scheduled_break\`, \`operator_override\`, \`feed_reported_not_open\` (the halt monitor's feed said the venue was not open; no claim about why), \`calendar_unavailable\` or \`determination_error\`.
+No value claims an unscheduled halt. Verify a v5.1 receipt over \`canonical_payload_spec.versions["v5.1"]\` at /v5/keys; v5.0 lists stay where they were.
 
 ---
 
@@ -11644,7 +11688,8 @@ const MCP_TOOLS = [
 			'SAFE TO EXECUTE check: status must be OPEN and receipt must not be expired. ' +
 			'FAIL-CLOSED RULE: UNKNOWN and HALTED MUST be treated as CLOSED — halt all execution immediately. Do not act on a receipt where expires_at is in the past (TTL = 60s). If this tool is unreachable, the agent MUST NOT execute the trade. ' +
 			'ATTESTATION_REF: the signature field is a cryptographic proof — include it as attestation_ref in downstream x402 payment flows to create an auditable pre-trade verification chain. ' +
-			'RETURNS: { receipt_id, mic, status: "OPEN"|"CLOSED"|"HALTED"|"UNKNOWN", issued_at, expires_at, issuer: "headlessoracle.com", source, halt_detection, receipt_mode: "live"|"demo", schema_version: "v5.0", public_key_id, signature (hex Ed25519) }. ' +
+			'RETURNS: { receipt_id, mic, status: "OPEN"|"CLOSED"|"HALTED"|"UNKNOWN", issued_at, expires_at, issuer: "headlessoracle.com", source, halt_detection, coverage, receipt_mode: "live"|"demo", schema_version: "v5.0", public_key_id, signature (hex Ed25519) }. ' +
+			'With the argument schema_version "v5.1" the receipt also signs session_phase and closure_reason (see /v5/keys canonical_payload_spec.versions). ' +
 			'Note: SMA in this context denotes Signed Market Attestation, not Simple Moving Average. ' +
 			'LATENCY: sub-200ms p95 from Cloudflare edge. ' +
 			'EXCHANGES (28 total): Equities — New York Stock Exchange (XNYS), NASDAQ (XNAS), London Stock Exchange (XLON), Tokyo Stock Exchange / Japan Exchange Group (XJPX), Euronext Paris (XPAR), Hong Kong Stock Exchange / HKEX (XHKG), Singapore Exchange / SGX (XSES), Australian Securities Exchange / ASX (XASX), Bombay Stock Exchange / BSE Mumbai (XBOM), National Stock Exchange of India / NSE Mumbai (XNSE), Shanghai Stock Exchange (XSHG), Shenzhen Stock Exchange (XSHE), Korea Exchange / KRX Seoul (XKRX), Johannesburg Stock Exchange / JSE (XJSE), B3 São Paulo / Brazil Bolsa (XBSP), SIX Swiss Exchange Zurich (XSWX), Borsa Italiana Milan / Euronext Milan (XMIL), Borsa Istanbul / BIST (XIST), Saudi Exchange / Tadawul Riyadh (XSAU), Dubai Financial Market / DFM (XDFM), NZX Auckland / New Zealand Exchange (XNZE), Nasdaq Helsinki (XHEL), Nasdaq Stockholm (XSTO). Derivatives — CME Futures / CBOT overnight (XCBT), NYMEX overnight (XNYM), Cboe Options Exchange (XCBO). Crypto 24/7 — Coinbase (XCOI), Binance (XBIN).',
@@ -11657,6 +11702,11 @@ const MCP_TOOLS = [
 						'ISO 10383 Market Identifier Code. Required. Examples: XNYS=NYSE, XNAS=NASDAQ, XLON=London, XJPX=Tokyo, XCBT=CME Futures, XCOI=Coinbase (24/7), XBIN=Binance (24/7). ' +
 						'Call list_exchanges to discover all 28 supported codes.',
 					enum: ['XNYS', 'XNAS', 'XLON', 'XJPX', 'XPAR', 'XHKG', 'XSES', 'XASX', 'XBOM', 'XNSE', 'XSHG', 'XSHE', 'XKRX', 'XJSE', 'XBSP', 'XSWX', 'XMIL', 'XIST', 'XSAU', 'XDFM', 'XNZE', 'XHEL', 'XSTO', 'XCBT', 'XNYM', 'XCBO', 'XCOI', 'XBIN'],
+				},
+				schema_version: {
+					type: 'string',
+					enum: ['v5.0', 'v5.1'],
+					description: 'Optional. "v5.1" signs session_phase and closure_reason as well. Default "v5.0".',
 				},
 			},
 			additionalProperties: false,
@@ -11830,7 +11880,9 @@ const OPENAPI_SPEC = {
 					reason:         { type: 'string', description: 'Present when source is OVERRIDE.' },
 					halt_detection: { type: 'string', enum: ['active', 'schedule_only'], description: '"active" = real-time intraday halt detection via external API (XNYS, XNAS only). "schedule_only" = calendar hours + holidays only; unscheduled intraday circuit breaker halts are not detected. Agents must adjust confidence accordingly.' },
 					receipt_mode:   { type: 'string', enum: ['demo', 'live'], description: "'demo' for unauthenticated /v5/demo; 'live' for /v5/status, /v5/batch, and MCP tool receipts." },
-					schema_version: { type: 'string', example: 'v5.0', description: 'Receipt schema version. Consumers should verify this matches the version they were built against.' },
+					schema_version: { type: 'string', example: 'v5.0', enum: ['v5.0', 'v5.1'], description: 'Receipt schema version. Consumers should verify this matches the version they were built against. v5.0 unless the request asked for v5.1 (query parameter schema_version).' },
+					session_phase:  { type: 'string', enum: ['pre_open', 'regular', 'lunch_break', 'post_close', 'maintenance', 'non_trading_day', 'unknown'], description: 'v5.1 only, signed. Where the clock sits against the published schedule.' },
+					closure_reason: { type: 'string', enum: ['none', 'weekend', 'holiday', 'outside_hours', 'early_close', 'scheduled_break', 'operator_override', 'feed_reported_not_open', 'calendar_unavailable', 'determination_error'], description: 'v5.1 only, signed. Why the status is what it is; none exactly when status is OPEN by schedule. No value claims an unscheduled halt.' },
 					public_key_id:  { type: 'string', example: 'key_2026_v1' },
 					signature:      { type: 'string', description: 'Ed25519 signature of canonical payload as 128-char hex string.' },
 				},
@@ -13727,10 +13779,65 @@ export function openapiOperationId(method: string, path: string): string {
 		}
 	}
 }
+// B-490 (4): every route that signs a market receipt takes schema_version.
+{
+	const SCHEMA_VERSION_PARAM = {
+		name: 'schema_version', in: 'query', required: false,
+		schema: { type: 'string', enum: ['v5.0', 'v5.1'], default: 'v5.0' },
+		description: 'Optional. v5.1 signs session_phase and closure_reason as well; any other value is refused with 400 UNSUPPORTED_SCHEMA_VERSION. Default v5.0.',
+	};
+	for (const p of ['/v5/demo', '/v5/status', '/v5/batch', '/v5/status/realtime', '/v5/status/x402', '/v1/status/{mic}', '/v1/status/{MIC}']) {
+		const op = (OPENAPI_SPEC.paths as Record<string, Record<string, { parameters?: unknown[] }>>)[p]?.get;
+		if (op) op.parameters = [...(op.parameters ?? []), SCHEMA_VERSION_PARAM];
+	}
+}
 
 // ─── Signed Receipt Builder ───────────────────────────────────────────────────
 // Implements the 4-tier fail-closed architecture. Called by both the REST routes
 // (/v5/demo, /v5/status) and the MCP tool, so the same safety guarantees apply.
+
+// B-490 (4): the schema versions a market receipt can be signed in. v5.0 is the
+// default of every route and is unchanged; v5.1 adds two signed fields,
+// session_phase and closure_reason, and is served only on request: the query
+// parameter `schema_version=v5.1` on /v5/status, /v5/demo, /v5/status/x402,
+// /v5/status/realtime, /v1/status/{MIC} and /v5/batch, and the argument
+// `schema_version` of the MCP tool get_market_status. A query parameter, not a
+// header, because it travels with the URL: an x402 payment binds the resource
+// URL, links and caches keep it, and an agent that can only issue a GET can
+// still ask for it. Any other value is refused with 400 before any work.
+export type SchemaVersion = 'v5.0' | 'v5.1';
+const SCHEMA_VERSIONS: readonly SchemaVersion[] = ['v5.0', 'v5.1'];
+
+export function requestedSchemaVersion(value: string | null | undefined): SchemaVersion | null {
+	if (value === null || value === undefined) return 'v5.0';
+	return (SCHEMA_VERSIONS as readonly string[]).includes(value) ? (value as SchemaVersion) : null;
+}
+const V50_RECEIPT_FIELDS = ['coverage', 'expires_at', 'halt_detection', 'issued_at', 'issuer', 'mic', 'public_key_id', 'receipt_id', 'receipt_mode', 'schema_version', 'source', 'status'];
+const V50_BATCH_FIELDS   = ['all_open', 'batch_id', 'correlation_id', 'exchanges', 'expires_at', 'issued_at', 'issuer', 'public_key_id', 'schema_version'];
+const withField = (list: string[], ...more: string[]) => [...list, ...more].sort();
+const SIGNED_FIELD_SETS = {
+	'v5.0': {
+		receipt_fields:         V50_RECEIPT_FIELDS,
+		override_fields:        withField(V50_RECEIPT_FIELDS, 'reason'),
+		batch_fields:           V50_BATCH_FIELDS,
+		batch_exchange_members: ['status', 'source'],
+	},
+	'v5.1': {
+		receipt_fields:         withField(V50_RECEIPT_FIELDS, 'closure_reason', 'session_phase'),
+		override_fields:        withField(V50_RECEIPT_FIELDS, 'closure_reason', 'reason', 'session_phase'),
+		batch_fields:           V50_BATCH_FIELDS,
+		batch_exchange_members: ['status', 'source', 'session_phase', 'closure_reason'],
+		session_phase_values:   SESSION_PHASES,
+		closure_reason_values:  CLOSURE_REASONS,
+	},
+} as const;
+function unsupportedSchemaVersionBody(value: string): Record<string, unknown> {
+	return {
+		error:     'UNSUPPORTED_SCHEMA_VERSION',
+		message:   `schema_version ${value} is not served. Omit it for v5.0 (the default), or ask for v5.1.`,
+		supported: [...SCHEMA_VERSIONS],
+	};
+}
 
 async function buildSignedReceipt(
 	mic: string,
@@ -13738,6 +13845,7 @@ async function buildSignedReceipt(
 	now: Date,
 	expiresAt: string,
 	mode: 'demo' | 'live',
+	version: SchemaVersion = 'v5.0',
 ): Promise<{ receipt: Record<string, unknown>; status: number }> {
 	try {
 		// ─ TIER 0: Manual Override (circuit breakers, emergency halts) ─
@@ -13748,7 +13856,7 @@ async function buildSignedReceipt(
 				// origin; it throws on an entry the oracle cannot sign (Tier 2).
 				const override = parseOverrideEntry(overrideRaw, now);
 				if (override) {
-					const payload = {
+					const base = {
 						receipt_id:     crypto.randomUUID(),
 						issued_at:      now.toISOString(),
 						expires_at:     expiresAt,
@@ -13764,6 +13872,17 @@ async function buildSignedReceipt(
 						schema_version: 'v5.0',
 						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 					};
+					// v5.1: the phase is the schedule's; the reason is the entry's
+					// origin (recorded, or inferred for the old monitor's own entry;
+					// any other entry with no origin reads as an operator's: B-490 (3)).
+					const payload = version === 'v5.1'
+						? {
+							...base,
+							schema_version: 'v5.1',
+							session_phase:  getScheduleDetail(mic, now).phase,
+							closure_reason: override.origin === 'monitor' ? 'feed_reported_not_open' : 'operator_override',
+						}
+						: base;
 					const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
 					return { receipt: { ...payload, signature }, status: 200 };
 				}
@@ -13773,9 +13892,9 @@ async function buildSignedReceipt(
 		// ─ TIER 1: Normal schedule-based operation ───────────────────
 		// Not destructured: the UNKNOWN branch of MarketStatusResult carries a
 		// required `reason`, and only the un-destructured value narrows.
-		const sched = getScheduleStatus(mic, now);
+		const sched = getScheduleDetail(mic, now);
 		const { status, source } = sched;
-		const payload = {
+		const base = {
 			receipt_id:     crypto.randomUUID(),
 			issued_at:      now.toISOString(),
 			expires_at:     expiresAt,
@@ -13795,6 +13914,9 @@ async function buildSignedReceipt(
 			schema_version: 'v5.0',
 			public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 		};
+		const payload = version === 'v5.1'
+			? { ...base, schema_version: 'v5.1', session_phase: sched.phase, closure_reason: sched.closure }
+			: base;
 		const signature = await signPayload(payload, env.ED25519_PRIVATE_KEY);
 		return { receipt: { ...payload, signature }, status: 200 };
 
@@ -13804,7 +13926,7 @@ async function buildSignedReceipt(
 		console.error(`ORACLE_TIER_1_FAILURE: ${msg}`);
 
 		try {
-			const safePayload = {
+			const safeBase = {
 				receipt_id:     crypto.randomUUID(),
 				issued_at:      now.toISOString(),
 				expires_at:     expiresAt,
@@ -13822,6 +13944,9 @@ async function buildSignedReceipt(
 				schema_version: 'v5.0',
 				public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 			};
+			const safePayload = version === 'v5.1'
+				? { ...safeBase, schema_version: 'v5.1', session_phase: 'unknown', closure_reason: 'determination_error' }
+				: safeBase;
 			const safeSig = await signPayload(safePayload, env.ED25519_PRIVATE_KEY);
 			return { receipt: { ...safePayload, signature: safeSig }, status: 200 };
 
@@ -14618,9 +14743,17 @@ async function handleMcpMessage(request: Request, env: Env, ctx: ExecutionContex
 						}) }],
 					});
 				}
+				// B-490 (4): the argument schema_version asks for v5.1; absent is v5.0.
+				const mcpSchema = requestedSchemaVersion(typeof args.schema_version === 'string' ? args.schema_version : args.schema_version === undefined ? null : String(args.schema_version));
+				if (mcpSchema === null) {
+					return rpcResult({
+						isError: true,
+						content: [{ type: 'text', text: JSON.stringify(unsupportedSchemaVersionBody(String(args.schema_version))) }],
+					});
+				}
 				const now       = new Date();
 				const expiresAt = new Date(now.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
-				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, 'live');
+				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, 'live', mcpSchema);
 				return rpcResult({
 					...(status === 500 ? { isError: true } : {}),
 					content: [{ type: 'text', text: JSON.stringify(receipt) }],
@@ -15515,6 +15648,17 @@ export default {
 				});
 		}
 
+		// B-490 (4): a receipt route asked for a schema version it does not serve is
+		// refused first, before any authentication, payment or counting.
+		const askedSchemaVersion = requestedSchemaVersion(url.searchParams.get('schema_version'));
+		if (
+			askedSchemaVersion === null &&
+			(['/v5/status', '/v5/demo', '/v5/status/x402', '/v5/status/realtime', '/v5/batch'].includes(url.pathname) || url.pathname.startsWith('/v1/status/'))
+		) {
+			return json(unsupportedSchemaVersionBody(url.searchParams.get('schema_version') ?? ''), 400);
+		}
+		const schemaVersion: SchemaVersion = askedSchemaVersion ?? 'v5.0';
+
 		try {
 			// ── Phase 3: legacy master key hard expiry (April 1 2026) ────────────
 			// Blocks authenticated endpoints only — public endpoints are unaffected.
@@ -15599,7 +15743,7 @@ export default {
 				// as /v5/status so the two paths can never drift in receipt shape or signature.
 				const x402IssuedAt = now;
 				const x402Expires  = new Date(x402IssuedAt.getTime() + RECEIPT_TTL_SECONDS * 1000).toISOString();
-				const { receipt: x402Receipt, status: x402Status } = await buildSignedReceipt(mic, env, x402IssuedAt, x402Expires, 'live');
+				const { receipt: x402Receipt, status: x402Status } = await buildSignedReceipt(mic, env, x402IssuedAt, x402Expires, 'live', schemaVersion);
 				// Archive + Merkle-track exactly as /v5/status does for live receipts.
 				if (typeof ctx?.waitUntil === 'function' && env.ORACLE_TELEMETRY && typeof x402Receipt['receipt_id'] === 'string') {
 					const archiveDate = x402IssuedAt.toISOString().slice(0, 10);
@@ -16013,6 +16157,13 @@ export default {
 						// (strings-only canonical form, matching the /v5/batch precedent for
 						// `exchanges` and `all_open`). Consumers JSON.parse them after sig verify.
 						safe_to_trade_fields: ['cross_venue', 'expires_at', 'instrument', 'issued_at', 'issuer', 'max_age', 'public_key_id', 'reasons', 'receipt_id', 'receipt_mode', 'safe', 'schema_version', 'venue', 'venue_source', 'venue_status'],
+						// B-490 (4): the signed field lists of each schema_version a market
+						// receipt or a batch can carry. The members above are v5.0's and
+						// stay exactly as they were, so a reader of the old shape keeps
+						// working. Pick the list by the receipt's own schema_version.
+						default_schema_version: 'v5.0',
+						schema_version_request: 'Add the query parameter schema_version=v5.1 (MCP get_market_status: the argument schema_version) to receive v5.1. Without it every route serves v5.0.',
+						versions: SIGNED_FIELD_SETS,
 					},
 				}));
 			}
@@ -16080,7 +16231,7 @@ export default {
 				}
 
 				// Also return the signed receipt for this MIC
-				const { receipt, status: receiptStatus } = await buildSignedReceipt(mic, env, now, expiresAt, 'live');
+				const { receipt, status: receiptStatus } = await buildSignedReceipt(mic, env, now, expiresAt, 'live', schemaVersion);
 
 				return await withMigrationNotice(json({
 					mic,
@@ -16110,7 +16261,7 @@ export default {
 					incrementKvCounter(`unauth_calls:${now.toISOString().slice(0, 10)}`, env, ctx);
 					incrementKvCounter(`funnel_demo:fallback:${now.toISOString().slice(0, 10)}`, env, ctx);
 				}
-				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode);
+				const { receipt, status } = await buildSignedReceipt(mic, env, now, expiresAt, mode, schemaVersion);
 				// Audit: log receipt to Supabase for authenticated /v5/status calls (non-blocking)
 				if (mode === 'live' && typeof ctx?.waitUntil === 'function') {
 					const auditApiKey = request.headers.get('X-Oracle-Key') ?? '';
@@ -16280,7 +16431,7 @@ export default {
 
 				// Build signed receipts in parallel — each is independently signed
 				const results = await Promise.all(
-					requestedMics.map((mic) => buildSignedReceipt(mic, env, now, expiresAt, 'live')),
+					requestedMics.map((mic) => buildSignedReceipt(mic, env, now, expiresAt, 'live', schemaVersion)),
 				);
 
 				// If signing itself is offline (Tier 3), fail the whole batch — signing failure is total
@@ -16308,7 +16459,7 @@ export default {
 							const ov = parseOverrideEntry(raw, now);
 							if (ov) {
 								console.log(`OVERRIDE_APPLIED: ${mic} -> ${ov.status}`);
-								return { mic, status: ov.status };
+								return { mic, status: ov.status, origin: ov.origin };
 							}
 						} catch { /* malformed or invalid: ignored here */ }
 						return null;
@@ -16363,13 +16514,26 @@ export default {
 				const batchId = crypto.randomUUID();
 
 					// Build exchanges map for the atomic batch view
-					const exchanges: Record<string, { status: string; source: string }> = {};
+					const exchanges: Record<string, { status: string; source: string; session_phase?: string; closure_reason?: string }> = {};
 					for (let i = 0; i < requestedMics.length; i++) {
 						const r = results[i].receipt as Record<string, unknown>;
-						exchanges[requestedMics[i]] = {
-							status: (effectiveStatuses[i] || r.status) as string,
-							source: (r.source ?? 'SCHEDULE') as string,
-						};
+						if (schemaVersion === 'v5.1') {
+							// B-490 (4): in v5.1 an entry the re-check found signs the
+							// override's source and reason, never SCHEDULE. Members in
+							// this order: status, source, session_phase, closure_reason.
+							const ov = overrideRecheck[i];
+							exchanges[requestedMics[i]] = {
+								status:         (effectiveStatuses[i] || r.status) as string,
+								source:         ov ? 'OVERRIDE' : (r.source ?? 'SCHEDULE') as string,
+								session_phase:  (r.session_phase ?? 'unknown') as string,
+								closure_reason: ov ? (ov.origin === 'monitor' ? 'feed_reported_not_open' : 'operator_override') : (r.closure_reason ?? 'determination_error') as string,
+							};
+						} else {
+							exchanges[requestedMics[i]] = {
+								status: (effectiveStatuses[i] || r.status) as string,
+								source: (r.source ?? 'SCHEDULE') as string,
+							};
+						}
 					}
 
 					// Single signature over the entire batch payload (atomic truth)
@@ -16381,7 +16545,7 @@ export default {
 						issuer:         ORACLE_ISSUER,
 						exchanges:      JSON.stringify(exchanges),
 						all_open:       String(countOpen === results.length && !anyHalted && !anyUnknown),
-						schema_version: 'v5.0',
+						schema_version: schemaVersion,
 						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 					};
 					const batchSignature = await signPayload(batchPayload, env.ED25519_PRIVATE_KEY);
@@ -16402,9 +16566,13 @@ export default {
 						correlation_id: batchId,
 						issued_at:      now.toISOString(),
 						expires_at:     expiresAt,
+						// B-490 (4): issuer is signed in the envelope; v5.1 also serves it,
+						// so the envelope can be verified from the response alone (the v5.0
+						// response omits it: listed for the founder's ruling).
+						...(schemaVersion === 'v5.1' ? { issuer: ORACLE_ISSUER } : {}),
 						exchanges,
 						all_open:       countOpen === results.length && !anyHalted && !anyUnknown,
-						schema_version: 'v5.0',
+						schema_version: schemaVersion,
 						public_key_id:  env.PUBLIC_KEY_ID || 'key_2026_v1',
 						signature:      batchSignature,
 						queried_at:     now.toISOString(),
@@ -21876,7 +22044,7 @@ function generateStatusCard(mic: string, receipt: Record<string, string>): strin
 					supported: SUPPORTED_EXCHANGES.map((e) => e.mic),
 				}, 400));
 			}
-			const { receipt, status } = await buildSignedReceipt(v1Mic, env, now, expiresAt, 'live');
+			const { receipt, status } = await buildSignedReceipt(v1Mic, env, now, expiresAt, 'live', schemaVersion);
 			// Track receipt ID + counter only for GET — HEAD is a metadata probe and
 			// the receipt body is not actually served, so it has no place in the
 			// merkle chain or the served-receipt counter.
@@ -22340,6 +22508,11 @@ export class WebhookDispatcher {
 //
 // Export required by Cloudflare Workers module workers for DO class registration.
 export class StreamCoordinator {
+	// B-490 (4), rev 3: the polling loop of the last stream this instance
+	// started, so a caller (the tests) can await its end after the client
+	// goes away. Never read by the request path.
+	lastStream: Promise<void> | null = null;
+
 	constructor(
 		private readonly state: DurableObjectState,
 		private readonly env: Env,
@@ -22353,9 +22526,13 @@ export class StreamCoordinator {
 		const { readable, writable } = new TransformStream();
 		const writer = writable.getWriter();
 
-		// Fire-and-forget polling loop. Runs until the client disconnects (write throws)
-		// or the stream is explicitly closed (HALTED receipt).
-		void (async () => {
+		// Fire-and-forget polling loop. Runs until the client disconnects or the
+		// stream is explicitly closed (HALTED receipt). B-490 (4), rev 3: a client
+		// that disconnects ends the loop at once. Before, the loop learned of it
+		// only at its next write, after up to 30 s asleep and one more signed
+		// receipt built for nobody, so a cancelled stream kept a timer and a
+		// pending loop alive for that long. The bytes sent are unchanged.
+		this.lastStream = (async () => {
 			try {
 				while (true) {
 					const streamNow       = new Date();
@@ -22379,8 +22556,15 @@ data: ${JSON.stringify(receipt)}
 						return;
 					}
 
-					// Wait 30 seconds before next receipt
-					await new Promise<void>((resolve) => setTimeout(resolve, 30_000));
+					// Wait 30 seconds before next receipt, or less if the client goes:
+					// a cancelled readable errors the writable, which settles writer.closed.
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const slept = await Promise.race([
+						new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), 30_000); }),
+						writer.closed.then(() => false, () => false),
+					]);
+					clearTimeout(timer);
+					if (!slept) return;
 				}
 			} catch {
 				// Client disconnected — close gracefully
