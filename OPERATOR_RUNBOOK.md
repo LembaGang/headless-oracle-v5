@@ -227,8 +227,16 @@ Cloudflare Dashboard → Workers & Pages → KV → ORACLE_OVERRIDES
 }
 ```
 
-The `expires` field is optional but strongly recommended. Without it, the halt persists indefinitely
-until you delete the key.
+The `expires` field is required. The code reads an entry only while `expires` is a time in the
+future: an entry without it, or with a time that does not parse, is ignored and receipts follow the
+schedule (corrected in B-490 (3); this line used to say such a halt persists indefinitely). Whether
+an entry without `expires` should instead be honoured is listed for the founder's ruling.
+
+Since B-490 (3): write `"origin":"operator"` in every entry you set by hand, as above. The halt
+monitor writes `"origin":"monitor"` in its own entries and never overwrites or clears an entry
+whose origin is not `monitor`; an entry with no origin is treated as yours. The status may be
+`HALTED`, `CLOSED` or `UNKNOWN`; any other status, or another origin, is not signed as an override:
+receipts for that MIC are the fail-closed UNKNOWN (DETERMINATION_ERROR) until you fix or delete it.
 
 ### Clearing a halt
 Delete the key in the KV namespace. The Worker will revert to schedule-based status immediately.
@@ -236,7 +244,7 @@ Delete the key in the KV namespace. The Worker will revert to schedule-based sta
 ### Via Wrangler CLI (alternative)
 ```bash
 # Set halt
-wrangler kv key put --binding ORACLE_OVERRIDES XNYS '{"status":"HALTED","reason":"Circuit breaker","expires":"2026-03-09T20:00:00Z"}'
+wrangler kv key put --binding ORACLE_OVERRIDES XNYS '{"status":"HALTED","reason":"Circuit breaker","expires":"2026-03-09T20:00:00Z","origin":"operator"}'
 
 # Clear halt
 wrangler kv key delete --binding ORACLE_OVERRIDES XNYS

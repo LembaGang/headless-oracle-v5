@@ -9784,14 +9784,18 @@ describe('GAP-012: batch safe_to_execute override recheck', () => {
 		}
 	});
 
-	it('GAP-012: override=OPEN beats schedule-based CLOSED → counted as OPEN', async () => {
+	// B-490 (3): an entry may set only HALTED, CLOSED or UNKNOWN. An OPEN entry
+	// is not an override the oracle signs: the receipt is the fail-closed
+	// UNKNOWN and the batch counts it so (it counted it OPEN before).
+	it('GAP-012: an override entry with status OPEN is not signed as OPEN: counted UNKNOWN (B-490 (3))', async () => {
 		vi.setSystemTime(new Date('2026-03-16T01:00:00Z')); // XNYS closed (overnight)
 		const ctx = createExecutionContext();
 		await env.ORACLE_OVERRIDES.put('XNYS', JSON.stringify({ status: 'OPEN', reason: 'extended trading', expires: '2030-01-01T00:00:00Z' }));
 		try {
 			const res  = await worker.fetch(new Request('https://headlessoracle.com/v5/batch?mics=XNYS', { headers: { 'X-Oracle-Key': 'test_master_key_local_only' } }), env, ctx);
-			const body = await res.json() as { summary: { open: number } };
-			expect(body.summary.open).toBe(1);
+			const body = await res.json() as { summary: { open: number; unknown: number } };
+			expect(body.summary.open).toBe(0);
+			expect(body.summary.unknown).toBe(1);
 		} finally {
 			await env.ORACLE_OVERRIDES.delete('XNYS');
 		}

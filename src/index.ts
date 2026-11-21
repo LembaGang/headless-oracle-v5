@@ -65,6 +65,77 @@ async function getCachedOverride(mic: string, env: Env): Promise<string | null> 
 	return value;
 }
 
+// B-490 (3): one reading of an ORACLE_OVERRIDES entry for every signed path.
+// An entry records who wrote it in `origin`: 'monitor' (runHaltMonitor, which
+// always writes it) or 'operator' (OPERATOR_RUNBOOK.md tells an operator to
+// write it). An entry with no origin was written before origins were recorded,
+// or by hand without one. One such entry is recognised with certainty: the
+// entry the halt monitor itself wrote before origins were recorded (ae81d4d and
+// before, unchanged since 623b155). isLegacyMonitorEntry matches its exact
+// bytes: the monitor's own key order, source REALTIME, its own reason text
+// naming polygon or alpaca, and expires equal to auto_clear_at and exactly two
+// hours after detected_at, as toISOString() writes them. No route ever wrote
+// ORACLE_OVERRIDES and the runbook's hand-written form has none of those keys,
+// so only the monitor wrote those bytes; its origin is inferred as 'monitor'
+// (origin_recorded false), and the monitor refreshes and clears it as before.
+// Any other entry with no origin cannot be shown to come from the feed, so it
+// is never read as feed evidence: it is treated as an operator entry (signed
+// operator_override, never overwritten or cleared by the monitor).
+// The status an entry may set is HALTED, CLOSED or UNKNOWN; the monitor only
+// ever writes HALTED. Anything else is not an override the oracle can sign:
+// parseOverrideEntry throws, and the receipt builder's Tier 2 signs the
+// fail-closed UNKNOWN (DETERMINATION_ERROR), as it does for a malformed entry.
+// Returns null when there is no live entry (absent or expired).
+export type OverrideOrigin = 'monitor' | 'operator';
+export interface OverrideEntry {
+	status: 'HALTED' | 'CLOSED' | 'UNKNOWN';
+	reason: string;
+	expires: string;
+	source?: string;
+	origin: OverrideOrigin;
+	origin_recorded: boolean;
+}
+const OVERRIDE_STATUSES = new Set(['HALTED', 'CLOSED', 'UNKNOWN']);
+const LEGACY_MONITOR_TTL_MS = 2 * 60 * 60 * 1000;
+export function isLegacyMonitorEntry(raw: string): boolean {
+	let e: Record<string, unknown>;
+	try { e = JSON.parse(raw) as Record<string, unknown>; } catch { return false; }
+	if (e === null || typeof e !== 'object' || Array.isArray(e)) return false;
+	if (typeof e.detected_at !== 'string' || (e.reason !== 'Real-time halt detected by halt monitor (source: polygon)' && e.reason !== 'Real-time halt detected by halt monitor (source: alpaca)')) return false;
+	const det = Date.parse(e.detected_at);
+	if (!Number.isFinite(det)) return false;
+	const expires = new Date(det + LEGACY_MONITOR_TTL_MS).toISOString();
+	const exact = JSON.stringify({
+		status:        'HALTED',
+		source:        'REALTIME',
+		reason:        e.reason,
+		expires,
+		auto_clear_at: expires,
+		detected_at:   new Date(det).toISOString(),
+	});
+	return raw === exact;
+}
+export function entryOrigin(raw: string, e: { origin?: unknown }): OverrideOrigin {
+	if (e.origin === 'monitor') return 'monitor';
+	if (e.origin === undefined && isLegacyMonitorEntry(raw)) return 'monitor';
+	return 'operator';
+}
+export function parseOverrideEntry(raw: string, now: Date): OverrideEntry | null {
+	const e = JSON.parse(raw) as { status?: unknown; reason?: unknown; expires?: unknown; source?: unknown; origin?: unknown };
+	if (!(new Date(e.expires as string) > now)) return null;
+	if (typeof e.status !== 'string' || !OVERRIDE_STATUSES.has(e.status)) throw new Error(`OVERRIDE_ENTRY_INVALID: status ${String(e.status)}`);
+	if (e.origin !== undefined && e.origin !== 'monitor' && e.origin !== 'operator') throw new Error(`OVERRIDE_ENTRY_INVALID: origin ${String(e.origin)}`);
+	if (e.origin === 'monitor' && e.status !== 'HALTED') throw new Error('OVERRIDE_ENTRY_INVALID: a monitor entry is HALTED');
+	return {
+		status:          e.status as OverrideEntry['status'],
+		reason:          e.reason as string,
+		expires:         e.expires as string,
+		...(typeof e.source === 'string' ? { source: e.source } : {}),
+		origin:          entryOrigin(raw, e),
+		origin_recorded: e.origin !== undefined,
+	};
+}
+
 // Exported for use in tests — allows test setup/teardown to clear stale
 // cache entries that would otherwise cause override tests to see null.
 export function clearOverrideCache(): void {
@@ -13673,15 +13744,10 @@ async function buildSignedReceipt(
 		if (env.ORACLE_OVERRIDES) {
 			const overrideRaw = await getCachedOverride(mic, env);
 			if (overrideRaw) {
-				const override = JSON.parse(overrideRaw) as {
-					status: string;
-					reason: string;
-					expires: string;
-					// REALTIME entries are written by runHaltMonitor; OVERRIDE
-					// entries by an operator. Only the first is a feed observation.
-					source?: string;
-				};
-				if (new Date(override.expires) > now) {
+				// B-490 (3): parseOverrideEntry limits the status and reads the
+				// origin; it throws on an entry the oracle cannot sign (Tier 2).
+				const override = parseOverrideEntry(overrideRaw, now);
+				if (override) {
 					const payload = {
 						receipt_id:     crypto.randomUUID(),
 						issued_at:      now.toISOString(),
@@ -14951,11 +15017,31 @@ async function runHaltMonitor(env: Env): Promise<void> {
 		results.push({ mic, checked: true, halted, source });
 
 		if (halted) {
+			// B-490 (3): never overwrite an entry the monitor did not write. A live
+			// operator entry (or one with no recorded origin, apart from the old
+			// monitor's own entry: see isLegacyMonitorEntry) stands, and so does a
+			// malformed one (left for operator review; its receipts are already
+			// the fail-closed UNKNOWN). An expired entry no longer counts.
+			const current = await env.ORACLE_OVERRIDES.get(mic);
+			let keep = false;
+			if (current) {
+				try {
+					const c = JSON.parse(current) as { origin?: unknown; expires?: unknown };
+					keep = entryOrigin(current, c) !== 'monitor' && new Date(c.expires as string) > now;
+				} catch {
+					keep = true;
+				}
+			}
+			if (keep) {
+				console.log(JSON.stringify({ event: 'HALT_MONITOR_KEPT_OTHER_ENTRY', mic, timestamp: now.toISOString() }));
+				continue;
+			}
 			// Write REALTIME override to ORACLE_OVERRIDES KV — 2h TTL
 			const expiresAt = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString();
 			const overrideVal = JSON.stringify({
 				status:         'HALTED',
 				source:         'REALTIME',
+				origin:         'monitor',
 				reason:         `Real-time halt detected by halt monitor (source: ${source})`,
 				expires:        expiresAt,
 				auto_clear_at:  expiresAt,
@@ -14975,8 +15061,10 @@ async function runHaltMonitor(env: Env): Promise<void> {
 			const existing = await env.ORACLE_OVERRIDES.get(mic);
 			if (existing) {
 				try {
-					const parsed = JSON.parse(existing) as { source?: string };
-					if (parsed.source === 'REALTIME') {
+					// B-490 (3): only an entry the monitor recorded as its own, or the
+					// old monitor's own entry (isLegacyMonitorEntry).
+					const parsed = JSON.parse(existing) as { origin?: unknown };
+					if (entryOrigin(existing, parsed) === 'monitor') {
 						await env.ORACLE_OVERRIDES.delete(mic);
 						console.log(JSON.stringify({
 							event:     'HALT_MONITOR_CLEARED',
@@ -16214,12 +16302,15 @@ export default {
 						const raw = await env.ORACLE_OVERRIDES.get(mic).catch(() => null);
 						if (!raw) return null;
 						try {
-							const ov = JSON.parse(raw) as { status: string; reason: string; expires: string };
-							if (new Date(ov.expires) > now) {
+							// B-490 (3): the same reading as Tier 0. An entry the
+							// oracle cannot sign is ignored here: its receipt is
+							// already the fail-closed UNKNOWN.
+							const ov = parseOverrideEntry(raw, now);
+							if (ov) {
 								console.log(`OVERRIDE_APPLIED: ${mic} -> ${ov.status}`);
 								return { mic, status: ov.status };
 							}
-						} catch { /* malformed override — ignore */ }
+						} catch { /* malformed or invalid: ignored here */ }
 						return null;
 					})
 				);
