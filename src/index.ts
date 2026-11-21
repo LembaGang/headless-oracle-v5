@@ -252,6 +252,11 @@ interface MarketConfig {
 	lunchBreak?: LunchBreak;
 	weekends?: string[]; // e.g. ['Fri', 'Sat'] for Middle Eastern exchanges; default ['Sat', 'Sun']
 	overnightSession?: boolean; // true for exchanges with sessions that span midnight (e.g. CME Globex 17:00–16:00 CT)
+	// B-490 (1): the venue trades every minute of every day. The schedule is
+	// OPEN at every instant and needs no holiday calendar, so the year-keyed
+	// fail-closed guard does not apply. Before this flag the 24/7 venues were
+	// modelled as 00:00-23:59 and read CLOSED from 23:59:00 to 23:59:59 UTC.
+	alwaysOpen?: true;
 	mic_type?: 'iso' | 'convention'; // 'iso' = ISO 10383 MIC; 'convention' = community/non-ISO identifier
 }
 
@@ -1243,6 +1248,7 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		openHour: 0, openMinute: 0,
 		closeHour: 23, closeMinute: 59,
 		mic_type: 'convention',
+		alwaysOpen: true,
 		weekends: [],
 		holidays: { '2026': [], '2027': [] },
 	},
@@ -1255,6 +1261,7 @@ const MARKET_CONFIGS: Record<string, MarketConfig> = {
 		openHour: 0, openMinute: 0,
 		closeHour: 23, closeMinute: 59,
 		mic_type: 'convention',
+		alwaysOpen: true,
 		weekends: [],
 		holidays: { '2026': [], '2027': [] },
 	},
@@ -1691,9 +1698,12 @@ function isInSession(
 	return true;
 }
 
-function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
+export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 	const config = MARKET_CONFIGS[mic];
 	if (!config) return { status: 'UNKNOWN', source: 'SCHEDULE', reason: 'UNSUPPORTED_MIC' };
+
+	// B-490 (1): around-the-clock venues are OPEN at every instant (no calendar).
+	if (config.alwaysOpen) return { status: 'OPEN', source: 'SCHEDULE' };
 
 	const { weekday, year, dateStr, hour, minute } = getLocalTimeParts(config.timezone, now);
 
@@ -1759,6 +1769,15 @@ function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 	const closeMinutes = config.closeHour * 60 + config.closeMinute;
 	const open = isInSession(timeMinutes, openMinutes, closeMinutes, config.lunchBreak);
 	return { status: open ? 'OPEN' : 'CLOSED', source: 'SCHEDULE' };
+}
+
+// B-490: read-only views of the calendar data, for tests that walk every
+// exchange (functions, because the Workers runtime rejects non-function exports).
+export function scheduleMics(): string[] {
+	return Object.keys(MARKET_CONFIGS);
+}
+export function scheduleConfigFor(mic: string): Readonly<MarketConfig> | undefined {
+	return MARKET_CONFIGS[mic];
 }
 
 // ─── Next Session Calculator ──────────────────────────────────────────────────

@@ -1818,19 +1818,21 @@ describe('Holiday coverage guard (fail-closed)', () => {
 		}
 	});
 
-	it('guard fires for all MICs in an uncovered year', async () => {
-		vi.useFakeTimers();
-		vi.setSystemTime(new Date('2028-06-01T10:00:00Z'));
-		try {
-			for (const mic of ALL_MICS) {
+	// B-490 rev 4: one test per exchange, so no test runs long.
+	for (const mic of ALL_MICS) {
+		it(`guard fires in an uncovered year for ${mic} (B-490 (1): except the always-open XCOI and XBIN, which need no calendar)`, async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date('2028-06-01T10:00:00Z'));
+			try {
 				const body = await fetchJSON(`/v5/demo?mic=${mic}`);
-				expect(body).toHaveProperty('status', 'UNKNOWN');
-				expect(body).toHaveProperty('source', 'SYSTEM');
+				const alwaysOpen = mic === 'XCOI' || mic === 'XBIN';
+				expect(body).toHaveProperty('status', alwaysOpen ? 'OPEN' : 'UNKNOWN');
+				expect(body).toHaveProperty('source', alwaysOpen ? 'SCHEDULE' : 'SYSTEM');
+			} finally {
+				vi.useRealTimers();
 			}
-		} finally {
-			vi.useRealTimers();
-		}
-	});
+		});
+	}
 });
 
 // ─── GET /v5/health ──────────────────────────────────────────────────────────
