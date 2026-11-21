@@ -1090,11 +1090,14 @@ describe('Lunch break in /v5/schedule', () => {
 		expect(body.lunch_break).toBeNull();
 	});
 
-	it('XLON, XPAR, XSES all have lunch_break: null', async () => {
-		for (const mic of ['XLON', 'XPAR', 'XSES']) {
+	it('XLON and XPAR have lunch_break: null; XSES has the SGX mid-day break (B-498)', async () => {
+		for (const mic of ['XLON', 'XPAR']) {
 			const body = await fetchJSON(`/v5/schedule?mic=${mic}`);
 			expect(body.lunch_break).toBeNull();
 		}
+		// B-498: SGX Rulebook Practice Note 8.2.1, Mid-Day Break 12:00 to 13:00 (ruling R4).
+		const xses = await fetchJSON('/v5/schedule?mic=XSES');
+		expect(xses.lunch_break).toEqual({ start: '12:00', end: '13:00' });
 	});
 
 	// ── Year boundary safety: data_coverage_years ───────────────────────────────
@@ -1118,7 +1121,11 @@ describe('Lunch break in /v5/schedule', () => {
 			expect(body).toHaveProperty('data_coverage_years');
 			const years = body.data_coverage_years as string[];
 			expect(Array.isArray(years)).toBe(true);
-			expect(years.length).toBeGreaterThanOrEqual(2);
+			// B-498 ruling R5: venues whose 2027 calendar was not yet published on
+			// 2026-11-21 have no 2027 list, so they cover 2026 only.
+			expect(years).toContain('2026');
+			if (['XBOM', 'XNSE', 'XSAU', 'XDFM', 'XIST', 'XBSP'].includes(mic)) expect(years).toEqual(['2026']);
+			else expect(years.length).toBeGreaterThanOrEqual(2);
 		}
 	});
 
@@ -1908,9 +1915,11 @@ describe('GET /v5/health', () => {
 		const dc = body.data_coverage as Record<string, unknown>;
 		expect(Array.isArray(dc.holidays)).toBe(true);
 		expect(Array.isArray(dc.half_days)).toBe(true);
-		// All 7 exchanges have 2026 and 2027 holiday data
+		// Every exchange has 2026 holiday data. B-498 ruling R5: six venues have no
+		// 2027 list yet (not published on 2026-11-21), so 2027 is not a year every
+		// exchange shares.
 		expect(dc.holidays).toContain('2026');
-		expect(dc.holidays).toContain('2027');
+		expect(dc.holidays).not.toContain('2027');
 	});
 
 	it('health data_coverage.holidays is sorted and contains only years all exchanges share', async () => {
@@ -6568,9 +6577,9 @@ describe('edgeCaseCount()', () => {
 		expect(edgeCaseCount(2026).holidays).toBeGreaterThanOrEqual(292);
 	});
 
-	it('2026: halfDays = sum of all early-close entries (only original 7 exchanges have halfDays)', () => {
-		// XNYS 2 + XNAS 2 + XLON 2 + XJPX 0 + XPAR 2 + XHKG 1 + XSES 0 = 9
-		expect(edgeCaseCount(2026).halfDays).toBe(9);
+	it('2026: halfDays = sum of all early-close entries', () => {
+		// B-498: XNYS 2 + XNAS 2 + XLON 2 + XPAR 2 + XHKG 3 + XSES 2 + XASX 2 + XIST 3 + XSTO 5 + XCBO 2 = 25
+		expect(edgeCaseCount(2026).halfDays).toBe(25);
 	});
 
 	it('2026: dstTransitions > 8 (original 4 × 2 + new DST exchanges)', () => {
@@ -7743,12 +7752,15 @@ describe('XSAU — Saudi Exchange (Tadawul) — Fri/Sat weekends', () => {
 	});
 });
 
-describe('XDFM — Dubai Financial Market — Fri/Sat weekends', () => {
-	it('returns CLOSED on Friday (weekend for XDFM)', async () => {
+// B-498 ruling R4: the DFM weekend is Saturday and Sunday ("trading and settlement in
+// the securities market will occur from Monday to Friday", DFM circular 12/2025). These
+// tests said the opposite (Friday CLOSED, Sunday OPEN) and were changed.
+describe('XDFM — Dubai Financial Market — Sat/Sun weekends', () => {
+	it('returns OPEN on Friday (a DFM trading day)', async () => {
 		// 2026-03-06 Friday, 11:00 GST = 07:00 UTC (GST = UTC+4)
 		vi.setSystemTime(new Date('2026-03-06T07:00:00Z'));
 		const body = await fetchJSON('/v5/demo?mic=XDFM');
-		expect(body).toHaveProperty('status', 'CLOSED');
+		expect(body).toHaveProperty('status', 'OPEN');
 		vi.useRealTimers();
 	});
 
@@ -7759,11 +7771,11 @@ describe('XDFM — Dubai Financial Market — Fri/Sat weekends', () => {
 		vi.useRealTimers();
 	});
 
-	it('returns OPEN on Sunday (trading day for XDFM)', async () => {
-		// 2026-03-08 Sunday, 11:00 GST = 07:00 UTC — inside 10:00–14:00 GST
+	it('returns CLOSED on Sunday (weekend for XDFM)', async () => {
+		// 2026-03-08 Sunday, 11:00 GST = 07:00 UTC — inside 10:00–14:45 GST
 		vi.setSystemTime(new Date('2026-03-08T07:00:00Z'));
 		const body = await fetchJSON('/v5/demo?mic=XDFM');
-		expect(body).toHaveProperty('status', 'OPEN');
+		expect(body).toHaveProperty('status', 'CLOSED');
 		vi.useRealTimers();
 	});
 
@@ -13764,22 +13776,24 @@ describe('Schedule engine — weekend CLOSED', () => {
 		});
 	}
 
-	// Middle Eastern exchanges: Friday is weekend
+	// Friday: weekend at XSAU; a trading day at XDFM (B-498)
 	it('XSAU CLOSED on Friday (Middle Eastern weekend)', async () => {
 		await expectDemoStatus('XSAU', '2026-04-10T09:00:00Z', 'CLOSED'); // Fri 12:00 AST
 	});
 
-	it('XDFM CLOSED on Friday (Middle Eastern weekend)', async () => {
-		await expectDemoStatus('XDFM', '2026-04-10T09:00:00Z', 'CLOSED');
+	// B-498 ruling R4: DFM trades Monday to Friday (circular 12/2025); this test said CLOSED.
+	it('XDFM OPEN on Friday (DFM trades Monday to Friday)', async () => {
+		await expectDemoStatus('XDFM', '2026-04-10T09:00:00Z', 'OPEN'); // Fri 13:00 GST
 	});
 
-	// But XSAU/XDFM are OPEN on Sunday
+	// Sunday: a trading day at XSAU; weekend at XDFM (B-498)
 	it('XSAU OPEN on Sunday (not a Middle Eastern weekend)', async () => {
 		await expectDemoStatus('XSAU', '2026-04-12T09:00:00Z', 'OPEN'); // Sun 12:00 AST
 	});
 
-	it('XDFM OPEN on Sunday (not a Middle Eastern weekend)', async () => {
-		await expectDemoStatus('XDFM', '2026-04-12T08:00:00Z', 'OPEN'); // Sun 12:00 GST
+	// B-498 ruling R4: Sunday is a DFM weekend day; this test said OPEN.
+	it('XDFM CLOSED on Sunday (the DFM weekend is Saturday and Sunday)', async () => {
+		await expectDemoStatus('XDFM', '2026-04-12T08:00:00Z', 'CLOSED'); // Sun 12:00 GST
 	});
 
 	// Crypto: OPEN on weekends

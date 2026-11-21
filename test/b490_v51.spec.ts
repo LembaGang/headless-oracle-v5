@@ -109,7 +109,7 @@ describe('B-490 (4): every schedule path maps to exactly one pair (rulings 4, 5,
 		['XNYS', '2026-11-27T13:00:00Z', 'CLOSED', 'pre_open',        'outside_hours'],   // early-close day, before the open
 		['XNYS', '2026-11-27T16:00:00Z', 'OPEN',   'regular',         'none'],            // early-close day, in session
 		['XNYS', '2026-11-27T19:00:00Z', 'CLOSED', 'post_close',      'early_close'],     // early-close day, after the early close
-		['XHKG', '2026-04-07T04:30:00Z', 'CLOSED', 'lunch_break',     'scheduled_break'], // 12:30 HKT
+		['XHKG', '2026-04-08T04:30:00Z', 'CLOSED', 'lunch_break',     'scheduled_break'], // 12:30 HKT (B-498: 7 Apr 2026 is a Hong Kong holiday, so the lunch-break case moved to 8 Apr)
 		['XSHG', '2026-04-07T04:00:00Z', 'CLOSED', 'lunch_break',     'scheduled_break'], // 12:00 CST
 		['XCBT', '2026-04-12T15:00:00Z', 'CLOSED', 'pre_open',        'outside_hours'],   // Sun 10:00 CDT, the tail of Saturday
 		['XCBT', '2026-04-10T23:00:00Z', 'CLOSED', 'post_close',      'outside_hours'],   // Fri 18:00 CDT (B-490 (2))
