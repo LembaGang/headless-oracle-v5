@@ -4,9 +4,9 @@
 
 Headless Oracle runs an autonomous halt monitor every minute via Cloudflare Cron. It checks exchanges that are currently scheduled OPEN against real-time market data sources. When a discrepancy is detected — the exchange is scheduled OPEN but real-time data says it is halted — the monitor writes a `REALTIME` circuit breaker override to the `ORACLE_OVERRIDES` KV namespace.
 
-> **Coverage note**: Real-time halt detection currently covers US markets (XNYS, XNAS) via Polygon.io (primary) and Alpaca (fallback). All 23 exchanges use schedule-based detection for holidays, weekends, and lunch breaks. Non-US exchanges use schedule-based detection unless you extend the `micToPolygon` mapping in `src/index.ts` with additional Polygon exchange names.
+> **Coverage note**: Real-time halt detection currently covers US markets (XNYS, XNAS) via Polygon.io (primary) and Alpaca (fallback). All 28 exchanges use schedule-based detection for holidays, weekends, and lunch breaks. Non-US exchanges use schedule-based detection unless you extend the `micToPolygon` mapping in `src/index.ts` with additional Polygon exchange names.
 
-This means `GET /v5/status` and `GET /v5/demo` will return `status: 'HALTED', source: 'REALTIME'` for affected exchanges within 60 seconds of detection.
+This means `GET /v5/status` and `GET /v5/demo` will return `status: 'HALTED', source: 'OVERRIDE'` for affected exchanges within 60 seconds of detection. Every receipt answered from an override entry signs `source: 'OVERRIDE'`, whoever wrote the entry. What tells a monitor-written entry apart is signed elsewhere in the receipt: its `reason` ("Real-time halt detected by halt monitor (source: polygon)"), `coverage.consulted`, which names `realtime_halt_feed_via_override`, and, in schema_version v5.1 receipts, `closure_reason: 'feed_reported_not_open'`.
 
 ## Why This Matters for Agents
 
@@ -21,7 +21,7 @@ Without a halt monitor, an agent could receive `status: 'OPEN'` for an exchange 
 
 | Priority | Source | Scope | Auth Required |
 |----------|--------|-------|---------------|
-| 1 (primary) | Polygon.io `/v1/marketstatus/now` | US markets (XNYS, XNAS) + selected international | `POLYGON_API_KEY` secret |
+| 1 (primary) | Polygon.io `/v1/marketstatus/now` | US markets (XNYS, XNAS) only | `POLYGON_API_KEY` secret |
 | 2 (fallback) | Alpaca paper-api `/v2/clock` | US markets only | None (public paper endpoint) |
 
 If both sources fail to respond within 5 seconds, the monitor **fails open** — no REALTIME override is written and the schedule-based status is preserved. This is an intentional design choice: a false halt (blocking trading when the market is actually open) is worse for most consumers than a missed halt.
@@ -34,6 +34,7 @@ When a halt is detected, the monitor writes to `ORACLE_OVERRIDES`:
 {
   "status": "HALTED",
   "source": "REALTIME",
+  "origin": "monitor",
   "reason": "Real-time halt detected by halt monitor (source: polygon)",
   "expires": "2026-03-10T11:00:00.000Z",
   "auto_clear_at": "2026-03-10T11:00:00.000Z",
@@ -45,13 +46,13 @@ Key: `XNYS` (MIC code), TTL: 7200 seconds (2 hours).
 
 ## Auto-Clear Logic
 
-When the monitor runs and the exchange is OPEN per real-time data:
-- If a `REALTIME` override exists in KV → it is deleted
-- If a manual `OVERRIDE` (set by an operator) exists → it is **not** touched
+The monitor writes `"origin": "monitor"` in its entries (since B-490 (3)). When it runs:
+- and the exchange is OPEN per real-time data, it deletes an entry only if its `origin` is `monitor`;
+- and the exchange is halted per real-time data, it writes its entry only if no live entry of another origin is there.
 
-This means:
-- REALTIME overrides are self-healing — they clear automatically when the exchange resumes
-- Operator-set circuit breaker overrides are never affected by the halt monitor
+An entry the monitor wrote before origins were recorded has no `origin`, but its bytes are the monitor's own: exactly the keys of the entry above less `origin`, in that order (`status` HALTED, `source` REALTIME, the monitor's `reason` naming polygon or alpaca, `expires` equal to `auto_clear_at` and exactly two hours after `detected_at`, as `toISOString()` writes them). The code (`isLegacyMonitorEntry`) recognises exactly those bytes and treats the entry as the monitor's: at the first run after the deploy it is deleted if the exchange is OPEN per real-time data, and replaced by the monitor's own entry, with `origin`, if not. No route writes `ORACLE_OVERRIDES` and the runbook's operator form has none of those keys, so no operator entry has those bytes.
+
+So the monitor's own entries clear when the exchange resumes, and an entry written by an operator (`"origin": "operator"`), or with no recorded origin and not the monitor's own bytes, is never overwritten or cleared by the monitor: it lasts until its `expires` time or until an operator deletes it.
 
 ## Endpoints
 
@@ -111,17 +112,16 @@ Polygon's free tier covers US market status. The `/v1/marketstatus/now` endpoint
 |------|-----------------------|
 | XNYS | nyse                  |
 | XNAS | nasdaq                |
-| XASX | asx                   |
 
 Other MICs are not directly supported by Polygon's market status endpoint — they use the schedule-based system only, unless you extend the `micToPolygon` mapping in `src/index.ts`.
 
 ## Source Field in Signed Receipts
 
-Receipts produced while a REALTIME override is active will have `source: 'REALTIME'`. This is a signed field — it appears in the canonical payload and is covered by the Ed25519 signature.
+Receipts produced while a monitor-written override is active have `source: 'OVERRIDE'`, as every receipt answered from an override entry does; the value `REALTIME` in the KV entry is not copied into the receipt. The signed `reason`, `coverage.consulted` (`realtime_halt_feed_via_override`) and, in v5.1, `closure_reason` (`feed_reported_not_open`) say that the entry came from the monitor. All of these are signed fields, covered by the Ed25519 signature.
 
 Valid source values: `SCHEDULE`, `OVERRIDE`, `SYSTEM`, `REALTIME`
 
-Consumers should treat `REALTIME` halts with the same urgency as `OVERRIDE` halts: halt all execution.
+Consumers should treat every `HALTED` receipt the same way, whoever wrote the entry: halt all execution.
 
 ## Operational Notes
 

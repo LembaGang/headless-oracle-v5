@@ -11868,7 +11868,7 @@ const OPENAPI_SPEC = {
 			},
 			SignedReceipt: {
 				type: 'object',
-				required: ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic', 'status', 'source', 'halt_detection', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
+				required: ['receipt_id', 'issued_at', 'expires_at', 'issuer', 'mic', 'status', 'source', 'halt_detection', 'coverage', 'receipt_mode', 'schema_version', 'public_key_id', 'signature'],
 				properties: {
 					receipt_id:     { type: 'string', format: 'uuid' },
 					issued_at:      { type: 'string', format: 'date-time' },
@@ -11879,6 +11879,7 @@ const OPENAPI_SPEC = {
 					source:         { '$ref': '#/components/schemas/Source' },
 					reason:         { type: 'string', description: 'Present when source is OVERRIDE.' },
 					halt_detection: { type: 'string', enum: ['active', 'schedule_only'], description: '"active" = real-time intraday halt detection via external API (XNYS, XNAS only). "schedule_only" = calendar hours + holidays only; unscheduled intraday circuit breaker halts are not detected. Agents must adjust confidence accordingly.' },
+					coverage:       { type: 'string', description: 'Signed. A JSON-encoded string (JSON.parse it after verifying the signature): { determination_tier (0 override, 1 schedule, 2 fail-closed), consulted[], not_consulted[], realtime_halt_feed_scope[], unknown_reason (null unless status is UNKNOWN), feed_state (live | stale | failed | absent | not_covered), feed_last_run }, members in that order.' },
 					receipt_mode:   { type: 'string', enum: ['demo', 'live'], description: "'demo' for unauthenticated /v5/demo; 'live' for /v5/status, /v5/batch, and MCP tool receipts." },
 					schema_version: { type: 'string', example: 'v5.0', enum: ['v5.0', 'v5.1'], description: 'Receipt schema version. Consumers should verify this matches the version they were built against. v5.0 unless the request asked for v5.1 (query parameter schema_version).' },
 					session_phase:  { type: 'string', enum: ['pre_open', 'regular', 'lunch_break', 'post_close', 'maintenance', 'non_trading_day', 'unknown'], description: 'v5.1 only, signed. Where the clock sits against the published schedule.' },
