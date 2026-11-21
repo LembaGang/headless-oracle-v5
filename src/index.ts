@@ -1748,6 +1748,17 @@ export function getScheduleStatus(mic: string, now: Date): MarketStatusResult {
 		if (timeMinutes >= closeMinutes && timeMinutes < openMinutes) {
 			return { status: 'CLOSED', source: 'SCHEDULE' };
 		}
+		// B-490 (2): the evening part (from today's open hour) begins the NEXT
+		// day's session, so it exists only when tomorrow is not a rest day. The
+		// venue's week is Sun 17:00 to Fri 16:00 CT: without this check Friday
+		// 17:00 to midnight read OPEN although the market is shut until Sunday.
+		if (timeMinutes >= openMinutes) {
+			const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+			const { weekday: nextWeekday } = getLocalTimeParts(config.timezone, tomorrow);
+			if (weekends.includes(nextWeekday)) {
+				return { status: 'CLOSED', source: 'SCHEDULE' };
+			}
+		}
 		// In the overnight tail (before today's open hour): confirm yesterday was a trading day.
 		// Without this check, Sunday 00:00–17:00 CT would incorrectly read as OPEN.
 		if (timeMinutes < openMinutes) {
