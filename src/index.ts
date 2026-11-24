@@ -9519,13 +9519,13 @@ XSES (Singapore, Asia/Singapore), XASX (Sydney, Australia/Sydney), XBOM (Mumbai 
 XNSE (Mumbai NSE, Asia/Kolkata), XSHG (Shanghai, Asia/Shanghai), XSHE (Shenzhen, Asia/Shanghai),
 XKRX (Seoul, Asia/Seoul), XJSE (Johannesburg, Africa/Johannesburg), XBSP (Sao Paulo, America/Sao_Paulo),
 XSWX (Zurich, Europe/Zurich), XMIL (Milan, Europe/Rome), XIST (Istanbul, Europe/Istanbul),
-XSAU (Riyadh, Asia/Riyadh, Fri/Sat weekends), XDFM (Dubai, Asia/Dubai, Fri/Sat weekends),
+XSAU (Riyadh, Asia/Riyadh, Fri/Sat weekends), XDFM (Dubai, Asia/Dubai, Sat/Sun weekends),
 XNZE (Auckland, Pacific/Auckland), XHEL (Helsinki, Europe/Helsinki), XSTO (Stockholm, Europe/Stockholm)
 
 ### Derivatives & Crypto (5)
 XCBT (CME Futures, America/Chicago, overnight/Sunday pre-open, mic_type: iso)
 XNYM (NYMEX, America/Chicago, overnight/Sunday pre-open, mic_type: iso)
-XCBO (Cboe Options, America/Chicago, 9:30-16:15 ET, mic_type: iso)
+XCBO (Cboe Options, America/New_York, 9:30-16:15 ET, mic_type: iso)
 XCOI (Coinbase, UTC, 24/7 no weekends, mic_type: convention)
 XBIN (Binance, UTC, 24/7 no weekends, mic_type: convention)
 
@@ -9602,10 +9602,10 @@ Cursor (.cursor/mcp.json):
 | XNYS | NYSE | America/New_York | 09:30 | 16:00 | — | Sat/Sun |
 | XNAS | NASDAQ | America/New_York | 09:30 | 16:00 | — | Sat/Sun |
 | XLON | London SE | Europe/London | 08:00 | 16:30 | — | Sat/Sun |
-| XJPX | Tokyo SE | Asia/Tokyo | 09:00 | 15:00 | 11:30–12:30 | Sat/Sun |
+| XJPX | Tokyo SE | Asia/Tokyo | 09:00 | 15:30 | 11:30–12:30 | Sat/Sun |
 | XPAR | Euronext Paris | Europe/Paris | 09:00 | 17:30 | — | Sat/Sun |
 | XHKG | Hong Kong | Asia/Hong_Kong | 09:30 | 16:00 | 12:00–13:00 | Sat/Sun |
-| XSES | Singapore | Asia/Singapore | 09:00 | 17:00 | — | Sat/Sun |
+| XSES | Singapore | Asia/Singapore | 09:00 | 17:00 | 12:00–13:00 | Sat/Sun |
 | XASX | ASX | Australia/Sydney | 10:00 | 16:00 | — | Sat/Sun |
 | XBOM | BSE India | Asia/Kolkata | 09:15 | 15:30 | — | Sat/Sun |
 | XNSE | NSE India | Asia/Kolkata | 09:15 | 15:30 | — | Sat/Sun |
@@ -9618,13 +9618,13 @@ Cursor (.cursor/mcp.json):
 | XMIL | Borsa Italiana | Europe/Rome | 09:00 | 17:30 | — | Sat/Sun |
 | XIST | Borsa Istanbul | Europe/Istanbul | 10:00 | 18:00 | — | Sat/Sun |
 | XSAU | Saudi Tadawul | Asia/Riyadh | 10:00 | 15:00 | — | Fri/Sat |
-| XDFM | Dubai DFM | Asia/Dubai | 10:00 | 14:00 | — | Fri/Sat |
+| XDFM | Dubai DFM | Asia/Dubai | 10:00 | 14:45 | — | Sat/Sun |
 | XNZE | NZX | Pacific/Auckland | 10:00 | 16:45 | — | Sat/Sun |
 | XHEL | Helsinki | Europe/Helsinki | 10:00 | 18:30 | — | Sat/Sun |
 | XSTO | Stockholm | Europe/Stockholm | 09:00 | 17:30 | — | Sat/Sun |
 | XCBT | CME Futures | America/Chicago | 17:00 | 16:00 | — | Sat/Sun |
 | XNYM | NYMEX | America/Chicago | 17:00 | 16:00 | — | Sat/Sun |
-| XCBO | Cboe Options | America/Chicago | 09:30 | 16:15 | — | Sat/Sun |
+| XCBO | Cboe Options | America/New_York | 09:30 | 16:15 | — | Sat/Sun |
 | XCOI | Coinbase | UTC | 00:00 | 24:00 | — | None |
 | XBIN | Binance | UTC | 00:00 | 24:00 | — | None |
 
@@ -9742,7 +9742,7 @@ Headless Oracle returns cryptographically signed receipts that tell you whether 
 | Computing UTC offsets | Detecting exchange holiday closures (200+ across 28 venues) |
 | Formatting timestamps | Handling unscheduled circuit breaker halts |
 | Scheduling calendar events | Detecting early close days |
-| Building a world clock | Lunch break windows (XJPX, XHKG, XSHG, XSHE) |
+| Building a world clock | Lunch break windows (XJPX, XHKG, XSHG, XSHE, XSES) |
 | Converting between timezones | DST correctness across 28 separate exchange calendars |
 | Checking if an office is open | A signed record that you checked before executing |
 | | Fail-closed UNKNOWN when state cannot be determined |
@@ -11157,7 +11157,7 @@ const AGENT_JSON = {
 		{
 			id:          'get_market_schedule',
 			name:        'Get Market Schedule',
-			description: 'Returns holiday-aware trading session schedule: next open/close UTC times, market hours, trading hours, exchange operating hours, holiday calendar, lunch break windows (XJPX/XHKG/XSHG/XSHE), and session status across 28 exchanges.',
+			description: 'Returns holiday-aware trading session schedule: next open/close UTC times, market hours, trading hours, exchange operating hours, holiday calendar, lunch break windows (XJPX/XHKG/XSHG/XSHE/XSES), and session status across 28 exchanges.',
 			tags:        ['finance', 'schedule', 'market-hours'],
 			examples:    ['When does Tokyo Stock Exchange open next?', 'What are XJPX trading hours?'],
 		},
@@ -11755,8 +11755,8 @@ const MCP_TOOLS = [
 			'Model-agnostic: works identically regardless of which AI model consumes it. ' +
 			'Pairs with get_market_status signed receipts. ' +
 			'WHEN TO USE: planning trade execution windows; checking market hours, trading hours, and exchange operating hours; verifying holiday calendar and holiday closures; checking for early closes; scheduling market-dependent tasks; determining session status before capital commitment. ' +
-			'Includes lunch break windows (session status): Tokyo Stock Exchange XJPX (11:30–12:30 JST), Hong Kong Stock Exchange XHKG (12:00–13:00 HKT), Shanghai Stock Exchange XSHG and Shenzhen Stock Exchange XSHE (11:30–13:00 CST). ' +
-			'Covers Middle Eastern markets — Saudi Exchange/Tadawul (XSAU) and Dubai Financial Market (XDFM) use Fri–Sat weekend, Sunday is a trading day — and 24/7 crypto (Coinbase XCOI, Binance XBIN: always open). ' +
+			'Includes lunch break windows (session status): Tokyo Stock Exchange XJPX (11:30–12:30 JST), Hong Kong Stock Exchange XHKG (12:00–13:00 HKT), Shanghai Stock Exchange XSHG and Shenzhen Stock Exchange XSHE (11:30–13:00 CST), Singapore Exchange XSES (12:00–13:00 SGT). ' +
+			'Covers Middle Eastern markets: Saudi Exchange/Tadawul (XSAU) uses a Friday and Saturday weekend, with Sunday a trading day; Dubai Financial Market (XDFM) trades Monday to Friday, 10:00 to 14:45 GST. Also covers 24/7 crypto (Coinbase XCOI, Binance XBIN: always open). ' +
 			'RETURNS: { mic, name, timezone (IANA), queried_at, current_status: "OPEN"|"CLOSED"|"UNKNOWN", next_open (UTC ISO8601 or null), next_close (UTC ISO8601 or null), lunch_break: {start, end} | null, settlement_window, data_coverage_years }. ' +
 			'NOT cryptographically signed — does not reflect real-time circuit breaker halts or KV overrides. For authoritative signed status use get_market_status. ' +
 			'Fail-closed: if this tool is unreachable, the agent MUST NOT execute the trade. ' +
@@ -19737,7 +19737,7 @@ ${X402_EMAIL_PRICE_LINE} Details at <a href="https://headlessoracle.com/docs/x40
 							check:    'APTS-003',
 							name:     'settlement_window',
 							status:   'pass',
-							evidence: 'Lunch break sessions (XJPX, XHKG, XSHG, XSHE), early close days, religious holidays (Eid Al-Fitr for XSAU/XDFM), holiday calendars 2026–2027 for all 28 exchanges across 6 regions',
+							evidence: 'Lunch break sessions (XJPX, XHKG, XSHG, XSHE, XSES), early close days, religious holidays (Eid Al-Fitr for XSAU/XDFM), holiday calendars for 2026 at all 28 exchanges across 6 regions, and for 2027 at 22 of them; for the other six (XBOM, XNSE, XBSP, XIST, XSAU, XDFM) no official 2027 calendar had been found by 21 November 2026, so the service answers UNKNOWN for them on 2027 days outside their weekends',
 						},
 						{
 							check:    'APTS-004',
